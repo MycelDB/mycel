@@ -41,16 +41,18 @@ type bufferedNodeRow struct {
 // A checkpoint identifies a row before it is emitted, allowing the lookahead
 // row retained by response pagination to become the next page's first row.
 type PagedNodeSource struct {
-	alias             string
-	reader            NodePageReader
-	checkpointEncoder PageCheckpointEncoder
-	resumeCursor      string
-	resumeOffset      int
-	resumeRequested   bool
-	pendingResume     int
-	resuming          bool
-	batchSize         int
-	tracker           *Tracker
+	alias                   string
+	reader                  NodePageReader
+	checkpointEncoder       PageCheckpointEncoder
+	resumeCursor            string
+	resumeOffset            int
+	resumeRequested         bool
+	pendingResume           int
+	resuming                bool
+	batchSize               int
+	tracker                 *Tracker
+	trackStartNodes         bool
+	truncateOnStartCapacity bool
 
 	pageCursor     string
 	nextCursor     string
@@ -73,6 +75,15 @@ func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder P
 		resumeCursor: resumeCursor, resumeOffset: resumeOffset, resumeRequested: resuming,
 		batchSize: batchSize, tracker: tracker,
 	}
+}
+
+// WithStartNodeBudget makes this source account returned nodes as traversal
+// roots and clamp every dependency request to the remaining root/node budget.
+// Subtree roots may stop cleanly at a root boundary; path starts fail closed.
+func (s *PagedNodeSource) WithStartNodeBudget(truncate bool) *PagedNodeSource {
+	s.trackStartNodes = true
+	s.truncateOnStartCapacity = truncate
+	return s
 }
 
 func (s *PagedNodeSource) Open(ctx context.Context) error {
@@ -117,6 +128,13 @@ func (s *PagedNodeSource) Next(ctx context.Context) (Batch, error) {
 				return Batch{}, io.EOF
 			}
 			if err := s.fetch(ctx); err != nil {
+				if err == io.EOF {
+					s.exhausted = true
+					if len(rows) > 0 {
+						return Batch{Rows: rows}, nil
+					}
+					return Batch{}, io.EOF
+				}
 				_ = s.Close()
 				return Batch{}, err
 			}
@@ -156,7 +174,34 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 	if s.buffer != nil {
 		cursor = s.nextCursor
 	}
-	page, err := s.reader(ctx, s.batchSize, cursor)
+	limit := s.batchSize
+	if s.tracker != nil {
+		remainingNodes := s.tracker.RemainingNodesLoaded()
+		if remainingNodes == 0 {
+			if s.trackStartNodes && s.truncateOnStartCapacity {
+				s.tracker.MarkTruncated("max_nodes exceeded")
+				return io.EOF
+			}
+			return s.tracker.LoadNodes(1)
+		}
+		if remainingNodes < int64(limit) {
+			limit = int(remainingNodes)
+		}
+		if s.trackStartNodes {
+			remainingStarts := s.tracker.RemainingStartNodes()
+			if remainingStarts == 0 {
+				if s.truncateOnStartCapacity {
+					s.tracker.MarkTruncated("max_start_nodes exceeded")
+					return io.EOF
+				}
+				return s.tracker.UseStartNodes(1)
+			}
+			if remainingStarts < int64(limit) {
+				limit = int(remainingStarts)
+			}
+		}
+	}
+	page, err := s.reader(ctx, limit, cursor)
 	if contextErr := ctx.Err(); contextErr != nil {
 		return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", contextErr)
 	}
@@ -171,7 +216,7 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 			return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", err.Error(), err)
 		}
 	}
-	if len(page.Nodes) > s.batchSize {
+	if len(page.Nodes) > limit {
 		return invalidState("scan indexed nodes", "access method returned an oversized page")
 	}
 	if page.SourceRetainedBytes < 0 {
@@ -187,6 +232,11 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 		}
 		if err := s.tracker.LoadNodes(page.NodesLoaded); err != nil {
 			return err
+		}
+		if s.trackStartNodes {
+			if err := s.tracker.UseStartNodes(int64(len(page.Nodes))); err != nil {
+				return err
+			}
 		}
 		if err := s.tracker.RecordNodeReads(page.NodeReadCalls); err != nil {
 			return err

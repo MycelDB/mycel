@@ -35,6 +35,21 @@ type bufferedTraversalRow struct {
 	bytes int64
 }
 
+func withTraversalPageMemory(tracker *Tracker, edges []graph.Edge, visit func() error) error {
+	if tracker == nil || len(edges) == 0 {
+		return visit()
+	}
+	var bytes int64
+	for _, edge := range edges {
+		bytes += estimateBindingRow(BindingRow{GraphEdges: []graph.Edge{edge}})
+	}
+	if err := tracker.ReserveMemory(bytes); err != nil {
+		return err
+	}
+	defer tracker.ReleaseMemory(bytes)
+	return visit()
+}
+
 // AdjacencySource streams a one-hop explicit-start traversal without loading a
 // domain edge set. Its checkpoint identifies the edge candidate before target
 // and residual filtering, so filtered pages cannot skip matches.
@@ -597,89 +612,94 @@ func (o *PathExpand) visit(ctx context.Context, base BindingRow, node graph.Node
 				return err
 			}
 		}
-		for _, edge := range page.Edges {
-			if o.tracker != nil {
-				if err := o.tracker.ExamineCandidates(1); err != nil {
+		if err := withTraversalPageMemory(o.tracker, page.Edges, func() error {
+			for _, edge := range page.Edges {
+				if o.tracker != nil {
+					if err := o.tracker.ExamineCandidates(1); err != nil {
+						return err
+					}
+				}
+				edgeMatched, err := matchesEdgePattern(edge, o.step.Edge, base, o.eval)
+				if err != nil {
+					return err
+				}
+				if !edgeMatched {
+					continue
+				}
+				endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
+				if _, cycle := seen[endpointID]; cycle {
+					continue
+				}
+				if o.tracker != nil && o.tracker.RemainingNodesLoaded() == 0 {
+					return o.tracker.LoadNodes(1)
+				}
+				endpoint, err := o.nodeReader(ctx, endpointID)
+				if err := traversalDependencyError(ctx, "read path endpoint", err); err != nil {
+					return err
+				}
+				if err := canceled(ctx, "read path endpoint"); err != nil {
+					return err
+				}
+				if o.tracker != nil {
+					if err := o.tracker.LoadNodes(1); err != nil {
+						return err
+					}
+					if err := o.tracker.RecordNodeReads(1); err != nil {
+						return err
+					}
+				}
+				childDepth := depth + 1
+				if o.tracker != nil {
+					if err := o.tracker.ObserveTraversalDepth(childDepth); err != nil {
+						return err
+					}
+				}
+				child := cloneBindingRow(base)
+				if child.Nodes == nil {
+					child.Nodes = map[string]graph.Node{}
+				}
+				child.Nodes[o.step.Target.Alias] = endpoint
+				if o.step.Edge.Alias != "" {
+					if child.Edges == nil {
+						child.Edges = map[string]graph.Edge{}
+					}
+					child.Edges[o.step.Edge.Alias] = edge
+				}
+				if o.pathAlias != "" {
+					path := child.Paths[o.pathAlias]
+					path.Nodes = append(path.Nodes, neutralNode(endpoint))
+					path.Edges = append(path.Edges, neutralEdge(edge))
+					child.Paths[o.pathAlias] = path
+				}
+				child.Cursor = ""
+				matched, err := matchesNodePattern(child, endpoint, o.step.Target, o.eval)
+				if err != nil {
+					return err
+				}
+				if childDepth >= o.step.Depth.Min && matched {
+					if err := o.appendOutput(child); err != nil {
+						return err
+					}
+				}
+				childBytes := estimateBindingRow(child)
+				if o.tracker != nil {
+					if err := o.tracker.ReserveMemory(childBytes); err != nil {
+						return err
+					}
+				}
+				nextSeen := cloneSeen(seen)
+				nextSeen[endpointID] = struct{}{}
+				err = o.visit(ctx, child, endpoint, childDepth, nextSeen)
+				if o.tracker != nil {
+					o.tracker.ReleaseMemory(childBytes)
+				}
+				if err != nil {
 					return err
 				}
 			}
-			edgeMatched, err := matchesEdgePattern(edge, o.step.Edge, base, o.eval)
-			if err != nil {
-				return err
-			}
-			if !edgeMatched {
-				continue
-			}
-			endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
-			if _, cycle := seen[endpointID]; cycle {
-				continue
-			}
-			if o.tracker != nil && o.tracker.RemainingNodesLoaded() == 0 {
-				return o.tracker.LoadNodes(1)
-			}
-			endpoint, err := o.nodeReader(ctx, endpointID)
-			if err := traversalDependencyError(ctx, "read path endpoint", err); err != nil {
-				return err
-			}
-			if err := canceled(ctx, "read path endpoint"); err != nil {
-				return err
-			}
-			if o.tracker != nil {
-				if err := o.tracker.LoadNodes(1); err != nil {
-					return err
-				}
-				if err := o.tracker.RecordNodeReads(1); err != nil {
-					return err
-				}
-			}
-			childDepth := depth + 1
-			if o.tracker != nil {
-				if err := o.tracker.ObserveTraversalDepth(childDepth); err != nil {
-					return err
-				}
-			}
-			child := cloneBindingRow(base)
-			if child.Nodes == nil {
-				child.Nodes = map[string]graph.Node{}
-			}
-			child.Nodes[o.step.Target.Alias] = endpoint
-			if o.step.Edge.Alias != "" {
-				if child.Edges == nil {
-					child.Edges = map[string]graph.Edge{}
-				}
-				child.Edges[o.step.Edge.Alias] = edge
-			}
-			if o.pathAlias != "" {
-				path := child.Paths[o.pathAlias]
-				path.Nodes = append(path.Nodes, neutralNode(endpoint))
-				path.Edges = append(path.Edges, neutralEdge(edge))
-				child.Paths[o.pathAlias] = path
-			}
-			child.Cursor = ""
-			matched, err := matchesNodePattern(child, endpoint, o.step.Target, o.eval)
-			if err != nil {
-				return err
-			}
-			if childDepth >= o.step.Depth.Min && matched {
-				if err := o.appendOutput(child); err != nil {
-					return err
-				}
-			}
-			childBytes := estimateBindingRow(child)
-			if o.tracker != nil {
-				if err := o.tracker.ReserveMemory(childBytes); err != nil {
-					return err
-				}
-			}
-			nextSeen := cloneSeen(seen)
-			nextSeen[endpointID] = struct{}{}
-			err = o.visit(ctx, child, endpoint, childDepth, nextSeen)
-			if o.tracker != nil {
-				o.tracker.ReleaseMemory(childBytes)
-			}
-			if err != nil {
-				return err
-			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		if page.NextCursor == "" {
 			return nil
@@ -932,73 +952,83 @@ func (o *SubtreeExpand) expandRow(ctx context.Context, row BindingRow) (truncate
 					return false, err
 				}
 			}
-			for _, edge := range page.Edges {
-				if o.tracker != nil {
-					if err = o.tracker.ExamineCandidates(1); err != nil {
-						return false, err
+			if err = withTraversalPageMemory(o.tracker, page.Edges, func() error {
+				for _, edge := range page.Edges {
+					if o.tracker != nil {
+						if err = o.tracker.ExamineCandidates(1); err != nil {
+							return err
+						}
 					}
-				}
-				edgeMatched, matchErr := matchesEdgePattern(edge, o.step.Edge, out, o.eval)
-				if matchErr != nil {
-					return false, matchErr
-				}
-				if !edgeMatched {
-					continue
-				}
-				endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
-				if _, seen := visited[endpointID]; seen {
+					edgeMatched, matchErr := matchesEdgePattern(edge, o.step.Edge, out, o.eval)
+					if matchErr != nil {
+						return matchErr
+					}
+					if !edgeMatched {
+						continue
+					}
+					endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
+					if _, seen := visited[endpointID]; seen {
+						addGraphEdge(edge)
+						if err = o.resizeSubtreeReservation(&reserved, out, matchedNodes, parentByChild, orderByChild, frontier, visited, graphEdgeSeen); err != nil {
+							return err
+						}
+						continue
+					}
+					if o.tracker != nil && o.tracker.RemainingNodesLoaded() == 0 {
+						o.tracker.MarkTruncated("max_nodes exceeded")
+						truncated = true
+						break
+					}
+					endpoint, readErr := o.nodeReader(ctx, endpointID)
+					if err = traversalDependencyError(ctx, "read subtree endpoint", readErr); err != nil {
+						return err
+					}
+					if err = canceled(ctx, "read subtree endpoint"); err != nil {
+						return err
+					}
+					if o.tracker != nil {
+						if err = o.tracker.LoadNodes(1); err != nil {
+							return err
+						}
+						if err = o.tracker.RecordNodeReads(1); err != nil {
+							return err
+						}
+					}
+					childDepth := current.depth + 1
+					if o.tracker != nil {
+						if err = o.tracker.ObserveTraversalDepth(childDepth); err != nil {
+							return err
+						}
+					}
+					visited[endpointID] = struct{}{}
+					addGraphNode(endpoint)
 					addGraphEdge(edge)
+					matchRow := cloneBindingRow(out)
+					matchRow.Nodes[o.step.Target.Alias] = endpoint
+					matched, matchErr := matchesNodePattern(matchRow, endpoint, o.step.Target, o.eval)
+					if matchErr != nil {
+						return matchErr
+					}
+					if childDepth >= o.step.Depth.Min && matched {
+						matchedNodes = append(matchedNodes, endpoint)
+						// Preserve legacy tree semantics: only outgoing containment
+						// traversals establish parent/child hierarchy. Other subtree
+						// traversals return matched nodes as flat tree roots.
+						if o.step.Edge.Direction == querylogical.DirectionOutgoing && o.step.Edge.Labels[0] == "contains" {
+							parentByChild[endpointID] = current.node.ID.String()
+							orderByChild[endpointID] = edge.Properties["order"]
+						}
+					}
+					if childDepth < o.step.Depth.Max {
+						frontier = append(frontier, subtreeFrontier{node: endpoint, depth: childDepth})
+					}
 					if err = o.resizeSubtreeReservation(&reserved, out, matchedNodes, parentByChild, orderByChild, frontier, visited, graphEdgeSeen); err != nil {
-						return false, err
-					}
-					continue
-				}
-				if o.tracker != nil && o.tracker.RemainingNodesLoaded() == 0 {
-					o.tracker.MarkTruncated("max_nodes exceeded")
-					truncated = true
-					break
-				}
-				endpoint, readErr := o.nodeReader(ctx, endpointID)
-				if err = traversalDependencyError(ctx, "read subtree endpoint", readErr); err != nil {
-					return false, err
-				}
-				if err = canceled(ctx, "read subtree endpoint"); err != nil {
-					return false, err
-				}
-				if o.tracker != nil {
-					if err = o.tracker.LoadNodes(1); err != nil {
-						return false, err
-					}
-					if err = o.tracker.RecordNodeReads(1); err != nil {
-						return false, err
+						return err
 					}
 				}
-				childDepth := current.depth + 1
-				if o.tracker != nil {
-					if err = o.tracker.ObserveTraversalDepth(childDepth); err != nil {
-						return false, err
-					}
-				}
-				visited[endpointID] = struct{}{}
-				addGraphNode(endpoint)
-				addGraphEdge(edge)
-				matchRow := cloneBindingRow(out)
-				matchRow.Nodes[o.step.Target.Alias] = endpoint
-				matched, matchErr := matchesNodePattern(matchRow, endpoint, o.step.Target, o.eval)
-				if matchErr != nil {
-					return false, matchErr
-				}
-				if childDepth >= o.step.Depth.Min && matched {
-					matchedNodes = append(matchedNodes, endpoint)
-					parentByChild[endpointID] = current.node.ID.String()
-					orderByChild[endpointID] = edge.Properties["order"]
-				}
-				if childDepth < o.step.Depth.Max {
-					frontier = append(frontier, subtreeFrontier{node: endpoint, depth: childDepth})
-				}
-				if err = o.resizeSubtreeReservation(&reserved, out, matchedNodes, parentByChild, orderByChild, frontier, visited, graphEdgeSeen); err != nil {
-					return false, err
-				}
+				return nil
+			}); err != nil {
+				return false, err
 			}
 			if truncated || page.NextCursor == "" {
 				break

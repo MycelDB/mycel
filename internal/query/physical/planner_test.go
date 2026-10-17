@@ -385,6 +385,16 @@ func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {
 			env.Capabilities.Indexes = false
 			return env
 		}(), code: querylogical.ErrorUnavailableAccessPath},
+		{name: "subtree missing entity capability", query: func() querylogical.Query {
+			q := baseQuery()
+			q.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
+			q.Steps = []querylogical.Step{traversalStep("")}
+			return q
+		}(), schema: plannerSchema(), environment: func() queryphysical.Environment {
+			env := plannerEnvironment()
+			env.Capabilities.EntityReads = false
+			return env
+		}(), code: querylogical.ErrorUnavailableAccessPath},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

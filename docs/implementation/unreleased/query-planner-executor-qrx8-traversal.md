@@ -32,17 +32,21 @@ engine.
 
 All operators share one tracker for start nodes, candidates, index entries,
 node and edge payloads, adjacency calls, intermediate rows, output rows,
-traversal depth, and retained memory. Node and edge capacity is checked before
-additional dependency work. Caller cancellation wins even if a dependency
-returns success after cancellation, and operator close/error paths release all
-retained memory.
+traversal depth, and retained memory. Node and start-node capacity clamps each
+root-source request before dependency work; subtree roots are pulled one at a
+time so exhaustion stops at a stable root boundary. Every adjacency page is
+memory-accounted while it is processed, including filtered edges and pages
+retained across recursive path expansion. Caller cancellation wins even if a
+dependency returns success after cancellation, and operator close/error paths
+release all retained memory.
 
 Open GQL depth bounds are resolved by the physical planner and the resolved
 finite bound, rather than the logical `-1` marker, is passed to execution.
 Simple paths reject repeated nodes, retain edge order, and preserve path node
 and edge payloads. Subtrees apply edge and target patterns during traversal,
-preserve hierarchy order, and stop at root boundaries when `max_nodes` or
-`max_edges` truncates the result.
+preserve hierarchy order for outgoing `contains` edges, preserve legacy flat
+roots for incoming or non-`contains` tree projections, and stop at root
+boundaries when `max_nodes` or `max_edges` truncates the result.
 
 ## Transactions and graph results
 
@@ -93,11 +97,13 @@ Coverage includes:
 
 - structured/GQL adjacency, path, and subtree parity;
 - incoming/outgoing direction, edge and target patterns, variable depth,
-  simple-path cycle prevention, and tree ordering;
+  simple-path cycle prevention, containment ordering, and flat-tree legacy
+  semantics for incoming and non-containment subtrees;
 - finite adjacency limits and absence of subtree-wide/unbounded index calls;
 - stable adjacency and root-boundary continuation, legacy cursor upgrade, and
   stale/tampered cursor rejection;
-- query limits, subtree per-page limits, truncation, and resource exhaustion;
+- query limits, subtree per-page limits, root-source budget clamping,
+  truncation, adjacency-page memory accounting, and resource exhaustion;
 - read-only snapshots and read-write overlays;
 - cancellation and retained-memory cleanup; and
 - static Explain versus runtime traversal diagnostics.

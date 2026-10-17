@@ -171,6 +171,13 @@ func (t *Tracker) Snapshot() Usage {
 	return t.usage
 }
 
+// RemainingStartNodes reports how many additional traversal roots can be read.
+func (t *Tracker) RemainingStartNodes() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return max(0, t.limits.MaxStartNodes-t.usage.StartNodes)
+}
+
 // RemainingNodesLoaded reports how many additional node payloads can be read.
 func (t *Tracker) RemainingNodesLoaded() int64 {
 	t.mu.Lock()

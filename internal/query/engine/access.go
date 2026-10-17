@@ -155,12 +155,14 @@ func (e *Engine) pathSource(ctx context.Context, execution ExecutionContext, pre
 	if len(query.Steps) == 0 || len(query.Steps) != len(prepared.Physical.Access.Steps) {
 		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute indexed path", "path plan has incompatible traversal steps", nil)
 	}
-	source, err := e.pathStartSource(ctx, execution, prepared, tracker, batchSize)
+	source, startNodesAccounted, err := e.pathStartSource(ctx, execution, prepared, tracker, batchSize)
 	if err != nil {
 		return nil, err
 	}
 	source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
-	source = queryexecution.NewStartNodeLimit(source, tracker)
+	if !startNodesAccounted {
+		source = queryexecution.NewStartNodeLimit(source, tracker)
+	}
 	currentAlias := query.Start.Alias
 	for index, logicalStep := range query.Steps {
 		step := resolvedTraversalStep(logicalStep, prepared.Physical.Access.Steps[index])
@@ -174,27 +176,29 @@ func (e *Engine) pathSource(ctx context.Context, execution ExecutionContext, pre
 	return source, nil
 }
 
-func (e *Engine) pathStartSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, batchSize int) (queryexecution.Operator, error) {
+func (e *Engine) pathStartSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, batchSize int) (queryexecution.Operator, bool, error) {
 	access := prepared.Physical.Access
 	switch access.Kind {
 	case queryphysical.AccessNodeIDs:
-		return queryexecution.NewPagedNodeSource(access.StartAlias, e.nodeIDPageReader(execution, access.NodeIDs), nil, "", 0, false, batchSize, tracker), nil
+		return queryexecution.NewPagedNodeSource(access.StartAlias, e.nodeIDPageReader(execution, access.NodeIDs), nil, "", 0, false, batchSize, tracker).WithStartNodeBudget(false), true, nil
 	case queryphysical.AccessLabel:
 		label := access.Labels[0]
 		reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
 			nodes, next, stats, err := e.ports.Indexes.ScanLabel(ctx, execution.Transaction, graphquery.LabelScan{Label: label, Limit: limit, Cursor: cursor})
 			return executionNodePage(nodes, next, stats), err
 		}
-		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, nil, "", 0, false, batchSize, tracker), nil
+		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, nil, "", 0, false, batchSize, tracker).WithStartNodeBudget(false), true, nil
 	case queryphysical.AccessTag:
-		return e.tagSetSource(execution, prepared, tracker)
+		source, err := e.tagSetSource(execution, prepared, tracker)
+		return source, false, err
 	case queryphysical.AccessCompoundProperty:
 		if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return e.predicateSetSource(execution, prepared, tracker)
+		source, err := e.predicateSetSource(execution, prepared, tracker)
+		return source, false, err
 	default:
-		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute indexed path", "unsupported indexed path start access", nil)
+		return nil, false, querylogical.NewError(querylogical.ErrorInternal, "execute indexed path", "unsupported indexed path start access", nil)
 	}
 }
 
@@ -210,9 +214,10 @@ func (e *Engine) subtreeSource(ctx context.Context, execution ExecutionContext, 
 	if err != nil {
 		return nil, err
 	}
-	var source queryexecution.Operator = queryexecution.NewPagedNodeSource(query.Start.Alias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker)
+	// Pull one subtree root at a time so node capacity remains available for
+	// that root's descendants and capacity exhaustion stops at a root boundary.
+	var source queryexecution.Operator = queryexecution.NewPagedNodeSource(query.Start.Alias, reader, checkpoint, resumeCursor, resumeOffset, resuming, 1, tracker).WithStartNodeBudget(true)
 	source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
-	source = queryexecution.NewStartNodeLimit(source, tracker)
 	step := resolvedTraversalStep(query.Steps[0], prepared.Physical.Access.Steps[0])
 	edgeReader := e.traversalEdgeReader(execution, step)
 	nodeReader := func(ctx context.Context, nodeID string) (graph.Node, error) {

@@ -407,8 +407,8 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	if step.Edge.Direction != querylogical.DirectionIncoming && step.Edge.Direction != querylogical.DirectionOutgoing {
 		return Plan{}, true, p.invalid("indexed subtree requires directed traversal")
 	}
-	if !p.environment.Capabilities.Traversals {
-		return Plan{}, true, p.unavailable("indexed subtree requires traversal access")
+	if !p.environment.Capabilities.Traversals || !p.environment.Capabilities.EntityReads {
+		return Plan{}, true, p.unavailable("indexed subtree requires traversal and entity access")
 	}
 	maxDepth := p.resolvedMaxDepth(query.Source, step.Depth.Max)
 	if maxDepth < step.Depth.Min || maxDepth <= 0 {

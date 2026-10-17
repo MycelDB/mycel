@@ -218,6 +218,151 @@ func TestTraversalOperatorsCancellationWinsAndReleasesMemory(t *testing.T) {
 	})
 }
 
+func TestPagedNodeSourceClampsTraversalStartReadsBeforeDependencyWork(t *testing.T) {
+	node := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001")}
+	for _, test := range []struct {
+		name     string
+		truncate bool
+	}{
+		{name: "path fails closed"},
+		{name: "subtree truncates at root boundary", truncate: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracked := tracker(t, queryexecution.Budget{BatchSize: 10, MaxNodesLoaded: 1, MaxStartNodes: 1})
+			var limits []int
+			source := queryexecution.NewPagedNodeSource("n", func(_ context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+				limits = append(limits, limit)
+				return queryexecution.NodePage{Nodes: []graph.Node{node}, NextCursor: "more", IndexEntries: 1, NodesLoaded: 1}, nil
+			}, nil, "", 0, false, 1, tracked).WithStartNodeBudget(test.truncate)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := source.Next(context.Background())
+			if err != nil || len(batch.Rows) != 1 {
+				t.Fatalf("first batch = %#v, %v", batch, err)
+			}
+			_, err = source.Next(context.Background())
+			if test.truncate {
+				if !errors.Is(err, io.EOF) || !tracked.Snapshot().Truncated {
+					t.Fatalf("terminal error/usage = %v, %#v", err, tracked.Snapshot())
+				}
+			} else {
+				assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+			}
+			if !reflect.DeepEqual(limits, []int{1}) {
+				t.Fatalf("dependency limits = %v, want [1]", limits)
+			}
+			usage := tracked.Snapshot()
+			if usage.NodesLoaded != 1 || usage.StartNodes != 1 {
+				t.Fatalf("usage = %#v", usage)
+			}
+		})
+	}
+}
+
+func TestSubtreeTreeHierarchyMatchesLegacyContainmentRules(t *testing.T) {
+	root := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Labels: []string{"Document"}}
+	child := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Labels: []string{"Document"}}
+	grandchild := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Labels: []string{"Document"}}
+	nodes := map[string]graph.Node{child.ID.String(): child, grandchild.ID.String(): grandchild}
+	for _, test := range []struct {
+		name      string
+		label     string
+		direction querylogical.Direction
+	}{
+		{name: "outgoing non-containment", label: "LINKS", direction: querylogical.DirectionOutgoing},
+		{name: "incoming containment", label: "contains", direction: querylogical.DirectionIncoming},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracked := tracker(t, queryexecution.Budget{BatchSize: 1})
+			step := querylogical.Step{
+				Edge:  querylogical.EdgePattern{Labels: []string{test.label}, Direction: test.direction},
+				Depth: querylogical.DepthBounds{Min: 1, Max: 2}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+			}
+			edgeFor := func(from, to graph.Node) graph.Edge {
+				if test.direction == querylogical.DirectionIncoming {
+					from, to = to, from
+				}
+				return graph.Edge{ID: uuid.New(), FromID: from.ID, ToID: to.ID, Labels: []string{test.label}, Properties: map[string]any{"order": 1}}
+			}
+			edges := map[string]graph.Edge{root.ID.String(): edgeFor(root, child), child.ID.String(): edgeFor(child, grandchild)}
+			input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": root}}}, 1, tracked)
+			source := queryexecution.NewSubtreeExpand(input, "n", step, func(_ context.Context, nodeID string, _ int, _ string) (queryexecution.TraversalEdgePage, error) {
+				edge, ok := edges[nodeID]
+				if !ok {
+					return queryexecution.TraversalEdgePage{}, nil
+				}
+				return queryexecution.TraversalEdgePage{Edges: []graph.Edge{edge}, IndexEntries: 1, EdgesLoaded: 1}, nil
+			}, func(_ context.Context, nodeID string) (graph.Node, error) { return nodes[nodeID], nil }, 1, nil, time.Time{}, tracked)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := source.Next(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := batch.Rows[0].Trees["m"]
+			if len(tree.Roots) != 2 || len(tree.Roots[0].Children) != 0 || len(tree.Roots[1].Children) != 0 {
+				t.Fatalf("tree = %#v, want two flat roots", tree)
+			}
+			if err := source.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if tracked.Snapshot().RetainedMemory != 0 {
+				t.Fatalf("retained memory = %d", tracked.Snapshot().RetainedMemory)
+			}
+		})
+	}
+}
+
+func TestPathAndSubtreeAccountAdjacencyPageMemory(t *testing.T) {
+	root := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Labels: []string{"Document"}}
+	child := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Labels: []string{"Document"}}
+	edge := graph.Edge{
+		ID: uuid.New(), FromID: root.ID, ToID: child.ID, Labels: []string{"LINKS"},
+		Properties: map[string]any{"kind": "drop", "payload": string(make([]byte, 32<<10))},
+	}
+	step := querylogical.Step{
+		Edge:  querylogical.EdgePattern{Labels: []string{"LINKS"}, Properties: map[string]querylogical.Value{"kind": querylogical.NativeValue("keep")}, Direction: querylogical.DirectionOutgoing},
+		Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+	}
+	for _, test := range []struct {
+		name string
+		new  func(queryexecution.Operator, *queryexecution.Tracker) queryexecution.Operator
+	}{
+		{name: "path", new: func(input queryexecution.Operator, tracked *queryexecution.Tracker) queryexecution.Operator {
+			return queryexecution.NewPathExpand(input, "n", step, "path", func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
+				return queryexecution.TraversalEdgePage{Edges: []graph.Edge{edge}, IndexEntries: 1, EdgesLoaded: 1}, nil
+			}, func(context.Context, string) (graph.Node, error) {
+				t.Fatal("filtered endpoint was hydrated")
+				return graph.Node{}, nil
+			}, 1, nil, time.Time{}, tracked)
+		}},
+		{name: "subtree", new: func(input queryexecution.Operator, tracked *queryexecution.Tracker) queryexecution.Operator {
+			return queryexecution.NewSubtreeExpand(input, "n", step, func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
+				return queryexecution.TraversalEdgePage{Edges: []graph.Edge{edge}, IndexEntries: 1, EdgesLoaded: 1}, nil
+			}, func(context.Context, string) (graph.Node, error) {
+				t.Fatal("filtered endpoint was hydrated")
+				return graph.Node{}, nil
+			}, 1, nil, time.Time{}, tracked)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracked := tracker(t, queryexecution.Budget{BatchSize: 1, MaxMemoryBytes: 4 << 10})
+			input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": root}}}, 1, tracked)
+			source := test.new(input, tracked)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			_, err := source.Next(context.Background())
+			assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+			if usage := tracked.Snapshot(); usage.RetainedMemory != 0 {
+				t.Fatalf("retained memory after failure = %d", usage.RetainedMemory)
+			}
+		})
+	}
+}
+
 func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
 	rows := []queryexecution.BindingRow{
 		bindingRow("00000000-0000-0000-0000-000000000001", "a", "x", 1),
