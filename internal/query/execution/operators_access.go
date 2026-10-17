@@ -45,6 +45,9 @@ type PagedNodeSource struct {
 	checkpointEncoder PageCheckpointEncoder
 	resumeCursor      string
 	resumeOffset      int
+	resumeRequested   bool
+	pendingResume     int
+	resuming          bool
 	batchSize         int
 	tracker           *Tracker
 
@@ -60,13 +63,13 @@ type PagedNodeSource struct {
 	exhausted      bool
 }
 
-func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder PageCheckpointEncoder, resumeCursor string, resumeOffset int, batchSize int, tracker *Tracker) *PagedNodeSource {
+func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int, tracker *Tracker) *PagedNodeSource {
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
 	return &PagedNodeSource{
 		alias: alias, reader: reader, checkpointEncoder: checkpointEncoder,
-		resumeCursor: resumeCursor, resumeOffset: resumeOffset,
+		resumeCursor: resumeCursor, resumeOffset: resumeOffset, resumeRequested: resuming,
 		batchSize: batchSize, tracker: tracker,
 	}
 }
@@ -87,6 +90,8 @@ func (s *PagedNodeSource) Open(ctx context.Context) error {
 	s.releaseBuffer()
 	s.releaseSourceMemory()
 	s.pageCursor = s.resumeCursor
+	s.pendingResume = s.resumeOffset
+	s.resuming = s.resumeRequested
 	s.nextCursor = ""
 	s.buffer = nil
 	s.offset = 0
@@ -186,6 +191,9 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 			return err
 		}
 	}
+	if s.resuming && s.pendingResume >= len(page.Nodes) {
+		return querylogical.NewError(querylogical.ErrorStaleCursor, "resume indexed node source", "source cursor offset exceeds the indexed page", nil)
+	}
 	if len(page.Nodes) == 0 && page.NextCursor != "" {
 		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", "access method returned an empty non-terminal page", nil)
 	}
@@ -209,20 +217,17 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 	if s.buffer == nil || len(s.buffer) == 0 || page.NextCursor == "" {
 		s.exhausted = page.NextCursor == ""
 	}
-	if s.resumeOffset > 0 {
-		if s.resumeOffset >= len(s.buffer) {
-			s.releaseBuffer()
-			return querylogical.NewError(querylogical.ErrorStaleCursor, "resume indexed node source", "source cursor offset exceeds the indexed page", nil)
-		}
-		for i := 0; i < s.resumeOffset; i++ {
+	if s.resuming {
+		for i := 0; i < s.pendingResume; i++ {
 			if s.tracker != nil {
 				s.tracker.ReleaseMemory(s.buffer[i].bytes)
 			}
 			s.retained -= s.buffer[i].bytes
 			s.buffer[i].bytes = 0
 		}
-		s.offset = s.resumeOffset
-		s.resumeOffset = 0
+		s.offset = s.pendingResume
+		s.pendingResume = 0
+		s.resuming = false
 	}
 	return nil
 }

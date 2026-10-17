@@ -243,6 +243,21 @@ func TestEngineLabelAndTagScansUseNativeSources(t *testing.T) {
 	if access.tagCalls == 0 {
 		t.Fatal("tag scans were not called")
 	}
+
+	tagQuery := indexedBaseQuery()
+	tagQuery.Predicate = red
+	tagQuery.Page.Size = 1
+	tagPrepared := prepareIndexed(t, engine, tx, tagQuery)
+	firstTag, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, tagPrepared)
+	if err != nil || fmt.Sprint(resultNames(firstTag)) != "[a]" || firstTag.NextCursor == "" {
+		t.Fatalf("first tag page=%#v error=%v", firstTag, err)
+	}
+	tagQuery.Page.Cursor = firstTag.NextCursor
+	tagPrepared = prepareIndexed(t, engine, tx, tagQuery)
+	secondTag, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, tagPrepared)
+	if err != nil || fmt.Sprint(resultNames(secondTag)) != "[b]" || secondTag.NextCursor != "" {
+		t.Fatalf("second tag page=%#v error=%v", secondTag, err)
+	}
 }
 
 func TestEngineRejectsIndexedCursorForChangedSnapshotOrRequest(t *testing.T) {

@@ -43,7 +43,7 @@ func TestPagedNodeSourceResumesInsideFinitePageAndReleasesMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := queryexecution.NewPagedNodeSource("n", reader, func(cursor string, offset int) string { return fmt.Sprintf("%s:%d", cursor, offset) }, "", 1, 2, tracker)
+	source := queryexecution.NewPagedNodeSource("n", reader, func(cursor string, offset int) string { return fmt.Sprintf("%s:%d", cursor, offset) }, "", 1, true, 2, tracker)
 	if err := source.Open(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestPagedNodeSourceFailsClosedOnEmptyNonTerminalPage(t *testing.T) {
 	}
 	source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
 		return queryexecution.NodePage{NextCursor: "again"}, nil
-	}, nil, "", 0, 2, tracker)
+	}, nil, "", 0, false, 2, tracker)
 	if err := source.Open(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +79,33 @@ func TestPagedNodeSourceFailsClosedOnEmptyNonTerminalPage(t *testing.T) {
 	assertQueryErrorCode(t, err, querylogical.ErrorDependencyFailure)
 	if tracker.Snapshot().RetainedMemory != 0 {
 		t.Fatalf("retained memory = %d", tracker.Snapshot().RetainedMemory)
+	}
+}
+
+func TestPagedNodeSourceRejectsResumeOffsetOutsideActualPage(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		nodes  []graph.Node
+		offset int
+	}{
+		{name: "empty terminal page at offset zero", offset: 0},
+		{name: "short terminal page", nodes: []graph.Node{{ID: uuid.New()}}, offset: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 2}, queryexecution.Budget{})
+			tracker, err := queryexecution.NewTracker(budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+				return queryexecution.NodePage{Nodes: test.nodes}, nil
+			}, nil, "terminal", test.offset, true, 2, tracker)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			_, err = source.Next(context.Background())
+			assertQueryErrorCode(t, err, querylogical.ErrorStaleCursor)
+		})
 	}
 }
 
@@ -92,7 +119,7 @@ func TestPagedNodeSourcePreservesCancellationFromAccessCall(t *testing.T) {
 			}
 			source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
 				return queryexecution.NodePage{}, cause
-			}, nil, "", 0, 2, tracker)
+			}, nil, "", 0, false, 2, tracker)
 			if err := source.Open(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -115,7 +142,7 @@ func TestPagedNodeSourceCancellationWinsOverSuccessfulDependencyReturn(t *testin
 	source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
 		cancel()
 		return queryexecution.NodePage{}, nil
-	}, nil, "", 0, 2, tracker)
+	}, nil, "", 0, false, 2, tracker)
 	if err := source.Open(ctx); err != nil {
 		t.Fatal(err)
 	}

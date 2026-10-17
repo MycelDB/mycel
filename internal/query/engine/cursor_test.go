@@ -62,6 +62,27 @@ func TestDecodeIndexedCursorRejectsChecksummedIncompatibleModeState(t *testing.T
 	}
 }
 
+func TestDecodeIndexedCursorRejectsSourceModeForMaterializedTagPlan(t *testing.T) {
+	query := querylogical.Query{Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}}
+	prepared := PreparedQuery{
+		Statement: querylogical.ReadStatement(query),
+		Physical: queryphysical.Plan{
+			Family: queryphysical.FamilyTagIndex,
+			Access: queryphysical.AccessPath{TagBranches: [][]string{{"featured"}}},
+		},
+		Planning: PlanningContext{Transaction: sessionmodel.GraphTransaction{ID: "tx-1", BaseRevision: 7}},
+		Kind:     PlanIndexed,
+	}
+	token := encodeIndexedCursor(prepared, indexedCursor{Mode: cursorModeSource, PageCursor: "forged", RowsReturned: 1})
+	query.Page.Cursor = token
+	prepared.Statement = querylogical.ReadStatement(query)
+	_, err := decodeIndexedCursor(prepared)
+	var queryErr *querylogical.QueryError
+	if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorStaleCursor {
+		t.Fatalf("error = %#v, want stale cursor", err)
+	}
+}
+
 func TestIndexedSourceRejectsChecksumValidOffsetOutsideSourceBatch(t *testing.T) {
 	query := querylogical.Query{
 		Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}},

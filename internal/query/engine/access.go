@@ -26,8 +26,10 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 	}
 	checkpoint := sourceCheckpointEncoder(prepared, cursor, nextRowsReturned)
 	resumeCursor, resumeOffset := "", 0
+	resuming := false
 	if cursor.Mode == cursorModeSource {
 		resumeCursor, resumeOffset = cursor.PageCursor, cursor.PageOffset
+		resuming = cursor.Version > 0 || resumeCursor != "" || resumeOffset > 0 || cursor.RowsReturned > 0
 		if resumeOffset >= batchSize {
 			return nil, staleCursor("source cursor offset exceeds the indexed page size", nil)
 		}
@@ -36,14 +38,14 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 	switch prepared.Physical.Family {
 	case queryphysical.FamilyNodeIDLookup:
 		reader := e.nodeIDPageReader(execution, access.NodeIDs)
-		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, batchSize, tracker), nil
+		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 	case queryphysical.FamilyLabelIndex:
 		label := access.Labels[0]
 		reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
 			nodes, next, stats, err := e.ports.Indexes.ScanLabel(ctx, execution.Transaction, graphquery.LabelScan{Label: label, Limit: limit, Cursor: cursor})
 			return executionNodePage(nodes, next, stats), err
 		}
-		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, batchSize, tracker), nil
+		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 	case queryphysical.FamilyIndexedEquality, queryphysical.FamilyIndexedOrder:
 		if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
 			return nil, err
@@ -52,7 +54,7 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		if err != nil {
 			return nil, err
 		}
-		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, batchSize, tracker), nil
+		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 	case queryphysical.FamilyTagIndex:
 		return e.tagSetSource(execution, prepared, tracker)
 	case queryphysical.FamilyIndexedPredicate:
@@ -61,7 +63,7 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		}
 		return e.predicateSetSource(execution, prepared, tracker)
 	case queryphysical.FamilySemantic:
-		return e.semanticSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, batchSize)
+		return e.semanticSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
 	default:
 		return nil, unsupportedPlan(prepared)
 	}
@@ -88,9 +90,6 @@ func nativeSourceCursorSupported(prepared PreparedQuery) bool {
 		queryphysical.FamilyIndexedEquality, queryphysical.FamilyIndexedOrder,
 		queryphysical.FamilySemantic:
 		return true
-	case queryphysical.FamilyTagIndex:
-		branches := prepared.Physical.Access.TagBranches
-		return len(branches) == 1 && len(branches[0]) == 1
 	default:
 		return false
 	}
@@ -196,7 +195,7 @@ func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery
 				nodes, next, stats, err := e.ports.Indexes.ScanTag(ctx, execution.Transaction, graphquery.TagScan{Tag: tag, Limit: limit, Cursor: cursor})
 				return executionNodePage(nodes, next, stats), err
 			}
-			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, tracker.Limits().BatchSize, tracker))
+			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker))
 		}
 		branches = append(branches, queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker))
 	}
@@ -215,7 +214,7 @@ func (e *Engine) predicateSetSource(execution ExecutionContext, prepared Prepare
 			if err != nil {
 				return nil, err
 			}
-			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, tracker.Limits().BatchSize, tracker))
+			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker))
 		}
 		branches = append(branches, queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker))
 	}
@@ -244,7 +243,7 @@ func (e *Engine) indexScanReader(execution ExecutionContext, prepared PreparedQu
 	}, nil
 }
 
-func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, checkpoint queryexecution.PageCheckpointEncoder, resumeCursor string, resumeOffset int, batchSize int) (queryexecution.Operator, error) {
+func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, checkpoint queryexecution.PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int) (queryexecution.Operator, error) {
 	semantic := prepared.Physical.Access.Semantic
 	if semantic == nil {
 		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute semantic query", "semantic access specification is missing", nil)
@@ -324,7 +323,7 @@ func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQue
 		}
 		return page, nil
 	}
-	return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, batchSize, tracker), nil
+	return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 }
 
 func boundedPosition(cursor string, length int) (int, error) {
