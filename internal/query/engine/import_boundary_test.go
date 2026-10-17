@@ -31,6 +31,7 @@ func TestQueryEngineProductionCodeDoesNotImportTransportDaemonOrServiceImplement
 	for _, dir := range []string{
 		engineDir,
 		filepath.Join(engineDir, "..", "binding"),
+		filepath.Join(engineDir, "..", "execution"),
 		filepath.Join(engineDir, "..", "physical"),
 		filepath.Join(engineDir, "..", "schema"),
 	} {

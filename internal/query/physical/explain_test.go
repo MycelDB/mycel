@@ -25,7 +25,7 @@ func TestExplainSerializesStaticPhysicalPlanWithoutRuntimeStatistics(t *testing.
 		PushedPredicate: predicate, ResidualPredicate: predicate,
 		Ordering:      queryphysical.OrderingGuarantee{Terms: []querylogical.Order{{Value: querylogical.FieldValue("n", "date"), Direction: querylogical.SortAscending}}, Stable: true, Source: "journal_by_date"},
 		Cursor:        queryphysical.CursorStrategy{Kind: "index_key", PlanBound: true, Snapshot: true, Schema: true, LegacyForm: true},
-		Limits:        queryphysical.ResourceLimits{MaxIndexEntries: 100, MaxStartNodes: 10, MaxNodesLoaded: 50, MaxEdgesLoaded: 60, MaxIntermediateRows: 70, MaxSemanticCandidates: 20, MaxTraversalDepth: 5},
+		Limits:        queryphysical.ResourceLimits{MaxCandidates: 90, MaxIndexEntries: 100, MaxStartNodes: 10, MaxNodesLoaded: 50, MaxEdgesLoaded: 60, MaxAdjacencyCalls: 65, MaxIntermediateRows: 70, MaxOutputRows: 75, MaxMemoryBytes: 80, MaxSemanticCandidates: 20, MaxTraversalDepth: 5},
 		SchemaVersion: "v5", LegacyBridgeReason: "legacy execution",
 	}
 
@@ -45,7 +45,7 @@ func TestExplainSerializesStaticPhysicalPlanWithoutRuntimeStatistics(t *testing.
 	if !diagnostics.LegacyBridge || diagnostics.LegacyBridgeReason != "legacy execution" || diagnostics.NextCursorKind != "index_key" || !diagnostics.CursorPlanBound || !diagnostics.CursorSnapshotBound || !diagnostics.CursorSchemaBound || !diagnostics.CursorLegacyForm {
 		t.Fatalf("bridge/cursor diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.ResourceLimits.MaxIndexEntries != 100 || diagnostics.ResourceLimits.MaxTraversalDepth != 5 {
+	if diagnostics.ResourceLimits.MaxCandidates != 90 || diagnostics.ResourceLimits.MaxIndexEntries != 100 || diagnostics.ResourceLimits.MaxAdjacencyCalls != 65 || diagnostics.ResourceLimits.MaxOutputRows != 75 || diagnostics.ResourceLimits.MaxMemoryBytes != 80 || diagnostics.ResourceLimits.MaxTraversalDepth != 5 {
 		t.Fatalf("resource diagnostics = %#v", diagnostics.ResourceLimits)
 	}
 	if diagnostics.IndexEntriesScanned != 0 || diagnostics.NodesLoaded != 0 || diagnostics.EdgesLoaded != 0 || diagnostics.RowsScanned != 0 || diagnostics.RowsProduced != 0 || diagnostics.RowsReturned != 0 || diagnostics.CandidateCount != 0 || diagnostics.ExecutionMillis != 0 {

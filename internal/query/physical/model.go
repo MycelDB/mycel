@@ -39,6 +39,7 @@ const (
 	OperatorAggregate          OperatorKind = "aggregate"
 	OperatorDistinct           OperatorKind = "distinct"
 	OperatorSort               OperatorKind = "sort"
+	OperatorTopN               OperatorKind = "top_n"
 	OperatorOffset             OperatorKind = "offset"
 	OperatorLimit              OperatorKind = "limit"
 )
@@ -140,11 +141,15 @@ type CursorStrategy struct {
 
 // ResourceLimits bound future physical execution independently of page size.
 type ResourceLimits struct {
+	MaxCandidates         int64 `json:"max_candidates,omitempty"`
 	MaxIndexEntries       int64 `json:"max_index_entries,omitempty"`
 	MaxStartNodes         int64 `json:"max_start_nodes,omitempty"`
 	MaxNodesLoaded        int64 `json:"max_nodes_loaded,omitempty"`
 	MaxEdgesLoaded        int64 `json:"max_edges_loaded,omitempty"`
+	MaxAdjacencyCalls     int64 `json:"max_adjacency_calls,omitempty"`
 	MaxIntermediateRows   int64 `json:"max_intermediate_rows,omitempty"`
+	MaxOutputRows         int64 `json:"max_output_rows,omitempty"`
+	MaxMemoryBytes        int64 `json:"max_memory_bytes,omitempty"`
 	MaxSemanticCandidates int64 `json:"max_semantic_candidates,omitempty"`
 	MaxTraversalDepth     int   `json:"max_traversal_depth,omitempty"`
 }

@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"errors"
+	"time"
 
 	querybinding "github.com/myceldb/mycel/internal/query/binding"
+	queryexecution "github.com/myceldb/mycel/internal/query/execution"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -15,7 +17,7 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx5"
+	PlannerVersion = "qrx6"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -45,22 +47,18 @@ type PlanningContext struct {
 	Parameters  map[string]querylogical.Value
 }
 
-// ExecutionContext contains state and work limits for one execution.
+// ExecutionContext contains state and work limits for one execution. LegacyRows
+// is the temporary QRX6 handoff from legacy access selection into neutral
+// shaping; nil retains the explicit unsupported-plan bridge.
 type ExecutionContext struct {
 	Transaction sessionmodel.GraphTransaction
 	Budget      WorkBudget
+	LegacyRows  []queryexecution.BindingRow
+	Now         time.Time
 }
 
-// WorkBudget bounds physical work independently of response page size. Zero
-// values mean the caller did not supply a bound; operators introduced by later
-// tranches must resolve them to configured defaults before doing work.
-type WorkBudget struct {
-	MaxIndexEntries       int64
-	MaxNodesLoaded        int64
-	MaxEdgesLoaded        int64
-	MaxIntermediateRows   int64
-	MaxSemanticCandidates int64
-}
+// WorkBudget is the shared bounded-runtime resource vocabulary.
+type WorkBudget = queryexecution.Budget
 
 // PlanKind identifies the execution owner selected during preparation.
 type PlanKind string
@@ -87,9 +85,9 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX5 exposes the selected
-// physical plan through Explain while retaining the legacy bridge as the sole
-// execution owner until operator families migrate.
+// Engine implements the neutral query facade. QRX6 can execute neutral result
+// shaping over an explicitly supplied temporary legacy source. Storage access
+// families remain on the adapter-owned legacy bridge until later tranches.
 type Engine struct {
 	ports Ports
 }
@@ -168,22 +166,81 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	return diagnostics, nil
 }
 
-// Execute rejects legacy-bridge plans before invoking any dependency. The
-// caller may then execute the statement once through the legacy path.
-func (e *Engine) Execute(ctx context.Context, _ ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
+// Execute runs QRX6 neutral shaping only when the caller explicitly supplies a
+// temporary legacy binding source. With no source, storage-backed plans are
+// rejected before any access port is invoked.
+func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
 	if err := contextQueryError("execute query", ctx.Err()); err != nil {
 		return querylogical.Result{}, err
 	}
+	if execution.LegacyRows == nil || prepared.Statement.Kind != querylogical.StatementRead || prepared.Statement.Read == nil {
+		return querylogical.Result{}, unsupportedPlan(prepared)
+	}
+	if execution.Transaction != prepared.Planning.Transaction {
+		return querylogical.Result{}, querylogical.NewError(
+			querylogical.ErrorInvalidQuery,
+			"execute query",
+			"execution transaction does not match the prepared transaction",
+			nil,
+		)
+	}
+	staticBudget := queryexecution.Budget{
+		MaxCandidates:         prepared.Physical.Limits.MaxCandidates,
+		MaxIndexEntries:       prepared.Physical.Limits.MaxIndexEntries,
+		MaxNodesLoaded:        prepared.Physical.Limits.MaxNodesLoaded,
+		MaxEdgesLoaded:        prepared.Physical.Limits.MaxEdgesLoaded,
+		MaxAdjacencyCalls:     prepared.Physical.Limits.MaxAdjacencyCalls,
+		MaxIntermediateRows:   prepared.Physical.Limits.MaxIntermediateRows,
+		MaxOutputRows:         prepared.Physical.Limits.MaxOutputRows,
+		MaxMemoryBytes:        prepared.Physical.Limits.MaxMemoryBytes,
+		MaxSemanticCandidates: prepared.Physical.Limits.MaxSemanticCandidates,
+		MaxTraversalDepth:     prepared.Physical.Limits.MaxTraversalDepth,
+	}
+	budget := queryexecution.ResolveBudget(execution.Budget, staticBudget)
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		return querylogical.Result{}, err
+	}
+	source := queryexecution.NewLegacySource(execution.LegacyRows, budget.BatchSize, tracker)
+	query := *prepared.Statement.Read
+	query.Predicate = prepared.Physical.ResidualPredicate
+	result, err := queryexecution.Shape(ctx, source, query, tracker, queryexecution.ShapeOptions{
+		Parameters: prepared.Planning.Parameters,
+		Now:        execution.Now,
+	})
+	if err != nil {
+		return querylogical.Result{}, err
+	}
+	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
+	result.Diagnostics.Planner = PlannerName
+	result.Diagnostics.PlannerVersion = PlannerVersion
+	return result, nil
+}
+
+func unsupportedPlan(prepared PreparedQuery) error {
 	reason := prepared.UnsupportedReason
 	if reason == "" {
 		reason = "prepared query has no supported physical plan"
 	}
-	return querylogical.Result{}, querylogical.NewError(
-		querylogical.ErrorUnsupportedPlan,
-		"execute query",
-		reason,
-		ErrUnsupportedPlan,
-	)
+	return querylogical.NewError(querylogical.ErrorUnsupportedPlan, "execute query", reason, ErrUnsupportedPlan)
+}
+
+func mergeRuntimeDiagnostics(plan querylogical.Diagnostics, runtime querylogical.Diagnostics) querylogical.Diagnostics {
+	plan.ExplainOnly = false
+	plan.IndexEntriesScanned = runtime.IndexEntriesScanned
+	plan.NodesLoaded = runtime.NodesLoaded
+	plan.EdgesLoaded = runtime.EdgesLoaded
+	plan.RowsScanned = runtime.RowsScanned
+	plan.RowsProduced = runtime.RowsProduced
+	plan.RowsReturned = runtime.RowsReturned
+	plan.CandidateCount = runtime.CandidateCount
+	plan.AdjacencyScanCalls = runtime.AdjacencyScanCalls
+	plan.IntermediateRows = runtime.IntermediateRows
+	plan.PeakMemoryBytes = runtime.PeakMemoryBytes
+	plan.RetainedMemoryBytes = runtime.RetainedMemoryBytes
+	plan.TraversalDepth = runtime.TraversalDepth
+	plan.ExecutionMillis = runtime.ExecutionMillis
+	return plan
 }
 
 // IsUnsupportedPlan reports whether an engine error requests the temporary

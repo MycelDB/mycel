@@ -17,6 +17,7 @@ import (
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	queryruntime "github.com/myceldb/mycel/internal/query/execution"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
@@ -179,9 +180,9 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	out, next, err := exec.shapeAndProjectRows(rows, req.GetQuery(), int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rows, req.GetQuery(), int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, preserveQueryShapingError(err)
 	}
 	result := queryResultFromRows(out, next)
 	diagnostics := completeQueryDiagnostics(&clientv1.QueryDiagnostics{Plan: "BroadGraphFallback", PlanKind: "fallback", FullScan: true, NodesLoaded: int32(len(nodes)), EdgesLoaded: int32(len(edges)), RowsReturned: int32(len(out)), RowsProduced: int32(len(out)), RowsScanned: int32(len(rows)), CandidateCount: int32(len(rows)), NextCursorKind: "offset", FallbackMode: "broad_graph_fallback", ResidualPredicates: predicateDiagnostics(req.GetQuery().GetWhere())}, "fallback", executionStart, len(rows), len(out))
@@ -1364,32 +1365,27 @@ type shapedProtoRow struct {
 	sequence   int
 }
 
-func (e *queryExecution) shapeAndProjectRows(rows []*queryRowState, query *clientv1.GraphQuery, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
-	if query.GetOffset() < 0 {
-		return nil, "", fmt.Errorf("offset must be non-negative")
+func (e *queryExecution) shapeAndProjectRows(ctx context.Context, rows []*queryRowState, query *clientv1.GraphQuery, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
+	logicalQuery := logicalQueryFromStructured(query, int32(pageSize), pageToken)
+	if len(logicalQuery.Returns) == 0 && len(logicalQuery.Aggregates) == 0 {
+		logicalQuery.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: logicalQuery.Start.Alias, OutputName: logicalQuery.Start.Alias}}
 	}
-	returns := query.GetReturns()
-	if len(returns) == 0 && len(query.GetAggregateReturns()) == 0 {
-		startAlias := query.GetMatch().GetStart().GetAlias()
-		returns = []*clientv1.ReturnProjection{{Alias: startAlias, OutputName: startAlias, Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}
-	}
-	var shaped []shapedProtoRow
-	var err error
-	if len(query.GetAggregateReturns()) > 0 {
-		shaped, err = e.projectAggregateShapedRows(rows, returns, query.GetAggregateReturns(), query.GetOrderBy())
-	} else {
-		shaped, err = e.projectShapedRows(rows, returns, query.GetOrderBy())
-	}
+	// Legacy access and matching have already applied the complete predicate.
+	// The temporary source owns shaping only; storage-family cutovers will pass
+	// the physical residual predicate through Engine.Execute.
+	logicalQuery.Predicate = nil
+	bindings := e.neutralLegacyBindings(rows, logicalQuery.Returns)
+	budget := queryruntime.ResolveBudget(queryruntime.Budget{}, queryruntime.Budget{})
+	tracker, err := queryruntime.NewTracker(budget)
 	if err != nil {
 		return nil, "", err
 	}
-	shaped = distinctShapedProtoRowsIf(shaped, query.GetDistinct())
-	if err := sortShapedProtoRows(shaped, query.GetOrderBy()); err != nil {
-		return nil, "", err
+	result, err := queryruntime.Shape(ctx, queryruntime.NewLegacySource(bindings, budget.BatchSize, tracker), logicalQuery, tracker, queryruntime.ShapeOptions{})
+	if err != nil {
+		return nil, "", mapQueryEngineError(err)
 	}
-	projected := materializeShapedProtoRows(shaped)
-	projected = applyProtoOffsetLimit(projected, int(query.GetOffset()), int(query.GetLimit()))
-	return paginateProtoQueryRows(projected, pageSize, pageToken)
+	mapped := protoNeutralQueryResult(result)
+	return mapped.GetRows(), mapped.GetNextPageToken(), nil
 }
 
 func (e *queryExecution) projectShapedRows(rows []*queryRowState, returns []*clientv1.ReturnProjection, orders []*clientv1.OrderSpec) ([]shapedProtoRow, error) {
@@ -2497,9 +2493,9 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 		rowStates = append(rowStates, &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): []domaingraph.Node{node}}, edgeBindings: map[string][]domaingraph.Edge{}, pathBindings: map[string]*clientv1.PathValue{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}})
 	}
 	shapingQuery := indexedShapingQuery(query, firstPageOffset, pageLimit)
-	out, _, err := exec.shapeAndProjectRows(rowStates, shapingQuery, pageLimit, "")
+	out, _, err := exec.shapeAndProjectRows(ctx, rowStates, shapingQuery, pageLimit, "")
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	next := nextShapedIndexCursor(rawNext, len(out), cursor.RowsReturned, query.GetLimit())
 	result := queryResultFromRows(out, next)
@@ -2611,9 +2607,9 @@ func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req
 		}
 		rowStates = append(rowStates, row)
 	}
-	out, next, err := exec.shapeAndProjectRows(rowStates, query, int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rowStates, query, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	indexes := make([]string, 0, len(indexNames))
 	for id := range indexNames {
@@ -2789,9 +2785,9 @@ func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, 
 		node := union[id]
 		rowStates = append(rowStates, &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {node}}, edgeBindings: map[string][]domaingraph.Edge{}, pathBindings: map[string]*clientv1.PathValue{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}})
 	}
-	out, next, err := exec.shapeAndProjectRows(rowStates, query, int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rowStates, query, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	idx := make([]string, 0, len(indexNames))
 	for index := range indexNames {
@@ -3006,9 +3002,9 @@ func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, r
 		rowStates = append(rowStates, &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {node}}, edgeBindings: map[string][]domaingraph.Edge{}, pathBindings: map[string]*clientv1.PathValue{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}})
 	}
 	shapingQuery := indexedShapingQuery(query, firstPageOffset, pageLimit)
-	out, _, err := exec.shapeAndProjectRows(rowStates, shapingQuery, pageLimit, "")
+	out, _, err := exec.shapeAndProjectRows(ctx, rowStates, shapingQuery, pageLimit, "")
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	next := nextShapedIndexCursor(rawNext, len(out), cursor.RowsReturned, query.GetLimit())
 	result := queryResultFromRows(out, next)
@@ -3304,9 +3300,9 @@ func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clie
 		}
 		rows = filtered
 	}
-	out, next, err := exec.shapeAndProjectRows(rows, query, int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rows, query, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	idx := make([]string, 0, len(indexes))
 	for index := range indexes {
