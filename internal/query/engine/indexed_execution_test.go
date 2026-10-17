@@ -123,6 +123,45 @@ func indexedTestPage(nodes []graph.Node, limit int, cursor string, plan string, 
 	return page, next, graphquery.IndexedReadStats{Plan: plan, IndexName: index, IndexEntriesScanned: len(page), NodesLoaded: len(page), NextCursorKind: "index_key"}, nil
 }
 
+type traversalTestAccess struct {
+	*indexedTestAccess
+	edges          map[string][]graph.Edge
+	adjacencyCalls int
+	adjacencyScans []graphquery.AdjacencyScan
+}
+
+func (a *traversalTestAccess) ScanAdjacency(_ context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {
+	a.adjacencyCalls++
+	a.txs = append(a.txs, tx)
+	a.adjacencyScans = append(a.adjacencyScans, scan)
+	a.limits = append(a.limits, scan.Limit)
+	if a.err != nil {
+		return nil, "", graphquery.IndexedReadStats{}, a.err
+	}
+	if scan.Limit <= 0 {
+		return nil, "", graphquery.IndexedReadStats{}, fmt.Errorf("unbounded adjacency limit %d", scan.Limit)
+	}
+	edges := a.edges[scan.NodeID]
+	start := 0
+	if scan.Cursor != "" {
+		parsed, err := strconv.Atoi(scan.Cursor)
+		if err != nil || parsed < 0 || parsed > len(edges) {
+			return nil, "", graphquery.IndexedReadStats{}, fmt.Errorf("bad adjacency cursor %q", scan.Cursor)
+		}
+		start = parsed
+	}
+	end := start + scan.Limit
+	if end > len(edges) {
+		end = len(edges)
+	}
+	next := ""
+	if end < len(edges) {
+		next = strconv.Itoa(end)
+	}
+	page := append([]graph.Edge(nil), edges[start:end]...)
+	return page, next, graphquery.IndexedReadStats{IndexName: string(scan.Direction) + ":" + scan.Label, IndexEntriesScanned: len(page), EdgesLoaded: len(page), AdjacencyScanCalls: 1}, nil
+}
+
 type indexedTestSemantic struct {
 	batch queryengine.SemanticCandidateBatch
 	err   error
@@ -541,6 +580,197 @@ func TestEngineSemanticCandidatesPreserveRankAndFailClosedHydration(t *testing.T
 	assertEngineQueryCode(t, err, querylogical.ErrorDependencyFailure)
 }
 
+func TestEngineExecutesAdjacencyWithSecureSourceContinuation(t *testing.T) {
+	nodes := indexedNodes("start", "first", "second")
+	base := newIndexedTestAccess(nodes)
+	access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{}}
+	access.edges[nodes[0].ID.String()] = []graph.Edge{
+		indexedEdge(1, nodes[0], nodes[1], "LINKS"),
+		indexedEdge(2, nodes[0], nodes[2], "LINKS"),
+	}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+	tx := indexedTransaction()
+	field := querylogical.FieldRef{Alias: "m", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query := querylogical.Query{
+		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+		Start:   querylogical.NodePattern{Alias: "n", NodeIDs: []string{nodes[0].ID.String()}, Labels: []string{"Document"}},
+		Steps:   []querylogical.Step{{Edge: querylogical.EdgePattern{Alias: "e", Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}}}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "m", Field: &field, OutputName: "name"}},
+		Page:    querylogical.PageSpec{Size: 1},
+	}
+	prepared := prepareIndexed(t, engine, tx, query)
+	if prepared.Physical.Family != queryphysical.FamilyIndexedAdjacency || prepared.RequiresLegacy() {
+		t.Fatalf("prepared = %#v", prepared)
+	}
+	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, prepared)
+	if err != nil || fmt.Sprint(resultNames(first)) != "[first]" || !strings.HasPrefix(first.NextCursor, "qrx7:") {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	query.Page.Cursor = first.NextCursor
+	second, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, prepareIndexed(t, engine, tx, query))
+	if err != nil || fmt.Sprint(resultNames(second)) != "[second]" || second.NextCursor != "" {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	query.Page.Cursor = "1" // legacy raw adjacency cursor
+	legacy, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, prepareIndexed(t, engine, tx, query))
+	if err != nil || fmt.Sprint(resultNames(legacy)) != "[second]" {
+		t.Fatalf("legacy=%#v err=%v", legacy, err)
+	}
+	for _, scan := range access.adjacencyScans {
+		if scan.Limit <= 0 {
+			t.Fatalf("unbounded adjacency scan: %#v", scan)
+		}
+	}
+	for _, got := range access.txs {
+		if got != tx {
+			t.Fatalf("transaction = %#v, want %#v", got, tx)
+		}
+	}
+}
+
+func TestEngineExecutesBoundedPathsWithOutputContinuation(t *testing.T) {
+	nodes := indexedNodes("start", "left", "right", "leaf")
+	base := newIndexedTestAccess(nodes)
+	access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{}}
+	access.edges[nodes[0].ID.String()] = []graph.Edge{indexedEdge(1, nodes[0], nodes[1], "LINKS"), indexedEdge(2, nodes[0], nodes[2], "LINKS")}
+	access.edges[nodes[1].ID.String()] = []graph.Edge{indexedEdge(3, nodes[1], nodes[3], "LINKS")}
+	access.edges[nodes[2].ID.String()] = []graph.Edge{indexedEdge(4, nodes[2], nodes[3], "LINKS")}
+	access.edges[nodes[3].ID.String()] = []graph.Edge{indexedEdge(5, nodes[3], nodes[0], "LINKS")}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+	tx := indexedTransaction()
+	field := querylogical.FieldRef{Alias: "m", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query := querylogical.Query{
+		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "n", NodeIDs: []string{nodes[0].ID.String()}, Labels: []string{"Document"}}, PathAlias: "path",
+		Steps:   []querylogical.Step{{Edge: querylogical.EdgePattern{Alias: "e", Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 3}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}}}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "m", Field: &field, OutputName: "name"}, {Kind: querylogical.ProjectionPath, Alias: "path", OutputName: "path"}},
+		Page:    querylogical.PageSpec{Size: 2},
+	}
+	prepared := prepareIndexed(t, engine, tx, query)
+	if prepared.Physical.Family != queryphysical.FamilyIndexedPath || prepared.RequiresLegacy() {
+		t.Fatalf("prepared = %#v", prepared)
+	}
+	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
+	if err != nil || fmt.Sprint(resultNames(first)) != "[left leaf]" || first.NextCursor == "" {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	if path := first.Rows[1].Fields["path"].Path; path == nil || len(path.Nodes) != 3 || len(path.Edges) != 2 {
+		t.Fatalf("path = %#v", path)
+	}
+	query.Page.Cursor = first.NextCursor
+	second, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepareIndexed(t, engine, tx, query))
+	if err != nil || fmt.Sprint(resultNames(second)) != "[right leaf]" || second.NextCursor != "" {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	if first.Diagnostics.TraversalDepth != 2 || access.adjacencyCalls == 0 {
+		t.Fatalf("diagnostics=%#v calls=%d", first.Diagnostics, access.adjacencyCalls)
+	}
+
+	query.Page = querylogical.PageSpec{Size: 10}
+	query.Predicate = indexedComparison("m", "name", "=", querylogical.Value{Kind: querylogical.ValueString, String: "leaf"})
+	filtered, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepareIndexed(t, engine, tx, query))
+	if err != nil || fmt.Sprint(resultNames(filtered)) != "[leaf leaf]" {
+		t.Fatalf("target residual=%#v err=%v", filtered, err)
+	}
+}
+
+func TestEngineResolvesOpenGQLPathDepthBeforeExecution(t *testing.T) {
+	nodes := indexedNodes("start", "one", "two", "three", "four", "five", "six")
+	base := newIndexedTestAccess(nodes)
+	access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{}}
+	for index := 0; index < len(nodes)-1; index++ {
+		access.edges[nodes[index].ID.String()] = []graph.Edge{indexedEdge(index+1, nodes[index], nodes[index+1], "LINKS")}
+	}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+	tx := indexedTransaction()
+	field := querylogical.FieldRef{Alias: "m", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query := querylogical.Query{
+		Source: querylogical.SourceGQL, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "n", NodeIDs: []string{nodes[0].ID.String()}, Labels: []string{"Document"}}, PathAlias: "path",
+		Steps:   []querylogical.Step{{Edge: querylogical.EdgePattern{Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: -1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}}}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "m", Field: &field, OutputName: "name"}},
+		Page:    querylogical.PageSpec{Size: 10},
+	}
+	prepared := prepareIndexed(t, engine, tx, query)
+	if got := prepared.Physical.Access.Steps[0].MaxDepth; got != 5 {
+		t.Fatalf("resolved max depth = %d, want 5", got)
+	}
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got := fmt.Sprint(resultNames(result)); got != "[one two three four five]" {
+		t.Fatalf("path targets = %s", got)
+	}
+	if result.Diagnostics.TraversalDepth != 5 {
+		t.Fatalf("diagnostics = %#v", result.Diagnostics)
+	}
+}
+
+func TestEngineExecutesOrderedSubtreesWithTreeAndGraphProjection(t *testing.T) {
+	nodes := indexedNodes("root-a", "root-b", "child-a", "child-b")
+	base := newIndexedTestAccess(nodes)
+	base.indexes["document_name"] = nodes[:2]
+	edgeA := indexedEdge(1, nodes[0], nodes[2], "contains")
+	edgeB := indexedEdge(2, nodes[1], nodes[3], "contains")
+	edgeA.Properties["keep"] = true
+	edgeB.Properties["keep"] = false
+	nodes[2].Properties["kind"] = "child"
+	nodes[3].Properties["kind"] = "child"
+	base.nodes[nodes[2].ID.String()] = nodes[2]
+	base.nodes[nodes[3].ID.String()] = nodes[3]
+	access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{
+		nodes[0].ID.String(): {edgeA},
+		nodes[1].ID.String(): {edgeB},
+	}}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+	tx := indexedTransaction()
+	rootField := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query := querylogical.Query{
+		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}},
+		Steps: []querylogical.Step{{
+			Edge:   querylogical.EdgePattern{Labels: []string{"contains"}, Direction: querylogical.DirectionOutgoing, Properties: map[string]querylogical.Value{"keep": {Kind: querylogical.ValueBool, Bool: true}}},
+			Depth:  querylogical.DepthBounds{Min: 1, Max: 2},
+			Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}, Properties: map[string]querylogical.Value{"kind": {Kind: querylogical.ValueString, String: "child"}}},
+		}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "n", Field: &rootField, OutputName: "name"}, {Kind: querylogical.ProjectionTree, Alias: "m", OutputName: "tree"}},
+		OrderBy: []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}},
+		Page:    querylogical.PageSpec{Size: 1},
+	}
+	prepared := prepareIndexed(t, engine, tx, query)
+	if prepared.Physical.Family != queryphysical.FamilyIndexedSubtree || prepared.RequiresLegacy() {
+		t.Fatalf("prepared = %#v", prepared)
+	}
+	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
+	if err != nil || fmt.Sprint(resultNames(first)) != "[root-a]" || first.NextCursor == "" {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	if len(first.Graph.Nodes) != 2 || len(first.Graph.Edges) != 1 || first.Rows[0].Fields["tree"].Tree == nil {
+		t.Fatalf("tree/graph result = %#v", first)
+	}
+	query.Page.Cursor = first.NextCursor
+	second, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepareIndexed(t, engine, tx, query))
+	if err != nil || fmt.Sprint(resultNames(second)) != "[root-b]" || second.NextCursor != "" {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	if len(second.Graph.Nodes) != 1 || len(second.Graph.Edges) != 0 || len(second.Rows[0].Fields["tree"].Tree.Roots) != 0 {
+		t.Fatalf("filtered subtree = %#v", second)
+	}
+	if access.adjacencyCalls < 2 {
+		t.Fatalf("subtree adjacency calls = %d", access.adjacencyCalls)
+	}
+	for _, scan := range access.adjacencyScans {
+		if scan.Limit <= 0 {
+			t.Fatalf("unbounded subtree adjacency scan: %#v", scan)
+		}
+	}
+}
+
+func indexedEdge(index int, from graph.Node, to graph.Node, label string) graph.Edge {
+	return graph.Edge{ID: uuid.MustParse(fmt.Sprintf("10000000-0000-0000-0000-%012d", index)), FromID: from.ID, ToID: to.ID, Labels: []string{label}, Properties: map[string]any{"order": index}}
+}
+
 func newIndexedTestAccess(nodes []graph.Node) *indexedTestAccess {
 	access := &indexedTestAccess{nodes: map[string]graph.Node{}, labels: map[string][]graph.Node{"Document": nodes}, tags: map[string][]graph.Node{}, indexes: map[string][]graph.Node{}}
 	for _, node := range nodes {
@@ -580,7 +810,11 @@ func indexedBaseQuery() querylogical.Query {
 func indexedSchema() schemamodel.DomainSchema {
 	return schemamodel.DomainSchema{
 		Version: "qrx7", Mode: schemamodel.SchemaModeStrict,
-		NodeTypes: []schemamodel.NodeType{{Name: "Document", Labels: []string{"Document"}, Properties: []schemamodel.FieldSpec{{Name: "name", Type: schemamodel.FieldTypeString}, {Name: "rank", Type: schemamodel.FieldTypeInt}, {Name: "tags", Type: schemamodel.FieldTypeJSON}}}},
+		NodeTypes: []schemamodel.NodeType{{Name: "Document", Labels: []string{"Document"}, Properties: []schemamodel.FieldSpec{{Name: "name", Type: schemamodel.FieldTypeString}, {Name: "rank", Type: schemamodel.FieldTypeInt}, {Name: "kind", Type: schemamodel.FieldTypeString}, {Name: "tags", Type: schemamodel.FieldTypeJSON}}}},
+		EdgeTypes: []schemamodel.EdgeType{
+			{Name: "LINKS", Labels: []string{"LINKS"}, From: schemamodel.EndpointSpec{NodeTypes: []string{"Document"}}, To: schemamodel.EndpointSpec{NodeTypes: []string{"Document"}}},
+			{Name: "contains", Labels: []string{"contains"}, From: schemamodel.EndpointSpec{NodeTypes: []string{"Document"}}, To: schemamodel.EndpointSpec{NodeTypes: []string{"Document"}}, Properties: []schemamodel.FieldSpec{{Name: "keep", Type: schemamodel.FieldTypeBool}}},
+		},
 		Indexes: []schemamodel.IndexDefinition{
 			{Name: "document_name", TargetKind: schemamodel.IndexTargetNode, TargetType: "Document", Field: schemamodel.FieldPath{Namespace: "properties", Name: "name"}, Kind: schemamodel.IndexKindOrdered},
 			{Name: "document_rank", TargetKind: schemamodel.IndexTargetNode, TargetType: "Document", Field: schemamodel.FieldPath{Namespace: "properties", Name: "rank"}, Kind: schemamodel.IndexKindOrdered},

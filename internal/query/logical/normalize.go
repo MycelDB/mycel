@@ -73,6 +73,9 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 		}
 		q.Predicate = combineGQLPredicates(predicates...)
 		q.Returns = fromGQLReturns(op.Returns, projectionKinds)
+		if op.PathVariable == "" && op.ReturnGraph && len(op.OrderBy) > 0 && len(op.Segments) == 1 {
+			q.Returns = gqlSubtreeReturns(op.Start.Variable, op.Segments[0].Node.Variable)
+		}
 		q.Aggregates = fromGQLAggregates(op.Aggregates)
 		q.OrderBy = fromGQLOrder(op.OrderBy)
 		q.ReturnGraph = op.ReturnGraph
@@ -107,6 +110,13 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 
 	default:
 		return base, false
+	}
+}
+
+func gqlSubtreeReturns(startAlias string, targetAlias string) []Projection {
+	return []Projection{
+		{Kind: ProjectionNode, Alias: startAlias, OutputName: startAlias},
+		{Kind: ProjectionTree, Alias: targetAlias, OutputName: "graph"},
 	}
 }
 

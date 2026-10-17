@@ -227,7 +227,7 @@ func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	if diagnostics.Plan != "BoundedFullGraphScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx7" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || !diagnostics.LegacyBridge {
+	if diagnostics.PlannerVersion != "qrx8" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || !diagnostics.LegacyBridge {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if len(diagnostics.Operators) == 0 || diagnostics.ResourceLimits.MaxNodesLoaded == 0 || diagnostics.RowsScanned != 0 || diagnostics.NodesLoaded != 0 {
@@ -273,7 +273,7 @@ func TestEngineExecuteShapesExplicitLegacyBindingsWithoutAccess(t *testing.T) {
 	if len(result.Rows) != 1 || result.Rows[0].Fields["node"].Node == nil || result.Rows[0].Fields["node"].Node.ID != node.ID.String() {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Diagnostics.PlannerVersion != "qrx7" || result.Diagnostics.ExplainOnly || !result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
+	if result.Diagnostics.PlannerVersion != "qrx8" || result.Diagnostics.ExplainOnly || !result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
 		t.Fatalf("diagnostics = %#v", result.Diagnostics)
 	}
 	if entities.calls != 0 {

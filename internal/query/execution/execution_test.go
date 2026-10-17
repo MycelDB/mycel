@@ -153,6 +153,71 @@ func TestPagedNodeSourceCancellationWinsOverSuccessfulDependencyReturn(t *testin
 	}
 }
 
+func TestTraversalOperatorsCancellationWinsAndReleasesMemory(t *testing.T) {
+	start := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Labels: []string{"Document"}}
+	step := querylogical.Step{
+		Edge:  querylogical.EdgePattern{Alias: "e", Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing},
+		Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+	}
+
+	t.Run("adjacency", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		tracked := tracker(t, queryexecution.Budget{BatchSize: 1})
+		source := queryexecution.NewAdjacencySource(
+			"n", querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}, step, []string{start.ID.String()},
+			func(context.Context, string) (graph.Node, error) { return start, nil },
+			func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
+				cancel()
+				return queryexecution.TraversalEdgePage{}, nil
+			}, nil, 0, "", 0, false, 1, nil, time.Time{}, tracked,
+		)
+		if err := source.Open(ctx); err != nil {
+			t.Fatal(err)
+		}
+		_, err := source.Next(ctx)
+		assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+		if tracked.Snapshot().RetainedMemory != 0 {
+			t.Fatalf("retained memory = %d", tracked.Snapshot().RetainedMemory)
+		}
+	})
+
+	t.Run("path", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		tracked := tracker(t, queryexecution.Budget{BatchSize: 1})
+		input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": start}}}, 1, tracked)
+		source := queryexecution.NewPathExpand(input, "n", step, "path", func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
+			cancel()
+			return queryexecution.TraversalEdgePage{}, nil
+		}, func(context.Context, string) (graph.Node, error) { return graph.Node{}, nil }, 1, nil, time.Time{}, tracked)
+		if err := source.Open(ctx); err != nil {
+			t.Fatal(err)
+		}
+		_, err := source.Next(ctx)
+		assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+		if tracked.Snapshot().RetainedMemory != 0 {
+			t.Fatalf("retained memory = %d", tracked.Snapshot().RetainedMemory)
+		}
+	})
+
+	t.Run("subtree", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		tracked := tracker(t, queryexecution.Budget{BatchSize: 1})
+		input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": start}}}, 1, tracked)
+		source := queryexecution.NewSubtreeExpand(input, "n", step, func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
+			cancel()
+			return queryexecution.TraversalEdgePage{}, nil
+		}, func(context.Context, string) (graph.Node, error) { return graph.Node{}, nil }, 1, nil, time.Time{}, tracked)
+		if err := source.Open(ctx); err != nil {
+			t.Fatal(err)
+		}
+		_, err := source.Next(ctx)
+		assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+		if tracked.Snapshot().RetainedMemory != 0 {
+			t.Fatalf("retained memory = %d", tracked.Snapshot().RetainedMemory)
+		}
+	})
+}
+
 func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
 	rows := []queryexecution.BindingRow{
 		bindingRow("00000000-0000-0000-0000-000000000001", "a", "x", 1),

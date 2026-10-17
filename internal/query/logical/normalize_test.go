@@ -86,6 +86,26 @@ func TestFromGQLPlanPreservesPathNodeAndEdgePatterns(t *testing.T) {
 	}
 }
 
+func TestFromGQLPlanNormalizesOrderedReturnGraphAsSubtreeProjection(t *testing.T) {
+	plan, err := gql.Compile("MATCH (d:Journal)-[:contains*0..2]->(n) WHERE d.day <= 20260702 RETURN GRAPH d,n ORDER BY d.day DESC FETCH FIRST 2 ROWS ONLY")
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	query, ok := FromGQLPlan(plan)
+	if !ok {
+		t.Fatal("FromGQLPlan() ok = false")
+	}
+	if len(query.Steps) != 1 || !query.ReturnGraph || len(query.Returns) != 2 {
+		t.Fatalf("subtree query = %+v", query)
+	}
+	if query.Returns[0].Kind != ProjectionNode || query.Returns[0].Alias != "d" || query.Returns[0].OutputName != "d" {
+		t.Fatalf("root projection = %+v", query.Returns[0])
+	}
+	if query.Returns[1].Kind != ProjectionTree || query.Returns[1].Alias != "n" || query.Returns[1].OutputName != "graph" {
+		t.Fatalf("tree projection = %+v", query.Returns[1])
+	}
+}
+
 func TestFromGQLPlanPreservesNamespacedTextAndSemanticPredicates(t *testing.T) {
 	plan, err := gql.Compile("MATCH (n:Note) WHERE (TEXT_CONTAINS(n.payload.text, 'alpha') OR SEMANTIC_SIMILAR(n, 'memory', TOP 7)) AND n.meta.archived IS NULL RETURN n.meta.owner AS owner")
 	if err != nil {

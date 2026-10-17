@@ -21,6 +21,12 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
+func newQRX8QueryService(fixture domainPolicyClientAPIFixture, manager schemaservice.Manager) *QueryService {
+	return NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+		WithSchemaManager(manager).
+		WithQueryEngine(queryEngineForExplainTest(fixture.graphs, manager))
+}
+
 func TestQueryServiceExecuteQueryUsesOrderedNodePropertyIndex(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
@@ -417,12 +423,12 @@ func TestQueryServiceExecuteQueryIndexedRootSubtreeGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: pkmJournalSubtreeQuery(20260701, 20260710, 7, 0, 0), PageSize: 7})
+	res, err := newQRX8QueryService(fixture, manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: pkmJournalSubtreeQuery(20260701, 20260710, 7, 0, 0), PageSize: 7})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
 	assertJournalSubtreeResult(t, res.GetRows(), res.GetResult().GetGraph(), []int{20260710, 20260709, 20260708, 20260707, 20260706, 20260705, 20260704})
-	if diag := res.GetDiagnostics(); diag.GetPlan() != indexedSubtreePlanName || diag.GetFullScan() || diag.GetRootCount() != 7 || diag.GetTruncated() || diag.GetEdgesLoaded() != 21 || diag.GetNodesLoaded() < 28 || diag.GetAdjacencyScanCalls() != 21 || diag.GetNodeReadCalls() != 21 || !containsString(diag.GetIndexes(), "pkm_journals_by_day") || !containsString(diag.GetIndexes(), "out:contains") {
+	if diag := res.GetDiagnostics(); diag.GetPlan() != indexedSubtreePlanName || diag.GetFullScan() || diag.GetRootCount() != 7 || diag.GetTruncated() || diag.GetEdgesLoaded() < 21 || diag.GetNodesLoaded() < 28 || diag.GetAdjacencyScanCalls() < 21 || diag.GetNodeReadCalls() < 21 || !containsString(diag.GetIndexes(), "pkm_journals_by_day") || !containsString(diag.GetIndexes(), "out:contains") {
 		t.Fatalf("unexpected diagnostics: %+v", diag)
 	}
 }
@@ -439,7 +445,7 @@ func TestQueryServiceExecuteGQLIndexedRootSubtreeGraph(t *testing.T) {
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := "MATCH (d:pkm.journal)-[:contains*0..2]->(n) WHERE d.journal_day BETWEEN 20260701 AND 20260710 RETURN GRAPH d,n ORDER BY d.journal_day DESC FETCH FIRST 7 ROWS ONLY"
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: query, PageSize: 7})
+	res, err := newQRX8QueryService(fixture, manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: query, PageSize: 7})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -488,7 +494,7 @@ func TestQueryServiceExecuteQueryIndexedStartPathTraversal(t *testing.T) {
 		Returns: []*clientv1.ReturnProjection{{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 		Limit:   10,
 	}
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	res, err := newQRX8QueryService(fixture, manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -530,7 +536,7 @@ func TestQueryServiceExecuteQueryLabelIndexedStartPathTraversal(t *testing.T) {
 		Returns:   []*clientv1.ReturnProjection{{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 		Limit:     10,
 	}
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -554,7 +560,7 @@ func TestQueryServiceExecuteGQLLabelIndexedStartPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (d:Document)-[:contains]->(s:Section) RETURN path", PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (d:Document)-[:contains]->(s:Section) RETURN path", PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -594,7 +600,7 @@ func TestQueryServiceExecuteQueryTagIndexedStartPathTraversal(t *testing.T) {
 		Where:     &clientv1.Expr{Expr: &clientv1.Expr_HasTag{HasTag: &clientv1.HasTagExpr{Alias: "d", Tag: "Project"}}},
 		Returns:   []*clientv1.ReturnProjection{{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 	}
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -634,9 +640,9 @@ func TestQueryServiceExecuteQueryLabelIndexedStartPathCapFailsClosed(t *testing.
 		PathAlias: "path",
 		Returns:   []*clientv1.ReturnProjection{{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 	}
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
-	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "indexed label path start matched more than") {
-		t.Fatalf("ExecuteQuery() err=%v code=%v, want label start cap FailedPrecondition", err, status.Code(err))
+	_, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), "budget exceeded") {
+		t.Fatalf("ExecuteQuery() err=%v code=%v, want label start cap ResourceExhausted", err, status.Code(err))
 	}
 }
 
@@ -666,7 +672,7 @@ func TestQueryServiceExecuteQueryIndexedPathSkipsCycles(t *testing.T) {
 		PathAlias: "path",
 		Returns:   []*clientv1.ReturnProjection{{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 	}
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -705,7 +711,7 @@ func TestQueryServiceExecuteQueryIndexedPathKeepsEdgeDistinctDuplicates(t *testi
 		PathAlias: "path",
 		Returns:   []*clientv1.ReturnProjection{{Alias: "path", OutputName: "path", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_PATH}},
 	}
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -740,7 +746,7 @@ func TestQueryServiceExecuteGQLIndexedStartPathTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (d:Document {rank: 2})-[:contains*1..2]->(s:Section) RETURN path", PageSize: 10})
+	res, err := newQRX8QueryService(fixture, manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (d:Document {rank: 2})-[:contains*1..2]->(s:Section) RETURN path", PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -762,7 +768,7 @@ func TestQueryServiceExecuteQueryIndexedRootSubtreePagination(t *testing.T) {
 	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
 		t.Fatal(err)
 	}
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := pkmJournalSubtreeQuery(20260701, 20260714, 7, 0, 0)
 	page1, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 7})
@@ -791,7 +797,7 @@ func TestQueryServiceExecuteQueryIndexedRootSubtreeTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: pkmJournalSubtreeQuery(20260701, 20260701, 1, 2, 10), PageSize: 1})
+	res, err := newQRX8QueryService(fixture, manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: pkmJournalSubtreeQuery(20260701, 20260701, 1, 2, 10), PageSize: 1})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -1298,7 +1304,7 @@ func TestQueryServiceExecuteQueryUsesAdjacencyIndexForOutgoingEdgeProjection(t *
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, ""), PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, ""), PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -1335,7 +1341,7 @@ func TestQueryServiceExecuteQueryUsesAdjacencyIndexForIncomingEdgeProjection(t *
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: referenceQuery(target, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN, ""), PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: referenceQuery(target, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN, ""), PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -1365,14 +1371,15 @@ func TestQueryServiceExecuteQueryAdjacencyEdgePropertyFilterAndPagination(t *tes
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "keep")
-	page1, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
+	querySvc := newQRX8QueryService(fixture, nil)
+	page1, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
 	if err != nil {
 		t.Fatalf("ExecuteQuery(page1) error = %v", err)
 	}
 	if len(page1.GetRows()) != 1 || page1.GetNextPageToken() == "" {
 		t.Fatalf("page1 rows=%d next=%q, want one row and cursor", len(page1.GetRows()), page1.GetNextPageToken())
 	}
-	page2, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10, PageToken: page1.GetNextPageToken()})
+	page2, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1, PageToken: page1.GetNextPageToken()})
 	if err != nil {
 		t.Fatalf("ExecuteQuery(page2) error = %v", err)
 	}
@@ -1453,7 +1460,7 @@ func TestQueryServiceExecuteQueryAdjacencyMultiStartPagination(t *testing.T) {
 	query := referenceQuery(sourceA, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
 	query.GetMatch().GetStart().NodeIds = []string{sourceA, sourceB}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := newQRX8QueryService(fixture, nil)
 	page1, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
 	if err != nil {
 		t.Fatalf("ExecuteQuery(page1) error = %v", err)
@@ -1484,7 +1491,7 @@ func TestQueryServiceExecuteQueryStrictSchemaAllowsIncomingEdgeAliasTraversal(t 
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: referenceQuery(target, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN, "target"), PageSize: 10})
+	res, err := newQRX8QueryService(fixture, manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: referenceQuery(target, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN, "target"), PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -1529,7 +1536,7 @@ func TestQueryServiceExecuteQueryAdjacencyHonorsQueryLimit(t *testing.T) {
 	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
 	query.Limit = 1
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
@@ -1549,7 +1556,7 @@ func TestQueryServiceExecuteQueryAdjacencyPaginatesWriteOverlay(t *testing.T) {
 	createQueryTestEdge(t, fixture, graphSvc, writeTx, source, targetB, []string{"references"}, map[string]any{"order": 2000})
 
 	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := newQRX8QueryService(fixture, nil)
 	page1, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: writeTx, Query: query, PageSize: 1})
 	if err != nil {
 		t.Fatalf("ExecuteQuery(page1) error = %v", err)
@@ -1565,6 +1572,94 @@ func TestQueryServiceExecuteQueryAdjacencyPaginatesWriteOverlay(t *testing.T) {
 		t.Fatalf("page2 titles=%+v next=%q, want [B] and no cursor", got, page2.GetNextPageToken())
 	}
 }
+func TestQueryServiceExecuteQueryAdjacencyPreservesReadSnapshot(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	source := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Note"}, map[string]any{"title": "source"})
+	targetA := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Page"}, map[string]any{"title": "A"})
+	createQueryTestEdge(t, fixture, graphSvc, writeTx, source, targetA, []string{"references"}, map[string]any{"order": 1000})
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("CommitTransaction(initial) error = %v", err)
+	}
+
+	snapshotTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	laterTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	targetB := createQueryTestNode(t, fixture, graphSvc, laterTx, []string{"Page"}, map[string]any{"title": "B"})
+	createQueryTestEdge(t, fixture, graphSvc, laterTx, source, targetB, []string{"references"}, map[string]any{"order": 2000})
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: laterTx}); err != nil {
+		t.Fatalf("CommitTransaction(later) error = %v", err)
+	}
+
+	querySvc := newQRX8QueryService(fixture, nil)
+	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
+	snapshot, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: snapshotTx, Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery(snapshot) error = %v", err)
+	}
+	if got := referenceTargetTitles(snapshot.GetRows()); !reflect.DeepEqual(got, []string{"A"}) {
+		t.Fatalf("snapshot titles = %v, want [A]", got)
+	}
+	freshTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	fresh, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: freshTx, Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery(fresh) error = %v", err)
+	}
+	if got := referenceTargetTitles(fresh.GetRows()); !reflect.DeepEqual(got, []string{"A", "B"}) {
+		t.Fatalf("fresh titles = %v, want [A B]", got)
+	}
+}
+
+func TestQueryServiceExecuteQueryPathReadsWriteOverlay(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	aID := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Person"}, map[string]any{"name": "A"})
+	bID := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Person"}, map[string]any{"name": "B"})
+	cID := createQueryTestNode(t, fixture, graphSvc, writeTx, []string{"Person"}, map[string]any{"name": "C"})
+	createQueryTestEdge(t, fixture, graphSvc, writeTx, aID, bID, []string{"FRIEND_OF"}, nil)
+	createQueryTestEdge(t, fixture, graphSvc, writeTx, bID, cID, []string{"FRIEND_OF"}, nil)
+	query := &clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{
+			Start: &clientv1.NodePattern{Alias: "a", NodeIds: []string{aID}},
+			Steps: []*clientv1.TraversalStep{{Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, EdgeKind: "FRIEND_OF", Depth: &clientv1.DepthSpec{MinDepth: 2, MaxDepth: 2}, Target: &clientv1.NodePattern{Alias: "c", Labels: []string{"Person"}}}},
+		},
+		PathAlias: "path",
+		Returns:   []*clientv1.ReturnProjection{{Alias: "c.name", OutputName: "name", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+		Where:     &clientv1.Expr{Expr: &clientv1.Expr_PropertyEquals{PropertyEquals: &clientv1.PropertyEqualsExpr{Alias: "c", Name: "name", Value: structpb.NewStringValue("C")}}},
+	}
+	res, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: writeTx, Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery() error = %v", err)
+	}
+	if got := qrx0ScalarValues(res.GetRows(), "name"); !reflect.DeepEqual(got, []string{"C"}) {
+		t.Fatalf("overlay path names = %v, want [C]", got)
+	}
+	if res.GetDiagnostics().GetPlanKind() != "indexed_path" {
+		t.Fatalf("diagnostics = %+v", res.GetDiagnostics())
+	}
+}
+
+func TestQueryServiceExecuteQuerySubtreeReadsWriteOverlay(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	manager := pkmJournalSubtreeSchemaManagerForQueryTest(t, fixture.domainID)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	createJournalSubtreeFixture(t, fixture, graphSvc, writeTx, 1)
+	query := pkmJournalSubtreeQuery(20260701, 20260701, 1, 0, 0)
+	res, err := newQRX8QueryService(fixture, manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: writeTx, Query: query, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery() error = %v", err)
+	}
+	if len(res.GetRows()) != 1 || res.GetRows()[0].GetFields()["graph"].GetTree() == nil {
+		t.Fatalf("overlay subtree result = %+v", res.GetResult())
+	}
+	if res.GetDiagnostics().GetPlanKind() != "indexed_subtree" || res.GetDiagnostics().GetAdjacencyScanCalls() == 0 {
+		t.Fatalf("diagnostics = %+v", res.GetDiagnostics())
+	}
+}
+
 func TestQueryServiceExecuteGQLAggregationDistinctOffsetAndPredicates(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
@@ -1712,7 +1807,8 @@ func TestQueryServiceExecuteQueryStructuredAggregationAndPathValue(t *testing.T)
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+		WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil))
 
 	countRes, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "p", Labels: []string{"Person"}}}, AggregateReturns: []*clientv1.AggregateProjection{{OutputName: "total", Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}}}}})
 	if err != nil {

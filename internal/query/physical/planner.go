@@ -100,24 +100,28 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 	}
 	indexes := []IndexUse{}
 	var pushed *querylogical.Predicate
+	startPredicate, hasStartPredicate, mixedStartPredicate := pathStartPredicate(query.Predicate, query.Start.Alias)
+	if mixedStartPredicate && len(query.Start.NodeIDs) == 0 {
+		return Plan{}, false, nil
+	}
 	switch {
 	case len(query.Start.NodeIDs) > 0:
 		access.Kind = AccessNodeIDs
 		if !p.environment.Capabilities.EntityReads {
 			return Plan{}, true, p.unavailable("indexed path requires entity reads")
 		}
-	case query.Predicate == nil:
+	case !hasStartPredicate:
 		access.Kind = AccessLabel
 		indexes = append(indexes, builtInIndex("label:"+query.Start.Labels[0], query.Start.Labels[0]))
 	default:
-		tags, tagOK, err := tagBranches(query.Predicate, query.Start.Alias)
+		tags, tagOK, err := tagBranches(startPredicate, query.Start.Alias)
 		if err != nil {
 			return Plan{}, true, err
 		}
 		if tagOK {
 			access.Kind = AccessTag
 			access.TagBranches = tags
-			pushed = query.Predicate
+			pushed = startPredicate
 			for _, branch := range tags {
 				for _, tag := range branch {
 					indexes = append(indexes, builtInIndex("tag:"+tag, query.Start.Labels[0]))
@@ -125,7 +129,7 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 			}
 			break
 		}
-		branches, indexed, predicateOK, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source, false)
+		branches, indexed, predicateOK, err := indexedBranches(startPredicate, query.Start.Alias, query.Source, false)
 		if err != nil {
 			return Plan{}, true, err
 		}
@@ -168,7 +172,7 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 	return Plan{
 		Name: "IndexedMultiHopAdjacencyPathScan", Family: FamilyIndexedPath,
 		Access: access, Indexes: dedupeIndexes(indexes), PushedPredicate: pushed, ResidualPredicate: query.Predicate,
-		Cursor: legacyCursor("offset"), Limits: p.resourceLimits(query, FamilyIndexedPath),
+		Cursor: nativeCursor("traversal_offset"), Limits: p.resourceLimits(query, FamilyIndexedPath),
 	}, true, nil
 }
 
@@ -200,7 +204,7 @@ func (p planner) planIndexedAdjacency(query querylogical.Query) (Plan, bool, err
 	return Plan{
 		Name: "EdgeAdjacencyIndexScan", Family: FamilyIndexedAdjacency,
 		Access: access, Indexes: []IndexUse{adjacencyIndex(step)}, ResidualPredicate: query.Predicate,
-		Cursor: legacyCursor("adjacency_key"), Limits: p.resourceLimits(query, FamilyIndexedAdjacency),
+		Cursor: nativeCursor("adjacency_key"), Limits: p.resourceLimits(query, FamilyIndexedAdjacency),
 	}, true, nil
 }
 
@@ -419,7 +423,7 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	plan.Family = FamilyIndexedSubtree
 	plan.Access = access
 	plan.Indexes = append(plan.Indexes, adjacencyIndex(step))
-	plan.Cursor = legacyCursor("root_index_key")
+	plan.Cursor = nativeCursor("root_index_key")
 	plan.Limits = p.resourceLimits(query, FamilyIndexedSubtree)
 	return plan, true, nil
 }
@@ -455,7 +459,7 @@ func (p planner) finish(plan Plan, bound querybinding.BoundStatement, query quer
 
 func nativeIndexedFamily(family Family) bool {
 	switch family {
-	case FamilyNodeIDLookup, FamilyLabelIndex, FamilyTagIndex, FamilyIndexedEquality, FamilySemantic, FamilyIndexedPredicate, FamilyIndexedOrder:
+	case FamilyNodeIDLookup, FamilyLabelIndex, FamilyTagIndex, FamilyIndexedPath, FamilyIndexedAdjacency, FamilyIndexedEquality, FamilySemantic, FamilyIndexedPredicate, FamilyIndexedOrder, FamilyIndexedSubtree:
 		return true
 	default:
 		return false
@@ -503,7 +507,7 @@ func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operat
 			current = Operator{Kind: OperatorSort, Inputs: []Operator{current}}
 		}
 	} else {
-		if len(query.OrderBy) > 0 && plan.Family != FamilyIndexedOrder {
+		if len(query.OrderBy) > 0 && plan.Family != FamilyIndexedOrder && plan.Family != FamilyIndexedSubtree {
 			kind := OperatorSort
 			if physicalTopNSafe(query) {
 				kind = OperatorTopN
@@ -575,6 +579,78 @@ func (p planner) resolveScan(label string, scan IndexScan) (IndexScan, IndexUse,
 	return scan, schemaIndexUse(index, label), nil
 }
 
+func pathStartPredicate(predicate *querylogical.Predicate, startAlias string) (*querylogical.Predicate, bool, bool) {
+	if predicate == nil {
+		return nil, false, false
+	}
+	if predicate.Op != querylogical.PredicateAndOp {
+		aliases := predicateAliases(*predicate)
+		_, hasStart := aliases[startAlias]
+		if !hasStart {
+			return nil, false, false
+		}
+		if len(aliases) != 1 {
+			return nil, false, true
+		}
+		copyPredicate := *predicate
+		return &copyPredicate, true, false
+	}
+	terms := make([]querylogical.Predicate, 0, len(predicate.Terms))
+	for _, term := range predicate.Terms {
+		aliases := predicateAliases(term)
+		if _, hasStart := aliases[startAlias]; !hasStart {
+			continue
+		}
+		if len(aliases) != 1 {
+			return nil, false, true
+		}
+		terms = append(terms, term)
+	}
+	combined := querylogical.CombinePredicate(querylogical.PredicateAndOp, terms)
+	return combined, combined != nil, false
+}
+
+func predicateAliases(predicate querylogical.Predicate) map[string]struct{} {
+	out := map[string]struct{}{}
+	var addValue func(*querylogical.Value)
+	addValue = func(value *querylogical.Value) {
+		if value == nil {
+			return
+		}
+		if value.Field != nil && value.Field.Alias != "" {
+			out[value.Field.Alias] = struct{}{}
+		}
+		if value.Kind == querylogical.ValueBinding && value.Binding != "" {
+			out[value.Binding] = struct{}{}
+		}
+		for i := range value.List {
+			addValue(&value.List[i])
+		}
+		for key := range value.Object {
+			item := value.Object[key]
+			addValue(&item)
+		}
+	}
+	var visit func(querylogical.Predicate)
+	visit = func(current querylogical.Predicate) {
+		if current.Leaf != nil {
+			if current.Leaf.Field != nil && current.Leaf.Field.Alias != "" {
+				out[current.Leaf.Field.Alias] = struct{}{}
+			}
+			addValue(current.Leaf.Operand)
+			addValue(current.Leaf.Left)
+			addValue(current.Leaf.Right)
+			addValue(current.Leaf.Low)
+			addValue(current.Leaf.High)
+		}
+		for _, term := range current.Terms {
+			visit(term)
+		}
+	}
+	visit(predicate)
+	return out
+}
+
 func (p planner) resourceLimits(query querylogical.Query, family Family) ResourceLimits {
 	limits := ResourceLimits{
 		MaxCandidates:       defaultMaxCandidates,
@@ -587,14 +663,12 @@ func (p planner) resourceLimits(query querylogical.Query, family Family) Resourc
 	case FamilyIndexedPath:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxStartNodes = defaultPathMaxStartNodes
-		limits.MaxNodesLoaded = defaultMaxNodesLoaded
-		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
+		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
 		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 	case FamilyIndexedAdjacency:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxStartNodes = defaultPathMaxStartNodes
-		limits.MaxNodesLoaded = defaultMaxNodesLoaded
-		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
+		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
 		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 	case FamilyNodeIDLookup:
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded

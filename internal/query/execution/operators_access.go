@@ -19,6 +19,7 @@ type NodePage struct {
 	NextCursor         string
 	IndexEntries       int64
 	NodesLoaded        int64
+	NodeReadCalls      int64
 	SemanticCandidates int64
 	// SourceRetainedBytes accounts for source state retained across page reads.
 	// A source reports each allocation once; PagedNodeSource releases it on Close.
@@ -187,6 +188,9 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 		if err := s.tracker.LoadNodes(page.NodesLoaded); err != nil {
 			return err
 		}
+		if err := s.tracker.RecordNodeReads(page.NodeReadCalls); err != nil {
+			return err
+		}
 		if err := s.tracker.UseSemanticCandidates(page.SemanticCandidates); err != nil {
 			return err
 		}
@@ -327,28 +331,7 @@ func (o *NodePatternFilter) matches(row BindingRow) (bool, error) {
 	if !ok {
 		return false, executionInvalid("filter start nodes", fmt.Sprintf("alias %q is not bound", o.pattern.Alias))
 	}
-	if len(o.pattern.NodeIDs) > 0 && !containsString(o.pattern.NodeIDs, node.ID.String()) {
-		return false, nil
-	}
-	for _, label := range o.pattern.Labels {
-		if !containsString(node.Labels, label) {
-			return false, nil
-		}
-	}
-	for name, expected := range o.pattern.Properties {
-		actual, exists := graph.Property(node, name)
-		if !exists {
-			return false, nil
-		}
-		resolved, err := o.eval.value(row, expected)
-		if err != nil {
-			return false, err
-		}
-		if compareValues(querylogical.NativeValue(actual), resolved) != 0 {
-			return false, nil
-		}
-	}
-	return true, nil
+	return matchesNodePattern(row, node, o.pattern, o.eval)
 }
 
 func (o *NodePatternFilter) Close() error { return o.close() }
@@ -606,6 +589,42 @@ func (o *NodeSetOperator) releaseRows() {
 	o.sizes = nil
 	o.offset = 0
 }
+
+// StartNodeLimit accounts for start candidates independently from expanded
+// rows, so traversal fan-out cannot hide an over-broad root source.
+type StartNodeLimit struct {
+	unaryOperator
+	tracker *Tracker
+}
+
+func NewStartNodeLimit(input Operator, tracker *Tracker) *StartNodeLimit {
+	return &StartNodeLimit{unaryOperator: unaryOperator{input: input}, tracker: tracker}
+}
+
+func (o *StartNodeLimit) Open(ctx context.Context) error {
+	return o.open(ctx, "open traversal start limiter")
+}
+
+func (o *StartNodeLimit) Next(ctx context.Context) (Batch, error) {
+	if err := o.ready(ctx, "read traversal starts"); err != nil {
+		return Batch{}, err
+	}
+	batch, err := o.input.Next(ctx)
+	if err != nil {
+		if err == io.EOF {
+			return Batch{}, io.EOF
+		}
+		return Batch{}, o.fail(err)
+	}
+	if o.tracker != nil {
+		if err := o.tracker.UseStartNodes(int64(len(batch.Rows))); err != nil {
+			return Batch{}, o.fail(err)
+		}
+	}
+	return batch, nil
+}
+
+func (o *StartNodeLimit) Close() error { return o.close() }
 
 // StaticValue resolves a bound literal/parameter/date for a storage boundary.
 func StaticValue(value querylogical.Value, parameters map[string]querylogical.Value, now time.Time) (any, error) {

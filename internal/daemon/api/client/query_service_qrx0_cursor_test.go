@@ -144,7 +144,7 @@ func TestQRX0LegacyRawAdjacencyCursorResumesQuery(t *testing.T) {
 	// Raw base64url cursor for the first zero-order adjacency key.
 	const legacyRawCursor = "dTowOTIyMzM3MjAzNjg1NDc3NTgwOAAwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMjE"
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil)).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
 		TransactionId: readTx,
 		Query:         referenceQuery(sourceID, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, ""),
 		PageSize:      1,

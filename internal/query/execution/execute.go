@@ -54,9 +54,12 @@ func Shape(ctx context.Context, source Operator, query querylogical.Query, track
 	for _, row := range pageRows {
 		resultRows = append(resultRows, row.Projected)
 	}
+	if tracker.Snapshot().Truncated {
+		nextCursor = ""
+	}
 	result := querylogical.Result{
 		Rows:       resultRows,
-		Graph:      resultGraph(resultRows),
+		Graph:      resultGraph(pageRows),
 		Counters:   querylogical.Counters{RowsReturned: int64(len(resultRows))},
 		NextCursor: nextCursor,
 	}
@@ -225,15 +228,19 @@ func runtimeDiagnostics(usage Usage, elapsed time.Duration) querylogical.Diagnos
 		RowsReturned:        usage.OutputRows,
 		CandidateCount:      usage.CandidatesExamined,
 		AdjacencyScanCalls:  usage.AdjacencyCalls,
+		NodeReadCalls:       usage.NodeReadCalls,
 		ExecutionMillis:     elapsed.Milliseconds(),
 		IntermediateRows:    usage.IntermediateRows,
 		PeakMemoryBytes:     usage.PeakRetainedMemory,
 		RetainedMemoryBytes: usage.RetainedMemory,
 		TraversalDepth:      usage.TraversalDepth,
+		RootCount:           usage.StartNodes,
+		Truncated:           usage.Truncated,
+		TruncationReason:    usage.TruncationReason,
 	}
 }
 
-func resultGraph(rows []querylogical.Row) querylogical.ResultGraph {
+func resultGraph(rows []BindingRow) querylogical.ResultGraph {
 	graph := querylogical.ResultGraph{}
 	nodes := map[string]struct{}{}
 	edges := map[string]struct{}{}
@@ -258,7 +265,14 @@ func resultGraph(rows []querylogical.Row) querylogical.ResultGraph {
 			addTreeNode(child)
 		}
 	}
-	for _, row := range rows {
+	for _, binding := range rows {
+		for _, node := range binding.GraphNodes {
+			addNode(neutralNode(node))
+		}
+		for _, edge := range binding.GraphEdges {
+			addEdge(neutralEdge(edge))
+		}
+		row := binding.Projected
 		names := make([]string, 0, len(row.Fields))
 		for name := range row.Fields {
 			names = append(names, name)
