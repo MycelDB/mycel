@@ -81,23 +81,38 @@ func TestQRX3KnownGQLStrictSchemaFieldDeltasRemainObservational(t *testing.T) {
 	}
 }
 
-func TestQRX3KnownGQLStrictSchemaDirectionDeltaRemainsObservational(t *testing.T) {
+func TestQRX3KnownGQLStrictSchemaDirectionDeltasRemainObservational(t *testing.T) {
 	schema := qrx3BindingSchema()
 	schemaCtx := analysis.SchemaContext{Schema: &schema}
-	query := "MATCH (c:Company)<-[e:WORKS_AT]-(p:Person) RETURN e"
-	if _, err := gql.CompileWithSchemaAndParams(query, schemaCtx, nil); err == nil || !strings.Contains(err.Error(), "endpoint constraints") {
-		t.Fatalf("legacy error = %v, want captured incoming-endpoint delta", err)
+	tests := []struct {
+		name         string
+		gql          string
+		legacyAccept bool
+		binderAccept bool
+	}{
+		{name: "valid incoming", gql: "MATCH (c:Company)<-[e:WORKS_AT]-(p:Person) RETURN e", legacyAccept: false, binderAccept: true},
+		{name: "invalid incoming", gql: "MATCH (p:Person)<-[e:WORKS_AT]-(c:Company) RETURN e", legacyAccept: true, binderAccept: false},
+		{name: "reverse undirected", gql: "MATCH (c:Company)-[e:WORKS_AT]-(p:Person) RETURN e", legacyAccept: false, binderAccept: true},
 	}
-	plan, err := gql.CompileWithParams(query, nil)
-	if err != nil {
-		t.Fatalf("compile without schema: %v", err)
-	}
-	statement, ok := querylogical.StatementFromGQLPlan(plan)
-	if !ok {
-		t.Fatal("normalize GQL statement")
-	}
-	if _, err := querybinding.Bind(statement, qrx3BindingEnvironment(&schema)); err != nil {
-		t.Fatalf("direction-aware binder rejected valid incoming endpoints: %v", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, legacyErr := gql.CompileWithSchemaAndParams(test.gql, schemaCtx, nil)
+			if (legacyErr == nil) != test.legacyAccept {
+				t.Fatalf("legacy error = %v, accept = %v", legacyErr, test.legacyAccept)
+			}
+			plan, err := gql.CompileWithParams(test.gql, nil)
+			if err != nil {
+				t.Fatalf("compile without schema: %v", err)
+			}
+			statement, ok := querylogical.StatementFromGQLPlan(plan)
+			if !ok {
+				t.Fatal("normalize GQL statement")
+			}
+			_, bindErr := querybinding.Bind(statement, qrx3BindingEnvironment(&schema))
+			if (bindErr == nil) != test.binderAccept {
+				t.Fatalf("binder error = %v, accept = %v", bindErr, test.binderAccept)
+			}
+		})
 	}
 }
 
