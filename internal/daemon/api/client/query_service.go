@@ -16,6 +16,7 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
@@ -56,12 +57,13 @@ type semanticQuerySearcher interface {
 
 type QueryService struct {
 	clientv1.UnimplementedQueryServiceServer
-	sessions daemonsession.Manager
-	graphs   daegraph.Manager
-	spaces   daemonspace.Manager
-	schemas  schemaservice.Manager
-	semantic semanticQuerySearcher
-	router   ClientRequestRouter
+	sessions    daemonsession.Manager
+	graphs      daegraph.Manager
+	spaces      daemonspace.Manager
+	schemas     schemaservice.Manager
+	semantic    semanticQuerySearcher
+	queryEngine queryengine.Facade
+	router      ClientRequestRouter
 }
 
 func NewQueryService(sessions daemonsession.Manager, graphs daegraph.Manager, spaces daemonspace.Manager) *QueryService {
@@ -78,9 +80,33 @@ func (s *QueryService) WithSemanticManager(manager semanticQuerySearcher) *Query
 	return s
 }
 
+func (s *QueryService) WithQueryEngine(engine queryengine.Facade) *QueryService {
+	s.queryEngine = engine
+	return s
+}
+
 func (s *QueryService) WithClientRequestRouter(router ClientRequestRouter) *QueryService {
 	s.router = router
 	return s
+}
+
+// observeQueryEnginePrepare establishes the QRX2 preparation seam while the
+// existing adapter remains the sole execution owner. Engine errors are
+// intentionally observational until a physical plan family migrates.
+func (s *QueryService) observeQueryEnginePrepare(ctx context.Context, tx sessionmodel.GraphTransaction, query querylogical.Query) {
+	if s.queryEngine == nil {
+		return
+	}
+	_, _ = s.queryEngine.Prepare(ctx, queryengine.PlanningContext{Transaction: tx}, query)
+}
+
+// observeQueryEngineExplain exercises the neutral Explain boundary without
+// replacing the existing public diagnostics during the compatibility tranche.
+func (s *QueryService) observeQueryEngineExplain(ctx context.Context, tx sessionmodel.GraphTransaction, query querylogical.Query) {
+	if s.queryEngine == nil {
+		return
+	}
+	_, _ = s.queryEngine.Explain(ctx, queryengine.PlanningContext{Transaction: tx}, query)
 }
 
 func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQueryRequest) (*clientv1.ExecuteQueryResponse, error) {
@@ -112,7 +138,8 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err := validateStructuredQuerySafety(req.GetQuery()); err != nil {
 		return nil, err
 	}
-	_ = logicalQueryFromStructured(req.GetQuery(), req.GetPageSize(), req.GetPageToken())
+	logicalQuery := logicalQueryFromStructured(req.GetQuery(), req.GetPageSize(), req.GetPageToken())
+	s.observeQueryEnginePrepare(ctx, tx, logicalQuery)
 	domain, err := s.visibleTransactionDomain(ctx, principal.PrincipalID, tx)
 	if err != nil {
 		return nil, err
@@ -198,7 +225,8 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if plan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
-	_, _ = querylogical.FromGQLPlan(plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize(), Cursor: req.GetPageToken()})
+	logicalQuery, _ := querylogical.FromGQLPlan(plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize(), Cursor: req.GetPageToken()})
+	s.observeQueryEnginePrepare(ctx, tx, logicalQuery)
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
 	if indexed, res, err := s.tryExecuteIndexedGQL(readCtx, tx, schemaCtx, plan, int(req.GetPageSize()), req.GetPageToken(), recorder); indexed || err != nil {
 		if err == nil || status.Code(err) != codes.FailedPrecondition || !domaingraph.DomainBroadSearchable(domain) {
@@ -245,7 +273,8 @@ func (s *QueryService) ExplainQuery(ctx context.Context, req *clientv1.ExplainQu
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	_ = logicalQueryFromStructured(req.GetQuery(), 0, "")
+	logicalQuery := logicalQueryFromStructured(req.GetQuery(), 0, "")
+	s.observeQueryEngineExplain(ctx, tx, logicalQuery)
 	diag := s.explainStructuredGraphQuery(req.GetQuery(), schemaCtx, domain)
 	diag.ExplainOnly = true
 	diag.PlanningMillis = time.Since(start).Milliseconds()
@@ -279,7 +308,8 @@ func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	_, _ = querylogical.FromGQLPlan(plan)
+	logicalQuery, _ := querylogical.FromGQLPlan(plan)
+	s.observeQueryEngineExplain(ctx, tx, logicalQuery)
 	diag := s.explainGQLPlan(plan, schemaCtx, domain)
 	diag.ExplainOnly = true
 	diag.PlanningMillis = time.Since(start).Milliseconds()
