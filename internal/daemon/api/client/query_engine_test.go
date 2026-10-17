@@ -8,7 +8,9 @@ import (
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -20,20 +22,20 @@ type recordingQueryEngineFacade struct {
 	explainCalls int
 	executeCalls int
 	planning     queryengine.PlanningContext
-	query        querylogical.Query
+	statement    querylogical.Statement
 }
 
-func (r *recordingQueryEngineFacade) Prepare(_ context.Context, planning queryengine.PlanningContext, query querylogical.Query) (queryengine.PreparedQuery, error) {
+func (r *recordingQueryEngineFacade) Prepare(_ context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) (queryengine.PreparedQuery, error) {
 	r.prepareCalls++
 	r.planning = planning
-	r.query = query
-	return queryengine.PreparedQuery{Logical: query, Planning: planning, Kind: queryengine.PlanLegacyBridge}, nil
+	r.statement = statement
+	return queryengine.PreparedQuery{Statement: statement, Planning: planning, Kind: queryengine.PlanLegacyBridge}, nil
 }
 
-func (r *recordingQueryEngineFacade) Explain(_ context.Context, planning queryengine.PlanningContext, query querylogical.Query) (querylogical.Diagnostics, error) {
+func (r *recordingQueryEngineFacade) Explain(_ context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) (querylogical.Diagnostics, error) {
 	r.explainCalls++
 	r.planning = planning
-	r.query = query
+	r.statement = statement
 	return querylogical.Diagnostics{}, nil
 }
 
@@ -55,20 +57,21 @@ func TestQueryServiceObservesEngineBoundariesWithoutDoubleExecution(t *testing.T
 		State:        sessionmodel.TransactionStateActive,
 		BaseRevision: 73,
 	}
-	query := querylogical.Query{Source: querylogical.SourceStructured, Start: querylogical.NodePattern{Alias: "n"}}
+	statement := querylogical.ReadStatement(querylogical.Query{Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly, Start: querylogical.NodePattern{Alias: "n"}})
+	planning := queryengine.PlanningContext{Transaction: tx}
 
-	service.observeQueryEnginePrepare(context.Background(), tx, query)
+	service.observeQueryEnginePrepare(context.Background(), planning, statement)
 	if facade.prepareCalls != 1 || facade.explainCalls != 0 || facade.executeCalls != 0 {
 		t.Fatalf("calls after prepare observation = prepare %d, explain %d, execute %d", facade.prepareCalls, facade.explainCalls, facade.executeCalls)
 	}
 	if !reflect.DeepEqual(facade.planning.Transaction, tx) {
 		t.Fatalf("planning transaction = %#v, want %#v", facade.planning.Transaction, tx)
 	}
-	if !reflect.DeepEqual(facade.query, query) {
-		t.Fatalf("logical query = %#v, want %#v", facade.query, query)
+	if !reflect.DeepEqual(facade.statement, statement) {
+		t.Fatalf("logical statement = %#v, want %#v", facade.statement, statement)
 	}
 
-	service.observeQueryEngineExplain(context.Background(), tx, query)
+	service.observeQueryEngineExplain(context.Background(), planning, statement)
 	if facade.prepareCalls != 1 || facade.explainCalls != 1 || facade.executeCalls != 0 {
 		t.Fatalf("calls after explain observation = prepare %d, explain %d, execute %d", facade.prepareCalls, facade.explainCalls, facade.executeCalls)
 	}
@@ -82,6 +85,24 @@ type recordingSemanticSearcher struct {
 func (r *recordingSemanticSearcher) Search(_ context.Context, input daemonsemantic.SearchInput) (semanticsearch.Result, error) {
 	r.input = input
 	return r.result, nil
+}
+
+func TestQueryServiceBuildsExplicitEnginePlanningContext(t *testing.T) {
+	service := &QueryService{}
+	tx := sessionmodel.GraphTransaction{ID: "tx-1", Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive}
+	schema := schemamodel.DomainSchema{Version: "v7"}
+	domain := graph.Domain{
+		ReadOnly: true, SearchMode: graph.DomainSearchModeExplicitOnly,
+		SemanticMode: graph.DomainSemanticModeDisabled,
+	}
+
+	planning := service.queryEnginePlanningContext(tx, domain, analysis.SchemaContext{Schema: &schema})
+	if !reflect.DeepEqual(planning.Transaction, tx) || planning.Schema != &schema {
+		t.Fatalf("planning context = %#v", planning)
+	}
+	if !planning.Domain.ReadOnly || planning.Domain.BroadSearchable || !planning.Domain.ExplicitSearchable || planning.Domain.SemanticSearchable || planning.Domain.SemanticCandidatesAvailable {
+		t.Fatalf("domain policy = %#v", planning.Domain)
+	}
 }
 
 func TestQuerySemanticCandidateReaderAdaptsNeutralRequestAndResult(t *testing.T) {

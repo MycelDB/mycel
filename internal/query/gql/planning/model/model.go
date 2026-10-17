@@ -225,11 +225,16 @@ const (
 )
 
 type ReturnItem struct {
-	Kind       ReturnItemKind
-	Variable   string
-	Namespace  string
-	Property   string
-	OutputName string
+	Kind               ReturnItemKind
+	Variable           string
+	Namespace          string
+	Property           string
+	OutputName         string
+	Aggregate          string
+	AggregateStar      bool
+	AggregateAlias     string
+	AggregateNamespace string
+	AggregateProperty  string
 }
 
 type AggregateItem struct {

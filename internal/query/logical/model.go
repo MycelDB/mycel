@@ -154,6 +154,7 @@ const (
 	ValueString      ValueKind = "string"
 	ValueList        ValueKind = "list"
 	ValueObject      ValueKind = "object"
+	ValueParameter   ValueKind = "parameter"
 	ValueDate        ValueKind = "date"
 	ValueCurrentDate ValueKind = "current_date"
 )
@@ -172,6 +173,7 @@ type Value struct {
 	String     string           `json:"string,omitempty"`
 	List       []Value          `json:"list,omitempty"`
 	Object     map[string]Value `json:"object,omitempty"`
+	Parameter  string           `json:"parameter,omitempty"`
 	OffsetDays int32            `json:"offset_days,omitempty"`
 }
 

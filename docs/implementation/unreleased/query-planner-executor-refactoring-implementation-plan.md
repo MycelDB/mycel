@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 and QRX1 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md) and [typed neutral model](query-planner-executor-qrx1-neutral-model.md). QRX2 is implemented on its feature branch with the daemon-independent engine façade, consumer-owned access ports, composition wiring, and [QRX2 architecture notes](query-planner-executor-qrx2-engine-facade.md). Later tranches remain planned.
+In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX2 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), and [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md). QRX3 is implemented on its feature branch with neutral read/mutation statements, shared binding and semantic validation, observational daemon wiring, and [QRX3 architecture notes](query-planner-executor-qrx3-binding.md). Later tranches remain planned.
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -513,6 +513,11 @@ return legacy.Execute(ctx, req, tx)
 
 Fallback to the legacy executor is a migration mechanism, not a permanent production planning rule. It must be observable in diagnostics and removed when all accepted plans have migrated.
 
+No plan family may make shared binding errors authoritative while its shadow
+comparison has an unclassified validation mismatch. Captured legacy defects
+require an explicit compatibility decision before that ownership transfer; they
+must not become accidental behavior changes or implicit compatibility rules.
+
 ## Implementation phases
 
 ## QRX0: Baseline behavior and conformance inventory
@@ -650,6 +655,8 @@ Unify schema and semantic validation after both query surfaces produce neutral s
 
 - Structured and GQL reads use one binder.
 - Equivalent invalid queries fail with equivalent internal error categories.
+- Any remaining legacy-validator mismatch is captured explicitly and gates
+  authoritative binder adoption until a compatibility decision is approved.
 - `query_service_schema_structured.go` is removed or reduced to protobuf mapping only after parity is proven.
 - GQL mutation execution remains unchanged.
 

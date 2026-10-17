@@ -12,15 +12,12 @@ import (
 	"testing"
 )
 
-func TestEngineProductionCodeDoesNotImportTransportDaemonOrServiceImplementations(t *testing.T) {
+func TestQueryEngineProductionCodeDoesNotImportTransportDaemonOrServiceImplementations(t *testing.T) {
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate engine import-boundary test source")
 	}
-	imports, err := productionImportPaths(filepath.Dir(testFile))
-	if err != nil {
-		t.Fatalf("load engine package imports: %v", err)
-	}
+	engineDir := filepath.Dir(testFile)
 	forbidden := []string{
 		"github.com/myceldb/mycel/internal/daemon",
 		"github.com/myceldb/mycel/internal/gen",
@@ -31,10 +28,20 @@ func TestEngineProductionCodeDoesNotImportTransportDaemonOrServiceImplementation
 		"github.com/myceldb/mycel/internal/space/service",
 		"google.golang.org/protobuf",
 	}
-	for _, imported := range imports {
-		for _, prefix := range forbidden {
-			if strings.HasPrefix(imported, prefix) {
-				t.Errorf("query engine imports forbidden package %q", imported)
+	for _, dir := range []string{
+		engineDir,
+		filepath.Join(engineDir, "..", "binding"),
+		filepath.Join(engineDir, "..", "schema"),
+	} {
+		imports, err := productionImportPaths(dir)
+		if err != nil {
+			t.Fatalf("load query package imports from %s: %v", dir, err)
+		}
+		for _, imported := range imports {
+			for _, prefix := range forbidden {
+				if strings.HasPrefix(imported, prefix) {
+					t.Errorf("query package %s imports forbidden package %q", dir, imported)
+				}
 			}
 		}
 	}

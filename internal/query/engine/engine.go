@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 
+	querybinding "github.com/myceldb/mycel/internal/query/binding"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const (
 	plannerName    = "mycel-query-engine"
-	plannerVersion = "qrx2"
+	plannerVersion = "qrx3"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -19,16 +21,25 @@ var ErrUnsupportedPlan = errors.New("query engine plan is not supported")
 
 // Facade is the daemon-independent query engine boundary.
 type Facade interface {
-	Prepare(ctx context.Context, planning PlanningContext, query querylogical.Query) (PreparedQuery, error)
-	Explain(ctx context.Context, planning PlanningContext, query querylogical.Query) (querylogical.Diagnostics, error)
+	Prepare(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (PreparedQuery, error)
+	Explain(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (querylogical.Diagnostics, error)
 	Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error)
 }
 
+// DomainPolicy and BindingLimits expose neutral binding inputs at the façade
+// without making daemon adapters depend on binder implementation details.
+type DomainPolicy = querybinding.DomainPolicy
+type BindingLimits = querybinding.Limits
+
 // PlanningContext contains request-scoped state needed to bind and plan a
-// query. The complete graph transaction is retained so a later physical plan
-// can preserve snapshot and overlay visibility.
+// statement. The complete graph transaction is retained so a later physical
+// plan can preserve snapshot and overlay visibility.
 type PlanningContext struct {
 	Transaction sessionmodel.GraphTransaction
+	Schema      *schemamodel.DomainSchema
+	Domain      DomainPolicy
+	Limits      BindingLimits
+	Parameters  map[string]querylogical.Value
 }
 
 // ExecutionContext contains state and work limits for one execution.
@@ -59,7 +70,8 @@ const (
 
 // PreparedQuery is the stable handoff between preparation and execution.
 type PreparedQuery struct {
-	Logical           querylogical.Query
+	Statement         querylogical.Statement
+	Binding           querybinding.BoundStatement
 	Planning          PlanningContext
 	Kind              PlanKind
 	UnsupportedReason string
@@ -71,9 +83,9 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX2 deliberately prepares all
-// statements for the legacy bridge; later tranches replace that decision one
-// plan family at a time.
+// Engine implements the neutral query facade. QRX3 binds every represented
+// statement and still prepares it for the legacy bridge; later tranches replace
+// that execution decision one plan family at a time.
 type Engine struct {
 	ports Ports
 }
@@ -98,14 +110,25 @@ func (e *Engine) Capabilities() CapabilitySet {
 	}
 }
 
-// Prepare establishes the planning boundary without changing production plan
-// ownership. No access port is invoked in QRX2.
-func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, query querylogical.Query) (PreparedQuery, error) {
+// Prepare binds the neutral statement without changing production execution
+// ownership. Binding is side-effect-free and invokes no access port.
+func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (PreparedQuery, error) {
 	if err := contextQueryError("prepare query", ctx.Err()); err != nil {
 		return PreparedQuery{}, err
 	}
+	bound, err := querybinding.Bind(statement, querybinding.Environment{
+		Transaction: planning.Transaction,
+		Schema:      planning.Schema,
+		Domain:      planning.Domain,
+		Limits:      planning.Limits,
+		Parameters:  planning.Parameters,
+	})
+	if err != nil {
+		return PreparedQuery{}, err
+	}
 	return PreparedQuery{
-		Logical:           query,
+		Statement:         statement,
+		Binding:           bound,
 		Planning:          planning,
 		Kind:              PlanLegacyBridge,
 		UnsupportedReason: "no physical plan families have migrated to the query engine",
@@ -114,8 +137,8 @@ func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, query qu
 
 // Explain reports the preparation decision. The daemon adapter keeps its
 // existing Explain response authoritative until physical planning migrates.
-func (e *Engine) Explain(ctx context.Context, planning PlanningContext, query querylogical.Query) (querylogical.Diagnostics, error) {
-	prepared, err := e.Prepare(ctx, planning, query)
+func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (querylogical.Diagnostics, error) {
+	prepared, err := e.Prepare(ctx, planning, statement)
 	if err != nil {
 		return querylogical.Diagnostics{}, err
 	}

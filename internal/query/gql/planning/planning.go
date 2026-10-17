@@ -107,11 +107,7 @@ func planMatchSetStatement(a analysis.Analysis, stmt ast.MatchSetStatement) (pla
 	}
 	returns := make([]planmodel.ReturnItem, 0, len(stmt.Returns))
 	for _, ret := range stmt.Returns {
-		kind := planmodel.ReturnItemKind(ret.Kind)
-		if kind == "" {
-			kind = planmodel.ReturnVariable
-		}
-		returns = append(returns, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property, OutputName: ret.OutputName})
+		returns = append(returns, planReturnItem(ret))
 	}
 	assignments := make([]planmodel.SetAssignment, 0, len(stmt.Assignments))
 	for _, assignment := range stmt.Assignments {
@@ -555,13 +551,21 @@ func propertiesMap(properties []ast.Property, params map[string]any) map[string]
 func planReturns(returns []ast.ReturnItem) []planmodel.ReturnItem {
 	out := make([]planmodel.ReturnItem, 0, len(returns))
 	for _, ret := range returns {
-		kind := planmodel.ReturnItemKind(ret.Kind)
-		if kind == "" {
-			kind = planmodel.ReturnVariable
-		}
-		out = append(out, planmodel.ReturnItem{Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property, OutputName: ret.OutputName})
+		out = append(out, planReturnItem(ret))
 	}
 	return out
+}
+
+func planReturnItem(ret ast.ReturnItem) planmodel.ReturnItem {
+	kind := planmodel.ReturnItemKind(ret.Kind)
+	if kind == "" {
+		kind = planmodel.ReturnVariable
+	}
+	return planmodel.ReturnItem{
+		Kind: kind, Variable: ret.Variable, Namespace: ret.Namespace, Property: ret.Property, OutputName: ret.OutputName,
+		Aggregate: ret.Aggregate, AggregateStar: ret.AggregateStar, AggregateAlias: ret.AggregateAlias,
+		AggregateNamespace: ret.AggregateNamespace, AggregateProperty: ret.AggregateProperty,
+	}
 }
 
 func resolveValue(value ast.Value, params map[string]any) any {

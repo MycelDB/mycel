@@ -202,6 +202,9 @@ func gqlDepth(quantifier *planmodel.RelationshipQuantifier) DepthBounds {
 func fromGQLReturns(returns []planmodel.ReturnItem, variableKinds map[string]ProjectionKind) []Projection {
 	out := make([]Projection, 0, len(returns))
 	for _, ret := range returns {
+		if ret.Kind == planmodel.ReturnAggregate {
+			continue
+		}
 		kind := variableKinds[ret.Variable]
 		if kind == "" {
 			kind = ProjectionNode
@@ -220,25 +223,26 @@ func fromGQLReturns(returns []planmodel.ReturnItem, variableKinds map[string]Pro
 func fromGQLAggregates(aggregates []planmodel.AggregateItem) []Aggregate {
 	out := make([]Aggregate, 0, len(aggregates))
 	for _, aggregate := range aggregates {
-		item := Aggregate{
-			Function:   aggregateFunction(aggregate.Function),
-			Star:       aggregate.Star,
-			OutputName: aggregate.Output,
-		}
-		if !aggregate.Star && aggregate.Alias != "" {
-			argument := BindingValue(aggregate.Alias)
-			if aggregate.Property != "" {
-				name := aggregate.Property
-				if namespace := namespaceOrDefault(aggregate.Namespace); namespace != NamespaceProperties {
-					name = string(namespace) + "." + name
-				}
-				argument = FieldValue(aggregate.Alias, name)
-			}
-			item.Argument = &argument
-		}
-		out = append(out, item)
+		out = append(out, gqlAggregate(aggregate.Function, aggregate.Star, aggregate.Alias, aggregate.Namespace, aggregate.Property, aggregate.Output))
 	}
 	return out
+}
+
+func gqlAggregate(function string, star bool, alias string, namespace string, property string, output string) Aggregate {
+	aggregate := Aggregate{Function: aggregateFunction(function), Star: star, OutputName: output}
+	if star || alias == "" {
+		return aggregate
+	}
+	argument := BindingValue(alias)
+	if property != "" {
+		name := property
+		if typedNamespace := namespaceOrDefault(namespace); typedNamespace != NamespaceProperties {
+			name = string(typedNamespace) + "." + name
+		}
+		argument = FieldValue(alias, name)
+	}
+	aggregate.Argument = &argument
+	return aggregate
 }
 
 func aggregateFunction(function string) AggregateFunction {
