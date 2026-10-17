@@ -396,7 +396,7 @@ type qrx7BlockingLabelGraph struct {
 func (g *qrx7BlockingLabelGraph) ScanLabel(ctx context.Context, _ sessionmodel.GraphTransaction, _ graphquery.LabelScan) ([]graphmodel.Node, string, graphquery.IndexedReadStats, error) {
 	close(g.started)
 	<-ctx.Done()
-	return nil, "", graphquery.IndexedReadStats{}, ctx.Err()
+	return nil, "", graphquery.IndexedReadStats{}, nil
 }
 
 type qrx7BlockingSemanticSearcher struct {
@@ -406,7 +406,7 @@ type qrx7BlockingSemanticSearcher struct {
 func (s *qrx7BlockingSemanticSearcher) Search(ctx context.Context, _ semanticservice.SearchInput) (semanticsearch.Result, error) {
 	close(s.started)
 	<-ctx.Done()
-	return semanticsearch.Result{}, ctx.Err()
+	return semanticsearch.Result{}, nil
 }
 
 type qrx7StatusLabelGraph struct {

@@ -100,6 +100,12 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if cursor.Mode == cursorModeSource && cursor.OutputOffset != 0 {
 		return staleCursor("source cursor contains output continuation state", nil)
 	}
+	if cursor.Mode == cursorModeSource && !nativeSourceCursorSupported(prepared) {
+		return staleCursor("source cursor is not supported by the indexed plan", nil)
+	}
+	if prepared.Statement.Read != nil && prepared.Statement.Read.Page.Limit > 0 && cursor.RowsReturned >= prepared.Statement.Read.Page.Limit {
+		return staleCursor("cursor returned-row count reaches or exceeds the query limit", nil)
+	}
 	if cursor.Mode == cursorModeOutput && (cursor.PageCursor != "" || cursor.PageOffset != 0 || cursor.RowsReturned != int64(cursor.OutputOffset)) {
 		return staleCursor("output cursor contains incompatible source continuation state", nil)
 	}

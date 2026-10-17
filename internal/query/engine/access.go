@@ -28,6 +28,9 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 	resumeCursor, resumeOffset := "", 0
 	if cursor.Mode == cursorModeSource {
 		resumeCursor, resumeOffset = cursor.PageCursor, cursor.PageOffset
+		if resumeOffset >= batchSize {
+			return nil, staleCursor("source cursor offset exceeds the indexed page size", nil)
+		}
 	}
 
 	switch prepared.Physical.Family {
@@ -65,7 +68,7 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 }
 
 func sourceCheckpointEncoder(prepared PreparedQuery, cursor indexedCursor, nextRowsReturned int64) queryexecution.PageCheckpointEncoder {
-	if cursor.Mode == cursorModeOutput || !sourceCursorSafe(*prepared.Statement.Read, prepared.Physical) {
+	if cursor.Mode == cursorModeOutput || !nativeSourceCursorSupported(prepared) {
 		return nil
 	}
 	return func(pageCursor string, offset int) string {
@@ -73,6 +76,23 @@ func sourceCheckpointEncoder(prepared PreparedQuery, cursor indexedCursor, nextR
 			Mode: cursorModeSource, PageCursor: pageCursor, PageOffset: offset,
 			RowsReturned: nextRowsReturned,
 		})
+	}
+}
+
+func nativeSourceCursorSupported(prepared PreparedQuery) bool {
+	if prepared.Statement.Read == nil || !sourceCursorSafe(*prepared.Statement.Read, prepared.Physical) {
+		return false
+	}
+	switch prepared.Physical.Family {
+	case queryphysical.FamilyNodeIDLookup, queryphysical.FamilyLabelIndex,
+		queryphysical.FamilyIndexedEquality, queryphysical.FamilyIndexedOrder,
+		queryphysical.FamilySemantic:
+		return true
+	case queryphysical.FamilyTagIndex:
+		branches := prepared.Physical.Access.TagBranches
+		return len(branches) == 1 && len(branches[0]) == 1
+	default:
+		return false
 	}
 }
 

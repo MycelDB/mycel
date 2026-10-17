@@ -105,6 +105,27 @@ func TestPagedNodeSourcePreservesCancellationFromAccessCall(t *testing.T) {
 	}
 }
 
+func TestPagedNodeSourceCancellationWinsOverSuccessfulDependencyReturn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+		cancel()
+		return queryexecution.NodePage{}, nil
+	}, nil, "", 0, 2, tracker)
+	if err := source.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err = source.Next(ctx)
+	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+}
+
 func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
 	rows := []queryexecution.BindingRow{
 		bindingRow("00000000-0000-0000-0000-000000000001", "a", "x", 1),

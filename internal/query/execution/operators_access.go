@@ -151,10 +151,10 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 		cursor = s.nextCursor
 	}
 	page, err := s.reader(ctx, s.batchSize, cursor)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", contextErr)
+	}
 	if err != nil {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", contextErr)
-		}
 		var queryErr *querylogical.QueryError
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
