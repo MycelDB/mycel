@@ -248,6 +248,24 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		}
 	})
 
+	t.Run("GQL script Explain stays on explicit bridge without graph access", func(t *testing.T) {
+		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
+		res, err := querySvc.ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{
+			TransactionId: readTx,
+			Query:         "MATCH (j:JournalEntry) RETURN j; MATCH (j:JournalEntry) RETURN j",
+		})
+		if err != nil {
+			t.Fatalf("ExplainGQL(script) error = %v", err)
+		}
+		if diagnostics := res.GetDiagnostics(); diagnostics.GetPlan() != "GQLScriptPlan" || diagnostics.GetPlanKind() != "gql_script" || diagnostics.GetFallbackMode() != "legacy_script_bridge" || !diagnostics.GetExplainOnly() {
+			t.Fatalf("script diagnostics = %+v", diagnostics)
+		}
+		if profile.dataReadCalls() != 0 || profile.callCount("ConfigureIndexes") != 0 {
+			t.Fatalf("script Explain calls = %+v", profile.callsSnapshot())
+		}
+	})
+
 	t.Run("Explain performs no graph data reads", func(t *testing.T) {
 		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
 		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(instrumented, manager))

@@ -321,11 +321,16 @@ func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLR
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
 	params := gqlParamsFromProto(req.GetParams())
-	plan, err := gql.CompileWithSchemaAndParams(req.GetQuery(), schemaCtx, params)
+	scriptPlan, err := gql.CompileScriptWithSchemaAndParams(req.GetQuery(), schemaCtx, params)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	statement, ok := querylogical.StatementFromGQLPlan(plan)
+	if len(scriptPlan.Statements) != 1 {
+		diagnostics := gqlScriptCompatibilityDiagnostics()
+		diagnostics.PlanningMillis = time.Since(start).Milliseconds()
+		return &clientv1.ExplainGQLResponse{Diagnostics: diagnostics}, nil
+	}
+	statement, ok := querylogical.StatementFromGQLPlan(scriptPlan.Statements[0].Plan)
 	if !ok {
 		diagnostics := gqlScriptCompatibilityDiagnostics()
 		diagnostics.PlanningMillis = time.Since(start).Milliseconds()
