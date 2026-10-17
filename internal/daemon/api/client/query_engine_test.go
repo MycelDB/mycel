@@ -55,7 +55,7 @@ func (r *recordingQueryEngineFacade) Execute(context.Context, queryengine.Execut
 	return querylogical.Result{}, nil
 }
 
-func TestQueryServiceUsesPrepareAndExplainBoundariesWithoutDoubleExecution(t *testing.T) {
+func TestQueryServiceUsesExplainBoundaryWithoutExecution(t *testing.T) {
 	facade := &recordingQueryEngineFacade{}
 	service := (&QueryService{}).WithQueryEngine(facade)
 	tx := sessionmodel.GraphTransaction{
@@ -71,22 +71,14 @@ func TestQueryServiceUsesPrepareAndExplainBoundariesWithoutDoubleExecution(t *te
 	statement := querylogical.ReadStatement(querylogical.Query{Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly, Start: querylogical.NodePattern{Alias: "n"}})
 	planning := queryengine.PlanningContext{Transaction: tx}
 
-	service.observeQueryEnginePrepare(context.Background(), planning, statement)
-	if facade.prepareCalls != 1 || facade.explainCalls != 0 || facade.executeCalls != 0 {
-		t.Fatalf("calls after prepare observation = prepare %d, explain %d, execute %d", facade.prepareCalls, facade.explainCalls, facade.executeCalls)
-	}
-	if !reflect.DeepEqual(facade.planning.Transaction, tx) {
-		t.Fatalf("planning transaction = %#v, want %#v", facade.planning.Transaction, tx)
-	}
-	if !reflect.DeepEqual(facade.statement, statement) {
-		t.Fatalf("logical statement = %#v, want %#v", facade.statement, statement)
-	}
-
 	if _, err := service.explainStatement(context.Background(), planning, statement, false); err != nil {
 		t.Fatalf("explain statement: %v", err)
 	}
-	if facade.prepareCalls != 1 || facade.explainCalls != 1 || facade.executeCalls != 0 {
-		t.Fatalf("calls after explain observation = prepare %d, explain %d, execute %d", facade.prepareCalls, facade.explainCalls, facade.executeCalls)
+	if facade.prepareCalls != 0 || facade.explainCalls != 1 || facade.executeCalls != 0 {
+		t.Fatalf("calls after explain = prepare %d, explain %d, execute %d", facade.prepareCalls, facade.explainCalls, facade.executeCalls)
+	}
+	if !reflect.DeepEqual(facade.planning.Transaction, tx) || !reflect.DeepEqual(facade.statement, statement) {
+		t.Fatalf("planning=%#v statement=%#v", facade.planning, facade.statement)
 	}
 }
 

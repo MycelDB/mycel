@@ -279,6 +279,107 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 	})
 }
 
+func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+
+	for _, test := range []struct {
+		name string
+		run  func(*QueryService) ([]string, *clientv1.QueryDiagnostics, error)
+	}{
+		{name: "structured", run: func(service *QueryService) ([]string, *clientv1.QueryDiagnostics, error) {
+			response, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query: &clientv1.GraphQuery{
+					Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+					Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+					OrderBy: []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "j", Name: "date"}}}, Direction: clientv1.SortDirection_SORT_DIRECTION_ASC}},
+				},
+				PageSize: 2,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			return qrx0ScalarValues(response.GetRows(), "title"), response.GetDiagnostics(), nil
+		}},
+		{name: "GQL", run: func(service *QueryService) ([]string, *clientv1.QueryDiagnostics, error) {
+			response, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+				TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j.title AS title ORDER BY j.date ASC", PageSize: 2,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			return qrx0ScalarValues(response.GetResult().GetRows(), "title"), response.GetDiagnostics(), nil
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+			service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+				WithSchemaManager(manager).
+				WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
+			titles, diagnostics, err := test.run(service)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if !reflect.DeepEqual(titles, []string{"oldest", "middle"}) {
+				t.Fatalf("titles = %v", titles)
+			}
+			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx7" || diagnostics.GetFullScan() {
+				t.Fatalf("diagnostics = %+v", diagnostics)
+			}
+			if profile.callCount("ScanNodePropertyOrdered") == 0 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
+				t.Fatalf("migrated query used legacy queryExecution access: %+v", profile.callsSnapshot())
+			}
+			for _, limit := range profile.requestedLimits("ScanNodePropertyOrdered") {
+				if limit <= 0 {
+					t.Fatalf("ordered scan used unbounded limit: %v", profile.requestedLimits("ScanNodePropertyOrdered"))
+				}
+			}
+		})
+	}
+}
+
+func TestQRX7StructuredCursorContinuesThroughEquivalentGQLLabelPlan(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+	service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+		WithSchemaManager(manager).
+		WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
+	structured, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+		TransactionId: readTx,
+		Query: &clientv1.GraphQuery{
+			Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+			Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+		},
+		PageSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("structured execute: %v", err)
+	}
+	if structured.GetDiagnostics().GetPlanKind() != "label_index" || structured.GetNextPageToken() == "" {
+		t.Fatalf("structured response = %+v", structured)
+	}
+	gql, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+		TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j.title AS title",
+		PageSize: 1, PageToken: structured.GetNextPageToken(),
+	})
+	if err != nil {
+		t.Fatalf("GQL continuation: %v", err)
+	}
+	first := qrx0ScalarValues(structured.GetRows(), "title")
+	second := qrx0ScalarValues(gql.GetResult().GetRows(), "title")
+	if len(first) != 1 || len(second) != 1 || first[0] == second[0] || gql.GetDiagnostics().GetPlanKind() != "label_index" {
+		t.Fatalf("structured=%v GQL=%v diagnostics=%+v", first, second, gql.GetDiagnostics())
+	}
+	if profile.callCount("ScanLabel") < 2 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
+		t.Fatalf("label continuation access = %+v", profile.callsSnapshot())
+	}
+	for _, limit := range profile.requestedLimits("ScanLabel") {
+		if limit <= 0 || limit > 2 {
+			t.Fatalf("label scan limits = %v", profile.requestedLimits("ScanLabel"))
+		}
+	}
+}
+
 func TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed(t *testing.T) {
 	t.Run("graph read error", func(t *testing.T) {
 		fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})

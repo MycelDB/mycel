@@ -261,7 +261,7 @@ func TestQueryServiceExplainGQLReportsIndexedAndFallbackPlans(t *testing.T) {
 	if diag := indexed.GetDiagnostics(); diag.GetPlan() != "OrderedNodePropertyIndexScan" || diag.GetPlanKind() != "indexed_order" || diag.GetFullScan() || !diag.GetExplainOnly() {
 		t.Fatalf("indexed diagnostics = %+v", diag)
 	}
-	fallback, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil)).ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{TransactionId: readTx, Query: "MATCH (p:Person) RETURN p"})
+	fallback, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil)).ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{TransactionId: readTx, Query: "MATCH (p) RETURN p"})
 	if err != nil {
 		t.Fatalf("ExplainGQL(fallback) error = %v", err)
 	}

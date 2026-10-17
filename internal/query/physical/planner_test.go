@@ -11,7 +11,7 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
-func TestBuildSelectsLegacyAccessFamiliesInPrecedenceOrder(t *testing.T) {
+func TestBuildSelectsAccessFamiliesInPrecedenceOrder(t *testing.T) {
 	path := baseQuery()
 	path.Start.NodeIDs = []string{"node-1"}
 	path.PathAlias = "path"
@@ -50,15 +50,16 @@ func TestBuildSelectsLegacyAccessFamiliesInPrecedenceOrder(t *testing.T) {
 		family     queryphysical.Family
 		operator   queryphysical.OperatorKind
 		cursorKind string
+		legacy     bool
 	}{
-		{name: "path before adjacency", query: path, family: queryphysical.FamilyIndexedPath, operator: queryphysical.OperatorIndexedPath, cursorKind: "offset"},
-		{name: "adjacency", query: adjacency, family: queryphysical.FamilyIndexedAdjacency, operator: queryphysical.OperatorAdjacency, cursorKind: "adjacency_key"},
+		{name: "path before adjacency", query: path, family: queryphysical.FamilyIndexedPath, operator: queryphysical.OperatorIndexedPath, cursorKind: "offset", legacy: true},
+		{name: "adjacency", query: adjacency, family: queryphysical.FamilyIndexedAdjacency, operator: queryphysical.OperatorAdjacency, cursorKind: "adjacency_key", legacy: true},
 		{name: "equality before compound", query: equality, family: queryphysical.FamilyIndexedEquality, operator: queryphysical.OperatorOrderedIndex, cursorKind: "index_key"},
-		{name: "semantic", query: semantic, family: queryphysical.FamilySemantic, operator: queryphysical.OperatorSemanticCandidates, cursorKind: "offset"},
-		{name: "compound", query: compound, family: queryphysical.FamilyIndexedPredicate, operator: queryphysical.OperatorCompoundIndex, cursorKind: "offset"},
+		{name: "semantic", query: semantic, family: queryphysical.FamilySemantic, operator: queryphysical.OperatorSemanticCandidates, cursorKind: "semantic_rank"},
+		{name: "compound", query: compound, family: queryphysical.FamilyIndexedPredicate, operator: queryphysical.OperatorCompoundIndex, cursorKind: "node_set_offset"},
 		{name: "ordered", query: ordered, family: queryphysical.FamilyIndexedOrder, operator: queryphysical.OperatorOrderedIndex, cursorKind: "index_key"},
-		{name: "subtree", query: subtree, family: queryphysical.FamilyIndexedSubtree, operator: queryphysical.OperatorSubtree, cursorKind: "root_index_key"},
-		{name: "full", query: full, family: queryphysical.FamilyBoundedFullScan, operator: queryphysical.OperatorFullGraph, cursorKind: "offset"},
+		{name: "subtree", query: subtree, family: queryphysical.FamilyIndexedSubtree, operator: queryphysical.OperatorSubtree, cursorKind: "root_index_key", legacy: true},
+		{name: "full", query: full, family: queryphysical.FamilyBoundedFullScan, operator: queryphysical.OperatorFullGraph, cursorKind: "offset", legacy: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -66,14 +67,50 @@ func TestBuildSelectsLegacyAccessFamiliesInPrecedenceOrder(t *testing.T) {
 			if plan.Family != test.family || plan.Cursor.Kind != test.cursorKind {
 				t.Fatalf("plan = %#v, want family %q cursor %q", plan, test.family, test.cursorKind)
 			}
-			if !plan.RequiresLegacy() || plan.Root.Kind != queryphysical.OperatorLegacyBridge {
+			if plan.RequiresLegacy() != test.legacy {
+				t.Fatalf("RequiresLegacy() = %v, want %v; root=%#v", plan.RequiresLegacy(), test.legacy, plan.Root)
+			}
+			if test.legacy && plan.Root.Kind != queryphysical.OperatorLegacyBridge {
 				t.Fatalf("root = %#v, want legacy bridge", plan.Root)
+			}
+			if !test.legacy && (!plan.Cursor.PlanBound || !plan.Cursor.Snapshot || !plan.Cursor.Schema) {
+				t.Fatalf("native cursor strategy = %#v", plan.Cursor)
 			}
 			if !operatorTreeContains(plan.Root, test.operator) {
 				t.Fatalf("operator tree %#v does not contain %q", plan.Root, test.operator)
 			}
 			if !operatorTreeContainsNamed(plan.Root, queryphysical.OperatorLimit, "ResponsePageLookahead") {
 				t.Fatalf("operator tree %#v does not contain the default response lookahead limit", plan.Root)
+			}
+		})
+	}
+}
+
+func TestBuildSelectsMigratedDirectNodeAccess(t *testing.T) {
+	nodeIDs := baseQuery()
+	nodeIDs.Start.NodeIDs = []string{"node-1", "node-2"}
+
+	label := baseQuery()
+
+	tag := baseQuery()
+	tagField := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "tags"}
+	tag.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafHasTag, Field: &tagField, Tag: "featured"})
+
+	for _, test := range []struct {
+		name     string
+		query    querylogical.Query
+		family   queryphysical.Family
+		access   queryphysical.AccessKind
+		operator queryphysical.OperatorKind
+	}{
+		{name: "node IDs", query: nodeIDs, family: queryphysical.FamilyNodeIDLookup, access: queryphysical.AccessNodeIDs, operator: queryphysical.OperatorNodeLookup},
+		{name: "label", query: label, family: queryphysical.FamilyLabelIndex, access: queryphysical.AccessLabel, operator: queryphysical.OperatorLabelIndex},
+		{name: "tag", query: tag, family: queryphysical.FamilyTagIndex, access: queryphysical.AccessTag, operator: queryphysical.OperatorTagIndex},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := buildRead(t, test.query, plannerSchema(), plannerEnvironment())
+			if plan.Family != test.family || plan.Access.Kind != test.access || plan.RequiresLegacy() || !operatorTreeContains(plan.Root, test.operator) {
+				t.Fatalf("plan = %#v", plan)
 			}
 		})
 	}
@@ -195,6 +232,8 @@ func TestBuildRecordsBoundedPathAndFullScanLimits(t *testing.T) {
 	}
 
 	full := baseQuery()
+	fullField := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	full.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafNull, Field: &fullField, IsNull: true})
 	full.Safety = querylogical.SafetyLimits{MaxNodes: 123, MaxEdges: 456}
 	plan = buildRead(t, full, plannerSchema(), plannerEnvironment())
 	if !plan.FullScan || plan.Limits.MaxNodesLoaded != 123 || plan.Limits.MaxEdgesLoaded != 456 {
@@ -274,7 +313,12 @@ func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {
 		environment queryphysical.Environment
 		code        querylogical.ErrorCode
 	}{
-		{name: "broad disabled", query: baseQuery(), schema: plannerSchema(), environment: func() queryphysical.Environment {
+		{name: "broad disabled", query: func() querylogical.Query {
+			q := baseQuery()
+			field := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "name"}
+			q.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafNull, Field: &field, IsNull: true})
+			return q
+		}(), schema: plannerSchema(), environment: func() queryphysical.Environment {
 			env := plannerEnvironment()
 			env.Domain.BroadSearchable = false
 			return env
@@ -362,27 +406,39 @@ func buildRead(t *testing.T, query querylogical.Query, schema schemamodel.Domain
 
 func TestBuildRecordsSortAndTopNShapingOperators(t *testing.T) {
 	schema := plannerSchema()
-	tests := []struct {
-		name string
-		edit func(*querylogical.Query)
-		want queryphysical.OperatorKind
-	}{
-		{name: "finite limit uses Top-N", edit: func(query *querylogical.Query) { query.Page.Limit = 5 }, want: queryphysical.OperatorTopN},
-		{name: "distinct requires complete sort", edit: func(query *querylogical.Query) { query.Distinct = true }, want: queryphysical.OperatorSort},
-		{name: "aggregation requires complete sort", edit: func(query *querylogical.Query) {
-			query.Aggregates = []querylogical.Aggregate{{Function: querylogical.AggregateCount, Star: true}}
-		}, want: queryphysical.OperatorSort},
+
+	ordered := baseQuery()
+	ordered.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
+	ordered.Page.Limit = 5
+	plan := buildRead(t, ordered, schema, plannerEnvironment())
+	if operatorTreeContains(plan.Root, queryphysical.OperatorSort) || operatorTreeContains(plan.Root, queryphysical.OperatorTopN) {
+		t.Fatalf("ordered index should satisfy ordering directly: %#v", plan.Root)
 	}
-	for _, test := range tests {
+
+	for _, test := range []struct {
+		name     string
+		distinct bool
+		want     queryphysical.OperatorKind
+	}{
+		{name: "subtree finite limit uses Top-N", want: queryphysical.OperatorTopN},
+		{name: "subtree distinct requires complete sort", distinct: true, want: queryphysical.OperatorSort},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			query := baseQuery()
-			query.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
-			test.edit(&query)
+			query := ordered
+			query.Steps = []querylogical.Step{traversalStep("")}
+			query.Distinct = test.distinct
 			plan := buildRead(t, query, schema, plannerEnvironment())
 			if !operatorTreeContains(plan.Root, test.want) {
 				t.Fatalf("operator tree = %#v, want %q", plan.Root, test.want)
 			}
 		})
+	}
+
+	aggregate := ordered
+	aggregate.Aggregates = []querylogical.Aggregate{{Function: querylogical.AggregateCount, Star: true}}
+	plan = buildRead(t, aggregate, schema, plannerEnvironment())
+	if !operatorTreeContains(plan.Root, queryphysical.OperatorSort) {
+		t.Fatalf("aggregate ordering requires complete sort: %#v", plan.Root)
 	}
 }
 

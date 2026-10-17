@@ -53,7 +53,7 @@ func TestQRX4StructuredAndGQLEqualitySelectSamePhysicalPlan(t *testing.T) {
 		if plan.Access.Field == nil || plan.Access.Field.Alias != "p" || plan.Access.Field.Name != "firstName" || plan.Access.Index != "person_first_name" {
 			t.Fatalf("%s access = %#v", name, plan.Access)
 		}
-		if len(plan.Indexes) != 1 || plan.Indexes[0].Name != "person_first_name" || plan.Cursor.Kind != "index_key" || !plan.RequiresLegacy() {
+		if len(plan.Indexes) != 1 || plan.Indexes[0].Name != "person_first_name" || plan.Cursor.Kind != "index_key" || plan.RequiresLegacy() || !plan.Cursor.PlanBound {
 			t.Fatalf("%s metadata = %#v", name, plan)
 		}
 	}

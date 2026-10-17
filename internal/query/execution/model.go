@@ -22,7 +22,10 @@ type BindingRow struct {
 	Paths     map[string]querylogical.Path
 	Trees     map[string]querylogical.Tree
 	Projected querylogical.Row
-	Sequence  int64
+	// Cursor resumes the access source at this row. Streaming operators retain
+	// it so response pagination can continue from its lookahead row.
+	Cursor   string
+	Sequence int64
 }
 
 // Batch is one bounded transfer between operators. An empty batch with a nil
