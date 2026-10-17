@@ -29,6 +29,7 @@ import (
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	daemoninference "github.com/myceldb/mycel/internal/inference/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
@@ -195,7 +196,15 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithLogger(cfg.Logger).WithClientRequestRouter(clientRouter)
-	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
+	queryEngine := queryengine.New(queryengine.Ports{
+		Entities:           cfg.GraphManager,
+		Traversals:         cfg.GraphManager,
+		Indexes:            cfg.GraphManager,
+		Catalog:            cfg.SchemaManager,
+		SemanticCandidates: clientapi.NewQuerySemanticCandidateReader(cfg.SemanticManager),
+		Mutations:          cfg.GraphManager,
+	})
+	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithQueryEngine(queryEngine).WithClientRequestRouter(clientRouter)
 	searchAPI := clientapi.NewSearchService(cfg.LexicalManager, cfg.SpaceManager, cfg.GraphManager).WithHybridRRFRankConstant(cfg.SearchConfig.HybridRRFK).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
 		searchAPI.WithGraphWriteRouteProvider(provider)
