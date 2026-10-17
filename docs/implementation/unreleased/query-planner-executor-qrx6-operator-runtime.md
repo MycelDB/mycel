@@ -114,8 +114,9 @@ functions are ready for the plan-family cutovers beginning in QRX7.
   range. Aggregate sum/average retain existing floating-point behavior.
 - Structured scalar projections preserve bare node aliases and the legacy
   synthetic `node_id`, `content`, `edge_id`, `from_node_id`, and `to_node_id`
-  fields. `COUNT(binding)` retains node, edge, and path presence semantics;
-  non-count aggregates still require value expressions.
+  fields, including the original unqualified or explicit `properties` spelling
+  as the default output name. `COUNT(binding)` retains node, edge, and path
+  presence semantics; non-count aggregates still require value expressions.
 - Physical trees model the finite response-page lookahead limit even when the
   request omits a page size and runtime applies the default.
 

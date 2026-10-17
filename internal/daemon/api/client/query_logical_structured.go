@@ -93,6 +93,9 @@ func logicalStructuredReturns(returns []*clientv1.ReturnProjection) []querylogic
 			OutputName: projection.GetOutputName(),
 		}
 		if item.Kind == querylogical.ProjectionScalar {
+			if item.OutputName == "" {
+				item.OutputName = projection.GetAlias()
+			}
 			alias, fieldName := logicalProjectionField(projection.GetAlias())
 			field := querylogical.ParseFieldRef(alias, fieldName)
 			item.Alias = alias

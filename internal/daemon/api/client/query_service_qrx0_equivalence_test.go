@@ -216,6 +216,42 @@ func TestQRX0TraversalAndProjectionEquivalence(t *testing.T) {
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
 
+	broadSyntheticQuery := &clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{
+			Start: &clientv1.NodePattern{Alias: "d", Labels: []string{"Document"}},
+			Steps: []*clientv1.TraversalStep{{Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, EdgeKind: "contains", EdgeAlias: "edge", Target: &clientv1.NodePattern{Alias: "s", Labels: []string{"Section"}}}},
+		},
+		Returns: []*clientv1.ReturnProjection{
+			{Alias: "d", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "d.node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "d.properties.node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "edge.edge_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "edge.properties.from_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "edge.properties.to_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		},
+	}
+	broad, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: broadSyntheticQuery, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ExecuteQuery(broad synthetic fields) error = %v", err)
+	}
+	if len(broad.GetRows()) != 1 || !broad.GetDiagnostics().GetFullScan() {
+		t.Fatalf("broad synthetic result = %+v, diagnostics = %+v", broad.GetRows(), broad.GetDiagnostics())
+	}
+	fields := broad.GetRows()[0].GetFields()
+	wantSynthetic := map[string]string{
+		"d":                            documentID,
+		"d.node_id":                    documentID,
+		"d.properties.node_id":         documentID,
+		"edge.edge_id":                 edgeID,
+		"edge.properties.from_node_id": documentID,
+		"edge.properties.to_node_id":   sectionID,
+	}
+	for name, expected := range wantSynthetic {
+		if got := fields[name].GetScalar().GetStringValue(); got != expected {
+			t.Fatalf("%s = %q, want %q; fields=%+v", name, got, expected, fields)
+		}
+	}
+
 	pathQuery := &clientv1.GraphQuery{
 		Match: &clientv1.GraphPattern{
 			Start: &clientv1.NodePattern{Alias: "d", Labels: []string{"Document"}},

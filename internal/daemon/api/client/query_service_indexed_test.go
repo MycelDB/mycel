@@ -103,9 +103,9 @@ func TestQueryServiceExecuteQueryStructuredScalarFieldProjection(t *testing.T) {
 	query := journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)
 	query.Returns = []*clientv1.ReturnProjection{
 		{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-		{Alias: "j", OutputName: "bare", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-		{Alias: "j.node_id", OutputName: "node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-		{Alias: "j.content", OutputName: "content", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		{Alias: "j", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		{Alias: "j.node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		{Alias: "j.properties.content", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
 	}
 	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
@@ -115,13 +115,13 @@ func TestQueryServiceExecuteQueryStructuredScalarFieldProjection(t *testing.T) {
 	if got := fields["title"].GetScalar().GetStringValue(); got != "latest" {
 		t.Fatalf("scalar title = %q", got)
 	}
-	if got := fields["bare"].GetScalar().GetStringValue(); got != created.GetNode().GetNodeId() {
+	if got := fields["j"].GetScalar().GetStringValue(); got != created.GetNode().GetNodeId() {
 		t.Fatalf("bare scalar = %q, want node ID %q", got, created.GetNode().GetNodeId())
 	}
-	if got := fields["node_id"].GetScalar().GetStringValue(); got != created.GetNode().GetNodeId() {
+	if got := fields["j.node_id"].GetScalar().GetStringValue(); got != created.GetNode().GetNodeId() {
 		t.Fatalf("node_id = %q, want %q", got, created.GetNode().GetNodeId())
 	}
-	if got := fields["content"].GetScalar().GetStringValue(); got != "entry payload" {
+	if got := fields["j.properties.content"].GetScalar().GetStringValue(); got != "entry payload" {
 		t.Fatalf("content = %q", got)
 	}
 	if res.GetDiagnostics().GetFullScan() {

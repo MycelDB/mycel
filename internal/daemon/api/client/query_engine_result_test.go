@@ -80,9 +80,9 @@ func TestLegacyStructuredShapingPreservesSyntheticEdgeFields(t *testing.T) {
 	query := &clientv1.GraphQuery{
 		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
 		Returns: []*clientv1.ReturnProjection{
-			{Alias: "e.edge_id", OutputName: "edge_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-			{Alias: "e.from_node_id", OutputName: "from_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-			{Alias: "e.to_node_id", OutputName: "to_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "e.edge_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "e.properties.from_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "e.properties.to_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
 		},
 	}
 	rows, _, err := newQueryExecution(nil, nil).shapeAndProjectRows(context.Background(), []*queryRowState{row}, query, 10, "")
@@ -90,7 +90,7 @@ func TestLegacyStructuredShapingPreservesSyntheticEdgeFields(t *testing.T) {
 		t.Fatalf("shape edge fields: %v", err)
 	}
 	fields := rows[0].GetFields()
-	want := map[string]string{"edge_id": edgeID.String(), "from_node_id": fromID.String(), "to_node_id": toID.String()}
+	want := map[string]string{"e.edge_id": edgeID.String(), "e.properties.from_node_id": fromID.String(), "e.properties.to_node_id": toID.String()}
 	for name, expected := range want {
 		if got := fields[name].GetScalar().GetStringValue(); got != expected {
 			t.Fatalf("%s = %q, want %q", name, got, expected)
