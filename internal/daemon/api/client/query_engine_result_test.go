@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -153,5 +154,11 @@ func TestMapQueryEngineErrorUsesStableGRPCCategories(t *testing.T) {
 	deadline := querylogical.NewError(querylogical.ErrorCanceled, "execute query", "deadline", context.DeadlineExceeded)
 	if got := status.Code(mapQueryEngineError(deadline)); got != codes.DeadlineExceeded {
 		t.Fatalf("deadline status = %s", got)
+	}
+	for _, code := range []codes.Code{codes.Canceled, codes.DeadlineExceeded} {
+		dependency := querylogical.NewError(querylogical.ErrorDependencyFailure, "scan index", "dependency canceled", fmt.Errorf("wrapped dependency: %w", status.Error(code, "injected")))
+		if got := status.Code(mapQueryEngineError(dependency)); got != code {
+			t.Fatalf("status-coded dependency = %s, want %s", got, code)
+		}
 	}
 }

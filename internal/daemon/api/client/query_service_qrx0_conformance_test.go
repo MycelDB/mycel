@@ -15,6 +15,7 @@ import (
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
@@ -408,6 +409,32 @@ func (s *qrx7BlockingSemanticSearcher) Search(ctx context.Context, _ semanticser
 	return semanticsearch.Result{}, ctx.Err()
 }
 
+type qrx7StatusLabelGraph struct {
+	graphservice.Manager
+	err error
+}
+
+func (g *qrx7StatusLabelGraph) ScanLabel(context.Context, sessionmodel.GraphTransaction, graphquery.LabelScan) ([]graphmodel.Node, string, graphquery.IndexedReadStats, error) {
+	return nil, "", graphquery.IndexedReadStats{}, g.err
+}
+
+type qrx7StatusConfigureGraph struct {
+	graphservice.Manager
+	err error
+}
+
+func (g *qrx7StatusConfigureGraph) ConfigureIndexes(context.Context, sessionmodel.GraphTransaction, string, []schemamodel.IndexDefinition) error {
+	return g.err
+}
+
+type qrx7StatusSemanticSearcher struct {
+	err error
+}
+
+func (s *qrx7StatusSemanticSearcher) Search(context.Context, semanticservice.SearchInput) (semanticsearch.Result, error) {
+	return semanticsearch.Result{}, s.err
+}
+
 func TestQRX7CancellationDuringIndexedDependencyCallIsPreserved(t *testing.T) {
 	t.Run("label index", func(t *testing.T) {
 		fixture, manager, readTx := newQRX0JournalFixture(t)
@@ -476,6 +503,60 @@ func TestQRX7CancellationDuringIndexedDependencyCallIsPreserved(t *testing.T) {
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("semantic cancellation did not return")
+		}
+	})
+}
+
+func TestQRX7StatusCodedDependencyCancellationIsPreserved(t *testing.T) {
+	t.Run("label deadline", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		failing := &qrx7StatusLabelGraph{Manager: fixture.graphs, err: status.Error(codes.DeadlineExceeded, "injected label deadline")}
+		service := NewQueryService(fixture.sessions, failing, fixture.spaces).
+			WithSchemaManager(manager).
+			WithQueryEngine(queryEngineForExplainTest(failing, manager))
+		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+			TransactionId: readTx,
+			Query:         &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}}},
+		})
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("error = %v, want DeadlineExceeded", err)
+		}
+	})
+
+	t.Run("index configuration canceled", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		failing := &qrx7StatusConfigureGraph{Manager: fixture.graphs, err: status.Error(codes.Canceled, "injected configure cancellation")}
+		service := NewQueryService(fixture.sessions, failing, fixture.spaces).
+			WithSchemaManager(manager).
+			WithQueryEngine(queryEngineForExplainTest(failing, manager))
+		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+			TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1,
+		})
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("error = %v, want Canceled", err)
+		}
+	})
+
+	t.Run("semantic deadline", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		failing := &qrx7StatusSemanticSearcher{err: status.Error(codes.DeadlineExceeded, "injected semantic deadline")}
+		engine := queryengine.New(queryengine.Ports{
+			Entities: fixture.graphs, Traversals: fixture.graphs, Indexes: fixture.graphs,
+			Catalog: manager, SemanticCandidates: NewQuerySemanticCandidateReader(failing), Mutations: fixture.graphs,
+		})
+		service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+			WithSchemaManager(manager).
+			WithSemanticManager(failing).
+			WithQueryEngine(engine)
+		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+			TransactionId: readTx,
+			Query: &clientv1.GraphQuery{
+				Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+				Where: &clientv1.Expr{Expr: &clientv1.Expr_Semantic{Semantic: &clientv1.SemanticSearchExpr{Alias: "j", Query: "needle", Limit: 5}}},
+			},
+		})
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("error = %v, want DeadlineExceeded", err)
 		}
 	})
 }

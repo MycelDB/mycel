@@ -155,6 +155,9 @@ func (e *Engine) configureIndexes(ctx context.Context, tx sessionmodel.GraphTran
 		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "configure query indexes", "indexed query requires an active schema", nil)
 	}
 	if err := e.ports.Indexes.ConfigureIndexes(ctx, tx, schemacompile.Hash(*prepared.Planning.Schema), prepared.Planning.Schema.Indexes); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextQueryError("configure query indexes", contextErr)
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return contextQueryError("configure query indexes", err)
 		}

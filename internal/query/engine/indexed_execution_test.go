@@ -102,6 +102,9 @@ func indexedTestPage(nodes []graph.Node, limit int, cursor string, plan string, 
 	}
 	start := 0
 	if cursor != "" {
+		if cursor == "opaque-index-key" {
+			cursor = "0"
+		}
 		parsed, err := strconv.Atoi(cursor)
 		if err != nil || parsed < 0 || parsed > len(nodes) {
 			return nil, "", graphquery.IndexedReadStats{}, fmt.Errorf("bad cursor %q", cursor)
@@ -382,6 +385,30 @@ func TestEngineAcceptsCompatibleLegacyShapedOrderedCursor(t *testing.T) {
 	if got := resultNames(result); fmt.Sprint(got) != "[a]" || !strings.HasPrefix(result.NextCursor, "qrx7:") {
 		t.Fatalf("result=%#v names=%v", result, got)
 	}
+}
+
+func TestEngineAcceptsRawCursorOnlyForCompatibleOrderedFamily(t *testing.T) {
+	nodes := indexedNodes("a", "b", "c")
+	access := newIndexedTestAccess(nodes)
+	access.indexes["document_name"] = nodes
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access})
+	tx := indexedTransaction()
+
+	equality := indexedBaseQuery()
+	equality.Predicate = indexedComparison("n", "name", "=", querylogical.NativeValue("a"))
+	equality.Page.Size = 1
+	equality.Page.Cursor = "opaque-index-key"
+	prepared := prepareIndexed(t, engine, tx, equality)
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
+	if err != nil || fmt.Sprint(resultNames(result)) != "[a]" || !strings.HasPrefix(result.NextCursor, "qrx7:") {
+		t.Fatalf("compatible raw result=%#v error=%v", result, err)
+	}
+
+	label := indexedBaseQuery()
+	label.Page.Cursor = "opaque-index-key"
+	prepared = prepareIndexed(t, engine, tx, label)
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	assertEngineQueryCode(t, err, querylogical.ErrorStaleCursor)
 }
 
 func TestEngineExecutesEqualityAndRangeBoundsThroughOrderedIndex(t *testing.T) {
