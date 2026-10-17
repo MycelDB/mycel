@@ -117,7 +117,7 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 			}
 			break
 		}
-		branches, indexed, predicateOK, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source)
+		branches, indexed, predicateOK, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source, false)
 		if err != nil {
 			return Plan{}, true, err
 		}
@@ -251,7 +251,7 @@ func (p planner) planIndexedPredicate(query querylogical.Query) (Plan, bool, err
 	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 {
 		return Plan{}, false, nil
 	}
-	branches, pushed, ok, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source)
+	branches, pushed, ok, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source, true)
 	if err != nil {
 		return Plan{}, true, err
 	}
@@ -280,6 +280,9 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	if len(query.OrderBy) != 1 || len(query.Start.Labels) != 1 {
 		return Plan{}, true, p.unavailable("ORDER BY requires one ordered single-label node query")
 	}
+	if gqlOrderedNodeRequiresBroadFallback(query) {
+		return Plan{}, false, nil
+	}
 	orderField, ok := valueField(query.OrderBy[0].Value)
 	if !ok || orderField.Alias != query.Start.Alias || orderField.Namespace != querylogical.NamespaceProperties {
 		return Plan{}, true, p.unavailable("ORDER BY requires an indexed property reference on the start alias")
@@ -291,9 +294,17 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	if !ok {
 		return Plan{}, true, p.unavailable("no ordered index for %s.properties.%s", query.Start.Labels[0], orderField.Name)
 	}
-	low, high, err := orderedBounds(query.Predicate, orderField)
-	if err != nil {
-		return Plan{}, true, p.unavailable("%s", err)
+	var low, high *Bound
+	var err error
+	if query.Source != querylogical.SourceGQL || len(query.Steps) != 0 {
+		low, high, err = orderedBounds(query.Predicate, orderField)
+		if err != nil {
+			return Plan{}, true, p.unavailable("%s", err)
+		}
+	}
+	pushed, residual := query.Predicate, (*querylogical.Predicate)(nil)
+	if query.Source == querylogical.SourceGQL && len(query.Steps) == 0 {
+		pushed, residual = nil, query.Predicate
 	}
 	use := schemaIndexUse(index, query.Start.Labels[0])
 	access := AccessPath{
@@ -302,7 +313,7 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	}
 	plan := Plan{
 		Name: "OrderedNodePropertyIndexScan", Family: FamilyIndexedOrder, Access: access,
-		Indexes: []IndexUse{use}, PushedPredicate: query.Predicate,
+		Indexes: []IndexUse{use}, PushedPredicate: pushed, ResidualPredicate: residual,
 		Ordering: OrderingGuarantee{Terms: append([]querylogical.Order(nil), query.OrderBy...), Stable: true, Source: index.Name},
 		Cursor:   legacyCursor("index_key"), Limits: p.resourceLimits(query, FamilyIndexedOrder),
 	}
@@ -563,7 +574,7 @@ func equalityScan(predicate *querylogical.Predicate, alias string) (IndexScan, b
 	return scan, ok
 }
 
-func indexedBranches(predicate *querylogical.Predicate, alias string, source querylogical.Source) ([]candidateBranch, *querylogical.Predicate, bool, error) {
+func indexedBranches(predicate *querylogical.Predicate, alias string, source querylogical.Source, strict bool) ([]candidateBranch, *querylogical.Predicate, bool, error) {
 	if source == querylogical.SourceGQL && hasUnsupportedGQLIndexedComparison(predicate) {
 		return nil, nil, false, nil
 	}
@@ -574,7 +585,7 @@ func indexedBranches(predicate *querylogical.Predicate, alias string, source que
 		branches := []candidateBranch{}
 		pushedTerms := []querylogical.Predicate{}
 		for i := range predicate.Terms {
-			childBranches, pushed, ok, err := indexedBranches(&predicate.Terms[i], alias, source)
+			childBranches, pushed, ok, err := indexedBranches(&predicate.Terms[i], alias, source, strict)
 			if err != nil {
 				return nil, nil, true, err
 			}
@@ -588,7 +599,10 @@ func indexedBranches(predicate *querylogical.Predicate, alias string, source que
 	}
 	branch, pushed, err := indexedAndBranch(predicate, alias, source)
 	if err != nil {
-		return nil, nil, true, err
+		if strict {
+			return nil, nil, true, err
+		}
+		return nil, nil, false, nil
 	}
 	if len(branch.scans) == 0 || pushed == nil {
 		return nil, nil, false, nil
@@ -700,6 +714,33 @@ func scanForLeaf(leaf querylogical.Leaf, alias string) (IndexScan, bool) {
 	return scan, true
 }
 
+func gqlOrderedNodeRequiresBroadFallback(query querylogical.Query) bool {
+	if query.Source != querylogical.SourceGQL || len(query.Steps) != 0 {
+		return false
+	}
+	var requiresBroad func(*querylogical.Predicate) bool
+	requiresBroad = func(predicate *querylogical.Predicate) bool {
+		if predicate == nil {
+			return false
+		}
+		if predicate.Op == querylogical.PredicateLeafOp && predicate.Leaf != nil {
+			switch predicate.Leaf.Kind {
+			case querylogical.LeafComparison, querylogical.LeafBetween, querylogical.LeafText, querylogical.LeafSemantic:
+				return true
+			default:
+				return false
+			}
+		}
+		for i := range predicate.Terms {
+			if requiresBroad(&predicate.Terms[i]) {
+				return true
+			}
+		}
+		return false
+	}
+	return requiresBroad(query.Predicate)
+}
+
 func gqlIndexedPredicatesSupported(query querylogical.Query) bool {
 	return query.Source != querylogical.SourceGQL || !hasUnsupportedGQLIndexedComparison(query.Predicate)
 }
@@ -720,10 +761,7 @@ func hasUnsupportedGQLIndexedComparison(predicate *querylogical.Predicate) bool 
 	return false
 }
 
-func malformedIndexedLeaf(leaf querylogical.Leaf, alias string, source querylogical.Source) error {
-	if source != querylogical.SourceStructured {
-		return nil
-	}
+func malformedIndexedLeaf(leaf querylogical.Leaf, alias string, _ querylogical.Source) error {
 	invalidField := func(field querylogical.FieldRef, ok bool) bool {
 		return !ok || field.Alias != alias || strings.TrimSpace(field.Name) == ""
 	}

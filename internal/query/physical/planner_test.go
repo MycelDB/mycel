@@ -206,14 +206,61 @@ func TestBuildGQLRangeUsesBroadFallbackAndPolicy(t *testing.T) {
 		*comparison("n", "name", "=", stringValue("Ada")),
 		*comparison("n", "age", ">", integerValue(18)),
 	})
+	ordered := query
+	ordered.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "age"), Direction: querylogical.SortAscending}}
+
+	for _, test := range []struct {
+		name  string
+		query querylogical.Query
+	}{{name: "unordered", query: query}, {name: "ordered node", query: ordered}} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := buildRead(t, test.query, plannerSchema(), plannerEnvironment())
+			if plan.Family != queryphysical.FamilyBoundedFullScan {
+				t.Fatalf("plan = %#v", plan)
+			}
+			environment := plannerEnvironment()
+			environment.Domain.BroadSearchable = false
+			assertPlanError(t, test.query, plannerSchema(), environment, querylogical.ErrorUnavailableAccessPath)
+		})
+	}
+}
+
+func TestBuildGQLOrderedStringFilterRetainsLegacyIndexFamilyAsResidual(t *testing.T) {
+	query := baseQuery()
+	query.Source = querylogical.SourceGQL
+	query.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "age"), Direction: querylogical.SortAscending}}
+	name := querylogical.FieldValue("n", "name")
+	query.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafString, Operator: "contains", Operand: &name, Query: "Ada"})
 
 	plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
-	if plan.Family != queryphysical.FamilyBoundedFullScan {
+	if plan.Family != queryphysical.FamilyIndexedOrder || plan.PushedPredicate != nil || plan.ResidualPredicate == nil {
 		t.Fatalf("plan = %#v", plan)
 	}
-	environment := plannerEnvironment()
-	environment.Domain.BroadSearchable = false
-	assertPlanError(t, query, plannerSchema(), environment, querylogical.ErrorUnavailableAccessPath)
+}
+
+func TestBuildMalformedPathPredicatesUseBroadFallback(t *testing.T) {
+	base := baseQuery()
+	base.PathAlias = "path"
+	base.Steps = []querylogical.Step{traversalStep("edge")}
+	left := stringValue("Ada")
+	right := querylogical.FieldValue("n", "name")
+	reversedLess := querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafComparison, Operator: "<", Left: &left, Right: &right})
+	targetField := querylogical.FieldValue("m", "name")
+	targetString := querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafString, Operator: "contains", Operand: &targetField, Query: "Ada"})
+
+	for _, test := range []struct {
+		name      string
+		predicate *querylogical.Predicate
+	}{{name: "reversed less-than", predicate: reversedLess}, {name: "target alias string", predicate: targetString}} {
+		t.Run(test.name, func(t *testing.T) {
+			query := base
+			query.Predicate = test.predicate
+			plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
+			if plan.Family != queryphysical.FamilyBoundedFullScan {
+				t.Fatalf("plan = %#v", plan)
+			}
+		})
+	}
 }
 
 func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {

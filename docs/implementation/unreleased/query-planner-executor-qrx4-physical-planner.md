@@ -45,9 +45,14 @@ choices. Compound predicates retain AND-intersection/OR-union shape and an
 explicit residual predicate because the legacy implementation rechecks
 candidates. Outside ordered traversal bounds, GQL comparison indexing retains
 the legacy equality-only subset; a range term keeps the complete GQL predicate
-on broad fallback. Ordered scans preserve bounds, direction, concrete index
-identity, and subtree root ordering. Semantic plans separate the semantic
-predicate from its residual filter.
+on broad fallback. Filtered GQL ordered-node comparisons, text, and semantic
+predicates also retain broad fallback, while ordered-subtree comparison bounds
+remain indexed. The legacy ordered-node dispatcher currently selects its index
+for null/string filters but omits those filters from the translated request;
+QRX4 retains that access family but records the filters as residual, and this
+known defect remains an execution-migration compatibility gate. Ordered scans
+preserve bounds, direction, concrete index identity, and subtree root ordering.
+Semantic plans separate the semantic predicate from its residual filter.
 
 ## Bounds and policy
 
