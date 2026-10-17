@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX3 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md), and [shared binder](query-planner-executor-qrx3-binding.md). QRX4 is implemented on its feature branch with a side-effect-free rule-based physical planner and [QRX4 architecture notes](query-planner-executor-qrx4-physical-planner.md). Later tranches remain planned.
+In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX4 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md), [shared binder](query-planner-executor-qrx3-binding.md), and [rule-based physical planner](query-planner-executor-qrx4-physical-planner.md). QRX5 is implemented on its feature branch with public Explain backed by actual physical plans and [QRX5 architecture notes](query-planner-executor-qrx5-plan-explain.md). Later tranches remain planned.
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -694,6 +694,8 @@ Extract physical plan selection from the gRPC adapter without immediately replac
 - Plan selection performs no graph data reads.
 
 ## QRX5: Explain from actual plans
+
+Status: implemented on the feature branch. See the [QRX5 plan-Explain notes](query-planner-executor-qrx5-plan-explain.md).
 
 ### Objective
 

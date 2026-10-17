@@ -46,6 +46,36 @@ func (r *recordingEntityReader) ListEdges(_ context.Context, tx sessionmodel.Gra
 
 type panicIndexReader struct{}
 
+type panicSemanticCandidateReader struct{}
+
+type panicMutationWriter struct{}
+
+func (panicMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
+	panic("Explain must not create nodes")
+}
+func (panicMutationWriter) UpdateNode(context.Context, sessionmodel.GraphTransaction, graph.UpdateNodeInput) (graph.Node, error) {
+	panic("Explain must not update nodes")
+}
+func (panicMutationWriter) UpsertNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
+	panic("Explain must not upsert nodes")
+}
+func (panicMutationWriter) DeleteNode(context.Context, sessionmodel.GraphTransaction, string, bool) ([]string, []string, error) {
+	panic("Explain must not delete nodes")
+}
+func (panicMutationWriter) CreateEdge(context.Context, sessionmodel.GraphTransaction, graph.EdgeInput) (graph.Edge, error) {
+	panic("Explain must not create edges")
+}
+func (panicMutationWriter) UpdateEdge(context.Context, sessionmodel.GraphTransaction, graph.UpdateEdgeInput) (graph.Edge, error) {
+	panic("Explain must not update edges")
+}
+func (panicMutationWriter) DeleteEdge(context.Context, sessionmodel.GraphTransaction, string) (string, error) {
+	panic("Explain must not delete edges")
+}
+
+func (panicSemanticCandidateReader) SearchCandidates(context.Context, queryengine.SemanticCandidateRequest) (queryengine.SemanticCandidateBatch, error) {
+	panic("Explain must not invoke semantic inference")
+}
+
 func (panicIndexReader) ScanLabel(context.Context, sessionmodel.GraphTransaction, graphquery.LabelScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
 	panic("planning must not scan labels")
 }
@@ -130,6 +160,54 @@ func TestEnginePrepareSelectsIndexedPhysicalPlanWithoutIndexAccess(t *testing.T)
 	if entities.calls != 0 {
 		t.Fatalf("entity reads during indexed planning = %d, want 0", entities.calls)
 	}
+	diagnostics, err := engine.Explain(context.Background(), queryengine.PlanningContext{Schema: &schema}, statement)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	if diagnostics.Plan != prepared.Physical.Name || diagnostics.PlanKind != string(prepared.Physical.Family) || !reflect.DeepEqual(diagnostics.Indexes, []string{"document_name"}) {
+		t.Fatalf("Explain diagnostics %#v do not match prepared plan %#v", diagnostics, prepared.Physical)
+	}
+	if entities.calls != 0 {
+		t.Fatalf("entity reads during indexed Explain = %d, want 0", entities.calls)
+	}
+}
+
+func TestEngineExplainMutationPlanDoesNotInvokeWriter(t *testing.T) {
+	engine := queryengine.New(queryengine.Ports{Mutations: panicMutationWriter{}})
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationInsertNode,
+		Node: &querylogical.NodePattern{Labels: []string{"Note"}},
+	})
+	planning := queryengine.PlanningContext{Transaction: sessionmodel.GraphTransaction{Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}}
+	diagnostics, err := engine.Explain(context.Background(), planning, statement)
+	if err != nil {
+		t.Fatalf("explain mutation plan: %v", err)
+	}
+	if diagnostics.PlanKind != string(queryphysical.FamilyLegacyMutation) || !diagnostics.LegacyBridge {
+		t.Fatalf("mutation diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestEngineExplainSemanticPlanDoesNotInvokeCandidates(t *testing.T) {
+	entities := &recordingEntityReader{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities, SemanticCandidates: panicSemanticCandidateReader{}})
+	statement := validReadStatement()
+	field := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties}
+	statement.Read.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafSemantic, Field: &field, Query: "graph databases", Limit: 5})
+	planning := broadPlanningContext(sessionmodel.GraphTransaction{})
+	planning.Domain.SemanticSearchable = true
+	planning.Domain.SemanticCandidatesAvailable = true
+
+	diagnostics, err := engine.Explain(context.Background(), planning, statement)
+	if err != nil {
+		t.Fatalf("explain semantic plan: %v", err)
+	}
+	if diagnostics.PlanKind != string(queryphysical.FamilySemantic) || diagnostics.ResourceLimits.MaxSemanticCandidates != 5 {
+		t.Fatalf("semantic diagnostics = %#v", diagnostics)
+	}
+	if entities.calls != 0 {
+		t.Fatalf("entity reads during semantic Explain = %d", entities.calls)
+	}
 }
 
 func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
@@ -143,8 +221,11 @@ func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	if diagnostics.Plan != "BoundedFullGraphScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx4" || diagnostics.FallbackMode != string(queryengine.PlanLegacyBridge) || !diagnostics.ExplainOnly {
+	if diagnostics.PlannerVersion != "qrx5" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || !diagnostics.LegacyBridge {
 		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+	if len(diagnostics.Operators) == 0 || diagnostics.ResourceLimits.MaxNodesLoaded == 0 || diagnostics.RowsScanned != 0 || diagnostics.NodesLoaded != 0 {
+		t.Fatalf("static diagnostics = %#v", diagnostics)
 	}
 	if entities.calls != 0 {
 		t.Fatalf("entity reads during explain = %d, want 0", entities.calls)

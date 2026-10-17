@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	plannerName    = "mycel-query-engine"
-	plannerVersion = "qrx4"
+	// PlannerName and PlannerVersion identify the extracted planner in neutral
+	// and transport diagnostics.
+	PlannerName    = "mycel-query-engine"
+	PlannerVersion = "qrx5"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -85,8 +87,8 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX4 binds and physically plans
-// every represented statement, then retains the legacy bridge as the sole
+// Engine implements the neutral query facade. QRX5 exposes the selected
+// physical plan through Explain while retaining the legacy bridge as the sole
 // execution owner until operator families migrate.
 type Engine struct {
 	ports Ports
@@ -153,28 +155,17 @@ func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statemen
 	}, nil
 }
 
-// Explain reports the preparation decision. The daemon adapter keeps its
-// existing Explain response authoritative until physical planning migrates.
+// Explain prepares once and serializes that exact physical plan. Static plan
+// diagnostics never contain runtime work counters.
 func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (querylogical.Diagnostics, error) {
 	prepared, err := e.Prepare(ctx, planning, statement)
 	if err != nil {
 		return querylogical.Diagnostics{}, err
 	}
-	indexes := make([]string, 0, len(prepared.Physical.Indexes))
-	for _, index := range prepared.Physical.Indexes {
-		indexes = append(indexes, index.Name)
-	}
-	return querylogical.Diagnostics{
-		Plan:           prepared.Physical.Name,
-		PlanKind:       string(prepared.Physical.Family),
-		Planner:        plannerName,
-		PlannerVersion: plannerVersion,
-		Indexes:        indexes,
-		FullScan:       prepared.Physical.FullScan,
-		NextCursorKind: prepared.Physical.Cursor.Kind,
-		ExplainOnly:    true,
-		FallbackMode:   string(PlanLegacyBridge),
-	}, nil
+	diagnostics := queryphysical.Explain(prepared.Physical)
+	diagnostics.Planner = PlannerName
+	diagnostics.PlannerVersion = PlannerVersion
+	return diagnostics, nil
 }
 
 // Execute rejects legacy-bridge plans before invoking any dependency. The

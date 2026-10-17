@@ -19,10 +19,11 @@ const (
 // QueryError is returned by neutral query layers before an API adapter maps it
 // to a transport status.
 type QueryError struct {
-	Code      ErrorCode
-	Operation string
-	Message   string
-	Cause     error
+	Code          ErrorCode
+	Operation     string
+	Message       string
+	RequiredIndex string
+	Cause         error
 }
 
 func (e *QueryError) Error() string {
@@ -52,4 +53,13 @@ func (e *QueryError) Unwrap() error {
 // NewError constructs a categorized neutral query error.
 func NewError(code ErrorCode, operation string, message string, cause error) *QueryError {
 	return &QueryError{Code: code, Operation: operation, Message: message, Cause: cause}
+}
+
+// WithRequiredIndex attaches the schema index identity needed to make an
+// unavailable access path plannable.
+func (e *QueryError) WithRequiredIndex(index string) *QueryError {
+	if e != nil {
+		e.RequiredIndex = index
+	}
+	return e
 }

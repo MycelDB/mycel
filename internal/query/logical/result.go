@@ -107,37 +107,60 @@ type ReadMetadata struct {
 	StaleReason      string `json:"stale_reason,omitempty"`
 }
 
+// DiagnosticResourceLimits are static plan bounds. Runtime work counters stay
+// in Diagnostics and are never synthesized by Explain.
+type DiagnosticResourceLimits struct {
+	MaxIndexEntries       int64 `json:"max_index_entries,omitempty"`
+	MaxStartNodes         int64 `json:"max_start_nodes,omitempty"`
+	MaxNodesLoaded        int64 `json:"max_nodes_loaded,omitempty"`
+	MaxEdgesLoaded        int64 `json:"max_edges_loaded,omitempty"`
+	MaxIntermediateRows   int64 `json:"max_intermediate_rows,omitempty"`
+	MaxSemanticCandidates int64 `json:"max_semantic_candidates,omitempty"`
+	MaxTraversalDepth     int   `json:"max_traversal_depth,omitempty"`
+}
+
 // Diagnostics is the stable neutral vocabulary for planning and execution
 // observations. Timing values are milliseconds.
 type Diagnostics struct {
-	Plan                string   `json:"plan,omitempty"`
-	PlanKind            string   `json:"plan_kind,omitempty"`
-	Planner             string   `json:"planner,omitempty"`
-	PlannerVersion      string   `json:"planner_version,omitempty"`
-	Indexes             []string `json:"indexes,omitempty"`
-	FullScan            bool     `json:"full_scan,omitempty"`
-	IndexEntriesScanned int64    `json:"index_entries_scanned,omitempty"`
-	NodesLoaded         int64    `json:"nodes_loaded,omitempty"`
-	EdgesLoaded         int64    `json:"edges_loaded,omitempty"`
-	RowsScanned         int64    `json:"rows_scanned,omitempty"`
-	RowsProduced        int64    `json:"rows_produced,omitempty"`
-	RowsReturned        int64    `json:"rows_returned,omitempty"`
-	CandidateCount      int64    `json:"candidate_count,omitempty"`
-	AdjacencyScanCalls  int64    `json:"adjacency_scan_calls,omitempty"`
-	NodeReadCalls       int64    `json:"node_read_calls,omitempty"`
-	RootCount           int64    `json:"root_count,omitempty"`
-	PushedPredicates    []string `json:"pushed_predicates,omitempty"`
-	ResidualPredicates  []string `json:"residual_predicates,omitempty"`
-	NextCursorKind      string   `json:"next_cursor_kind,omitempty"`
-	ExplainOnly         bool     `json:"explain_only,omitempty"`
-	Truncated           bool     `json:"truncated,omitempty"`
-	TruncationReason    string   `json:"truncation_reason,omitempty"`
-	RejectedReason      string   `json:"rejected_reason,omitempty"`
-	RequiredIndex       string   `json:"required_index,omitempty"`
-	FallbackMode        string   `json:"fallback_mode,omitempty"`
-	PlanningMillis      int64    `json:"planning_millis,omitempty"`
-	ExecutionMillis     int64    `json:"execution_millis,omitempty"`
-	ShapingMillis       int64    `json:"shaping_millis,omitempty"`
-	RootScanMillis      int64    `json:"root_scan_millis,omitempty"`
-	ExpansionMillis     int64    `json:"expansion_millis,omitempty"`
+	Plan                string                   `json:"plan,omitempty"`
+	PlanKind            string                   `json:"plan_kind,omitempty"`
+	Planner             string                   `json:"planner,omitempty"`
+	PlannerVersion      string                   `json:"planner_version,omitempty"`
+	Indexes             []string                 `json:"indexes,omitempty"`
+	Operators           []string                 `json:"operators,omitempty"`
+	Ordering            []string                 `json:"ordering,omitempty"`
+	AccessPath          string                   `json:"access_path,omitempty"`
+	SchemaVersion       string                   `json:"schema_version,omitempty"`
+	FullScan            bool                     `json:"full_scan,omitempty"`
+	IndexEntriesScanned int64                    `json:"index_entries_scanned,omitempty"`
+	NodesLoaded         int64                    `json:"nodes_loaded,omitempty"`
+	EdgesLoaded         int64                    `json:"edges_loaded,omitempty"`
+	RowsScanned         int64                    `json:"rows_scanned,omitempty"`
+	RowsProduced        int64                    `json:"rows_produced,omitempty"`
+	RowsReturned        int64                    `json:"rows_returned,omitempty"`
+	CandidateCount      int64                    `json:"candidate_count,omitempty"`
+	AdjacencyScanCalls  int64                    `json:"adjacency_scan_calls,omitempty"`
+	NodeReadCalls       int64                    `json:"node_read_calls,omitempty"`
+	RootCount           int64                    `json:"root_count,omitempty"`
+	PushedPredicates    []string                 `json:"pushed_predicates,omitempty"`
+	ResidualPredicates  []string                 `json:"residual_predicates,omitempty"`
+	NextCursorKind      string                   `json:"next_cursor_kind,omitempty"`
+	ExplainOnly         bool                     `json:"explain_only,omitempty"`
+	Truncated           bool                     `json:"truncated,omitempty"`
+	TruncationReason    string                   `json:"truncation_reason,omitempty"`
+	RejectedReason      string                   `json:"rejected_reason,omitempty"`
+	RequiredIndex       string                   `json:"required_index,omitempty"`
+	FallbackMode        string                   `json:"fallback_mode,omitempty"`
+	LegacyBridge        bool                     `json:"legacy_bridge,omitempty"`
+	LegacyBridgeReason  string                   `json:"legacy_bridge_reason,omitempty"`
+	CursorPlanBound     bool                     `json:"cursor_plan_bound,omitempty"`
+	CursorSnapshotBound bool                     `json:"cursor_snapshot_bound,omitempty"`
+	CursorSchemaBound   bool                     `json:"cursor_schema_bound,omitempty"`
+	CursorLegacyForm    bool                     `json:"cursor_legacy_form,omitempty"`
+	ResourceLimits      DiagnosticResourceLimits `json:"resource_limits,omitempty"`
+	PlanningMillis      int64                    `json:"planning_millis,omitempty"`
+	ExecutionMillis     int64                    `json:"execution_millis,omitempty"`
+	ShapingMillis       int64                    `json:"shaping_millis,omitempty"`
+	RootScanMillis      int64                    `json:"root_scan_millis,omitempty"`
+	ExpansionMillis     int64                    `json:"expansion_millis,omitempty"`
 }
