@@ -8,10 +8,17 @@ import (
 	"slices"
 	"sort"
 	"testing"
+	"time"
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
+	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -378,6 +385,99 @@ func TestQRX7StructuredCursorContinuesThroughEquivalentGQLLabelPlan(t *testing.T
 			t.Fatalf("label scan limits = %v", profile.requestedLimits("ScanLabel"))
 		}
 	}
+}
+
+type qrx7BlockingLabelGraph struct {
+	graphservice.Manager
+	started chan struct{}
+}
+
+func (g *qrx7BlockingLabelGraph) ScanLabel(ctx context.Context, _ sessionmodel.GraphTransaction, _ graphquery.LabelScan) ([]graphmodel.Node, string, graphquery.IndexedReadStats, error) {
+	close(g.started)
+	<-ctx.Done()
+	return nil, "", graphquery.IndexedReadStats{}, ctx.Err()
+}
+
+type qrx7BlockingSemanticSearcher struct {
+	started chan struct{}
+}
+
+func (s *qrx7BlockingSemanticSearcher) Search(ctx context.Context, _ semanticservice.SearchInput) (semanticsearch.Result, error) {
+	close(s.started)
+	<-ctx.Done()
+	return semanticsearch.Result{}, ctx.Err()
+}
+
+func TestQRX7CancellationDuringIndexedDependencyCallIsPreserved(t *testing.T) {
+	t.Run("label index", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		blocking := &qrx7BlockingLabelGraph{Manager: fixture.graphs, started: make(chan struct{})}
+		service := NewQueryService(fixture.sessions, blocking, fixture.spaces).
+			WithSchemaManager(manager).
+			WithQueryEngine(queryEngineForExplainTest(blocking, manager))
+		ctx, cancel := context.WithCancel(fixture.ctx)
+		result := make(chan error, 1)
+		go func() {
+			_, err := service.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query:         &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}}},
+			})
+			result <- err
+		}()
+		select {
+		case <-blocking.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("label scan did not start")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			if status.Code(err) != codes.Canceled {
+				t.Fatalf("error = %v, want Canceled", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("label cancellation did not return")
+		}
+	})
+
+	t.Run("semantic search", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		blocking := &qrx7BlockingSemanticSearcher{started: make(chan struct{})}
+		engine := queryengine.New(queryengine.Ports{
+			Entities: fixture.graphs, Traversals: fixture.graphs, Indexes: fixture.graphs,
+			Catalog: manager, SemanticCandidates: NewQuerySemanticCandidateReader(blocking), Mutations: fixture.graphs,
+		})
+		service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+			WithSchemaManager(manager).
+			WithSemanticManager(blocking).
+			WithQueryEngine(engine)
+		ctx, cancel := context.WithCancel(fixture.ctx)
+		result := make(chan error, 1)
+		go func() {
+			_, err := service.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query: &clientv1.GraphQuery{
+					Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+					Where: &clientv1.Expr{Expr: &clientv1.Expr_Semantic{Semantic: &clientv1.SemanticSearchExpr{Alias: "j", Query: "needle", Limit: 5}}},
+				},
+			})
+			result <- err
+		}()
+		select {
+		case <-blocking.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("semantic search did not start")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			if status.Code(err) != codes.Canceled {
+				t.Fatalf("error = %v, want Canceled", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("semantic cancellation did not return")
+		}
+	})
 }
 
 func TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed(t *testing.T) {

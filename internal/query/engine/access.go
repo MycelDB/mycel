@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -154,6 +155,9 @@ func (e *Engine) configureIndexes(ctx context.Context, tx sessionmodel.GraphTran
 		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "configure query indexes", "indexed query requires an active schema", nil)
 	}
 	if err := e.ports.Indexes.ConfigureIndexes(ctx, tx, schemacompile.Hash(*prepared.Planning.Schema), prepared.Planning.Schema.Indexes); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return contextQueryError("configure query indexes", err)
+		}
 		return querylogical.NewError(querylogical.ErrorDependencyFailure, "configure query indexes", err.Error(), err)
 	}
 	return nil

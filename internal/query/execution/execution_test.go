@@ -82,6 +82,29 @@ func TestPagedNodeSourceFailsClosedOnEmptyNonTerminalPage(t *testing.T) {
 	}
 }
 
+func TestPagedNodeSourcePreservesCancellationFromAccessCall(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
+			tracker, err := queryexecution.NewTracker(budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+				return queryexecution.NodePage{}, cause
+			}, nil, "", 0, 2, tracker)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			_, err = source.Next(context.Background())
+			assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+			if !errors.Is(err, cause) {
+				t.Fatalf("error = %v, want cause %v", err, cause)
+			}
+		})
+	}
+}
+
 func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
 	rows := []queryexecution.BindingRow{
 		bindingRow("00000000-0000-0000-0000-000000000001", "a", "x", 1),

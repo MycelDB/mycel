@@ -153,10 +153,14 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 	page, err := s.reader(ctx, s.batchSize, cursor)
 	if err != nil {
 		var queryErr *querylogical.QueryError
-		if errors.As(err, &queryErr) {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", err)
+		case errors.As(err, &queryErr):
 			return err
+		default:
+			return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", err.Error(), err)
 		}
-		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", err.Error(), err)
 	}
 	if len(page.Nodes) > s.batchSize {
 		return invalidState("scan indexed nodes", "access method returned an oversized page")

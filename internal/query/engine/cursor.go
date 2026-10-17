@@ -2,6 +2,7 @@ package engine
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -32,6 +33,7 @@ type indexedCursor struct {
 	PageOffset    int    `json:"page_offset,omitempty"`
 	OutputOffset  int    `json:"output_offset,omitempty"`
 	RowsReturned  int64  `json:"rows_returned,omitempty"`
+	Checksum      string `json:"checksum"`
 }
 
 type legacyShapedCursor struct {
@@ -59,6 +61,9 @@ func decodeIndexedCursor(prepared PreparedQuery) (indexedCursor, error) {
 		return cursor, nil
 	}
 	if strings.HasPrefix(token, legacyShapedCursorPrefix) {
+		if prepared.Physical.Family != queryphysical.FamilyIndexedOrder && prepared.Physical.Family != queryphysical.FamilyIndexedEquality {
+			return indexedCursor{}, staleCursor("legacy shaped cursor is not compatible with the indexed plan", nil)
+		}
 		payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, legacyShapedCursorPrefix))
 		if err != nil {
 			return indexedCursor{}, staleCursor("legacy index cursor is malformed", err)
@@ -82,11 +87,21 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if cursor.Version != indexedCursorVersion {
 		return staleCursor("cursor version is unsupported", nil)
 	}
+	wantChecksum := indexedCursorChecksum(cursor)
+	if subtle.ConstantTimeCompare([]byte(cursor.Checksum), []byte(wantChecksum)) != 1 {
+		return staleCursor("cursor integrity checksum does not match", nil)
+	}
 	if cursor.Mode != cursorModeSource && cursor.Mode != cursorModeOutput {
 		return staleCursor("cursor mode is unsupported", nil)
 	}
 	if cursor.PageOffset < 0 || cursor.OutputOffset < 0 || cursor.RowsReturned < 0 {
 		return staleCursor("cursor contains a negative position", nil)
+	}
+	if cursor.Mode == cursorModeSource && cursor.OutputOffset != 0 {
+		return staleCursor("source cursor contains output continuation state", nil)
+	}
+	if cursor.Mode == cursorModeOutput && (cursor.PageCursor != "" || cursor.PageOffset != 0 || cursor.RowsReturned != int64(cursor.OutputOffset)) {
+		return staleCursor("output cursor contains incompatible source continuation state", nil)
 	}
 	if cursor.TransactionID != prepared.Planning.Transaction.ID || cursor.BaseRevision != prepared.Planning.Transaction.BaseRevision {
 		return staleCursor("cursor transaction snapshot does not match the prepared query", nil)
@@ -106,8 +121,16 @@ func encodeIndexedCursor(prepared PreparedQuery, cursor indexedCursor) string {
 	cursor.TransactionID = prepared.Planning.Transaction.ID
 	cursor.BaseRevision = prepared.Planning.Transaction.BaseRevision
 	cursor.SchemaVersion = prepared.Physical.SchemaVersion
+	cursor.Checksum = indexedCursorChecksum(cursor)
 	payload, _ := json.Marshal(cursor)
 	return indexedCursorPrefix + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func indexedCursorChecksum(cursor indexedCursor) string {
+	cursor.Checksum = ""
+	payload, _ := json.Marshal(cursor)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func indexedPlanHash(prepared PreparedQuery) string {

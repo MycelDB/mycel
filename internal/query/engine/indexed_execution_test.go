@@ -2,9 +2,12 @@ package engine_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -206,10 +209,8 @@ func TestEngineLabelAndTagScansUseNativeSources(t *testing.T) {
 	}
 	labelQuery.Page.Cursor = "shapeidx:eyJpbmRleF9jdXJzb3IiOiIyIiwicm93c19yZXR1cm5lZCI6Mn0"
 	labelPrepared = prepareIndexed(t, engine, tx, labelQuery)
-	labelResult, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, labelPrepared)
-	if err != nil || fmt.Sprint(resultNames(labelResult)) != "[c]" {
-		t.Fatalf("shaped legacy continuation=%#v error=%v", labelResult, err)
-	}
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, labelPrepared)
+	assertEngineQueryCode(t, err, querylogical.ErrorStaleCursor)
 
 	tagField := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "tags"}
 	red := querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafHasTag, Field: &tagField, Tag: "red"})
@@ -255,6 +256,22 @@ func TestEngineRejectsIndexedCursorForChangedSnapshotOrRequest(t *testing.T) {
 	}
 
 	query.Page.Cursor = first.NextCursor
+	for _, field := range []struct {
+		name  string
+		value any
+	}{
+		{name: "mode", value: "output"},
+		{name: "page_cursor", value: "forged"},
+		{name: "page_offset", value: float64(0)},
+		{name: "rows_returned", value: float64(999)},
+	} {
+		tamperedQuery := query
+		tamperedQuery.Page.Cursor = tamperIndexedCursor(t, first.NextCursor, field.name, field.value)
+		tampered := prepareIndexed(t, engine, tx, tamperedQuery)
+		_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, tampered)
+		assertEngineQueryCode(t, err, querylogical.ErrorStaleCursor)
+	}
+
 	query.Returns[0].OutputName = "changed"
 	changed := prepareIndexed(t, engine, tx, query)
 	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, changed)
@@ -344,6 +361,26 @@ func TestEngineOrderedIndexFollowsPagesUntilResidualDemand(t *testing.T) {
 		if limit <= 0 || limit > 2 {
 			t.Fatalf("scan limit = %d, want finite batch limit", limit)
 		}
+	}
+}
+
+func TestEngineAcceptsCompatibleLegacyShapedOrderedCursor(t *testing.T) {
+	nodes := indexedNodes("a", "b", "c")
+	access := newIndexedTestAccess(nodes)
+	access.indexes["document_name"] = nodes
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access})
+	tx := indexedTransaction()
+	query := indexedBaseQuery()
+	query.Predicate = indexedComparison("n", "name", "=", querylogical.NativeValue("a"))
+	query.Page.Size = 1
+	query.Page.Cursor = "shapeidx:eyJpbmRleF9jdXJzb3IiOiIwIiwicm93c19yZXR1cm5lZCI6MH0"
+	prepared := prepareIndexed(t, engine, tx, query)
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
+	if err != nil {
+		t.Fatalf("execute shaped cursor: %v", err)
+	}
+	if got := resultNames(result); fmt.Sprint(got) != "[a]" || !strings.HasPrefix(result.NextCursor, "qrx7:") {
+		t.Fatalf("result=%#v names=%v", result, got)
 	}
 }
 
@@ -535,6 +572,24 @@ func resultNames(result querylogical.Result) []string {
 func indexedComparison(alias, field, operator string, value querylogical.Value) *querylogical.Predicate {
 	left := querylogical.FieldValue(alias, field)
 	return querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafComparison, Left: &left, Right: &value, Operator: operator})
+}
+
+func tamperIndexedCursor(t *testing.T, token string, field string, value any) string {
+	t.Helper()
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "qrx7:"))
+	if err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("unmarshal cursor: %v", err)
+	}
+	envelope[field] = value
+	payload, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal cursor: %v", err)
+	}
+	return "qrx7:" + base64.RawURLEncoding.EncodeToString(payload)
 }
 
 func assertEngineQueryCode(t *testing.T, err error, want querylogical.ErrorCode) {

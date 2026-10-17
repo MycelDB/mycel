@@ -41,14 +41,15 @@ hydration errors.
 Native QRX7 continuations use a `qrx7:` envelope bound to:
 
 - the canonical statement, bound parameter values, and physical access plan;
-- transaction ID and base revision; and
-- schema version.
+- transaction ID and base revision;
+- schema version; and
+- an integrity checksum over the complete envelope and continuation state.
 
 Streaming source cursors retain the underlying page cursor plus the offset of
 the response lookahead row. Materialized set/blocking shapes use a bounded
-output offset. Compatible QRX6 decimal offsets, shaped index cursors, and raw
-ordered-index cursors remain accepted; successful continuation emits the new
-envelope.
+output offset. Compatible QRX6 decimal offsets remain accepted. Shaped and raw
+index cursors are accepted only for the ordered/equality families that emitted
+them; successful continuation emits the new envelope.
 
 A changed plan, snapshot, schema, malformed position, or unsupported cursor
 fails with the typed stale-cursor error.
@@ -64,6 +65,12 @@ composition.
 
 Explain remains side-effect-free. Runtime index configuration happens only
 during execution, before ordered-property scans.
+
+QRX0/QRX4 compatibility gates remain in force for GQL range syntax: legacy GQL
+non-equality and `BETWEEN` predicates continue to select their documented broad
+fallback instead of being silently reclassified as structured indexed ranges.
+Structured equality/range plans and GQL equality plans are native in QRX7; a
+future compatibility decision must explicitly retire that GQL fallback gate.
 
 ## Verification
 
