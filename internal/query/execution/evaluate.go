@@ -193,6 +193,12 @@ func (e evaluator) field(row BindingRow, field querylogical.FieldRef) (querylogi
 func nodeField(node graph.Node, namespace querylogical.FieldNamespace, name string) (any, bool) {
 	switch namespace {
 	case querylogical.NamespaceProperties, "":
+		switch name {
+		case "node_id":
+			return node.ID.String(), true
+		case "content":
+			return graph.PayloadText(node), true
+		}
 		return graph.Property(node, name)
 	case querylogical.NamespacePayload:
 		value, ok := node.Payload[name]
@@ -212,6 +218,14 @@ func edgeField(edge graph.Edge, namespace querylogical.FieldNamespace, name stri
 	var values map[string]any
 	switch namespace {
 	case querylogical.NamespaceProperties, "":
+		switch name {
+		case "edge_id":
+			return edge.ID.String(), true
+		case "from_node_id":
+			return edge.FromID.String(), true
+		case "to_node_id":
+			return edge.ToID.String(), true
+		}
 		values = edge.Properties
 	case querylogical.NamespacePayload:
 		values = edge.Payload
@@ -432,7 +446,17 @@ func projectRow(row BindingRow, projections []querylogical.Projection, eval eval
 			}
 			fields[name] = querylogical.Cell{Kind: querylogical.CellTree, Tree: &tree}
 		case querylogical.ProjectionScalar:
-			value, err := eval.value(row, querylogical.Value{Kind: querylogical.ValueField, Field: projection.Field})
+			var value querylogical.Value
+			var err error
+			if projection.Field != nil && projection.Field.Name == "" {
+				node, ok := row.Nodes[projection.Alias]
+				if !ok {
+					return querylogical.Row{}, executionInvalid("project query row", fmt.Sprintf("alias %q is not bound", projection.Alias))
+				}
+				value = querylogical.Value{Kind: querylogical.ValueString, String: node.ID.String()}
+			} else {
+				value, err = eval.value(row, querylogical.Value{Kind: querylogical.ValueField, Field: projection.Field})
+			}
 			if err != nil {
 				return querylogical.Row{}, err
 			}
@@ -449,6 +473,9 @@ func projectionOutputName(projection querylogical.Projection) string {
 		return projection.OutputName
 	}
 	if projection.Kind == querylogical.ProjectionScalar && projection.Field != nil {
+		if projection.Field.Name == "" {
+			return projection.Alias
+		}
 		name := projection.Field.Alias + "." + projection.Field.Name
 		if projection.Field.Namespace != "" && projection.Field.Namespace != querylogical.NamespaceProperties {
 			name = projection.Field.Alias + "." + string(projection.Field.Namespace) + "." + projection.Field.Name

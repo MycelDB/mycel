@@ -72,6 +72,62 @@ func TestLegacyStructuredShapingMapsBudgetsAndCancellation(t *testing.T) {
 	}
 }
 
+func TestLegacyStructuredShapingPreservesSyntheticEdgeFields(t *testing.T) {
+	edgeID := uuid.MustParse("00000000-0000-0000-0000-000000000010")
+	fromID := uuid.MustParse("00000000-0000-0000-0000-000000000011")
+	toID := uuid.MustParse("00000000-0000-0000-0000-000000000012")
+	row := &queryRowState{edgeBindings: map[string][]domaingraph.Edge{"e": {{ID: edgeID, FromID: fromID, ToID: toID}}}}
+	query := &clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
+		Returns: []*clientv1.ReturnProjection{
+			{Alias: "e.edge_id", OutputName: "edge_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "e.from_node_id", OutputName: "from_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+			{Alias: "e.to_node_id", OutputName: "to_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		},
+	}
+	rows, _, err := newQueryExecution(nil, nil).shapeAndProjectRows(context.Background(), []*queryRowState{row}, query, 10, "")
+	if err != nil {
+		t.Fatalf("shape edge fields: %v", err)
+	}
+	fields := rows[0].GetFields()
+	want := map[string]string{"edge_id": edgeID.String(), "from_node_id": fromID.String(), "to_node_id": toID.String()}
+	for name, expected := range want {
+		if got := fields[name].GetScalar().GetStringValue(); got != expected {
+			t.Fatalf("%s = %q, want %q", name, got, expected)
+		}
+	}
+}
+
+func TestLegacyStructuredShapingPreservesAggregateArguments(t *testing.T) {
+	row := &queryRowState{pathBindings: map[string]*clientv1.PathValue{"p": {Nodes: []*clientv1.Node{{NodeId: "node-1"}}}}}
+	exec := newQueryExecution(nil, nil)
+	countQuery := &clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
+		AggregateReturns: []*clientv1.AggregateProjection{{
+			OutputName: "count",
+			Function:   clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT,
+			Argument:   &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Alias{Alias: "p"}},
+		}},
+	}
+	rows, _, err := exec.shapeAndProjectRows(context.Background(), []*queryRowState{row}, countQuery, 10, "")
+	if err != nil {
+		t.Fatalf("COUNT(path): %v", err)
+	}
+	if got := rows[0].GetFields()["count"].GetScalar().GetNumberValue(); got != 1 {
+		t.Fatalf("COUNT(path) = %v, want 1", got)
+	}
+
+	for _, aggregate := range []*clientv1.AggregateProjection{
+		{Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}},
+		{Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Alias{Alias: "n"}}},
+	} {
+		query := &clientv1.GraphQuery{Match: countQuery.Match, AggregateReturns: []*clientv1.AggregateProjection{aggregate}}
+		if _, _, err := exec.shapeAndProjectRows(context.Background(), []*queryRowState{row}, query, 10, ""); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("%s invalid argument status = %s, error %v", aggregate.GetFunction(), status.Code(err), err)
+		}
+	}
+}
+
 func TestMapQueryEngineErrorUsesStableGRPCCategories(t *testing.T) {
 	tests := []struct {
 		code querylogical.ErrorCode

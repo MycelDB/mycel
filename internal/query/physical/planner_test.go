@@ -72,6 +72,9 @@ func TestBuildSelectsLegacyAccessFamiliesInPrecedenceOrder(t *testing.T) {
 			if !operatorTreeContains(plan.Root, test.operator) {
 				t.Fatalf("operator tree %#v does not contain %q", plan.Root, test.operator)
 			}
+			if !operatorTreeContainsNamed(plan.Root, queryphysical.OperatorLimit, "ResponsePageLookahead") {
+				t.Fatalf("operator tree %#v does not contain the default response lookahead limit", plan.Root)
+			}
 		})
 	}
 }
@@ -476,6 +479,18 @@ func operatorTreeContains(root queryphysical.Operator, kind queryphysical.Operat
 	}
 	for _, input := range root.Inputs {
 		if operatorTreeContains(input, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func operatorTreeContainsNamed(root queryphysical.Operator, kind queryphysical.OperatorKind, name string) bool {
+	if root.Kind == kind && root.Name == name {
+		return true
+	}
+	for _, input := range root.Inputs {
+		if operatorTreeContainsNamed(input, kind, name) {
 			return true
 		}
 	}

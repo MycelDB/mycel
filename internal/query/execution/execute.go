@@ -32,6 +32,9 @@ func Shape(ctx context.Context, source Operator, query querylogical.Query, track
 	if _, _, err := paginationBounds(query.Page.Size, query.Page.Cursor); err != nil {
 		return querylogical.Result{}, err
 	}
+	if err := validateAggregates(query.Aggregates); err != nil {
+		return querylogical.Result{}, err
+	}
 	root, err := buildPipeline(source, query, tracker, options)
 	if err != nil {
 		_ = source.Close()
@@ -72,6 +75,27 @@ func paginateRows(rows []BindingRow, requested int32, cursor string) ([]BindingR
 		return rows, "", nil
 	}
 	return rows[:pageSize], strconv.Itoa(start + pageSize), nil
+}
+
+func validateAggregates(aggregates []querylogical.Aggregate) error {
+	for _, aggregate := range aggregates {
+		switch aggregate.Function {
+		case querylogical.AggregateCount:
+			if aggregate.Star && aggregate.Argument != nil {
+				return executionInvalid("aggregate query rows", "count aggregate cannot contain both star and an argument")
+			}
+			if !aggregate.Star && aggregate.Argument == nil {
+				return executionInvalid("aggregate query rows", "count aggregate requires an argument")
+			}
+		case querylogical.AggregateSum, querylogical.AggregateAvg, querylogical.AggregateMin, querylogical.AggregateMax:
+			if aggregate.Star || aggregate.Argument == nil || aggregate.Argument.Kind == querylogical.ValueBinding {
+				return executionInvalid("aggregate query rows", string(aggregate.Function)+" aggregate requires a value argument")
+			}
+		default:
+			return executionInvalid("aggregate query rows", "unsupported aggregate function "+string(aggregate.Function))
+		}
+	}
+	return nil
 }
 
 func paginationBounds(requested int32, cursor string) (int, int, error) {

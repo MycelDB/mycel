@@ -427,11 +427,16 @@ func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operat
 		current = Operator{Kind: OperatorDistinct, Inputs: []Operator{current}}
 	}
 	if query.Page.Offset > 0 {
-		current = Operator{Kind: OperatorOffset, Inputs: []Operator{current}}
+		current = Operator{Kind: OperatorOffset, Name: "QueryOffset", Inputs: []Operator{current}}
 	}
-	if query.Page.Limit > 0 || query.Page.Size > 0 {
-		current = Operator{Kind: OperatorLimit, Inputs: []Operator{current}}
+	if query.Page.Limit > 0 {
+		current = Operator{Kind: OperatorLimit, Name: "QueryLimit", Inputs: []Operator{current}}
 	}
+	if query.Page.Cursor != "" {
+		current = Operator{Kind: OperatorOffset, Name: "ResponseCursorOffset", Inputs: []Operator{current}}
+	}
+	// Response pagination always has a finite default and retains one lookahead row.
+	current = Operator{Kind: OperatorLimit, Name: "ResponsePageLookahead", Inputs: []Operator{current}}
 	return current
 }
 

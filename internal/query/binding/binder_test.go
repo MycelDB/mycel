@@ -36,6 +36,15 @@ func TestBindReadValidatesAliasesSchemaExpressionsAndOutputs(t *testing.T) {
 	}
 }
 
+func TestBindAcceptsLegacyBareScalarNodeProjection(t *testing.T) {
+	query := validReadQuery(querylogical.SourceStructured)
+	field := querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties}
+	query.Returns = append(query.Returns, querylogical.Projection{Kind: querylogical.ProjectionScalar, Alias: "p", Field: &field, OutputName: "bare"})
+	if _, err := binding.Bind(querylogical.ReadStatement(query), readEnvironment()); err != nil {
+		t.Fatalf("Bind(bare scalar): %v", err)
+	}
+}
+
 func TestBindEquivalentInvalidReadsUseSameTypedCategory(t *testing.T) {
 	for _, source := range []querylogical.Source{querylogical.SourceStructured, querylogical.SourceGQL} {
 		t.Run(string(source), func(t *testing.T) {
@@ -65,6 +74,10 @@ func TestBindRejectsInvalidReadSemantics(t *testing.T) {
 		}, code: querylogical.ErrorInvalidQuery, want: "endpoint constraints"},
 		{name: "projection kind", mutate: func(q *querylogical.Query) { q.Returns[0].Kind = querylogical.ProjectionEdge }, code: querylogical.ErrorInvalidQuery, want: "is not an edge"},
 		{name: "aggregate star", mutate: func(q *querylogical.Query) { q.Aggregates[0].Function = querylogical.AggregateSum }, code: querylogical.ErrorInvalidQuery, want: "only COUNT supports star"},
+		{name: "aggregate binding", mutate: func(q *querylogical.Query) {
+			argument := querylogical.BindingValue("p")
+			q.Aggregates[0] = querylogical.Aggregate{Function: querylogical.AggregateMin, Argument: &argument, OutputName: "minimum"}
+		}, code: querylogical.ErrorInvalidQuery, want: "requires a value argument"},
 		{name: "order alias", mutate: func(q *querylogical.Query) { q.OrderBy[0].Value = querylogical.FieldValue("missing", "name") }, code: querylogical.ErrorInvalidQuery, want: "not defined"},
 		{name: "traversal direction", mutate: func(q *querylogical.Query) { q.Steps[0].Edge.Direction = querylogical.DirectionUnspecified }, code: querylogical.ErrorInvalidQuery, want: "traversal direction is required"},
 		{name: "traversal cap", mutate: func(q *querylogical.Query) { q.Steps[0].Depth.Max = 65 }, code: querylogical.ErrorInvalidQuery, want: "must not exceed 64"},

@@ -391,6 +391,16 @@ func (o *AggregateOperator) accumulate(row BindingRow, states []aggregateState) 
 			state.count++
 			continue
 		}
+		if aggregate.Function == querylogical.AggregateCount && aggregate.Argument != nil && aggregate.Argument.Kind == querylogical.ValueBinding {
+			alias := aggregate.Argument.Binding
+			_, hasNode := row.Nodes[alias]
+			_, hasEdge := row.Edges[alias]
+			_, hasPath := row.Paths[alias]
+			if hasNode || hasEdge || hasPath {
+				state.count++
+			}
+			continue
+		}
 		value, err := o.eval.value(row, dereferenceValue(aggregate.Argument))
 		if err != nil {
 			return err

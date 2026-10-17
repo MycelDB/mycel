@@ -266,6 +266,12 @@ func (b *binder) validateProjections(projections []querylogical.Projection) erro
 			if projection.Field.Alias != projection.Alias {
 				return b.invalid("scalar projection %d field alias does not match projection alias", i)
 			}
+			if projection.Field.Name == "" {
+				if variable.Kind != VariableNode {
+					return b.invalid("scalar projection %d alias %q is not a node", i, projection.Alias)
+				}
+				continue
+			}
 			if err := b.validateField(*projection.Field); err != nil {
 				return err
 			}
@@ -295,6 +301,9 @@ func (b *binder) validateAggregates(aggregates []querylogical.Aggregate) error {
 		if aggregate.Argument == nil {
 			return b.invalid("aggregate %d requires an argument", i)
 		}
+		if aggregate.Function != querylogical.AggregateCount && aggregate.Argument.Kind == querylogical.ValueBinding {
+			return b.invalid("aggregate %d %s requires a value argument", i, aggregate.Function)
+		}
 		if err := b.validateValue(*aggregate.Argument); err != nil {
 			return fmt.Errorf("aggregate %d: %w", i, err)
 		}
@@ -318,7 +327,7 @@ func (b *binder) validateOutputNames(projections []querylogical.Projection, aggr
 		name := projection.OutputName
 		if name == "" {
 			name = projection.Alias
-			if projection.Kind == querylogical.ProjectionScalar && projection.Field != nil {
+			if projection.Kind == querylogical.ProjectionScalar && projection.Field != nil && projection.Field.Name != "" {
 				name = projection.Field.Alias + "." + projection.Field.Name
 				if projection.Field.Namespace != querylogical.NamespaceProperties {
 					name = projection.Field.Alias + "." + string(projection.Field.Namespace) + "." + projection.Field.Name

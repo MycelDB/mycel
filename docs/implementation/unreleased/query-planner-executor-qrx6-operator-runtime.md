@@ -112,6 +112,12 @@ functions are ready for the plan-family cutovers beginning in QRX7.
   runtime diagnostics until an approved API change exposes them.
 - Numeric ordering preserves signed/unsigned integers beyond IEEE-754's exact
   range. Aggregate sum/average retain existing floating-point behavior.
+- Structured scalar projections preserve bare node aliases and the legacy
+  synthetic `node_id`, `content`, `edge_id`, `from_node_id`, and `to_node_id`
+  fields. `COUNT(binding)` retains node, edge, and path presence semantics;
+  non-count aggregates still require value expressions.
+- Physical trees model the finite response-page lookahead limit even when the
+  request omits a page size and runtime applies the default.
 
 ## Verification
 
@@ -121,7 +127,8 @@ Coverage includes:
 - stable filter/order/project/offset/limit output across batch sizes;
 - lossless large-integer ordering;
 - deterministic distinct and grouping;
-- global aggregation over empty input;
+- global aggregation over empty input and legacy aggregate-argument validation;
+- bare and synthetic node/edge scalar projection compatibility;
 - Top-N and complete-sort physical selection;
 - memory-budget failure for sort, distinct, and aggregation;
 - output-memory accounting and cleanup;

@@ -49,6 +49,58 @@ func TestShapeRunsDeterministicBoundedPipeline(t *testing.T) {
 	}
 }
 
+func TestShapePreservesLegacyBareAndSyntheticEntityFields(t *testing.T) {
+	nodeID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	edgeID := uuid.MustParse("00000000-0000-0000-0000-000000000010")
+	fromID := uuid.MustParse("00000000-0000-0000-0000-000000000011")
+	toID := uuid.MustParse("00000000-0000-0000-0000-000000000012")
+	row := queryexecution.BindingRow{
+		Nodes: map[string]graph.Node{"n": {ID: nodeID, Payload: map[string]any{"text": "payload"}}},
+		Edges: map[string]graph.Edge{"e": {ID: edgeID, FromID: fromID, ToID: toID}},
+	}
+	projections := []querylogical.Projection{
+		{Kind: querylogical.ProjectionScalar, Alias: "n", Field: fieldRef("n", ""), OutputName: "bare"},
+		{Kind: querylogical.ProjectionScalar, Alias: "n", Field: fieldRef("n", "node_id"), OutputName: "node_id"},
+		{Kind: querylogical.ProjectionScalar, Alias: "n", Field: fieldRef("n", "content"), OutputName: "content"},
+		{Kind: querylogical.ProjectionScalar, Alias: "e", Field: fieldRef("e", "edge_id"), OutputName: "edge_id"},
+		{Kind: querylogical.ProjectionScalar, Alias: "e", Field: fieldRef("e", "from_node_id"), OutputName: "from_node_id"},
+		{Kind: querylogical.ProjectionScalar, Alias: "e", Field: fieldRef("e", "to_node_id"), OutputName: "to_node_id"},
+	}
+	result := shape(t, []queryexecution.BindingRow{row}, querylogical.Query{Returns: projections}, queryexecution.Budget{})
+	want := map[string]string{
+		"bare":         nodeID.String(),
+		"node_id":      nodeID.String(),
+		"content":      "payload",
+		"edge_id":      edgeID.String(),
+		"from_node_id": fromID.String(),
+		"to_node_id":   toID.String(),
+	}
+	for name, expected := range want {
+		if got := scalarString(result.Rows[0], name); got != expected {
+			t.Fatalf("%s = %q, want %q", name, got, expected)
+		}
+	}
+}
+
+func TestShapePreservesAggregateArgumentCompatibility(t *testing.T) {
+	rows := []queryexecution.BindingRow{{Paths: map[string]querylogical.Path{"p": {}}}}
+	argument := querylogical.BindingValue("p")
+	count := shape(t, rows, querylogical.Query{Aggregates: []querylogical.Aggregate{{Function: querylogical.AggregateCount, Argument: &argument, OutputName: "count"}}}, queryexecution.Budget{})
+	if got := count.Rows[0].Fields["count"].Scalar.Number; got != 1 {
+		t.Fatalf("COUNT(path) = %v, want 1", got)
+	}
+
+	for _, function := range []querylogical.AggregateFunction{querylogical.AggregateSum, querylogical.AggregateAvg, querylogical.AggregateMin, querylogical.AggregateMax} {
+		budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
+		tracker, err := queryexecution.NewTracker(budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = queryexecution.Shape(context.Background(), queryexecution.NewLegacySource(rows, budget.BatchSize, tracker), querylogical.Query{Aggregates: []querylogical.Aggregate{{Function: function, Star: true}}}, tracker, queryexecution.ShapeOptions{})
+		assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
+	}
+}
+
 func TestShapeStopsStreamingSourceAfterBoundedPage(t *testing.T) {
 	rows := make([]queryexecution.BindingRow, 1000)
 	for index := range rows {
