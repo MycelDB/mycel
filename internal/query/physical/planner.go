@@ -117,7 +117,10 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 			}
 			break
 		}
-		branches, indexed, predicateOK := indexedBranches(query.Predicate, query.Start.Alias)
+		branches, indexed, predicateOK, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source)
+		if err != nil {
+			return Plan{}, true, err
+		}
 		if !predicateOK {
 			return Plan{}, false, nil
 		}
@@ -166,8 +169,8 @@ func (p planner) planIndexedAdjacency(query querylogical.Query) (Plan, bool, err
 		return Plan{}, false, nil
 	}
 	step := query.Steps[0]
-	if step.Depth.Min != 1 || p.resolvedMaxDepth(query.Source, step.Depth.Max) != 1 {
-		return Plan{}, true, p.invalid("indexed adjacency supports one-hop traversal only")
+	if step.Depth.Min > 1 || p.resolvedMaxDepth(query.Source, step.Depth.Max) != 1 {
+		return Plan{}, true, p.invalid("indexed adjacency requires maximum depth 1 and minimum depth at most 1")
 	}
 	if len(step.Edge.Labels) != 1 || strings.TrimSpace(step.Edge.Labels[0]) == "" {
 		return Plan{}, true, p.invalid("indexed adjacency requires exactly one edge label")
@@ -183,7 +186,7 @@ func (p planner) planIndexedAdjacency(query querylogical.Query) (Plan, bool, err
 		Labels: append([]string(nil), query.Start.Labels...), NodeIDs: append([]string(nil), query.Start.NodeIDs...),
 		Steps: []TraversalStep{{
 			EdgeAlias: step.Edge.Alias, Labels: append([]string(nil), step.Edge.Labels...), Direction: step.Edge.Direction,
-			MinDepth: 1, MaxDepth: 1, TargetAlias: step.Target.Alias, TargetLabels: append([]string(nil), step.Target.Labels...),
+			MinDepth: step.Depth.Min, MaxDepth: 1, TargetAlias: step.Target.Alias, TargetLabels: append([]string(nil), step.Target.Labels...),
 		}},
 	}
 	return Plan{
@@ -219,7 +222,7 @@ func (p planner) planIndexedEquality(query querylogical.Query) (Plan, bool, erro
 }
 
 func (p planner) planSemantic(query querylogical.Query) (Plan, bool, error) {
-	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 {
+	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 || !gqlIndexedPredicatesSupported(query) {
 		return Plan{}, false, nil
 	}
 	semantic, residual, found, err := semanticPredicate(query.Predicate)
@@ -248,7 +251,10 @@ func (p planner) planIndexedPredicate(query querylogical.Query) (Plan, bool, err
 	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 {
 		return Plan{}, false, nil
 	}
-	branches, pushed, ok := indexedBranches(query.Predicate, query.Start.Alias)
+	branches, pushed, ok, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source)
+	if err != nil {
+		return Plan{}, true, err
+	}
 	if !ok || len(branches) == 0 {
 		return Plan{}, false, nil
 	}
@@ -449,10 +455,17 @@ func (p planner) resourceLimits(query querylogical.Query, family Family) Resourc
 		limits.MaxStartNodes = defaultPathMaxStartNodes
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded
 		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
-	case FamilyIndexedAdjacency, FamilyIndexedEquality, FamilyIndexedPredicate, FamilyIndexedOrder:
+	case FamilyIndexedAdjacency:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
+		limits.MaxStartNodes = defaultPathMaxStartNodes
+		limits.MaxNodesLoaded = defaultMaxNodesLoaded
+		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
+	case FamilyIndexedEquality, FamilyIndexedPredicate, FamilyIndexedOrder:
+		limits.MaxIndexEntries = defaultMaxIndexEntries
+		limits.MaxNodesLoaded = defaultMaxNodesLoaded
 	case FamilyIndexedSubtree:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
+		limits.MaxStartNodes = defaultPathMaxStartNodes
 		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
 	case FamilySemantic:
 		limits.MaxSemanticCandidates = semanticCandidateLimit(query)
@@ -550,55 +563,73 @@ func equalityScan(predicate *querylogical.Predicate, alias string) (IndexScan, b
 	return scan, ok
 }
 
-func indexedBranches(predicate *querylogical.Predicate, alias string) ([]candidateBranch, *querylogical.Predicate, bool) {
+func indexedBranches(predicate *querylogical.Predicate, alias string, source querylogical.Source) ([]candidateBranch, *querylogical.Predicate, bool, error) {
+	if source == querylogical.SourceGQL && hasUnsupportedGQLIndexedComparison(predicate) {
+		return nil, nil, false, nil
+	}
 	if predicate == nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
 	if predicate.Op == querylogical.PredicateOrOp {
 		branches := []candidateBranch{}
 		pushedTerms := []querylogical.Predicate{}
 		for i := range predicate.Terms {
-			childBranches, pushed, ok := indexedBranches(&predicate.Terms[i], alias)
+			childBranches, pushed, ok, err := indexedBranches(&predicate.Terms[i], alias, source)
+			if err != nil {
+				return nil, nil, true, err
+			}
 			if !ok || len(childBranches) == 0 || pushed == nil {
-				return nil, nil, false
+				return nil, nil, false, nil
 			}
 			branches = append(branches, childBranches...)
 			pushedTerms = append(pushedTerms, *pushed)
 		}
-		return branches, querylogical.CombinePredicate(querylogical.PredicateOrOp, pushedTerms), len(branches) > 0
+		return branches, querylogical.CombinePredicate(querylogical.PredicateOrOp, pushedTerms), len(branches) > 0, nil
 	}
-	branch, pushed := indexedAndBranch(predicate, alias)
+	branch, pushed, err := indexedAndBranch(predicate, alias, source)
+	if err != nil {
+		return nil, nil, true, err
+	}
 	if len(branch.scans) == 0 || pushed == nil {
-		return nil, nil, false
+		return nil, nil, false, nil
 	}
-	return []candidateBranch{branch}, pushed, true
+	return []candidateBranch{branch}, pushed, true, nil
 }
 
-func indexedAndBranch(predicate *querylogical.Predicate, alias string) (candidateBranch, *querylogical.Predicate) {
+func indexedAndBranch(predicate *querylogical.Predicate, alias string, source querylogical.Source) (candidateBranch, *querylogical.Predicate, error) {
 	if predicate == nil {
-		return candidateBranch{}, nil
+		return candidateBranch{}, nil, nil
 	}
 	if predicate.Op == querylogical.PredicateAndOp {
 		branch := candidateBranch{}
 		terms := []querylogical.Predicate{}
 		for i := range predicate.Terms {
-			child, pushed := indexedAndBranch(&predicate.Terms[i], alias)
+			child, pushed, err := indexedAndBranch(&predicate.Terms[i], alias, source)
+			if err != nil {
+				return candidateBranch{}, nil, err
+			}
 			branch.scans = append(branch.scans, child.scans...)
 			if pushed != nil {
 				terms = append(terms, *pushed)
 			}
 		}
-		return branch, querylogical.CombinePredicate(querylogical.PredicateAndOp, terms)
+		return branch, querylogical.CombinePredicate(querylogical.PredicateAndOp, terms), nil
 	}
 	if predicate.Op != querylogical.PredicateLeafOp || predicate.Leaf == nil {
-		return candidateBranch{}, nil
+		return candidateBranch{}, nil, nil
+	}
+	if source == querylogical.SourceGQL && predicate.Leaf.Kind == querylogical.LeafComparison && predicate.Leaf.Operator != "=" {
+		return candidateBranch{}, nil, nil
 	}
 	scan, ok := scanForLeaf(*predicate.Leaf, alias)
 	if !ok {
-		return candidateBranch{}, nil
+		if err := malformedIndexedLeaf(*predicate.Leaf, alias, source); err != nil {
+			return candidateBranch{}, nil, err
+		}
+		return candidateBranch{}, nil, nil
 	}
 	leaf := *predicate
-	return candidateBranch{scans: []candidateScan{{scan: scan}}}, &leaf
+	return candidateBranch{scans: []candidateScan{{scan: scan}}}, &leaf, nil
 }
 
 func scanForLeaf(leaf querylogical.Leaf, alias string) (IndexScan, bool) {
@@ -667,6 +698,73 @@ func scanForLeaf(leaf querylogical.Leaf, alias string) (IndexScan, bool) {
 	}
 	scan.Field = field
 	return scan, true
+}
+
+func gqlIndexedPredicatesSupported(query querylogical.Query) bool {
+	return query.Source != querylogical.SourceGQL || !hasUnsupportedGQLIndexedComparison(query.Predicate)
+}
+
+func hasUnsupportedGQLIndexedComparison(predicate *querylogical.Predicate) bool {
+	if predicate == nil {
+		return false
+	}
+	if predicate.Op == querylogical.PredicateLeafOp && predicate.Leaf != nil {
+		return predicate.Leaf.Kind == querylogical.LeafBetween ||
+			(predicate.Leaf.Kind == querylogical.LeafComparison && predicate.Leaf.Operator != "=")
+	}
+	for i := range predicate.Terms {
+		if hasUnsupportedGQLIndexedComparison(&predicate.Terms[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func malformedIndexedLeaf(leaf querylogical.Leaf, alias string, source querylogical.Source) error {
+	if source != querylogical.SourceStructured {
+		return nil
+	}
+	invalidField := func(field querylogical.FieldRef, ok bool) bool {
+		return !ok || field.Alias != alias || strings.TrimSpace(field.Name) == ""
+	}
+	switch leaf.Kind {
+	case querylogical.LeafComparison:
+		if leaf.Operator != "=" && leaf.Operator != "<" && leaf.Operator != ">=" && leaf.Operator != "<=" {
+			return nil
+		}
+		field, ok := querylogical.FieldRef{}, false
+		if leaf.Left != nil {
+			field, ok = valueField(*leaf.Left)
+		}
+		if invalidField(field, ok) || leaf.Right == nil || !staticValue(*leaf.Right) {
+			return querylogical.NewError(querylogical.ErrorInvalidQuery, "plan query", "indexed comparison predicate must compare the start alias property with a static value", nil)
+		}
+	case querylogical.LeafBetween:
+		field, ok := querylogical.FieldRef{}, false
+		if leaf.Left != nil {
+			field, ok = valueField(*leaf.Left)
+		}
+		if invalidField(field, ok) || leaf.Low == nil || leaf.High == nil || !staticValue(*leaf.Low) || !staticValue(*leaf.High) {
+			return querylogical.NewError(querylogical.ErrorInvalidQuery, "plan query", "indexed between predicate must compare the start alias property with static bounds", nil)
+		}
+	case querylogical.LeafPropertyExists:
+		if leaf.Field == nil || invalidField(*leaf.Field, true) {
+			return querylogical.NewError(querylogical.ErrorInvalidQuery, "plan query", "indexed property-exists predicate must target the start alias", nil)
+		}
+	case querylogical.LeafString:
+		field, ok := querylogical.FieldRef{}, false
+		if leaf.Operand != nil {
+			field, ok = valueField(*leaf.Operand)
+		}
+		if invalidField(field, ok) {
+			return querylogical.NewError(querylogical.ErrorInvalidQuery, "plan query", "indexed string predicate must target the start alias property", nil)
+		}
+	case querylogical.LeafText:
+		if leaf.Field != nil && leaf.Field.Alias != alias {
+			return querylogical.NewError(querylogical.ErrorInvalidQuery, "plan query", "indexed text predicate must target the start alias", nil)
+		}
+	}
+	return nil
 }
 
 func semanticPredicate(predicate *querylogical.Predicate) (querylogical.Leaf, *querylogical.Predicate, bool, error) {

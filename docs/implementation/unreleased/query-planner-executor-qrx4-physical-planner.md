@@ -43,9 +43,11 @@ takes precedence over the compound predicate rule.
 Path starts retain the current node-ID, label, tag, and ordered-predicate access
 choices. Compound predicates retain AND-intersection/OR-union shape and an
 explicit residual predicate because the legacy implementation rechecks
-candidates. Ordered scans preserve bounds, direction, concrete index identity,
-and subtree root ordering. Semantic plans separate the semantic predicate from
-its residual filter.
+candidates. Outside ordered traversal bounds, GQL comparison indexing retains
+the legacy equality-only subset; a range term keeps the complete GQL predicate
+on broad fallback. Ordered scans preserve bounds, direction, concrete index
+identity, and subtree root ordering. Semantic plans separate the semantic
+predicate from its residual filter.
 
 ## Bounds and policy
 

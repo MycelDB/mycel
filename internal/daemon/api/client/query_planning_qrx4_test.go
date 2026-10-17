@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"testing"
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
@@ -51,6 +52,41 @@ func TestQRX4StructuredAndGQLEqualitySelectSamePhysicalPlan(t *testing.T) {
 		if len(plan.Indexes) != 1 || plan.Indexes[0].Name != "person_first_name" || plan.Cursor.Kind != "index_key" || !plan.RequiresLegacy() {
 			t.Fatalf("%s metadata = %#v", name, plan)
 		}
+	}
+}
+
+func TestQRX4GQLRangePreservesBroadFallbackPolicy(t *testing.T) {
+	schema := qrx3BindingSchema()
+	schema.Indexes = append(schema.Indexes, orderedNodeIndex("person_first_name", "Person", "firstName"))
+	gqlPlan, err := gql.CompileWithSchemaAndParams(
+		"MATCH (p:Person) WHERE p.firstName > 'Ada' RETURN p",
+		analysis.SchemaContext{Schema: &schema}, nil,
+	)
+	if err != nil {
+		t.Fatalf("compile GQL: %v", err)
+	}
+	if !gqlPlanRequiresBroadFallback(gqlPlan) {
+		t.Fatal("legacy GQL recognizer did not classify range predicate as broad fallback")
+	}
+	statement, ok := querylogical.StatementFromGQLPlan(gqlPlan, querylogical.NormalizeOptions{PageSize: 25})
+	if !ok {
+		t.Fatal("normalize GQL statement")
+	}
+	environment := qrx4PhysicalEnvironment(&schema)
+	physicalPlan := bindAndPlanQRX4(t, statement, &schema, environment)
+	if physicalPlan.Family != queryphysical.FamilyBoundedFullScan {
+		t.Fatalf("physical plan = %#v", physicalPlan)
+	}
+
+	bound, err := querybinding.Bind(statement, qrx3BindingEnvironment(&schema))
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	environment.Domain.BroadSearchable = false
+	_, err = queryphysical.Build(bound, environment)
+	var queryErr *querylogical.QueryError
+	if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorUnavailableAccessPath {
+		t.Fatalf("explicit-only planning error = %#v", err)
 	}
 }
 

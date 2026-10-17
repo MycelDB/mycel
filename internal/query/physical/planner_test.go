@@ -76,6 +76,27 @@ func TestBuildSelectsLegacyAccessFamiliesInPrecedenceOrder(t *testing.T) {
 	}
 }
 
+func TestBuildAcceptsOptionalOneHopAdjacencyAndBoundsWork(t *testing.T) {
+	query := baseQuery()
+	query.Start.NodeIDs = []string{"node-1", "node-2"}
+	step := traversalStep("edge")
+	step.Depth = querylogical.DepthBounds{Min: 0, Max: 1}
+	query.Steps = []querylogical.Step{step}
+
+	plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyIndexedAdjacency || plan.Access.Steps[0].MinDepth != 0 {
+		t.Fatalf("plan = %#v", plan)
+	}
+	if plan.Limits.MaxStartNodes == 0 || plan.Limits.MaxNodesLoaded == 0 || plan.Limits.MaxEdgesLoaded == 0 {
+		t.Fatalf("adjacency limits = %#v", plan.Limits)
+	}
+	query.Page.Size = 1
+	withSmallPage := buildRead(t, query, plannerSchema(), plannerEnvironment())
+	if plan.Limits != withSmallPage.Limits {
+		t.Fatalf("limits changed with page size: %#v != %#v", plan.Limits, withSmallPage.Limits)
+	}
+}
+
 func TestBuildSelectsIndexedPathStartAccess(t *testing.T) {
 	label := baseQuery()
 	label.PathAlias = "path"
@@ -178,6 +199,23 @@ func TestBuildRecordsBoundedPathAndFullScanLimits(t *testing.T) {
 	}
 }
 
+func TestBuildGQLRangeUsesBroadFallbackAndPolicy(t *testing.T) {
+	query := baseQuery()
+	query.Source = querylogical.SourceGQL
+	query.Predicate = querylogical.CombinePredicate(querylogical.PredicateAndOp, []querylogical.Predicate{
+		*comparison("n", "name", "=", stringValue("Ada")),
+		*comparison("n", "age", ">", integerValue(18)),
+	})
+
+	plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan {
+		t.Fatalf("plan = %#v", plan)
+	}
+	environment := plannerEnvironment()
+	environment.Domain.BroadSearchable = false
+	assertPlanError(t, query, plannerSchema(), environment, querylogical.ErrorUnavailableAccessPath)
+}
+
 func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -202,6 +240,13 @@ func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {
 			step := traversalStep("edge")
 			step.Depth.Max = 2
 			q.Steps = []querylogical.Step{step}
+			return q
+		}(), schema: plannerSchema(), environment: plannerEnvironment(), code: querylogical.ErrorInvalidQuery},
+		{name: "malformed structured less-than", query: func() querylogical.Query {
+			q := baseQuery()
+			left := stringValue("Ada")
+			right := querylogical.FieldValue("n", "name")
+			q.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafComparison, Operator: "<", Left: &left, Right: &right})
 			return q
 		}(), schema: plannerSchema(), environment: plannerEnvironment(), code: querylogical.ErrorInvalidQuery},
 		{name: "missing index capability", query: func() querylogical.Query {
@@ -362,6 +407,16 @@ func operatorTreeContains(root queryphysical.Operator, kind queryphysical.Operat
 		}
 	}
 	return false
+}
+
+func assertPlanError(t *testing.T, query querylogical.Query, schema schemamodel.DomainSchema, environment queryphysical.Environment, code querylogical.ErrorCode) {
+	t.Helper()
+	bound, err := querybinding.Bind(querylogical.ReadStatement(query), bindingEnvironment(&schema, false))
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	_, err = queryphysical.Build(bound, environment)
+	assertQueryErrorCode(t, err, code)
 }
 
 func assertQueryErrorCode(t *testing.T, err error, code querylogical.ErrorCode) {
