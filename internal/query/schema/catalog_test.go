@@ -19,6 +19,10 @@ func TestCatalogResolvesLabelsFieldsAndEndpoints(t *testing.T) {
 			From: schemamodel.EndpointSpec{NodeTypes: []string{"person"}}, To: schemamodel.EndpointSpec{Labels: []string{"Company"}},
 			Properties: []schemamodel.FieldSpec{{Name: "since"}},
 		}},
+		Indexes: []schemamodel.IndexDefinition{{
+			Name: "person_name", TargetKind: schemamodel.IndexTargetNode, TargetType: "person",
+			Field: schemamodel.FieldPath{Namespace: "properties", Name: "name"}, Kind: schemamodel.IndexKindOrdered,
+		}},
 	}
 	catalog := queryschema.NewCatalog(&document)
 	people, unknown := catalog.ResolveNodeLabels([]string{"Person", "Actor"})
@@ -41,6 +45,10 @@ func TestCatalogResolvesLabelsFieldsAndEndpoints(t *testing.T) {
 	}
 	if !catalog.EndpointsAllowed(edges, people, companies) || catalog.EndpointsAllowed(edges, companies, people) {
 		t.Fatal("unexpected endpoint lookup result")
+	}
+	index, ok := catalog.FindOrderedNodeIndex("Person", "name")
+	if !ok || index.Name != "person_name" {
+		t.Fatalf("ordered index = %#v, ok = %v", index, ok)
 	}
 	if _, unknown := catalog.ResolveNodeLabels([]string{"Missing"}); unknown != "Missing" {
 		t.Fatalf("unknown node label = %q", unknown)

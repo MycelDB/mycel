@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
@@ -42,6 +44,20 @@ func (r *recordingEntityReader) ListEdges(_ context.Context, tx sessionmodel.Gra
 	return nil, "", nil
 }
 
+type panicIndexReader struct{}
+
+func (panicIndexReader) ScanLabel(context.Context, sessionmodel.GraphTransaction, graphquery.LabelScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	panic("planning must not scan labels")
+}
+
+func (panicIndexReader) ScanTag(context.Context, sessionmodel.GraphTransaction, graphquery.TagScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	panic("planning must not scan tags")
+}
+
+func (panicIndexReader) ScanNodePropertyOrdered(context.Context, sessionmodel.GraphTransaction, graphquery.OrderedNodePropertyScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	panic("planning must not scan ordered indexes")
+}
+
 type panicCatalog struct{}
 
 func (panicCatalog) GetDomainSchema(context.Context, graph.DomainID) (schemamodel.DomainSchema, error) {
@@ -63,7 +79,7 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	}
 	statement := validReadStatement()
 
-	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{Transaction: tx}, statement)
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -75,6 +91,9 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	}
 	if !reflect.DeepEqual(prepared.Statement, statement) {
 		t.Fatalf("prepared statement = %#v, want %#v", prepared.Statement, statement)
+	}
+	if prepared.Physical.Family != queryphysical.FamilyBoundedFullScan || prepared.Physical.Root.Kind != queryphysical.OperatorLegacyBridge {
+		t.Fatalf("physical plan = %#v", prepared.Physical)
 	}
 	if len(prepared.Binding.Variables) != 1 || prepared.Binding.Variables[0].Name != "n" {
 		t.Fatalf("bound variables = %#v", prepared.Binding.Variables)
@@ -88,18 +107,43 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	}
 }
 
+func TestEnginePrepareSelectsIndexedPhysicalPlanWithoutIndexAccess(t *testing.T) {
+	entities := &recordingEntityReader{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities, Indexes: panicIndexReader{}})
+	schema := schemamodel.DomainSchema{
+		Version: "v4", Mode: schemamodel.SchemaModeStrict,
+		NodeTypes: []schemamodel.NodeType{{Name: "Document", Labels: []string{"Document"}, Properties: []schemamodel.FieldSpec{{Name: "name", Type: schemamodel.FieldTypeString}}}},
+		Indexes:   []schemamodel.IndexDefinition{{Name: "document_name", TargetKind: schemamodel.IndexTargetNode, TargetType: "Document", Field: schemamodel.FieldPath{Namespace: "properties", Name: "name"}, Kind: schemamodel.IndexKindOrdered}},
+	}
+	statement := validReadStatement()
+	left := querylogical.FieldValue("n", "name")
+	right := querylogical.Value{Kind: querylogical.ValueString, String: "Ada"}
+	statement.Read.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafComparison, Left: &left, Right: &right, Operator: "="})
+
+	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{Schema: &schema}, statement)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if prepared.Physical.Family != queryphysical.FamilyIndexedEquality || len(prepared.Physical.Indexes) != 1 || prepared.Physical.Indexes[0].Name != "document_name" {
+		t.Fatalf("physical plan = %#v", prepared.Physical)
+	}
+	if entities.calls != 0 {
+		t.Fatalf("entity reads during indexed planning = %d, want 0", entities.calls)
+	}
+}
+
 func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities})
 
-	diagnostics, err := engine.Explain(context.Background(), queryengine.PlanningContext{}, validReadStatement())
+	diagnostics, err := engine.Explain(context.Background(), broadPlanningContext(sessionmodel.GraphTransaction{}), validReadStatement())
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
-	if diagnostics.Plan != "LegacyBridge" || diagnostics.PlanKind != string(queryengine.PlanLegacyBridge) {
+	if diagnostics.Plan != "BoundedFullGraphScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx3" || !diagnostics.ExplainOnly {
+	if diagnostics.PlannerVersion != "qrx4" || diagnostics.FallbackMode != string(queryengine.PlanLegacyBridge) || !diagnostics.ExplainOnly {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if entities.calls != 0 {
@@ -123,7 +167,7 @@ func TestEnginePrepareReturnsTypedBindingErrorsBeforeAccess(t *testing.T) {
 func TestEngineExecuteReturnsTypedUnsupportedPlanBeforeAccess(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities})
-	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{}, validReadStatement())
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(sessionmodel.GraphTransaction{}), validReadStatement())
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -155,6 +199,10 @@ func TestEngineFacadeMapsCanceledContextsToTypedErrors(t *testing.T) {
 	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
 	_, err = engine.Execute(ctx, queryengine.ExecutionContext{}, queryengine.PreparedQuery{})
 	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+}
+
+func broadPlanningContext(tx sessionmodel.GraphTransaction) queryengine.PlanningContext {
+	return queryengine.PlanningContext{Transaction: tx, Domain: queryengine.DomainPolicy{BroadSearchable: true}}
 }
 
 func validReadStatement() querylogical.Statement {

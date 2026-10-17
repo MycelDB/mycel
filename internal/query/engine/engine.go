@@ -6,13 +6,14 @@ import (
 
 	querybinding "github.com/myceldb/mycel/internal/query/binding"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const (
 	plannerName    = "mycel-query-engine"
-	plannerVersion = "qrx3"
+	plannerVersion = "qrx4"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -72,6 +73,7 @@ const (
 type PreparedQuery struct {
 	Statement         querylogical.Statement
 	Binding           querybinding.BoundStatement
+	Physical          queryphysical.Plan
 	Planning          PlanningContext
 	Kind              PlanKind
 	UnsupportedReason string
@@ -83,9 +85,9 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX3 binds every represented
-// statement and still prepares it for the legacy bridge; later tranches replace
-// that execution decision one plan family at a time.
+// Engine implements the neutral query facade. QRX4 binds and physically plans
+// every represented statement, then retains the legacy bridge as the sole
+// execution owner until operator families migrate.
 type Engine struct {
 	ports Ports
 }
@@ -110,8 +112,9 @@ func (e *Engine) Capabilities() CapabilitySet {
 	}
 }
 
-// Prepare binds the neutral statement without changing production execution
-// ownership. Binding is side-effect-free and invokes no access port.
+// Prepare binds and physically plans the neutral statement without changing
+// production execution ownership. Preparation is side-effect-free and invokes
+// no access port.
 func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (PreparedQuery, error) {
 	if err := contextQueryError("prepare query", ctx.Err()); err != nil {
 		return PreparedQuery{}, err
@@ -126,12 +129,27 @@ func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statemen
 	if err != nil {
 		return PreparedQuery{}, err
 	}
+	capabilities := e.Capabilities()
+	physicalPlan, err := queryphysical.Build(bound, queryphysical.Environment{
+		Schema:        planning.Schema,
+		Domain:        planning.Domain,
+		BindingLimits: planning.Limits,
+		Capabilities: queryphysical.Capabilities{
+			EntityReads: capabilities.EntityReads, Traversals: capabilities.Traversals,
+			Indexes: capabilities.Indexes, SemanticCandidates: capabilities.SemanticCandidates,
+			Mutations: capabilities.Mutations,
+		},
+	})
+	if err != nil {
+		return PreparedQuery{}, err
+	}
 	return PreparedQuery{
 		Statement:         statement,
 		Binding:           bound,
+		Physical:          physicalPlan,
 		Planning:          planning,
 		Kind:              PlanLegacyBridge,
-		UnsupportedReason: "no physical plan families have migrated to the query engine",
+		UnsupportedReason: physicalPlan.LegacyBridgeReason,
 	}, nil
 }
 
@@ -142,11 +160,18 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	if err != nil {
 		return querylogical.Diagnostics{}, err
 	}
+	indexes := make([]string, 0, len(prepared.Physical.Indexes))
+	for _, index := range prepared.Physical.Indexes {
+		indexes = append(indexes, index.Name)
+	}
 	return querylogical.Diagnostics{
-		Plan:           "LegacyBridge",
-		PlanKind:       string(prepared.Kind),
+		Plan:           prepared.Physical.Name,
+		PlanKind:       string(prepared.Physical.Family),
 		Planner:        plannerName,
 		PlannerVersion: plannerVersion,
+		Indexes:        indexes,
+		FullScan:       prepared.Physical.FullScan,
+		NextCursorKind: prepared.Physical.Cursor.Kind,
 		ExplainOnly:    true,
 		FallbackMode:   string(PlanLegacyBridge),
 	}, nil
