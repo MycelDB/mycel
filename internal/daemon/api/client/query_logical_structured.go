@@ -93,6 +93,9 @@ func logicalStructuredReturns(returns []*clientv1.ReturnProjection) []querylogic
 			OutputName: projection.GetOutputName(),
 		}
 		if item.Kind == querylogical.ProjectionScalar {
+			if item.OutputName == "" {
+				item.OutputName = projection.GetAlias()
+			}
 			alias, fieldName := logicalProjectionField(projection.GetAlias())
 			field := querylogical.ParseFieldRef(alias, fieldName)
 			item.Alias = alias
@@ -156,6 +159,24 @@ func logicalStructuredAggregates(aggregates []*clientv1.AggregateProjection) []q
 		out = append(out, item)
 	}
 	return out
+}
+
+func aggregateOutputName(aggregate *clientv1.AggregateProjection) string {
+	if name := strings.TrimSpace(aggregate.GetOutputName()); name != "" {
+		return name
+	}
+	switch aggregate.GetFunction() {
+	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM:
+		return "sum"
+	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_AVG:
+		return "avg"
+	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN:
+		return "min"
+	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_MAX:
+		return "max"
+	default:
+		return "count"
+	}
 }
 
 func logicalStructuredAggregateFunction(function clientv1.AggregateFunction) querylogical.AggregateFunction {

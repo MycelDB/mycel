@@ -17,6 +17,7 @@ import (
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	queryruntime "github.com/myceldb/mycel/internal/query/execution"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
@@ -179,9 +180,9 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	out, next, err := exec.shapeAndProjectRows(rows, req.GetQuery(), int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rows, req.GetQuery(), int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, preserveQueryShapingError(err)
 	}
 	result := queryResultFromRows(out, next)
 	diagnostics := completeQueryDiagnostics(&clientv1.QueryDiagnostics{Plan: "BroadGraphFallback", PlanKind: "fallback", FullScan: true, NodesLoaded: int32(len(nodes)), EdgesLoaded: int32(len(edges)), RowsReturned: int32(len(out)), RowsProduced: int32(len(out)), RowsScanned: int32(len(rows)), CandidateCount: int32(len(rows)), NextCursorKind: "offset", FallbackMode: "broad_graph_fallback", ResidualPredicates: predicateDiagnostics(req.GetQuery().GetWhere())}, "fallback", executionStart, len(rows), len(out))
@@ -1358,384 +1359,27 @@ func (e *queryExecution) projectRow(row *queryRowState, returns []*clientv1.Retu
 	return &clientv1.QueryRow{Fields: fields}, nil
 }
 
-type shapedProtoRow struct {
-	row        *clientv1.QueryRow
-	sortValues []any
-	sequence   int
-}
-
-func (e *queryExecution) shapeAndProjectRows(rows []*queryRowState, query *clientv1.GraphQuery, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
-	if query.GetOffset() < 0 {
-		return nil, "", fmt.Errorf("offset must be non-negative")
+func (e *queryExecution) shapeAndProjectRows(ctx context.Context, rows []*queryRowState, query *clientv1.GraphQuery, pageSize int, pageToken string) ([]*clientv1.QueryRow, string, error) {
+	logicalQuery := logicalQueryFromStructured(query, int32(pageSize), pageToken)
+	if len(logicalQuery.Returns) == 0 && len(logicalQuery.Aggregates) == 0 {
+		logicalQuery.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: logicalQuery.Start.Alias, OutputName: logicalQuery.Start.Alias}}
 	}
-	returns := query.GetReturns()
-	if len(returns) == 0 && len(query.GetAggregateReturns()) == 0 {
-		startAlias := query.GetMatch().GetStart().GetAlias()
-		returns = []*clientv1.ReturnProjection{{Alias: startAlias, OutputName: startAlias, Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}}
-	}
-	var shaped []shapedProtoRow
-	var err error
-	if len(query.GetAggregateReturns()) > 0 {
-		shaped, err = e.projectAggregateShapedRows(rows, returns, query.GetAggregateReturns(), query.GetOrderBy())
-	} else {
-		shaped, err = e.projectShapedRows(rows, returns, query.GetOrderBy())
-	}
+	// Legacy access and matching have already applied the complete predicate.
+	// The temporary source owns shaping only; storage-family cutovers will pass
+	// the physical residual predicate through Engine.Execute.
+	logicalQuery.Predicate = nil
+	bindings := e.neutralLegacyBindings(rows, logicalQuery.Returns)
+	budget := queryruntime.ResolveBudget(queryruntime.Budget{}, queryruntime.Budget{})
+	tracker, err := queryruntime.NewTracker(budget)
 	if err != nil {
 		return nil, "", err
 	}
-	shaped = distinctShapedProtoRowsIf(shaped, query.GetDistinct())
-	if err := sortShapedProtoRows(shaped, query.GetOrderBy()); err != nil {
-		return nil, "", err
-	}
-	projected := materializeShapedProtoRows(shaped)
-	projected = applyProtoOffsetLimit(projected, int(query.GetOffset()), int(query.GetLimit()))
-	return paginateProtoQueryRows(projected, pageSize, pageToken)
-}
-
-func (e *queryExecution) projectShapedRows(rows []*queryRowState, returns []*clientv1.ReturnProjection, orders []*clientv1.OrderSpec) ([]shapedProtoRow, error) {
-	projected := make([]shapedProtoRow, 0, len(rows))
-	for i, row := range rows {
-		protoRow, err := e.projectRow(row, returns)
-		if err != nil {
-			return nil, err
-		}
-		sortValues, err := e.rowSortValues(row, orders)
-		if err != nil {
-			return nil, err
-		}
-		projected = append(projected, shapedProtoRow{row: protoRow, sortValues: sortValues, sequence: i})
-	}
-	return projected, nil
-}
-
-func (e *queryExecution) rowSortValues(row *queryRowState, orders []*clientv1.OrderSpec) ([]any, error) {
-	if len(orders) == 0 {
-		return nil, nil
-	}
-	values := make([]any, 0, len(orders))
-	for _, order := range orders {
-		value, err := e.evalValue(row, order.GetValue())
-		if err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, nil
-}
-
-func (e *queryExecution) projectAggregateShapedRows(rows []*queryRowState, returns []*clientv1.ReturnProjection, aggregates []*clientv1.AggregateProjection, orders []*clientv1.OrderSpec) ([]shapedProtoRow, error) {
-	if len(returns) == 0 {
-		fields := map[string]*clientv1.QueryValue{}
-		for _, agg := range aggregates {
-			value, err := e.aggregateRows(rows, agg)
-			if err != nil {
-				return nil, err
-			}
-			fields[aggregateOutputName(agg)] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value)}}
-		}
-		return []shapedProtoRow{{row: &clientv1.QueryRow{Fields: fields}, sequence: 0}}, nil
-	}
-	groups := map[string]map[string]*clientv1.QueryValue{}
-	groupRows := map[string][]*queryRowState{}
-	groupFirstSeq := map[string]int{}
-	groupFirstSortValues := map[string][]any{}
-	for i, row := range rows {
-		protoRow, err := e.projectRow(row, returns)
-		if err != nil {
-			return nil, err
-		}
-		key := protoRowKey(protoRow)
-		if _, ok := groups[key]; !ok {
-			groups[key] = cloneQueryFields(protoRow.GetFields())
-			groupFirstSeq[key] = i
-			sortValues, err := e.rowSortValues(row, orders)
-			if err != nil {
-				return nil, err
-			}
-			groupFirstSortValues[key] = sortValues
-		}
-		groupRows[key] = append(groupRows[key], row)
-	}
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]shapedProtoRow, 0, len(keys))
-	for _, key := range keys {
-		fields := cloneQueryFields(groups[key])
-		for _, agg := range aggregates {
-			value, err := e.aggregateRows(groupRows[key], agg)
-			if err != nil {
-				return nil, err
-			}
-			fields[aggregateOutputName(agg)] = &clientv1.QueryValue{Value: &clientv1.QueryValue_Scalar{Scalar: protoValue(value)}}
-		}
-		out = append(out, shapedProtoRow{row: &clientv1.QueryRow{Fields: fields}, sortValues: groupFirstSortValues[key], sequence: groupFirstSeq[key]})
-	}
-	return out, nil
-}
-
-func distinctShapedProtoRowsIf(rows []shapedProtoRow, distinct bool) []shapedProtoRow {
-	if !distinct {
-		return rows
-	}
-	seen := map[string]struct{}{}
-	out := make([]shapedProtoRow, 0, len(rows))
-	for _, row := range rows {
-		key := protoRowKey(row.row)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, row)
-	}
-	return out
-}
-
-func sortShapedProtoRows(rows []shapedProtoRow, orders []*clientv1.OrderSpec) error {
-	if len(orders) == 0 {
-		return nil
-	}
-	for _, row := range rows {
-		if len(row.sortValues) != len(orders) {
-			return fmt.Errorf("ORDER BY sort key count mismatch")
-		}
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		for idx, order := range orders {
-			cmp := compareQueryValues(rows[i].sortValues[idx], rows[j].sortValues[idx])
-			if cmp == 0 {
-				continue
-			}
-			if order.GetDirection() == clientv1.SortDirection_SORT_DIRECTION_DESC {
-				return cmp > 0
-			}
-			return cmp < 0
-		}
-		return rows[i].sequence < rows[j].sequence
-	})
-	return nil
-}
-
-func materializeShapedProtoRows(rows []shapedProtoRow) []*clientv1.QueryRow {
-	out := make([]*clientv1.QueryRow, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, row.row)
-	}
-	return out
-}
-
-func aggregateOutputName(agg *clientv1.AggregateProjection) string {
-	if name := strings.TrimSpace(agg.GetOutputName()); name != "" {
-		return name
-	}
-	switch agg.GetFunction() {
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM:
-		return "sum"
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_AVG:
-		return "avg"
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN:
-		return "min"
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_MAX:
-		return "max"
-	default:
-		return "count"
-	}
-}
-
-func (e *queryExecution) aggregateRows(rows []*queryRowState, agg *clientv1.AggregateProjection) (any, error) {
-	switch agg.GetFunction() {
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_UNSPECIFIED, clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT:
-		return e.aggregateCount(rows, agg)
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM:
-		values, err := e.aggregateNumericValues(rows, agg)
-		if err != nil {
-			return nil, err
-		}
-		sum := 0.0
-		for _, value := range values {
-			sum += value
-		}
-		return sum, nil
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_AVG:
-		values, err := e.aggregateNumericValues(rows, agg)
-		if err != nil {
-			return nil, err
-		}
-		if len(values) == 0 {
-			return nil, nil
-		}
-		sum := 0.0
-		for _, value := range values {
-			sum += value
-		}
-		return sum / float64(len(values)), nil
-	case clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN, clientv1.AggregateFunction_AGGREGATE_FUNCTION_MAX:
-		values, err := e.aggregateComparableValues(rows, agg)
-		if err != nil {
-			return nil, err
-		}
-		if len(values) == 0 {
-			return nil, nil
-		}
-		best := values[0]
-		for _, value := range values[1:] {
-			cmp := compareQueryValues(value, best)
-			if (agg.GetFunction() == clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN && cmp < 0) || (agg.GetFunction() == clientv1.AggregateFunction_AGGREGATE_FUNCTION_MAX && cmp > 0) {
-				best = value
-			}
-		}
-		return best, nil
-	default:
-		return nil, fmt.Errorf("unsupported aggregate function %s", agg.GetFunction())
-	}
-}
-
-func (e *queryExecution) aggregateCount(rows []*queryRowState, agg *clientv1.AggregateProjection) (int, error) {
-	arg := agg.GetArgument()
-	if arg == nil || arg.GetStar() {
-		return len(rows), nil
-	}
-	if valueExpr := arg.GetValue(); valueExpr != nil {
-		count := 0
-		for _, row := range rows {
-			value, err := e.evalValue(row, valueExpr)
-			if err != nil {
-				return 0, err
-			}
-			if value != nil {
-				count++
-			}
-		}
-		return count, nil
-	}
-	alias := arg.GetAlias()
-	if strings.TrimSpace(alias) == "" {
-		return len(rows), nil
-	}
-	count := 0
-	for _, row := range rows {
-		if len(row.bindings[alias]) > 0 || len(row.edgeBindings[alias]) > 0 || row.pathBindings[alias] != nil {
-			count++
-		}
-	}
-	return count, nil
-}
-
-func (e *queryExecution) aggregateNumericValues(rows []*queryRowState, agg *clientv1.AggregateProjection) ([]float64, error) {
-	arg := agg.GetArgument()
-	if arg == nil {
-		return nil, fmt.Errorf("%s aggregate requires a value argument", agg.GetFunction())
-	}
-	valueExpr := arg.GetValue()
-	if valueExpr == nil {
-		return nil, fmt.Errorf("%s aggregate requires a value argument", agg.GetFunction())
-	}
-	values := []float64{}
-	for _, row := range rows {
-		value, err := e.evalValue(row, valueExpr)
-		if err != nil {
-			return nil, err
-		}
-		if value == nil {
-			continue
-		}
-		number, ok := queryNumber(value)
-		if !ok {
-			return nil, fmt.Errorf("%s aggregate requires numeric values", agg.GetFunction())
-		}
-		values = append(values, number)
-	}
-	return values, nil
-}
-
-func (e *queryExecution) aggregateComparableValues(rows []*queryRowState, agg *clientv1.AggregateProjection) ([]any, error) {
-	arg := agg.GetArgument()
-	if arg == nil {
-		return nil, fmt.Errorf("%s aggregate requires a value argument", agg.GetFunction())
-	}
-	valueExpr := arg.GetValue()
-	if valueExpr == nil {
-		return nil, fmt.Errorf("%s aggregate requires a value argument", agg.GetFunction())
-	}
-	values := []any{}
-	for _, row := range rows {
-		value, err := e.evalValue(row, valueExpr)
-		if err != nil {
-			return nil, err
-		}
-		if value != nil {
-			values = append(values, value)
-		}
-	}
-	return values, nil
-}
-
-func queryNumber(value any) (float64, bool) {
-	switch typed := value.(type) {
-	case int:
-		return float64(typed), true
-	case int32:
-		return float64(typed), true
-	case int64:
-		return float64(typed), true
-	case float32:
-		return float64(typed), true
-	case float64:
-		return typed, true
-	case json.Number:
-		number, err := typed.Float64()
-		return number, err == nil
-	default:
-		return 0, false
-	}
-}
-
-func applyProtoOffsetLimit(rows []*clientv1.QueryRow, offset int, limit int) []*clientv1.QueryRow {
-	if offset > len(rows) {
-		return []*clientv1.QueryRow{}
-	}
-	if offset > 0 {
-		rows = rows[offset:]
-	}
-	if limit > 0 && len(rows) > limit {
-		rows = rows[:limit]
-	}
-	return rows
-}
-
-func distinctProtoRowsIf(rows []*clientv1.QueryRow, distinct bool) []*clientv1.QueryRow {
-	if !distinct {
-		return rows
-	}
-	seen := map[string]struct{}{}
-	out := make([]*clientv1.QueryRow, 0, len(rows))
-	for _, row := range rows {
-		key := protoRowKey(row)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, row)
-	}
-	return out
-}
-
-func protoRowKey(row *clientv1.QueryRow) string {
-	payload, err := json.Marshal(row.GetFields())
+	result, err := queryruntime.Shape(ctx, queryruntime.NewLegacySource(bindings, budget.BatchSize, tracker), logicalQuery, tracker, queryruntime.ShapeOptions{})
 	if err != nil {
-		return fmt.Sprint(row.GetFields())
+		return nil, "", mapQueryEngineError(err)
 	}
-	return string(payload)
-}
-
-func cloneQueryFields(in map[string]*clientv1.QueryValue) map[string]*clientv1.QueryValue {
-	out := make(map[string]*clientv1.QueryValue, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
+	mapped := protoNeutralQueryResult(result)
+	return mapped.GetRows(), mapped.GetNextPageToken(), nil
 }
 
 func (e *queryExecution) projectTree(row *queryRowState, alias string) *clientv1.Tree {
@@ -2497,9 +2141,9 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 		rowStates = append(rowStates, &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): []domaingraph.Node{node}}, edgeBindings: map[string][]domaingraph.Edge{}, pathBindings: map[string]*clientv1.PathValue{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}})
 	}
 	shapingQuery := indexedShapingQuery(query, firstPageOffset, pageLimit)
-	out, _, err := exec.shapeAndProjectRows(rowStates, shapingQuery, pageLimit, "")
+	out, _, err := exec.shapeAndProjectRows(ctx, rowStates, shapingQuery, pageLimit, "")
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	next := nextShapedIndexCursor(rawNext, len(out), cursor.RowsReturned, query.GetLimit())
 	result := queryResultFromRows(out, next)
@@ -2611,9 +2255,9 @@ func (s *QueryService) tryExecuteSemanticPredicateQuery(ctx context.Context, req
 		}
 		rowStates = append(rowStates, row)
 	}
-	out, next, err := exec.shapeAndProjectRows(rowStates, query, int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rowStates, query, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	indexes := make([]string, 0, len(indexNames))
 	for id := range indexNames {
@@ -2789,9 +2433,9 @@ func (s *QueryService) tryExecuteIndexedPredicateNodeQuery(ctx context.Context, 
 		node := union[id]
 		rowStates = append(rowStates, &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {node}}, edgeBindings: map[string][]domaingraph.Edge{}, pathBindings: map[string]*clientv1.PathValue{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}})
 	}
-	out, next, err := exec.shapeAndProjectRows(rowStates, query, int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rowStates, query, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	idx := make([]string, 0, len(indexNames))
 	for index := range indexNames {
@@ -3006,9 +2650,9 @@ func (s *QueryService) tryExecuteIndexedEqualityNodeQuery(ctx context.Context, r
 		rowStates = append(rowStates, &queryRowState{bindings: map[string][]domaingraph.Node{start.GetAlias(): {node}}, edgeBindings: map[string][]domaingraph.Edge{}, pathBindings: map[string]*clientv1.PathValue{}, parentByChild: map[string]string{}, orderByChild: map[string]any{}})
 	}
 	shapingQuery := indexedShapingQuery(query, firstPageOffset, pageLimit)
-	out, _, err := exec.shapeAndProjectRows(rowStates, shapingQuery, pageLimit, "")
+	out, _, err := exec.shapeAndProjectRows(ctx, rowStates, shapingQuery, pageLimit, "")
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	next := nextShapedIndexCursor(rawNext, len(out), cursor.RowsReturned, query.GetLimit())
 	result := queryResultFromRows(out, next)
@@ -3304,9 +2948,9 @@ func (s *QueryService) tryExecuteIndexedPathQuery(ctx context.Context, req *clie
 		}
 		rows = filtered
 	}
-	out, next, err := exec.shapeAndProjectRows(rows, query, int(req.GetPageSize()), req.GetPageToken())
+	out, next, err := exec.shapeAndProjectRows(ctx, rows, query, int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
-		return true, nil, status.Error(codes.InvalidArgument, err.Error())
+		return true, nil, preserveQueryShapingError(err)
 	}
 	idx := make([]string, 0, len(indexes))
 	for index := range indexes {

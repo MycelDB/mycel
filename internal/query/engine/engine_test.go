@@ -6,9 +6,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	queryexecution "github.com/myceldb/mycel/internal/query/execution"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -221,7 +223,7 @@ func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	if diagnostics.Plan != "BoundedFullGraphScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx5" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || !diagnostics.LegacyBridge {
+	if diagnostics.PlannerVersion != "qrx6" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || !diagnostics.LegacyBridge {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if len(diagnostics.Operators) == 0 || diagnostics.ResourceLimits.MaxNodesLoaded == 0 || diagnostics.RowsScanned != 0 || diagnostics.NodesLoaded != 0 {
@@ -243,6 +245,53 @@ func TestEnginePrepareReturnsTypedBindingErrorsBeforeAccess(t *testing.T) {
 	if entities.calls != 0 {
 		t.Fatalf("entity reads during rejected prepare = %d, want 0", entities.calls)
 	}
+}
+
+func TestEngineExecuteShapesExplicitLegacyBindingsWithoutAccess(t *testing.T) {
+	entities := &recordingEntityReader{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities})
+	tx := sessionmodel.GraphTransaction{ID: "tx-6", SessionID: "session-6", PrincipalID: "principal-6", SpaceID: "space-6", DomainID: "domain-6", Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: 61}
+	statement := validReadStatement()
+	statement.Read.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: "node"}}
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	node := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000006"), DomainID: uuid.MustParse("10000000-0000-0000-0000-000000000006"), Labels: []string{"Document"}}
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{
+		Transaction: tx,
+		LegacyRows:  []queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": node}}},
+		Budget:      queryengine.WorkBudget{BatchSize: 1},
+	}, prepared)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0].Fields["node"].Node == nil || result.Rows[0].Fields["node"].Node.ID != node.ID.String() {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.Diagnostics.PlannerVersion != "qrx6" || result.Diagnostics.ExplainOnly || !result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
+		t.Fatalf("diagnostics = %#v", result.Diagnostics)
+	}
+	if entities.calls != 0 {
+		t.Fatalf("entity reads during neutral shaping = %d, want 0", entities.calls)
+	}
+
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: sessionmodel.GraphTransaction{ID: "different"}, LegacyRows: []queryexecution.BindingRow{}}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
+}
+
+func TestEngineExecuteLegacyBindingsEnforcesWorkBudget(t *testing.T) {
+	engine := queryengine.New(queryengine.Ports{Entities: &recordingEntityReader{}})
+	tx := sessionmodel.GraphTransaction{ID: "tx-budget", Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive}
+	statement := validReadStatement()
+	statement.Read.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n"}}
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	rows := []queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": {}}}, {Nodes: map[string]graph.Node{"n": {}}}}
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, LegacyRows: rows, Budget: queryengine.WorkBudget{MaxCandidates: 1}}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 }
 
 func TestEngineExecuteReturnsTypedUnsupportedPlanBeforeAccess(t *testing.T) {

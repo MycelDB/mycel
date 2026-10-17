@@ -2,6 +2,7 @@ package physical
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -16,6 +17,10 @@ const (
 	defaultSubtreeMaxNodes       = 10_000
 	defaultMaxIndexEntries       = 50_000
 	defaultMaxEdgesLoaded        = 50_000
+	defaultMaxAdjacencyCalls     = 10_000
+	defaultMaxCandidates         = 50_000
+	defaultMaxOutputRows         = 10_000
+	defaultMaxMemoryBytes        = 64 << 20
 	defaultPathMaxStartNodes     = 1_000
 	defaultMaxIntermediateRows   = 10_000
 	defaultMaxNodesLoaded        = 50_000
@@ -405,19 +410,38 @@ func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operat
 	}
 	if len(query.Aggregates) > 0 {
 		current = Operator{Kind: OperatorAggregate, Inputs: []Operator{current}}
+		if len(query.OrderBy) > 0 {
+			current = Operator{Kind: OperatorSort, Inputs: []Operator{current}}
+		}
 	} else {
+		if len(query.OrderBy) > 0 {
+			kind := OperatorSort
+			if physicalTopNSafe(query) {
+				kind = OperatorTopN
+			}
+			current = Operator{Kind: kind, Inputs: []Operator{current}}
+		}
 		current = Operator{Kind: OperatorProject, Inputs: []Operator{current}}
 	}
 	if query.Distinct {
 		current = Operator{Kind: OperatorDistinct, Inputs: []Operator{current}}
 	}
 	if query.Page.Offset > 0 {
-		current = Operator{Kind: OperatorOffset, Inputs: []Operator{current}}
+		current = Operator{Kind: OperatorOffset, Name: "QueryOffset", Inputs: []Operator{current}}
 	}
-	if query.Page.Limit > 0 || query.Page.Size > 0 {
-		current = Operator{Kind: OperatorLimit, Inputs: []Operator{current}}
+	if query.Page.Limit > 0 {
+		current = Operator{Kind: OperatorLimit, Name: "QueryLimit", Inputs: []Operator{current}}
 	}
+	if query.Page.Cursor != "" {
+		current = Operator{Kind: OperatorOffset, Name: "ResponseCursorOffset", Inputs: []Operator{current}}
+	}
+	// Response pagination always has a finite default and retains one lookahead row.
+	current = Operator{Kind: OperatorLimit, Name: "ResponsePageLookahead", Inputs: []Operator{current}}
 	return current
+}
+
+func physicalTopNSafe(query querylogical.Query) bool {
+	return query.Page.Limit > 0 && query.Page.Offset >= 0 && query.Page.Offset <= int64(math.MaxInt)-query.Page.Limit && !query.Distinct && len(query.Aggregates) == 0
 }
 
 func legacyRoot(input Operator) Operator {
@@ -459,18 +483,26 @@ func (p planner) resolveScan(label string, scan IndexScan) (IndexScan, IndexUse,
 }
 
 func (p planner) resourceLimits(query querylogical.Query, family Family) ResourceLimits {
-	limits := ResourceLimits{MaxTraversalDepth: maxQueryDepth(query, p), MaxIntermediateRows: defaultMaxIntermediateRows}
+	limits := ResourceLimits{
+		MaxCandidates:       defaultMaxCandidates,
+		MaxIntermediateRows: defaultMaxIntermediateRows,
+		MaxOutputRows:       defaultMaxOutputRows,
+		MaxMemoryBytes:      defaultMaxMemoryBytes,
+		MaxTraversalDepth:   maxQueryDepth(query, p),
+	}
 	switch family {
 	case FamilyIndexedPath:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxStartNodes = defaultPathMaxStartNodes
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded
 		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
+		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 	case FamilyIndexedAdjacency:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxStartNodes = defaultPathMaxStartNodes
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded
 		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
+		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 	case FamilyIndexedEquality, FamilyIndexedPredicate, FamilyIndexedOrder:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded
@@ -478,11 +510,15 @@ func (p planner) resourceLimits(query querylogical.Query, family Family) Resourc
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxStartNodes = defaultPathMaxStartNodes
 		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
+		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 	case FamilySemantic:
 		limits.MaxSemanticCandidates = semanticCandidateLimit(query)
 		limits.MaxNodesLoaded = limits.MaxSemanticCandidates
 	case FamilyBoundedFullScan:
 		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
+		if len(query.Steps) > 0 {
+			limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
+		}
 	}
 	return limits
 }

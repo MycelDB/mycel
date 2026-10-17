@@ -92,7 +92,8 @@ func TestQueryServiceExecuteQueryStructuredScalarFieldProjection(t *testing.T) {
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
-	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": "latest", "date": "2026-07-20"})}}); err != nil {
+	created, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": "latest", "date": "2026-07-20"}), Payload: mustStruct(t, map[string]any{"text": "entry payload"})}})
+	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
 	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
@@ -100,13 +101,28 @@ func TestQueryServiceExecuteQueryStructuredScalarFieldProjection(t *testing.T) {
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)
-	query.Returns = []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}}
+	query.Returns = []*clientv1.ReturnProjection{
+		{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		{Alias: "j", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		{Alias: "j.node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+		{Alias: "j.properties.content", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
+	}
 	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ExecuteQuery() error = %v", err)
 	}
-	if got := res.GetRows()[0].GetFields()["title"].GetScalar().GetStringValue(); got != "latest" {
+	fields := res.GetRows()[0].GetFields()
+	if got := fields["title"].GetScalar().GetStringValue(); got != "latest" {
 		t.Fatalf("scalar title = %q", got)
+	}
+	if got := fields["j"].GetScalar().GetStringValue(); got != created.GetNode().GetNodeId() {
+		t.Fatalf("bare scalar = %q, want node ID %q", got, created.GetNode().GetNodeId())
+	}
+	if got := fields["j.node_id"].GetScalar().GetStringValue(); got != created.GetNode().GetNodeId() {
+		t.Fatalf("node_id = %q, want %q", got, created.GetNode().GetNodeId())
+	}
+	if got := fields["j.properties.content"].GetScalar().GetStringValue(); got != "entry payload" {
+		t.Fatalf("content = %q", got)
 	}
 	if res.GetDiagnostics().GetFullScan() {
 		t.Fatalf("diagnostics = %+v", res.GetDiagnostics())

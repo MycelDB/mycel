@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX4 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md), [shared binder](query-planner-executor-qrx3-binding.md), and [rule-based physical planner](query-planner-executor-qrx4-physical-planner.md). QRX5 is implemented on its feature branch with public Explain backed by actual physical plans and [QRX5 architecture notes](query-planner-executor-qrx5-plan-explain.md). Later tranches remain planned.
+In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX5 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md), [shared binder](query-planner-executor-qrx3-binding.md), [rule-based physical planner](query-planner-executor-qrx4-physical-planner.md), and [physical-plan-backed Explain](query-planner-executor-qrx5-plan-explain.md). QRX6 is implemented on its feature branch with a bounded [operator runtime and neutral result-shaping pipeline](query-planner-executor-qrx6-operator-runtime.md). Later tranches remain planned.
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -723,6 +723,8 @@ Make Explain the first production consumer of the extracted planner.
 - Hand-maintained duplicate explain planners are removed.
 
 ## QRX6: Operator runtime and neutral result shaping
+
+Status: implemented on the feature branch. See the [QRX6 operator-runtime notes](query-planner-executor-qrx6-operator-runtime.md).
 
 ### Objective
 

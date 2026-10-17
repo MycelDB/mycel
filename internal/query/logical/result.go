@@ -110,11 +110,15 @@ type ReadMetadata struct {
 // DiagnosticResourceLimits are static plan bounds. Runtime work counters stay
 // in Diagnostics and are never synthesized by Explain.
 type DiagnosticResourceLimits struct {
+	MaxCandidates         int64 `json:"max_candidates,omitempty"`
 	MaxIndexEntries       int64 `json:"max_index_entries,omitempty"`
 	MaxStartNodes         int64 `json:"max_start_nodes,omitempty"`
 	MaxNodesLoaded        int64 `json:"max_nodes_loaded,omitempty"`
 	MaxEdgesLoaded        int64 `json:"max_edges_loaded,omitempty"`
+	MaxAdjacencyCalls     int64 `json:"max_adjacency_calls,omitempty"`
 	MaxIntermediateRows   int64 `json:"max_intermediate_rows,omitempty"`
+	MaxOutputRows         int64 `json:"max_output_rows,omitempty"`
+	MaxMemoryBytes        int64 `json:"max_memory_bytes,omitempty"`
 	MaxSemanticCandidates int64 `json:"max_semantic_candidates,omitempty"`
 	MaxTraversalDepth     int   `json:"max_traversal_depth,omitempty"`
 }
@@ -139,6 +143,10 @@ type Diagnostics struct {
 	RowsProduced        int64                    `json:"rows_produced,omitempty"`
 	RowsReturned        int64                    `json:"rows_returned,omitempty"`
 	CandidateCount      int64                    `json:"candidate_count,omitempty"`
+	IntermediateRows    int64                    `json:"intermediate_rows,omitempty"`
+	PeakMemoryBytes     int64                    `json:"peak_memory_bytes,omitempty"`
+	RetainedMemoryBytes int64                    `json:"retained_memory_bytes,omitempty"`
+	TraversalDepth      int                      `json:"traversal_depth,omitempty"`
 	AdjacencyScanCalls  int64                    `json:"adjacency_scan_calls,omitempty"`
 	NodeReadCalls       int64                    `json:"node_read_calls,omitempty"`
 	RootCount           int64                    `json:"root_count,omitempty"`

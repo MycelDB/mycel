@@ -72,6 +72,9 @@ func TestBuildSelectsLegacyAccessFamiliesInPrecedenceOrder(t *testing.T) {
 			if !operatorTreeContains(plan.Root, test.operator) {
 				t.Fatalf("operator tree %#v does not contain %q", plan.Root, test.operator)
 			}
+			if !operatorTreeContainsNamed(plan.Root, queryphysical.OperatorLimit, "ResponsePageLookahead") {
+				t.Fatalf("operator tree %#v does not contain the default response lookahead limit", plan.Root)
+			}
 		})
 	}
 }
@@ -187,7 +190,7 @@ func TestBuildRecordsBoundedPathAndFullScanLimits(t *testing.T) {
 	step.Depth = querylogical.DepthBounds{Min: 1, Max: 3}
 	path.Steps = []querylogical.Step{step}
 	plan := buildRead(t, path, plannerSchema(), plannerEnvironment())
-	if plan.Limits.MaxStartNodes != 1000 || plan.Limits.MaxIntermediateRows != 10000 || plan.Limits.MaxNodesLoaded != 50000 || plan.Limits.MaxEdgesLoaded != 50000 || plan.Limits.MaxTraversalDepth != 3 {
+	if plan.Limits.MaxCandidates != 50000 || plan.Limits.MaxStartNodes != 1000 || plan.Limits.MaxIntermediateRows != 10000 || plan.Limits.MaxOutputRows != 10000 || plan.Limits.MaxMemoryBytes != 64<<20 || plan.Limits.MaxNodesLoaded != 50000 || plan.Limits.MaxEdgesLoaded != 50000 || plan.Limits.MaxAdjacencyCalls != 10000 || plan.Limits.MaxTraversalDepth != 3 {
 		t.Fatalf("path limits = %#v", plan.Limits)
 	}
 
@@ -357,6 +360,32 @@ func buildRead(t *testing.T, query querylogical.Query, schema schemamodel.Domain
 	return plan
 }
 
+func TestBuildRecordsSortAndTopNShapingOperators(t *testing.T) {
+	schema := plannerSchema()
+	tests := []struct {
+		name string
+		edit func(*querylogical.Query)
+		want queryphysical.OperatorKind
+	}{
+		{name: "finite limit uses Top-N", edit: func(query *querylogical.Query) { query.Page.Limit = 5 }, want: queryphysical.OperatorTopN},
+		{name: "distinct requires complete sort", edit: func(query *querylogical.Query) { query.Distinct = true }, want: queryphysical.OperatorSort},
+		{name: "aggregation requires complete sort", edit: func(query *querylogical.Query) {
+			query.Aggregates = []querylogical.Aggregate{{Function: querylogical.AggregateCount, Star: true}}
+		}, want: queryphysical.OperatorSort},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			query := baseQuery()
+			query.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
+			test.edit(&query)
+			plan := buildRead(t, query, schema, plannerEnvironment())
+			if !operatorTreeContains(plan.Root, test.want) {
+				t.Fatalf("operator tree = %#v, want %q", plan.Root, test.want)
+			}
+		})
+	}
+}
+
 func baseQuery() querylogical.Query {
 	return querylogical.Query{
 		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
@@ -450,6 +479,18 @@ func operatorTreeContains(root queryphysical.Operator, kind queryphysical.Operat
 	}
 	for _, input := range root.Inputs {
 		if operatorTreeContains(input, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func operatorTreeContainsNamed(root queryphysical.Operator, kind queryphysical.OperatorKind, name string) bool {
+	if root.Kind == kind && root.Name == name {
+		return true
+	}
+	for _, input := range root.Inputs {
+		if operatorTreeContainsNamed(input, kind, name) {
 			return true
 		}
 	}
