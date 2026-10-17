@@ -50,6 +50,57 @@ func TestQRX3StructuredLegacyAndCommonSchemaValidationParity(t *testing.T) {
 	}
 }
 
+func TestQRX3KnownGQLStrictSchemaFieldDeltasRemainObservational(t *testing.T) {
+	schema := qrx3BindingSchema()
+	schemaCtx := analysis.SchemaContext{Schema: &schema}
+	tests := []struct {
+		name string
+		gql  string
+	}{
+		{name: "edge projection", gql: "MATCH (p:Person)-[e:WORKS_AT]->(c:Company) RETURN e.missing"},
+		{name: "edge predicate", gql: "MATCH (p:Person)-[e:WORKS_AT]->(c:Company) WHERE e.missing = 1 RETURN e"},
+		{name: "edge aggregate", gql: "MATCH (p:Person)-[e:WORKS_AT]->(c:Company) RETURN sum(e.missing)"},
+		{name: "edge ordering", gql: "MATCH (p:Person)-[e:WORKS_AT]->(c:Company) RETURN e ORDER BY e.missing"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := gql.CompileWithSchemaAndParams(test.gql, schemaCtx, nil)
+			if err != nil {
+				t.Fatalf("legacy validation unexpectedly rejected known delta: %v", err)
+			}
+			statement, ok := querylogical.StatementFromGQLPlan(plan)
+			if !ok {
+				t.Fatal("normalize GQL statement")
+			}
+			_, err = querybinding.Bind(statement, qrx3BindingEnvironment(&schema))
+			var queryErr *querylogical.QueryError
+			if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorInvalidQuery || !strings.Contains(err.Error(), "unknown edge properties field") {
+				t.Fatalf("binder error = %#v, want captured strict edge-field delta", err)
+			}
+		})
+	}
+}
+
+func TestQRX3KnownGQLStrictSchemaDirectionDeltaRemainsObservational(t *testing.T) {
+	schema := qrx3BindingSchema()
+	schemaCtx := analysis.SchemaContext{Schema: &schema}
+	query := "MATCH (c:Company)<-[e:WORKS_AT]-(p:Person) RETURN e"
+	if _, err := gql.CompileWithSchemaAndParams(query, schemaCtx, nil); err == nil || !strings.Contains(err.Error(), "endpoint constraints") {
+		t.Fatalf("legacy error = %v, want captured incoming-endpoint delta", err)
+	}
+	plan, err := gql.CompileWithParams(query, nil)
+	if err != nil {
+		t.Fatalf("compile without schema: %v", err)
+	}
+	statement, ok := querylogical.StatementFromGQLPlan(plan)
+	if !ok {
+		t.Fatal("normalize GQL statement")
+	}
+	if _, err := querybinding.Bind(statement, qrx3BindingEnvironment(&schema)); err != nil {
+		t.Fatalf("direction-aware binder rejected valid incoming endpoints: %v", err)
+	}
+}
+
 func TestQRX3StructuredAndGQLReadsUseEquivalentCommonBindings(t *testing.T) {
 	schema := qrx3BindingSchema()
 	environment := qrx3BindingEnvironment(&schema)
@@ -112,6 +163,7 @@ func qrx3BindingSchema() schemamodel.DomainSchema {
 		EdgeTypes: []schemamodel.EdgeType{{
 			Name: "WorksAt", Labels: []string{"WORKS_AT"},
 			From: schemamodel.EndpointSpec{NodeTypes: []string{"Person"}}, To: schemamodel.EndpointSpec{NodeTypes: []string{"Company"}},
+			Properties: []schemamodel.FieldSpec{{Name: "since", Type: schemamodel.FieldTypeInt}},
 		}},
 	}
 }

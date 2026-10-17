@@ -56,6 +56,29 @@ limits: structured traversal uses the existing depth cap of 64 and requires a
 finite maximum, while GQL uses its current depth cap of 5 and maps an open upper
 bound to that cap. Both surfaces use the same binder and typed error vocabulary.
 
+Broad-search policy remains authoritative in the adapter until QRX4 classifies
+an explicit/indexed access path versus a broad scan. The binder cannot enforce
+that policy from statement shape alone; its environment carries the policy
+forward to physical planning. Focused tests lock this ownership boundary.
+
+## Captured GQL schema compatibility deltas
+
+QRX3 does not silently change two pre-existing strict-schema behaviors:
+
+- legacy GQL analysis does not retain edge aliases for projected, filtered,
+  aggregated, or ordered field validation and can therefore accept unknown edge
+  fields that the common binder rejects;
+- legacy GQL endpoint validation treats every relationship as outgoing, while
+  the common binder correctly reverses incoming endpoints and accepts either
+  orientation for undirected relationships.
+
+Comparison tests capture both deltas explicitly. Engine binding remains
+observational, so public acceptance, error mapping, and execution are unchanged.
+Before any physical plan family makes binder errors authoritative, these deltas
+must be resolved deliberately: either correct the public GQL behavior as an
+approved compatibility change or preserve it through an explicit legacy
+compatibility rule. They are not implicit migration behavior.
+
 ## Engine and daemon wiring
 
 The engine façade now accepts `logical.Statement`. `Prepare` invokes the common
@@ -66,7 +89,8 @@ binder and stores its result in `PreparedQuery` before selecting the unchanged
 The daemon adapter supplies schema and explicit domain policy after existing
 schema/domain validation. It observes binder results and errors but discards
 them, and it never calls engine `Execute`. Production requests therefore still
-execute exactly once through the existing path.
+execute exactly once through the existing path. This observational boundary is
+a required gate until the captured GQL schema deltas above are resolved.
 
 `query_service_schema_structured.go` intentionally remains during the comparison
 period. Tests compare its strict-schema outcomes with common binding, verify

@@ -66,6 +66,7 @@ func TestBindRejectsInvalidReadSemantics(t *testing.T) {
 		{name: "projection kind", mutate: func(q *querylogical.Query) { q.Returns[0].Kind = querylogical.ProjectionEdge }, code: querylogical.ErrorInvalidQuery, want: "is not an edge"},
 		{name: "aggregate star", mutate: func(q *querylogical.Query) { q.Aggregates[0].Function = querylogical.AggregateSum }, code: querylogical.ErrorInvalidQuery, want: "only COUNT supports star"},
 		{name: "order alias", mutate: func(q *querylogical.Query) { q.OrderBy[0].Value = querylogical.FieldValue("missing", "name") }, code: querylogical.ErrorInvalidQuery, want: "not defined"},
+		{name: "traversal direction", mutate: func(q *querylogical.Query) { q.Steps[0].Edge.Direction = querylogical.DirectionUnspecified }, code: querylogical.ErrorInvalidQuery, want: "traversal direction is required"},
 		{name: "traversal cap", mutate: func(q *querylogical.Query) { q.Steps[0].Depth.Max = 65 }, code: querylogical.ErrorInvalidQuery, want: "must not exceed 64"},
 		{name: "non finite", mutate: func(q *querylogical.Query) {
 			q.Start.Properties = map[string]querylogical.Value{"age": {Kind: querylogical.ValueNumber, Number: math.Inf(1)}}
@@ -127,6 +128,28 @@ func TestBindRejectsReadWriteAccessAndReadOnlyDomains(t *testing.T) {
 	environment.Domain.ReadOnly = true
 	_, err = binding.Bind(mutation, environment)
 	assertQueryError(t, err, querylogical.ErrorUnavailableAccessPath, "domain is read-only")
+}
+
+func TestBindRejectsMergeRelationshipWithoutEndpointIdentifiers(t *testing.T) {
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationMergeRelationship,
+		Nodes: []querylogical.NodePattern{
+			{Alias: "a", Labels: []string{"Person"}, Properties: map[string]querylogical.Value{"name": {Kind: querylogical.ValueString, String: "Ada"}}},
+			{Alias: "b", Labels: []string{"Person"}},
+		},
+		Relationship: &querylogical.RelationshipMutation{FromAlias: "a", ToAlias: "b", Labels: []string{"KNOWS"}},
+	})
+	_, err := binding.Bind(statement, writeEnvironment())
+	assertQueryError(t, err, querylogical.ErrorInvalidQuery, `merge relationship match for "b" requires at least one identifying property`)
+}
+
+func TestBindDefersBroadSearchPolicyToPhysicalPlanning(t *testing.T) {
+	query := validReadQuery(querylogical.SourceStructured)
+	environment := readEnvironment()
+	environment.Domain.BroadSearchable = false
+	if _, err := binding.Bind(querylogical.ReadStatement(query), environment); err != nil {
+		t.Fatalf("bind before access-path classification: %v", err)
+	}
 }
 
 func TestBindGQLMutationStatementFamilies(t *testing.T) {

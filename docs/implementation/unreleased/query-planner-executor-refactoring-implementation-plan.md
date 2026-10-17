@@ -513,6 +513,11 @@ return legacy.Execute(ctx, req, tx)
 
 Fallback to the legacy executor is a migration mechanism, not a permanent production planning rule. It must be observable in diagnostics and removed when all accepted plans have migrated.
 
+No plan family may make shared binding errors authoritative while its shadow
+comparison has an unclassified validation mismatch. Captured legacy defects
+require an explicit compatibility decision before that ownership transfer; they
+must not become accidental behavior changes or implicit compatibility rules.
+
 ## Implementation phases
 
 ## QRX0: Baseline behavior and conformance inventory
@@ -650,6 +655,8 @@ Unify schema and semantic validation after both query surfaces produce neutral s
 
 - Structured and GQL reads use one binder.
 - Equivalent invalid queries fail with equivalent internal error categories.
+- Any remaining legacy-validator mismatch is captured explicitly and gates
+  authoritative binder adoption until a compatibility decision is approved.
 - `query_service_schema_structured.go` is removed or reduced to protobuf mapping only after parity is proven.
 - GQL mutation execution remains unchanged.
 

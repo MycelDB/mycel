@@ -41,7 +41,10 @@ func (b *binder) bindNodePattern(pattern querylogical.NodePattern, aliasRequired
 }
 
 func (b *binder) bindEdgePattern(pattern querylogical.EdgePattern) ([]schemamodel.EdgeType, error) {
-	if pattern.Direction != querylogical.DirectionUnspecified && pattern.Direction != querylogical.DirectionIncoming && pattern.Direction != querylogical.DirectionOutgoing && pattern.Direction != querylogical.DirectionUndirected {
+	if pattern.Direction == querylogical.DirectionUnspecified {
+		return nil, b.invalid("traversal direction is required")
+	}
+	if pattern.Direction != querylogical.DirectionIncoming && pattern.Direction != querylogical.DirectionOutgoing && pattern.Direction != querylogical.DirectionUndirected {
 		return nil, b.invalid("unsupported traversal direction %q", pattern.Direction)
 	}
 	if err := validateNames("edge label", pattern.Labels); err != nil {

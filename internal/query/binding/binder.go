@@ -218,6 +218,9 @@ func (b *binder) bindMutation(mutation querylogical.Mutation) error {
 			return b.invalid("relationship mutation requires at least two node patterns")
 		}
 		for _, node := range mutation.Nodes {
+			if mutation.Kind == querylogical.MutationMergeRelationship && len(node.Properties) == 0 {
+				return b.invalid("merge relationship match for %q requires at least one identifying property", node.Alias)
+			}
 			if _, err := b.bindNodePattern(node, true); err != nil {
 				return err
 			}

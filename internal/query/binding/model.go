@@ -10,7 +10,9 @@ import (
 // DomainPolicy captures query-relevant domain policy without coupling the
 // binder to daemon space services.
 type DomainPolicy struct {
-	ReadOnly                    bool
+	ReadOnly bool
+	// BroadSearchable is carried into planning but cannot be enforced until a
+	// physical access path distinguishes explicit/indexed reads from broad scans.
 	BroadSearchable             bool
 	ExplicitSearchable          bool
 	SemanticSearchable          bool
