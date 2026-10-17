@@ -48,8 +48,10 @@ Native QRX7 continuations use a `qrx7:` envelope bound to:
 Streaming source cursors retain the underlying page cursor plus the offset of
 the response lookahead row. Materialized set/blocking shapes use a bounded
 output offset. Compatible QRX6 decimal offsets remain accepted. Shaped and raw
-index cursors are accepted only for the ordered/equality families that emitted
-them; successful continuation emits the new envelope.
+index cursors are accepted only for streaming ordered/equality shapes that can
+resume the underlying source safely; blocking distinct/aggregate shapes reject
+legacy source cursors rather than reinterpret them. Successful continuation
+emits the new envelope.
 
 A changed plan, snapshot, schema, malformed position, or unsupported cursor
 fails with the typed stale-cursor error.

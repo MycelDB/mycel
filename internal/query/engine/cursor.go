@@ -61,7 +61,7 @@ func decodeIndexedCursor(prepared PreparedQuery) (indexedCursor, error) {
 		return cursor, nil
 	}
 	if strings.HasPrefix(token, legacyShapedCursorPrefix) {
-		if prepared.Physical.Family != queryphysical.FamilyIndexedOrder && prepared.Physical.Family != queryphysical.FamilyIndexedEquality {
+		if (prepared.Physical.Family != queryphysical.FamilyIndexedOrder && prepared.Physical.Family != queryphysical.FamilyIndexedEquality) || !nativeSourceCursorSupported(prepared) {
 			return indexedCursor{}, staleCursor("legacy shaped cursor is not compatible with the indexed plan", nil)
 		}
 		payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, legacyShapedCursorPrefix))
@@ -77,7 +77,7 @@ func decodeIndexedCursor(prepared PreparedQuery) (indexedCursor, error) {
 	if offset, err := strconv.Atoi(token); err == nil && offset >= 0 {
 		return indexedCursor{Mode: cursorModeOutput, OutputOffset: offset, RowsReturned: int64(offset)}, nil
 	}
-	if prepared.Physical.Family == queryphysical.FamilyIndexedOrder || prepared.Physical.Family == queryphysical.FamilyIndexedEquality {
+	if (prepared.Physical.Family == queryphysical.FamilyIndexedOrder || prepared.Physical.Family == queryphysical.FamilyIndexedEquality) && nativeSourceCursorSupported(prepared) {
 		return indexedCursor{Mode: cursorModeSource, PageCursor: token}, nil
 	}
 	return indexedCursor{}, staleCursor("cursor is not valid for the indexed plan", nil)

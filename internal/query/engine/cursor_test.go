@@ -62,6 +62,31 @@ func TestDecodeIndexedCursorRejectsChecksummedIncompatibleModeState(t *testing.T
 	}
 }
 
+func TestDecodeIndexedCursorRejectsLegacySourceCursorForBlockingShape(t *testing.T) {
+	for _, token := range []string{
+		"shapeidx:eyJpbmRleF9jdXJzb3IiOiJvcGFxdWUiLCJyb3dzX3JldHVybmVkIjoxfQ",
+		"opaque-index-key",
+	} {
+		t.Run(strings.TrimPrefix(token, legacyShapedCursorPrefix), func(t *testing.T) {
+			query := querylogical.Query{
+				Start:    querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}},
+				Distinct: true,
+				Page:     querylogical.PageSpec{Cursor: token},
+			}
+			prepared := PreparedQuery{
+				Statement: querylogical.ReadStatement(query),
+				Physical:  queryphysical.Plan{Family: queryphysical.FamilyIndexedEquality},
+				Kind:      PlanIndexed,
+			}
+			_, err := decodeIndexedCursor(prepared)
+			var queryErr *querylogical.QueryError
+			if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorStaleCursor {
+				t.Fatalf("error = %#v, want stale cursor", err)
+			}
+		})
+	}
+}
+
 func TestDecodeIndexedCursorRejectsSourceModeForMaterializedTagPlan(t *testing.T) {
 	query := querylogical.Query{Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}}
 	prepared := PreparedQuery{
