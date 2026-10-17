@@ -48,6 +48,20 @@ func (c Catalog) Strict() bool {
 // Version returns the normalized schema version.
 func (c Catalog) Version() string { return c.document.Version }
 
+// FindOrderedNodeIndex resolves one ordered properties index by node type or
+// label without configuring or reading the index.
+func (c Catalog) FindOrderedNodeIndex(label string, field string) (schemamodel.IndexDefinition, bool) {
+	for _, index := range c.document.Indexes {
+		if index.TargetKind != schemamodel.IndexTargetNode || index.Kind != schemamodel.IndexKindOrdered || index.Field.Namespace != "properties" || index.Field.Name != field {
+			continue
+		}
+		if index.TargetType == label || contains(index.Labels, label) {
+			return index, true
+		}
+	}
+	return schemamodel.IndexDefinition{}, false
+}
+
 // ResolveNodeLabels returns the union of node types addressed by labels and the
 // first unknown label, if any.
 func (c Catalog) ResolveNodeLabels(labels []string) ([]schemamodel.NodeType, string) {

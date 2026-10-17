@@ -23,6 +23,7 @@ import (
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
 	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	queryschema "github.com/myceldb/mycel/internal/query/schema"
 	schemacompile "github.com/myceldb/mycel/internal/schema/compile"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -4010,21 +4011,7 @@ func (s *QueryService) tryExecuteIndexedAdjacencyQuery(ctx context.Context, req 
 }
 
 func findOrderedNodeIndex(schemaDoc schemamodel.DomainSchema, label string, field string) (schemamodel.IndexDefinition, bool) {
-	schemaDoc = schemaDoc.Normalize()
-	for _, idx := range schemaDoc.Indexes {
-		if idx.TargetKind != schemamodel.IndexTargetNode || idx.Kind != schemamodel.IndexKindOrdered || idx.Field.Namespace != "properties" || idx.Field.Name != field {
-			continue
-		}
-		for _, idxLabel := range idx.Labels {
-			if idxLabel == label {
-				return idx, true
-			}
-		}
-		if idx.TargetType == label {
-			return idx, true
-		}
-	}
-	return schemamodel.IndexDefinition{}, false
+	return queryschema.NewCatalog(&schemaDoc).FindOrderedNodeIndex(label, field)
 }
 
 func effectiveIndexedLimit(pageSize int32, queryLimit int32) int {

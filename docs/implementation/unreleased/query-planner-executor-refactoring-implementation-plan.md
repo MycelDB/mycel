@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX2 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), and [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md). QRX3 is implemented on its feature branch with neutral read/mutation statements, shared binding and semantic validation, observational daemon wiring, and [QRX3 architecture notes](query-planner-executor-qrx3-binding.md). Later tranches remain planned.
+In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX3 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md), and [shared binder](query-planner-executor-qrx3-binding.md). QRX4 is implemented on its feature branch with a side-effect-free rule-based physical planner and [QRX4 architecture notes](query-planner-executor-qrx4-physical-planner.md). Later tranches remain planned.
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -661,6 +661,8 @@ Unify schema and semantic validation after both query surfaces produce neutral s
 - GQL mutation execution remains unchanged.
 
 ## QRX4: Rule-based physical planner
+
+Status: implemented on the feature branch. See the [QRX4 physical-planner notes](query-planner-executor-qrx4-physical-planner.md).
 
 ### Objective
 
