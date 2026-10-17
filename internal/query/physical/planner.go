@@ -61,10 +61,13 @@ func Build(bound querybinding.BoundStatement, environment Environment) (Plan, er
 	rules := []func(querylogical.Query) (Plan, bool, error){
 		p.planIndexedPath,
 		p.planIndexedAdjacency,
+		p.planNodeIDLookup,
 		p.planIndexedEquality,
 		p.planSemantic,
+		p.planTagIndex,
 		p.planIndexedPredicate,
 		p.planOrdered,
+		p.planLabelIndex,
 	}
 	for _, rule := range rules {
 		plan, matched, err := rule(query)
@@ -201,6 +204,67 @@ func (p planner) planIndexedAdjacency(query querylogical.Query) (Plan, bool, err
 	}, true, nil
 }
 
+func (p planner) planNodeIDLookup(query querylogical.Query) (Plan, bool, error) {
+	if len(query.Steps) != 0 || len(query.Start.NodeIDs) == 0 {
+		return Plan{}, false, nil
+	}
+	if _, _, semantic, err := semanticPredicate(query.Predicate); err != nil || semantic {
+		return Plan{}, false, err
+	}
+	if !p.environment.Domain.ExplicitSearchable {
+		return Plan{}, false, nil
+	}
+	if !p.environment.Capabilities.EntityReads {
+		return Plan{}, true, p.unavailable("explicit node lookup requires entity reads")
+	}
+	return Plan{
+		Name: "NodeIDLookup", Family: FamilyNodeIDLookup,
+		Access:            AccessPath{Kind: AccessNodeIDs, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), NodeIDs: append([]string(nil), query.Start.NodeIDs...)},
+		ResidualPredicate: query.Predicate, Cursor: nativeCursor("node_position"), Limits: p.resourceLimits(query, FamilyNodeIDLookup),
+	}, true, nil
+}
+
+func (p planner) planLabelIndex(query querylogical.Query) (Plan, bool, error) {
+	if len(query.Steps) != 0 || len(query.OrderBy) != 0 || query.Predicate != nil || len(query.Start.NodeIDs) != 0 || len(query.Start.Labels) != 1 {
+		return Plan{}, false, nil
+	}
+	if !p.environment.Domain.ExplicitSearchable || !p.environment.Capabilities.Indexes {
+		return Plan{}, false, nil
+	}
+	label := query.Start.Labels[0]
+	return Plan{
+		Name: "LabelIndexScan", Family: FamilyLabelIndex,
+		Access:  AccessPath{Kind: AccessLabel, StartAlias: query.Start.Alias, Labels: []string{label}},
+		Indexes: []IndexUse{builtInIndex("label:"+label, label)}, Cursor: nativeCursor("label_key"),
+		Limits: p.resourceLimits(query, FamilyLabelIndex),
+	}, true, nil
+}
+
+func (p planner) planTagIndex(query querylogical.Query) (Plan, bool, error) {
+	if len(query.Steps) != 0 || len(query.OrderBy) != 0 || len(query.Start.NodeIDs) != 0 || len(query.Start.Labels) != 1 {
+		return Plan{}, false, nil
+	}
+	branches, ok, err := tagBranches(query.Predicate, query.Start.Alias)
+	if err != nil || !ok {
+		return Plan{}, ok, err
+	}
+	if !p.environment.Domain.ExplicitSearchable || !p.environment.Capabilities.Indexes {
+		return Plan{}, false, nil
+	}
+	uses := []IndexUse{}
+	for _, branch := range branches {
+		for _, tag := range branch {
+			uses = append(uses, builtInIndex("tag:"+tag, query.Start.Labels[0]))
+		}
+	}
+	return Plan{
+		Name: "TagIndexScan", Family: FamilyTagIndex,
+		Access:  AccessPath{Kind: AccessTag, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), TagBranches: branches},
+		Indexes: dedupeIndexes(uses), PushedPredicate: query.Predicate, ResidualPredicate: query.Predicate,
+		Cursor: nativeCursor("node_set_offset"), Limits: p.resourceLimits(query, FamilyTagIndex),
+	}, true, nil
+}
+
 func (p planner) planIndexedEquality(query querylogical.Query) (Plan, bool, error) {
 	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 {
 		return Plan{}, false, nil
@@ -221,7 +285,7 @@ func (p planner) planIndexedEquality(query querylogical.Query) (Plan, bool, erro
 		Name: "OrderedNodePropertyEqualityIndexScan", Family: FamilyIndexedEquality,
 		Access:  AccessPath{Kind: AccessOrderedProperty, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), Field: &field, Index: resolved.Index, Low: resolved.Low, High: resolved.High},
 		Indexes: []IndexUse{use}, PushedPredicate: query.Predicate,
-		Ordering: OrderingGuarantee{Stable: true, Source: resolved.Index}, Cursor: legacyCursor("index_key"),
+		Ordering: OrderingGuarantee{Stable: true, Source: resolved.Index}, Cursor: nativeCursor("index_key"),
 		Limits: p.resourceLimits(query, FamilyIndexedEquality),
 	}, true, nil
 }
@@ -245,10 +309,11 @@ func (p planner) planSemantic(query querylogical.Query) (Plan, bool, error) {
 	pushed := querylogical.LeafPredicate(semantic)
 	return Plan{
 		Name: "SemanticVectorSearch", Family: FamilySemantic,
-		Access:          AccessPath{Kind: AccessSemantic, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), Field: &field, Index: name},
+		Access: AccessPath{Kind: AccessSemantic, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), Field: &field, Index: name,
+			Semantic: &SemanticAccess{Query: semantic.Query, RuleRef: semantic.RuleRef, EmbeddingBindingKey: semantic.EmbeddingBindingKey, Limit: int(semanticCandidateLimit(query))}},
 		Indexes:         []IndexUse{{Name: name, Label: query.Start.Labels[0], Namespace: string(field.Namespace), Field: field.Name}},
 		PushedPredicate: pushed, ResidualPredicate: residual,
-		Cursor: legacyCursor("offset"), Limits: p.resourceLimits(query, FamilySemantic),
+		Cursor: nativeCursor("semantic_rank"), Limits: p.resourceLimits(query, FamilySemantic),
 	}, true, nil
 }
 
@@ -274,7 +339,7 @@ func (p planner) planIndexedPredicate(query querylogical.Query) (Plan, bool, err
 		Name: "OrderedNodePropertyPredicateIndexScan", Family: FamilyIndexedPredicate,
 		Access:  AccessPath{Kind: AccessCompoundProperty, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), Branches: resolved},
 		Indexes: uses, PushedPredicate: pushed, ResidualPredicate: query.Predicate,
-		Cursor: legacyCursor("offset"), Limits: p.resourceLimits(query, FamilyIndexedPredicate),
+		Cursor: nativeCursor("node_set_offset"), Limits: p.resourceLimits(query, FamilyIndexedPredicate),
 	}, true, nil
 }
 
@@ -320,7 +385,7 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 		Name: "OrderedNodePropertyIndexScan", Family: FamilyIndexedOrder, Access: access,
 		Indexes: []IndexUse{use}, PushedPredicate: pushed, ResidualPredicate: residual,
 		Ordering: OrderingGuarantee{Terms: append([]querylogical.Order(nil), query.OrderBy...), Stable: true, Source: index.Name},
-		Cursor:   legacyCursor("index_key"), Limits: p.resourceLimits(query, FamilyIndexedOrder),
+		Cursor:   nativeCursor("index_key"), Limits: p.resourceLimits(query, FamilyIndexedOrder),
 	}
 	if len(query.Steps) == 0 {
 		return plan, true, nil
@@ -376,15 +441,36 @@ func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 
 func (p planner) finish(plan Plan, bound querybinding.BoundStatement, query querylogical.Query) Plan {
 	plan.SchemaVersion = bound.SchemaVersion
-	plan.LegacyBridgeReason = legacyBridgeReason
 	plan.Indexes = dedupeIndexes(plan.Indexes)
-	plan.Root = legacyRoot(operatorPipeline(plan, query))
+	pipeline := operatorPipeline(plan, query)
+	if nativeIndexedFamily(plan.Family) {
+		plan.Root = pipeline
+		plan.LegacyBridgeReason = ""
+		return plan
+	}
+	plan.LegacyBridgeReason = legacyBridgeReason
+	plan.Root = legacyRoot(pipeline)
 	return plan
+}
+
+func nativeIndexedFamily(family Family) bool {
+	switch family {
+	case FamilyNodeIDLookup, FamilyLabelIndex, FamilyTagIndex, FamilyIndexedEquality, FamilySemantic, FamilyIndexedPredicate, FamilyIndexedOrder:
+		return true
+	default:
+		return false
+	}
 }
 
 func operatorPipeline(plan Plan, query querylogical.Query) Operator {
 	accessKind := OperatorFullGraph
 	switch plan.Family {
+	case FamilyNodeIDLookup:
+		accessKind = OperatorNodeLookup
+	case FamilyLabelIndex:
+		accessKind = OperatorLabelIndex
+	case FamilyTagIndex:
+		accessKind = OperatorTagIndex
 	case FamilyIndexedPath:
 		accessKind = OperatorIndexedPath
 	case FamilyIndexedAdjacency:
@@ -405,6 +491,9 @@ func operatorPipeline(plan Plan, query querylogical.Query) Operator {
 
 func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operator {
 	current := input
+	if nativeIndexedFamily(plan.Family) {
+		current = Operator{Kind: OperatorFilter, Name: "StartNodePattern", Inputs: []Operator{current}}
+	}
 	if plan.ResidualPredicate != nil {
 		current = Operator{Kind: OperatorFilter, Inputs: []Operator{current}}
 	}
@@ -414,7 +503,7 @@ func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operat
 			current = Operator{Kind: OperatorSort, Inputs: []Operator{current}}
 		}
 	} else {
-		if len(query.OrderBy) > 0 {
+		if len(query.OrderBy) > 0 && plan.Family != FamilyIndexedOrder {
 			kind := OperatorSort
 			if physicalTopNSafe(query) {
 				kind = OperatorTopN
@@ -450,6 +539,10 @@ func legacyRoot(input Operator) Operator {
 
 func legacyCursor(kind string) CursorStrategy {
 	return CursorStrategy{Kind: kind, LegacyForm: true}
+}
+
+func nativeCursor(kind string) CursorStrategy {
+	return CursorStrategy{Kind: kind, PlanBound: true, Snapshot: true, Schema: true, LegacyForm: true}
 }
 
 func (p planner) resolveBranches(label string, branches []candidateBranch) ([]IndexBranch, []IndexUse, error) {
@@ -503,7 +596,9 @@ func (p planner) resourceLimits(query querylogical.Query, family Family) Resourc
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded
 		limits.MaxEdgesLoaded = defaultMaxEdgesLoaded
 		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
-	case FamilyIndexedEquality, FamilyIndexedPredicate, FamilyIndexedOrder:
+	case FamilyNodeIDLookup:
+		limits.MaxNodesLoaded = defaultMaxNodesLoaded
+	case FamilyLabelIndex, FamilyTagIndex, FamilyIndexedEquality, FamilyIndexedPredicate, FamilyIndexedOrder:
 		limits.MaxIndexEntries = defaultMaxIndexEntries
 		limits.MaxNodesLoaded = defaultMaxNodesLoaded
 	case FamilyIndexedSubtree:

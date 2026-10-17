@@ -74,7 +74,11 @@ func paginateRows(rows []BindingRow, requested int32, cursor string) ([]BindingR
 	if len(rows) <= pageSize {
 		return rows, "", nil
 	}
-	return rows[:pageSize], strconv.Itoa(start + pageSize), nil
+	next := rows[pageSize].Cursor
+	if next == "" {
+		next = strconv.Itoa(start + pageSize)
+	}
+	return rows[:pageSize], next, nil
 }
 
 func validateAggregates(aggregates []querylogical.Aggregate) error {

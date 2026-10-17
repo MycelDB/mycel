@@ -785,6 +785,11 @@ Move the simplest and most common physical access paths to the new executor.
 
 ### Acceptance
 
+Compatibility note: the QRX0/QRX4 gate for legacy GQL non-equality and
+`BETWEEN` fallback remains explicit in QRX7. It is not reclassified as an
+indexed range without a separate compatibility decision. “Equivalent” below
+refers to shapes inside the shared normalized compatibility subset.
+
 - Structured and GQL equivalents use the same physical plan and executor.
 - Indexed node queries are bounded and cursor-driven.
 - Legacy cursor fixtures are accepted where compatible and upgraded to new envelopes.

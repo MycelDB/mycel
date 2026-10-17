@@ -3,6 +3,7 @@ package execution_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
@@ -13,6 +14,185 @@ import (
 	queryexecution "github.com/myceldb/mycel/internal/query/execution"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 )
+
+func TestPagedNodeSourceResumesInsideFinitePageAndReleasesMemory(t *testing.T) {
+	nodes := []graph.Node{
+		{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001")},
+		{ID: uuid.MustParse("00000000-0000-0000-0000-000000000002")},
+		{ID: uuid.MustParse("00000000-0000-0000-0000-000000000003")},
+	}
+	reader := func(_ context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+		start := 0
+		if cursor != "" {
+			if _, err := fmt.Sscan(cursor, &start); err != nil {
+				return queryexecution.NodePage{}, err
+			}
+		}
+		end := start + limit
+		if end > len(nodes) {
+			end = len(nodes)
+		}
+		next := ""
+		if end < len(nodes) {
+			next = fmt.Sprint(end)
+		}
+		return queryexecution.NodePage{Nodes: nodes[start:end], NextCursor: next, IndexEntries: int64(end - start), NodesLoaded: int64(end - start)}, nil
+	}
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 2}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := queryexecution.NewPagedNodeSource("n", reader, func(cursor string, offset int) string { return fmt.Sprintf("%s:%d", cursor, offset) }, "", 1, true, 2, tracker)
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := source.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Rows) != 2 || batch.Rows[0].Nodes["n"].ID != nodes[1].ID || batch.Rows[0].Cursor != ":1" || batch.Rows[1].Nodes["n"].ID != nodes[2].ID || batch.Rows[1].Cursor != "2:0" {
+		t.Fatalf("batch = %#v", batch)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	usage := tracker.Snapshot()
+	if usage.IndexEntries != 3 || usage.NodesLoaded != 3 || usage.CandidatesExamined != 2 || usage.RetainedMemory != 0 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestPagedNodeSourceFailsClosedOnEmptyNonTerminalPage(t *testing.T) {
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+		return queryexecution.NodePage{NextCursor: "again"}, nil
+	}, nil, "", 0, false, 2, tracker)
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = source.Next(context.Background())
+	assertQueryErrorCode(t, err, querylogical.ErrorDependencyFailure)
+	if tracker.Snapshot().RetainedMemory != 0 {
+		t.Fatalf("retained memory = %d", tracker.Snapshot().RetainedMemory)
+	}
+}
+
+func TestPagedNodeSourceRejectsResumeOffsetOutsideActualPage(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		nodes  []graph.Node
+		offset int
+	}{
+		{name: "empty terminal page at offset zero", offset: 0},
+		{name: "short terminal page", nodes: []graph.Node{{ID: uuid.New()}}, offset: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 2}, queryexecution.Budget{})
+			tracker, err := queryexecution.NewTracker(budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+				return queryexecution.NodePage{Nodes: test.nodes}, nil
+			}, nil, "terminal", test.offset, true, 2, tracker)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			_, err = source.Next(context.Background())
+			assertQueryErrorCode(t, err, querylogical.ErrorStaleCursor)
+		})
+	}
+}
+
+func TestPagedNodeSourcePreservesCancellationFromAccessCall(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
+			tracker, err := queryexecution.NewTracker(budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+				return queryexecution.NodePage{}, cause
+			}, nil, "", 0, false, 2, tracker)
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			_, err = source.Next(context.Background())
+			assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+			if !errors.Is(err, cause) {
+				t.Fatalf("error = %v, want cause %v", err, cause)
+			}
+		})
+	}
+}
+
+func TestPagedNodeSourceCancellationWinsOverSuccessfulDependencyReturn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := queryexecution.NewPagedNodeSource("n", func(context.Context, int, string) (queryexecution.NodePage, error) {
+		cancel()
+		return queryexecution.NodePage{}, nil
+	}, nil, "", 0, false, 2, tracker)
+	if err := source.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err = source.Next(ctx)
+	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+}
+
+func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
+	rows := []queryexecution.BindingRow{
+		bindingRow("00000000-0000-0000-0000-000000000001", "a", "x", 1),
+		bindingRow("00000000-0000-0000-0000-000000000002", "b", "x", 2),
+		bindingRow("00000000-0000-0000-0000-000000000003", "c", "x", 3),
+	}
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 1}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intersection := queryexecution.NewNodeSet([]queryexecution.Operator{
+		queryexecution.NewLegacySource(rows[:2], 1, tracker),
+		queryexecution.NewLegacySource(rows[1:], 1, tracker),
+	}, queryexecution.NodeSetIntersection, 1, tracker)
+	union := queryexecution.NewNodeSet([]queryexecution.Operator{
+		intersection,
+		queryexecution.NewLegacySource(rows[2:], 1, tracker),
+	}, queryexecution.NodeSetUnion, 1, tracker)
+	if err := union.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for {
+		batch, err := union.Next(context.Background())
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, batch.Rows[0].Nodes["n"].Properties["name"].(string))
+	}
+	if err := union.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"b", "c"}) || tracker.Snapshot().RetainedMemory != 0 {
+		t.Fatalf("rows=%v usage=%#v", got, tracker.Snapshot())
+	}
+}
 
 func TestShapeRunsDeterministicBoundedPipeline(t *testing.T) {
 	rows := []queryexecution.BindingRow{

@@ -29,6 +29,7 @@ type TraversalReader interface {
 
 // IndexReader provides bounded graph index access.
 type IndexReader interface {
+	ConfigureIndexes(ctx context.Context, tx sessionmodel.GraphTransaction, schemaHash string, indexes []schema.IndexDefinition) error
 	ScanLabel(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.LabelScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
 	ScanTag(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.TagScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
 	ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.OrderedNodePropertyScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)

@@ -92,15 +92,6 @@ func (s *QueryService) WithClientRequestRouter(router ClientRequestRouter) *Quer
 	return s
 }
 
-// observeQueryEnginePrepare exercises shared binding and physical planning
-// while the existing adapter remains the sole execution owner.
-func (s *QueryService) observeQueryEnginePrepare(ctx context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) {
-	if s.queryEngine == nil {
-		return
-	}
-	_, _ = s.queryEngine.Prepare(ctx, planning, statement)
-}
-
 func (s *QueryService) queryEnginePlanningContext(tx sessionmodel.GraphTransaction, domain domaingraph.Domain, schemaCtx analysis.SchemaContext) queryengine.PlanningContext {
 	return queryengine.PlanningContext{
 		Transaction: tx,
@@ -149,9 +140,6 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, err
 	}
-	if !domaingraph.DomainBroadSearchable(domain) && !isIndexedAdjacencyQuery(req.GetQuery()) && !isIndexedPathQuery(req.GetQuery()) && !isIndexedRootSubtreeQuery(req.GetQuery()) && !isSemanticPredicateNodeQuery(req.GetQuery()) && !isIndexedPredicateNodeQuery(req.GetQuery()) && !isIndexedEqualityNodeQuery(req.GetQuery()) {
-		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
-	}
 	schemaCtx, err := s.schemaContext(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -159,7 +147,26 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	s.observeQueryEnginePrepare(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), querylogical.ReadStatement(logicalQuery))
+	planning := s.queryEnginePlanningContext(tx, domain, schemaCtx)
+	statement := querylogical.ReadStatement(logicalQuery)
+	if s.queryEngine != nil {
+		prepared, prepareErr := s.queryEngine.Prepare(ctx, planning, statement)
+		if prepareErr == nil && !prepared.RequiresLegacy() {
+			readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+			result, executeErr := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
+			if executeErr != nil {
+				return nil, mapQueryEngineError(executeErr)
+			}
+			mapped := protoNeutralQueryResult(result)
+			return &clientv1.ExecuteQueryResponse{
+				Rows: mapped.GetRows(), NextPageToken: mapped.GetNextPageToken(), Result: mapped,
+				ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: protoQueryDiagnostics(result.Diagnostics),
+			}, nil
+		}
+	}
+	if !domaingraph.DomainBroadSearchable(domain) && !isIndexedAdjacencyQuery(req.GetQuery()) && !isIndexedPathQuery(req.GetQuery()) && !isIndexedRootSubtreeQuery(req.GetQuery()) && !isSemanticPredicateNodeQuery(req.GetQuery()) && !isIndexedPredicateNodeQuery(req.GetQuery()) && !isIndexedEqualityNodeQuery(req.GetQuery()) {
+		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
+	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
 	if indexed, res, err := s.tryExecuteIndexedQuery(readCtx, req, tx, schemaCtx, recorder); indexed || err != nil {
 		return res, err
@@ -231,8 +238,18 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if plan.AccessMode == analysis.ReadWrite && tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return nil, status.Error(codes.FailedPrecondition, "GQL query requires a read-write transaction")
 	}
-	if statement, ok := querylogical.StatementFromGQLPlan(plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize(), Cursor: req.GetPageToken()}); ok {
-		s.observeQueryEnginePrepare(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), statement)
+	if statement, ok := querylogical.StatementFromGQLPlan(plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize(), Cursor: req.GetPageToken()}); ok && s.queryEngine != nil {
+		planning := s.queryEnginePlanningContext(tx, domain, schemaCtx)
+		planning.Parameters = logicalQueryParameters(params)
+		prepared, prepareErr := s.queryEngine.Prepare(ctx, planning, statement)
+		if prepareErr == nil && !prepared.RequiresLegacy() {
+			readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+			result, executeErr := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
+			if executeErr != nil {
+				return nil, mapQueryEngineError(executeErr)
+			}
+			return &clientv1.ExecuteGQLResponse{Result: protoNeutralQueryResult(result), ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: protoQueryDiagnostics(result.Diagnostics)}, nil
+		}
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
 	if indexed, res, err := s.tryExecuteIndexedGQL(readCtx, tx, schemaCtx, plan, int(req.GetPageSize()), req.GetPageToken(), recorder); indexed || err != nil {
@@ -390,8 +407,25 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	statementResults := []*clientv1.GQLStatementResult{}
 	aggregate := &clientv1.QueryResult{Graph: &clientv1.ResultGraph{}, Counters: &clientv1.QueryCounters{}}
 	for _, statement := range scriptPlan.Statements {
-		if logicalStatement, ok := querylogical.StatementFromGQLPlan(statement.Plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize()}); ok {
-			s.observeQueryEnginePrepare(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), logicalStatement)
+		if logicalStatement, ok := querylogical.StatementFromGQLPlan(statement.Plan, querylogical.NormalizeOptions{PageSize: req.GetPageSize()}); ok && s.queryEngine != nil {
+			planning := s.queryEnginePlanningContext(tx, domain, schemaCtx)
+			planning.Parameters = logicalQueryParameters(params)
+			prepared, prepareErr := s.queryEngine.Prepare(readCtx, planning, logicalStatement)
+			if prepareErr == nil && !prepared.RequiresLegacy() {
+				neutral, executeErr := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
+				if executeErr != nil {
+					mappedErr := mapQueryEngineError(executeErr)
+					statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: false, Error: mappedErr.Error(), ReadMetadata: protoReadMetadata(recorder.Summary())})
+					if req.GetStopOnError() {
+						break
+					}
+					continue
+				}
+				result := protoNeutralQueryResult(neutral)
+				statementResults = append(statementResults, &clientv1.GQLStatementResult{Index: int32(statement.Index), Statement: statement.Statement, Success: true, Result: result, ReadMetadata: protoReadMetadata(recorder.Summary())})
+				mergeQueryResult(aggregate, result)
+				continue
+			}
 		}
 		if indexed, res, err := s.tryExecuteIndexedGQL(readCtx, tx, schemaCtx, statement.Plan, int(req.GetPageSize()), "", recorder); indexed || err != nil {
 			if err != nil {
@@ -437,6 +471,17 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 		mergeQueryResult(aggregate, result)
 	}
 	return &clientv1.ExecuteGQLScriptResponse{Statements: statementResults, Result: aggregate, ReadMetadata: protoReadMetadata(recorder.Summary())}, nil
+}
+
+func logicalQueryParameters(params map[string]any) map[string]querylogical.Value {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make(map[string]querylogical.Value, len(params))
+	for name, value := range params {
+		out[name] = querylogical.NativeValue(value)
+	}
+	return out
 }
 
 func gqlParamsFromProto(params map[string]*structpb.Value) map[string]any {

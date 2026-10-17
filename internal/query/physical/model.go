@@ -12,6 +12,9 @@ type Family string
 
 const (
 	FamilyLegacyMutation   Family = "legacy_mutation"
+	FamilyNodeIDLookup     Family = "node_id_lookup"
+	FamilyLabelIndex       Family = "label_index"
+	FamilyTagIndex         Family = "tag_index"
 	FamilyIndexedPath      Family = "indexed_path"
 	FamilyIndexedAdjacency Family = "indexed_adjacency"
 	FamilyIndexedEquality  Family = "indexed_equality"
@@ -27,6 +30,9 @@ type OperatorKind string
 
 const (
 	OperatorLegacyBridge       OperatorKind = "legacy_bridge"
+	OperatorNodeLookup         OperatorKind = "node_id_lookup"
+	OperatorLabelIndex         OperatorKind = "label_index_scan"
+	OperatorTagIndex           OperatorKind = "tag_index_scan"
 	OperatorIndexedPath        OperatorKind = "indexed_path_scan"
 	OperatorAdjacency          OperatorKind = "edge_adjacency_index_scan"
 	OperatorOrderedIndex       OperatorKind = "ordered_node_property_index_scan"
@@ -87,6 +93,15 @@ type IndexBranch struct {
 }
 
 // TraversalStep describes one adjacency-backed expansion in an indexed path.
+// SemanticAccess contains the immutable candidate request selected by planning.
+type SemanticAccess struct {
+	Query               string  `json:"query"`
+	RuleRef             string  `json:"rule_ref,omitempty"`
+	EmbeddingBindingKey string  `json:"embedding_binding_key,omitempty"`
+	Limit               int     `json:"limit"`
+	MinScore            float64 `json:"min_score,omitempty"`
+}
+
 type TraversalStep struct {
 	EdgeAlias    string                 `json:"edge_alias,omitempty"`
 	Labels       []string               `json:"labels"`
@@ -111,6 +126,7 @@ type AccessPath struct {
 	Steps       []TraversalStep        `json:"steps,omitempty"`
 	Low         *Bound                 `json:"low,omitempty"`
 	High        *Bound                 `json:"high,omitempty"`
+	Semantic    *SemanticAccess        `json:"semantic,omitempty"`
 }
 
 // IndexUse describes one concrete or built-in index identity.
@@ -172,8 +188,8 @@ type Plan struct {
 	SchemaVersion      string                  `json:"schema_version,omitempty"`
 }
 
-// RequiresLegacy reports that QRX4 selected a physical shape but execution has
-// not migrated from the adapter yet.
+// RequiresLegacy reports that the selected physical family has not migrated
+// from the adapter yet.
 func (p Plan) RequiresLegacy() bool {
 	return p.Root.Kind == OperatorLegacyBridge
 }

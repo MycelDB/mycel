@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	querybinding "github.com/myceldb/mycel/internal/query/binding"
@@ -17,7 +19,7 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx6"
+	PlannerVersion = "qrx7"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -67,6 +69,8 @@ const (
 	// PlanLegacyBridge means the API adapter must execute the statement exactly
 	// once through its existing implementation.
 	PlanLegacyBridge PlanKind = "legacy_bridge"
+	// PlanIndexed executes a migrated QRX7 node access family directly.
+	PlanIndexed PlanKind = "indexed"
 )
 
 // PreparedQuery is the stable handoff between preparation and execution.
@@ -85,9 +89,9 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX6 can execute neutral result
-// shaping over an explicitly supplied temporary legacy source. Storage access
-// families remain on the adapter-owned legacy bridge until later tranches.
+// Engine implements the neutral query facade. QRX7 executes indexed node and
+// semantic plans directly; later plan families can still provide an explicit
+// temporary legacy source for neutral QRX6 shaping.
 type Engine struct {
 	ports Ports
 }
@@ -112,9 +116,8 @@ func (e *Engine) Capabilities() CapabilitySet {
 	}
 }
 
-// Prepare binds and physically plans the neutral statement without changing
-// production execution ownership. Preparation is side-effect-free and invokes
-// no access port.
+// Prepare binds and physically plans the neutral statement. Preparation is
+// side-effect-free and invokes no access port.
 func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statement querylogical.Statement) (PreparedQuery, error) {
 	if err := contextQueryError("prepare query", ctx.Err()); err != nil {
 		return PreparedQuery{}, err
@@ -143,13 +146,13 @@ func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statemen
 	if err != nil {
 		return PreparedQuery{}, err
 	}
+	kind := PlanIndexed
+	if physicalPlan.RequiresLegacy() {
+		kind = PlanLegacyBridge
+	}
 	return PreparedQuery{
-		Statement:         statement,
-		Binding:           bound,
-		Physical:          physicalPlan,
-		Planning:          planning,
-		Kind:              PlanLegacyBridge,
-		UnsupportedReason: physicalPlan.LegacyBridgeReason,
+		Statement: statement, Binding: bound, Physical: physicalPlan, Planning: planning,
+		Kind: kind, UnsupportedReason: physicalPlan.LegacyBridgeReason,
 	}, nil
 }
 
@@ -166,14 +169,14 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	return diagnostics, nil
 }
 
-// Execute runs QRX6 neutral shaping only when the caller explicitly supplies a
-// temporary legacy binding source. With no source, storage-backed plans are
-// rejected before any access port is invoked.
+// Execute runs migrated QRX7 indexed node plans directly. An explicit legacy
+// row source remains available for adapter-owned families that only migrated
+// neutral shaping in QRX6.
 func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
 	if err := contextQueryError("execute query", ctx.Err()); err != nil {
 		return querylogical.Result{}, err
 	}
-	if execution.LegacyRows == nil || prepared.Statement.Kind != querylogical.StatementRead || prepared.Statement.Read == nil {
+	if prepared.Statement.Kind != querylogical.StatementRead || prepared.Statement.Read == nil {
 		return querylogical.Result{}, unsupportedPlan(prepared)
 	}
 	if execution.Transaction != prepared.Planning.Transaction {
@@ -184,26 +187,42 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 			nil,
 		)
 	}
-	staticBudget := queryexecution.Budget{
-		MaxCandidates:         prepared.Physical.Limits.MaxCandidates,
-		MaxIndexEntries:       prepared.Physical.Limits.MaxIndexEntries,
-		MaxNodesLoaded:        prepared.Physical.Limits.MaxNodesLoaded,
-		MaxEdgesLoaded:        prepared.Physical.Limits.MaxEdgesLoaded,
-		MaxAdjacencyCalls:     prepared.Physical.Limits.MaxAdjacencyCalls,
-		MaxIntermediateRows:   prepared.Physical.Limits.MaxIntermediateRows,
-		MaxOutputRows:         prepared.Physical.Limits.MaxOutputRows,
-		MaxMemoryBytes:        prepared.Physical.Limits.MaxMemoryBytes,
-		MaxSemanticCandidates: prepared.Physical.Limits.MaxSemanticCandidates,
-		MaxTraversalDepth:     prepared.Physical.Limits.MaxTraversalDepth,
+	if execution.Now.IsZero() {
+		execution.Now = time.Now()
 	}
-	budget := queryexecution.ResolveBudget(execution.Budget, staticBudget)
+	budget := queryexecution.ResolveBudget(execution.Budget, physicalBudget(prepared.Physical))
 	tracker, err := queryexecution.NewTracker(budget)
 	if err != nil {
 		return querylogical.Result{}, err
 	}
-	source := queryexecution.NewLegacySource(execution.LegacyRows, budget.BatchSize, tracker)
+
 	query := *prepared.Statement.Read
-	query.Predicate = prepared.Physical.ResidualPredicate
+	var source queryexecution.Operator
+	var cursor indexedCursor
+	if execution.LegacyRows != nil {
+		source = queryexecution.NewLegacySource(execution.LegacyRows, budget.BatchSize, tracker)
+		query.Predicate = prepared.Physical.ResidualPredicate
+	} else {
+		if prepared.Kind != PlanIndexed {
+			return querylogical.Result{}, unsupportedPlan(prepared)
+		}
+		cursor, err = decodeIndexedCursor(prepared)
+		if err != nil {
+			return querylogical.Result{}, err
+		}
+		pageRows := indexedPageRows(query, cursor)
+		if pageRows == 0 {
+			source = queryexecution.NewLegacySource([]queryexecution.BindingRow{}, budget.BatchSize, tracker)
+		} else {
+			source, err = e.indexedSource(ctx, execution, prepared, tracker, cursor, cursor.RowsReturned+int64(pageRows))
+			if err != nil {
+				return querylogical.Result{}, err
+			}
+			source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+		}
+		query = executionQuery(query, prepared.Physical, cursor)
+	}
+
 	result, err := queryexecution.Shape(ctx, source, query, tracker, queryexecution.ShapeOptions{
 		Parameters: prepared.Planning.Parameters,
 		Now:        execution.Now,
@@ -211,10 +230,77 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 	if err != nil {
 		return querylogical.Result{}, err
 	}
+	if execution.LegacyRows == nil {
+		result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor)
+	}
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
 	result.Diagnostics.Planner = PlannerName
 	result.Diagnostics.PlannerVersion = PlannerVersion
 	return result, nil
+}
+
+func physicalBudget(plan queryphysical.Plan) queryexecution.Budget {
+	return queryexecution.Budget{
+		MaxCandidates: plan.Limits.MaxCandidates, MaxIndexEntries: plan.Limits.MaxIndexEntries,
+		MaxNodesLoaded: plan.Limits.MaxNodesLoaded, MaxEdgesLoaded: plan.Limits.MaxEdgesLoaded,
+		MaxAdjacencyCalls: plan.Limits.MaxAdjacencyCalls, MaxIntermediateRows: plan.Limits.MaxIntermediateRows,
+		MaxOutputRows: plan.Limits.MaxOutputRows, MaxMemoryBytes: plan.Limits.MaxMemoryBytes,
+		MaxSemanticCandidates: plan.Limits.MaxSemanticCandidates, MaxTraversalDepth: plan.Limits.MaxTraversalDepth,
+	}
+}
+
+func indexedPageRows(query querylogical.Query, cursor indexedCursor) int {
+	pageSize := int(query.Page.Size)
+	if pageSize <= 0 || pageSize > 500 {
+		pageSize = 500
+	}
+	if query.Page.Limit <= 0 {
+		return pageSize
+	}
+	remaining := query.Page.Limit - cursor.RowsReturned
+	if cursor.Mode == cursorModeOutput {
+		remaining = query.Page.Limit - int64(cursor.OutputOffset)
+	}
+	if remaining <= 0 {
+		return 0
+	}
+	if remaining < int64(pageSize) {
+		return int(remaining)
+	}
+	return pageSize
+}
+
+func executionQuery(query querylogical.Query, plan queryphysical.Plan, cursor indexedCursor) querylogical.Query {
+	query.Predicate = plan.ResidualPredicate
+	if plan.Family == queryphysical.FamilyIndexedOrder && len(query.Aggregates) == 0 {
+		query.OrderBy = nil
+	}
+	if cursor.Mode == cursorModeSource {
+		if query.Page.Cursor != "" {
+			query.Page.Offset = 0
+		}
+		query.Page.Cursor = ""
+		if query.Page.Limit > 0 {
+			query.Page.Limit -= cursor.RowsReturned
+			if query.Page.Limit < 0 {
+				query.Page.Limit = 0
+			}
+		}
+		return query
+	}
+	query.Page.Cursor = strconv.Itoa(cursor.OutputOffset)
+	return query
+}
+
+func wrapIndexedNextCursor(prepared PreparedQuery, next string) string {
+	if next == "" || strings.HasPrefix(next, indexedCursorPrefix) {
+		return next
+	}
+	offset, err := strconv.Atoi(next)
+	if err != nil || offset < 0 {
+		return ""
+	}
+	return encodeIndexedCursor(prepared, indexedCursor{Mode: cursorModeOutput, OutputOffset: offset, RowsReturned: int64(offset)})
 }
 
 func unsupportedPlan(prepared PreparedQuery) error {

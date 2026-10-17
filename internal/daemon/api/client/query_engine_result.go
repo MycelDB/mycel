@@ -202,7 +202,14 @@ func mapQueryEngineError(err error) error {
 		}
 		return status.Error(codes.Canceled, queryErr.Error())
 	case querylogical.ErrorDependencyFailure:
-		return status.Error(codes.Unavailable, queryErr.Error())
+		switch status.Code(queryErr.Cause) {
+		case codes.Canceled:
+			return status.Error(codes.Canceled, queryErr.Error())
+		case codes.DeadlineExceeded:
+			return status.Error(codes.DeadlineExceeded, queryErr.Error())
+		default:
+			return status.Error(codes.Unavailable, queryErr.Error())
+		}
 	default:
 		return status.Error(codes.Internal, queryErr.Error())
 	}

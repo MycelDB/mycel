@@ -8,10 +8,18 @@ import (
 	"slices"
 	"sort"
 	"testing"
+	"time"
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
+	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
+	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
+	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -275,6 +283,280 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 		}
 		if !res.GetDiagnostics().GetExplainOnly() || profile.dataReadCalls() != 0 || profile.callCount("ConfigureIndexes") != 0 {
 			t.Fatalf("Explain diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
+		}
+	})
+}
+
+func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+
+	for _, test := range []struct {
+		name string
+		run  func(*QueryService) ([]string, *clientv1.QueryDiagnostics, error)
+	}{
+		{name: "structured", run: func(service *QueryService) ([]string, *clientv1.QueryDiagnostics, error) {
+			response, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query: &clientv1.GraphQuery{
+					Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+					Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+					OrderBy: []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: "j", Name: "date"}}}, Direction: clientv1.SortDirection_SORT_DIRECTION_ASC}},
+				},
+				PageSize: 2,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			return qrx0ScalarValues(response.GetRows(), "title"), response.GetDiagnostics(), nil
+		}},
+		{name: "GQL", run: func(service *QueryService) ([]string, *clientv1.QueryDiagnostics, error) {
+			response, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+				TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j.title AS title ORDER BY j.date ASC", PageSize: 2,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			return qrx0ScalarValues(response.GetResult().GetRows(), "title"), response.GetDiagnostics(), nil
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+			service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+				WithSchemaManager(manager).
+				WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
+			titles, diagnostics, err := test.run(service)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if !reflect.DeepEqual(titles, []string{"oldest", "middle"}) {
+				t.Fatalf("titles = %v", titles)
+			}
+			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx7" || diagnostics.GetFullScan() {
+				t.Fatalf("diagnostics = %+v", diagnostics)
+			}
+			if profile.callCount("ScanNodePropertyOrdered") == 0 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
+				t.Fatalf("migrated query used legacy queryExecution access: %+v", profile.callsSnapshot())
+			}
+			for _, limit := range profile.requestedLimits("ScanNodePropertyOrdered") {
+				if limit <= 0 {
+					t.Fatalf("ordered scan used unbounded limit: %v", profile.requestedLimits("ScanNodePropertyOrdered"))
+				}
+			}
+		})
+	}
+}
+
+func TestQRX7StructuredCursorContinuesThroughEquivalentGQLLabelPlan(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+	service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+		WithSchemaManager(manager).
+		WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
+	structured, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+		TransactionId: readTx,
+		Query: &clientv1.GraphQuery{
+			Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+			Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
+		},
+		PageSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("structured execute: %v", err)
+	}
+	if structured.GetDiagnostics().GetPlanKind() != "label_index" || structured.GetNextPageToken() == "" {
+		t.Fatalf("structured response = %+v", structured)
+	}
+	gql, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+		TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j.title AS title",
+		PageSize: 1, PageToken: structured.GetNextPageToken(),
+	})
+	if err != nil {
+		t.Fatalf("GQL continuation: %v", err)
+	}
+	first := qrx0ScalarValues(structured.GetRows(), "title")
+	second := qrx0ScalarValues(gql.GetResult().GetRows(), "title")
+	if len(first) != 1 || len(second) != 1 || first[0] == second[0] || gql.GetDiagnostics().GetPlanKind() != "label_index" {
+		t.Fatalf("structured=%v GQL=%v diagnostics=%+v", first, second, gql.GetDiagnostics())
+	}
+	if profile.callCount("ScanLabel") < 2 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
+		t.Fatalf("label continuation access = %+v", profile.callsSnapshot())
+	}
+	for _, limit := range profile.requestedLimits("ScanLabel") {
+		if limit <= 0 || limit > 2 {
+			t.Fatalf("label scan limits = %v", profile.requestedLimits("ScanLabel"))
+		}
+	}
+}
+
+type qrx7BlockingLabelGraph struct {
+	graphservice.Manager
+	started chan struct{}
+}
+
+func (g *qrx7BlockingLabelGraph) ScanLabel(ctx context.Context, _ sessionmodel.GraphTransaction, _ graphquery.LabelScan) ([]graphmodel.Node, string, graphquery.IndexedReadStats, error) {
+	close(g.started)
+	<-ctx.Done()
+	return nil, "", graphquery.IndexedReadStats{}, nil
+}
+
+type qrx7BlockingSemanticSearcher struct {
+	started chan struct{}
+}
+
+func (s *qrx7BlockingSemanticSearcher) Search(ctx context.Context, _ semanticservice.SearchInput) (semanticsearch.Result, error) {
+	close(s.started)
+	<-ctx.Done()
+	return semanticsearch.Result{}, nil
+}
+
+type qrx7StatusLabelGraph struct {
+	graphservice.Manager
+	err error
+}
+
+func (g *qrx7StatusLabelGraph) ScanLabel(context.Context, sessionmodel.GraphTransaction, graphquery.LabelScan) ([]graphmodel.Node, string, graphquery.IndexedReadStats, error) {
+	return nil, "", graphquery.IndexedReadStats{}, g.err
+}
+
+type qrx7StatusConfigureGraph struct {
+	graphservice.Manager
+	err error
+}
+
+func (g *qrx7StatusConfigureGraph) ConfigureIndexes(context.Context, sessionmodel.GraphTransaction, string, []schemamodel.IndexDefinition) error {
+	return g.err
+}
+
+type qrx7StatusSemanticSearcher struct {
+	err error
+}
+
+func (s *qrx7StatusSemanticSearcher) Search(context.Context, semanticservice.SearchInput) (semanticsearch.Result, error) {
+	return semanticsearch.Result{}, s.err
+}
+
+func TestQRX7CancellationDuringIndexedDependencyCallIsPreserved(t *testing.T) {
+	t.Run("label index", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		blocking := &qrx7BlockingLabelGraph{Manager: fixture.graphs, started: make(chan struct{})}
+		service := NewQueryService(fixture.sessions, blocking, fixture.spaces).
+			WithSchemaManager(manager).
+			WithQueryEngine(queryEngineForExplainTest(blocking, manager))
+		ctx, cancel := context.WithCancel(fixture.ctx)
+		result := make(chan error, 1)
+		go func() {
+			_, err := service.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query:         &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}}},
+			})
+			result <- err
+		}()
+		select {
+		case <-blocking.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("label scan did not start")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			if status.Code(err) != codes.Canceled {
+				t.Fatalf("error = %v, want Canceled", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("label cancellation did not return")
+		}
+	})
+
+	t.Run("semantic search", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		blocking := &qrx7BlockingSemanticSearcher{started: make(chan struct{})}
+		engine := queryengine.New(queryengine.Ports{
+			Entities: fixture.graphs, Traversals: fixture.graphs, Indexes: fixture.graphs,
+			Catalog: manager, SemanticCandidates: NewQuerySemanticCandidateReader(blocking), Mutations: fixture.graphs,
+		})
+		service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+			WithSchemaManager(manager).
+			WithSemanticManager(blocking).
+			WithQueryEngine(engine)
+		ctx, cancel := context.WithCancel(fixture.ctx)
+		result := make(chan error, 1)
+		go func() {
+			_, err := service.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query: &clientv1.GraphQuery{
+					Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+					Where: &clientv1.Expr{Expr: &clientv1.Expr_Semantic{Semantic: &clientv1.SemanticSearchExpr{Alias: "j", Query: "needle", Limit: 5}}},
+				},
+			})
+			result <- err
+		}()
+		select {
+		case <-blocking.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("semantic search did not start")
+		}
+		cancel()
+		select {
+		case err := <-result:
+			if status.Code(err) != codes.Canceled {
+				t.Fatalf("error = %v, want Canceled", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("semantic cancellation did not return")
+		}
+	})
+}
+
+func TestQRX7StatusCodedDependencyCancellationIsPreserved(t *testing.T) {
+	t.Run("label deadline", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		failing := &qrx7StatusLabelGraph{Manager: fixture.graphs, err: status.Error(codes.DeadlineExceeded, "injected label deadline")}
+		service := NewQueryService(fixture.sessions, failing, fixture.spaces).
+			WithSchemaManager(manager).
+			WithQueryEngine(queryEngineForExplainTest(failing, manager))
+		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+			TransactionId: readTx,
+			Query:         &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}}},
+		})
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("error = %v, want DeadlineExceeded", err)
+		}
+	})
+
+	t.Run("index configuration canceled", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		failing := &qrx7StatusConfigureGraph{Manager: fixture.graphs, err: status.Error(codes.Canceled, "injected configure cancellation")}
+		service := NewQueryService(fixture.sessions, failing, fixture.spaces).
+			WithSchemaManager(manager).
+			WithQueryEngine(queryEngineForExplainTest(failing, manager))
+		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+			TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1,
+		})
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("error = %v, want Canceled", err)
+		}
+	})
+
+	t.Run("semantic deadline", func(t *testing.T) {
+		fixture, manager, readTx := newQRX0JournalFixture(t)
+		failing := &qrx7StatusSemanticSearcher{err: status.Error(codes.DeadlineExceeded, "injected semantic deadline")}
+		engine := queryengine.New(queryengine.Ports{
+			Entities: fixture.graphs, Traversals: fixture.graphs, Indexes: fixture.graphs,
+			Catalog: manager, SemanticCandidates: NewQuerySemanticCandidateReader(failing), Mutations: fixture.graphs,
+		})
+		service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+			WithSchemaManager(manager).
+			WithSemanticManager(failing).
+			WithQueryEngine(engine)
+		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+			TransactionId: readTx,
+			Query: &clientv1.GraphQuery{
+				Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+				Where: &clientv1.Expr{Expr: &clientv1.Expr_Semantic{Semantic: &clientv1.SemanticSearchExpr{Alias: "j", Query: "needle", Limit: 5}}},
+			},
+		})
+		if status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("error = %v, want DeadlineExceeded", err)
 		}
 	})
 }
