@@ -250,13 +250,13 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 
 	t.Run("Explain performs no graph data reads", func(t *testing.T) {
 		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
+		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
 		res, err := querySvc.ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
 		if err != nil {
 			t.Fatalf("ExplainQuery() error = %v", err)
 		}
-		if !res.GetDiagnostics().GetExplainOnly() || profile.dataReadCalls() != 0 {
-			t.Fatalf("Explain diagnostics=%+v data_read_calls=%d", res.GetDiagnostics(), profile.dataReadCalls())
+		if !res.GetDiagnostics().GetExplainOnly() || profile.dataReadCalls() != 0 || profile.callCount("ConfigureIndexes") != 0 {
+			t.Fatalf("Explain diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
 		}
 	})
 }

@@ -91,23 +91,13 @@ func (s *QueryService) WithClientRequestRouter(router ClientRequestRouter) *Quer
 	return s
 }
 
-// observeQueryEnginePrepare runs the shared QRX3 binder while the existing
-// adapter remains the sole execution owner. Binder errors are intentionally
-// observational until validation parity is proven and a plan family migrates.
+// observeQueryEnginePrepare exercises shared binding and physical planning
+// while the existing adapter remains the sole execution owner.
 func (s *QueryService) observeQueryEnginePrepare(ctx context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) {
 	if s.queryEngine == nil {
 		return
 	}
 	_, _ = s.queryEngine.Prepare(ctx, planning, statement)
-}
-
-// observeQueryEngineExplain exercises neutral binding and Explain without
-// replacing the existing public diagnostics during the compatibility tranche.
-func (s *QueryService) observeQueryEngineExplain(ctx context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) {
-	if s.queryEngine == nil {
-		return
-	}
-	_, _ = s.queryEngine.Explain(ctx, planning, statement)
 }
 
 func (s *QueryService) queryEnginePlanningContext(tx sessionmodel.GraphTransaction, domain domaingraph.Domain, schemaCtx analysis.SchemaContext) queryengine.PlanningContext {
@@ -286,15 +276,26 @@ func (s *QueryService) ExplainQuery(ctx context.Context, req *clientv1.ExplainQu
 	if tx.State != sessionmodel.TransactionStateActive {
 		return nil, status.Error(codes.FailedPrecondition, "transaction is not active")
 	}
+	if req.GetQuery() == nil || req.GetQuery().GetMatch() == nil || req.GetQuery().GetMatch().GetStart() == nil {
+		diagnostics := rejectedPhysicalExplainDiagnostics("query match.start is required", "")
+		diagnostics.PlanningMillis = time.Since(start).Milliseconds()
+		return &clientv1.ExplainQueryResponse{Diagnostics: diagnostics}, nil
+	}
+	if err := validateStructuredQuerySafety(req.GetQuery()); err != nil {
+		diagnostics := rejectedPhysicalExplainDiagnostics(err.Error(), "")
+		diagnostics.PlanningMillis = time.Since(start).Milliseconds()
+		return &clientv1.ExplainQueryResponse{Diagnostics: diagnostics}, nil
+	}
 	if err := validateStructuredGraphQueryWithSchema(req.GetQuery(), schemaCtx); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	logicalQuery := logicalQueryFromStructured(req.GetQuery(), 0, "")
-	s.observeQueryEngineExplain(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), querylogical.ReadStatement(logicalQuery))
-	diag := s.explainStructuredGraphQuery(req.GetQuery(), schemaCtx, domain)
-	diag.ExplainOnly = true
-	diag.PlanningMillis = time.Since(start).Milliseconds()
-	return &clientv1.ExplainQueryResponse{Diagnostics: diag}, nil
+	statement := querylogical.ReadStatement(logicalQueryFromStructured(req.GetQuery(), 0, ""))
+	diagnostics, err := s.explainStatement(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), statement, false)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics.PlanningMillis = time.Since(start).Milliseconds()
+	return &clientv1.ExplainQueryResponse{Diagnostics: diagnostics}, nil
 }
 
 func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLRequest) (*clientv1.ExplainGQLResponse, error) {
@@ -324,13 +325,18 @@ func (s *QueryService) ExplainGQL(ctx context.Context, req *clientv1.ExplainGQLR
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if statement, ok := querylogical.StatementFromGQLPlan(plan); ok {
-		s.observeQueryEngineExplain(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), statement)
+	statement, ok := querylogical.StatementFromGQLPlan(plan)
+	if !ok {
+		diagnostics := gqlScriptCompatibilityDiagnostics()
+		diagnostics.PlanningMillis = time.Since(start).Milliseconds()
+		return &clientv1.ExplainGQLResponse{Diagnostics: diagnostics}, nil
 	}
-	diag := s.explainGQLPlan(plan, schemaCtx, domain)
-	diag.ExplainOnly = true
-	diag.PlanningMillis = time.Since(start).Milliseconds()
-	return &clientv1.ExplainGQLResponse{Diagnostics: diag}, nil
+	diagnostics, err := s.explainStatement(ctx, s.queryEnginePlanningContext(tx, domain, schemaCtx), statement, true)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics.PlanningMillis = time.Since(start).Milliseconds()
+	return &clientv1.ExplainGQLResponse{Diagnostics: diagnostics}, nil
 }
 
 func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.ExecuteGQLScriptRequest) (*clientv1.ExecuteGQLScriptResponse, error) {
@@ -551,223 +557,6 @@ func completeQueryDiagnostics(diag *clientv1.QueryDiagnostics, planKind string, 
 		diag.ExecutionMillis = time.Since(executionStart).Milliseconds()
 	}
 	return diag
-}
-
-func rejectPlanDiagnostics(reason string) *clientv1.QueryDiagnostics {
-	diag := baseQueryDiagnostics()
-	diag.Plan = "Rejected"
-	diag.PlanKind = "rejected"
-	diag.RejectedReason = reason
-	diag.FullScan = false
-	return diag
-}
-
-func (s *QueryService) explainStructuredGraphQuery(query *clientv1.GraphQuery, schemaCtx analysis.SchemaContext, domain domaingraph.Domain) *clientv1.QueryDiagnostics {
-	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil {
-		return rejectPlanDiagnostics("query match.start is required")
-	}
-	if err := validateStructuredQuerySafety(query); err != nil {
-		return rejectPlanDiagnostics(err.Error())
-	}
-	if diag, ok := s.explainAcceptedStructuredIndexQuery(query, schemaCtx); ok {
-		return diag
-	}
-	if !domaingraph.DomainBroadSearchable(domain) {
-		return rejectPlanDiagnostics("query shape requires broad fallback but domain is not broad-searchable")
-	}
-	diag := baseQueryDiagnostics()
-	diag.Plan = "BroadGraphFallback"
-	diag.PlanKind = "fallback"
-	diag.FullScan = true
-	diag.FallbackMode = "broad_graph_fallback"
-	diag.ResidualPredicates = predicateDiagnostics(query.GetWhere())
-	return diag
-}
-
-func (s *QueryService) explainAcceptedStructuredIndexQuery(query *clientv1.GraphQuery, schemaCtx analysis.SchemaContext) (*clientv1.QueryDiagnostics, bool) {
-	if isIndexedRootSubtreeQuery(query) || (len(query.GetOrderBy()) > 0 && len(query.GetMatch().GetSteps()) == 0) {
-		return s.explainOrderedIndexQuery(query, schemaCtx), true
-	}
-	if isIndexedPathQuery(query) {
-		diag := baseQueryDiagnostics()
-		diag.Plan = "IndexedMultiHopAdjacencyPathScan"
-		diag.PlanKind = "indexed_path"
-		diag.FullScan = false
-		diag.NextCursorKind = "offset"
-		diag.Indexes = []string{"adjacency"}
-		diag.PushedPredicates = predicateDiagnostics(query.GetWhere())
-		return diag, true
-	}
-	if isIndexedAdjacencyQuery(query) {
-		step := query.GetMatch().GetSteps()[0]
-		direction := "out"
-		if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
-			direction = "in"
-		}
-		diag := baseQueryDiagnostics()
-		diag.Plan = "EdgeAdjacencyIndexScan"
-		diag.PlanKind = "indexed_adjacency"
-		diag.Indexes = []string{direction + ":" + step.GetEdgeKind()}
-		diag.FullScan = false
-		diag.NextCursorKind = "adjacency_key"
-		return diag, true
-	}
-	if isIndexedEqualityNodeQuery(query) {
-		field, _, ok, err := indexedEqualityPredicate(query.GetWhere(), query.GetMatch().GetStart().GetAlias())
-		if err != nil || !ok {
-			return rejectPlanDiagnostics("indexed equality predicate could not be planned"), false
-		}
-		return s.explainOrderedFieldIndex(query, schemaCtx, "OrderedNodePropertyEqualityIndexScan", "indexed_equality", field), true
-	}
-	if isSemanticPredicateNodeQuery(query) {
-		diag := baseQueryDiagnostics()
-		diag.Plan = "SemanticVectorSearch"
-		diag.PlanKind = "semantic_vector"
-		diag.FullScan = false
-		diag.PushedPredicates = predicateDiagnostics(query.GetWhere())
-		return diag, true
-	}
-	if isIndexedPredicateNodeQuery(query) {
-		return s.explainIndexedPredicateQuery(query, schemaCtx), true
-	}
-	return nil, false
-}
-
-func (s *QueryService) explainOrderedIndexQuery(query *clientv1.GraphQuery, schemaCtx analysis.SchemaContext) *clientv1.QueryDiagnostics {
-	start := query.GetMatch().GetStart()
-	if len(query.GetOrderBy()) != 1 || len(start.GetLabels()) != 1 {
-		return rejectPlanDiagnostics("ORDER BY requires one ordered single-label node query")
-	}
-	prop := query.GetOrderBy()[0].GetValue().GetProp()
-	if prop == nil || prop.GetAlias() != start.GetAlias() || strings.TrimSpace(prop.GetName()) == "" {
-		return rejectPlanDiagnostics("ORDER BY requires an indexed property reference on the start alias")
-	}
-	if isIndexedRootSubtreeQuery(query) {
-		return s.explainOrderedFieldIndex(query, schemaCtx, indexedSubtreePlanName, "indexed_subtree", prop.GetName())
-	}
-	return s.explainOrderedFieldIndex(query, schemaCtx, "OrderedNodePropertyIndexScan", "indexed_order", prop.GetName())
-}
-
-func (s *QueryService) explainOrderedFieldIndex(query *clientv1.GraphQuery, schemaCtx analysis.SchemaContext, plan string, kind string, field string) *clientv1.QueryDiagnostics {
-	start := query.GetMatch().GetStart()
-	diag := baseQueryDiagnostics()
-	diag.Plan = plan
-	diag.PlanKind = kind
-	diag.FullScan = false
-	diag.NextCursorKind = "index_key"
-	diag.PushedPredicates = predicateDiagnostics(query.GetWhere())
-	if schemaCtx.Schema == nil {
-		diag.Plan = "Rejected"
-		diag.PlanKind = "rejected"
-		diag.RejectedReason = "indexed query requires an active schema with an ordered index"
-		diag.RequiredIndex = start.GetLabels()[0] + ".properties." + field
-		return diag
-	}
-	idx, ok := findOrderedNodeIndex(*schemaCtx.Schema, start.GetLabels()[0], field)
-	if !ok {
-		diag.Plan = "Rejected"
-		diag.PlanKind = "rejected"
-		diag.RejectedReason = fmt.Sprintf("no ordered index for %s.properties.%s", start.GetLabels()[0], field)
-		diag.RequiredIndex = start.GetLabels()[0] + ".properties." + field
-		return diag
-	}
-	diag.Indexes = []string{idx.Name}
-	if kind == "indexed_subtree" && len(query.GetMatch().GetSteps()) > 0 {
-		step := query.GetMatch().GetSteps()[0]
-		direction := "out"
-		if step.GetDirection() == clientv1.TraversalDirection_TRAVERSAL_DIRECTION_IN {
-			direction = "in"
-		}
-		diag.Indexes = append(diag.Indexes, direction+":"+step.GetEdgeKind())
-		diag.NextCursorKind = indexedSubtreeCursorKind
-	}
-	return diag
-}
-
-func (s *QueryService) explainIndexedPredicateQuery(query *clientv1.GraphQuery, schemaCtx analysis.SchemaContext) *clientv1.QueryDiagnostics {
-	start := query.GetMatch().GetStart()
-	diag := baseQueryDiagnostics()
-	diag.Plan = "OrderedNodePropertyPredicateIndexScan"
-	diag.PlanKind = "indexed_predicate"
-	diag.FullScan = false
-	diag.NextCursorKind = "offset"
-	diag.PushedPredicates = predicateDiagnostics(query.GetWhere())
-	branches, _, _ := indexedPredicateBranches(query.GetWhere(), start.GetAlias())
-	if schemaCtx.Schema == nil {
-		diag.Plan = "Rejected"
-		diag.PlanKind = "rejected"
-		diag.RejectedReason = "indexed predicate query requires an active schema with ordered indexes"
-		return diag
-	}
-	seen := map[string]struct{}{}
-	for _, branch := range branches {
-		for _, scan := range branch.scans {
-			idx, ok := findOrderedNodeIndex(*schemaCtx.Schema, start.GetLabels()[0], scan.field)
-			if !ok {
-				diag.Plan = "Rejected"
-				diag.PlanKind = "rejected"
-				diag.RejectedReason = fmt.Sprintf("no ordered index for %s.properties.%s", start.GetLabels()[0], scan.field)
-				diag.RequiredIndex = start.GetLabels()[0] + ".properties." + scan.field
-				return diag
-			}
-			seen[idx.Name] = struct{}{}
-		}
-	}
-	for index := range seen {
-		diag.Indexes = append(diag.Indexes, index)
-	}
-	sort.Strings(diag.Indexes)
-	return diag
-}
-
-func (s *QueryService) explainGQLPlan(plan planmodel.Plan, schemaCtx analysis.SchemaContext, domain domaingraph.Domain) *clientv1.QueryDiagnostics {
-	if len(plan.Operations) == 0 {
-		return rejectPlanDiagnostics("GQL plan has no operations")
-	}
-	if len(plan.Operations) != 1 {
-		diag := baseQueryDiagnostics()
-		diag.Plan = "GQLScriptPlan"
-		diag.PlanKind = "gql_script"
-		return diag
-	}
-	switch op := plan.Operations[0].(type) {
-	case planmodel.QueryNodesOperation:
-		query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: op.Variable, Labels: append([]string(nil), op.Labels...)}}, Returns: gqlStructuredReturns(op.Returns), AggregateReturns: gqlStructuredAggregates(op.Aggregates), Distinct: op.Distinct, Offset: int32(op.Offset), Limit: int32(op.Limit)}
-		if len(op.OrderBy) > 0 {
-			order := op.OrderBy[0]
-			direction := clientv1.SortDirection_SORT_DIRECTION_ASC
-			if order.Direction == planmodel.SortDescending {
-				direction = clientv1.SortDirection_SORT_DIRECTION_DESC
-			}
-			query.OrderBy = []*clientv1.OrderSpec{{Value: &clientv1.ValueExpr{Expr: &clientv1.ValueExpr_Prop{Prop: &clientv1.PropExpr{Alias: order.Variable, Name: order.Property}}}, Direction: direction}}
-		}
-		if len(op.ComparisonPredicates) > 0 || len(op.NullPredicates) > 0 || len(op.StringPredicates) > 0 || len(op.TextPredicates) > 0 || len(op.SemanticPredicates) > 0 {
-			query.Where = gqlPredicatesToStructured(op)
-		}
-		return s.explainStructuredGraphQuery(query, schemaCtx, domain)
-	case planmodel.QueryPathOperation:
-		query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: op.Start.Variable, Labels: append([]string(nil), op.Start.Labels...)}, Steps: gqlPathSteps(op.Segments)}, PathAlias: op.PathVariable, Returns: gqlStructuredReturnsWithPath(op.Returns, op.PathVariable), Distinct: op.Distinct, Offset: int32(op.Offset), Limit: int32(op.Limit)}
-		if where, ok := gqlPathPredicatesToStructured(op); ok {
-			query.Where = where
-		}
-		return s.explainStructuredGraphQuery(query, schemaCtx, domain)
-	case planmodel.InsertNodeOperation, planmodel.MergeNodeOperation, planmodel.MatchSetOperation, planmodel.MatchDeleteOperation, planmodel.MatchCreateRelationshipOperation, planmodel.MatchMergeRelationshipOperation:
-		diag := baseQueryDiagnostics()
-		diag.Plan = fmt.Sprintf("%T", op)
-		diag.PlanKind = "gql_mutation"
-		diag.FullScan = false
-		return diag
-	default:
-		if !domaingraph.DomainBroadSearchable(domain) {
-			return rejectPlanDiagnostics("GQL plan requires broad fallback but domain is not broad-searchable")
-		}
-		diag := baseQueryDiagnostics()
-		diag.Plan = "BroadGQLFallback"
-		diag.PlanKind = "fallback"
-		diag.FullScan = true
-		diag.FallbackMode = "broad_gql_fallback"
-		return diag
-	}
 }
 
 func predicateDiagnostics(expr *clientv1.Expr) []string {

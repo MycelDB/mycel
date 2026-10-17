@@ -206,7 +206,7 @@ func TestQueryServiceExplainQueryReportsIndexedPlanWithoutExecutingReads(t *test
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, manager)).ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
 	if err != nil {
 		t.Fatalf("ExplainQuery() error = %v", err)
 	}
@@ -223,7 +223,7 @@ func TestQueryServiceExplainQueryReportsRejectedMissingIndex(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
 	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, false)
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
+	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, manager)).ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
 	if err != nil {
 		t.Fatalf("ExplainQuery() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestQueryServiceExplainGQLReportsIndexedAndFallbackPlans(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, manager))
 	indexed, err := querySvc.ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j ORDER BY j.date"})
 	if err != nil {
 		t.Fatalf("ExplainGQL(indexed) error = %v", err)
@@ -245,7 +245,7 @@ func TestQueryServiceExplainGQLReportsIndexedAndFallbackPlans(t *testing.T) {
 	if diag := indexed.GetDiagnostics(); diag.GetPlan() != "OrderedNodePropertyIndexScan" || diag.GetPlanKind() != "indexed_order" || diag.GetFullScan() || !diag.GetExplainOnly() {
 		t.Fatalf("indexed diagnostics = %+v", diag)
 	}
-	fallback, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{TransactionId: readTx, Query: "MATCH (p:Person) RETURN p"})
+	fallback, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil)).ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{TransactionId: readTx, Query: "MATCH (p:Person) RETURN p"})
 	if err != nil {
 		t.Fatalf("ExplainGQL(fallback) error = %v", err)
 	}

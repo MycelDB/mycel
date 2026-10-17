@@ -292,7 +292,7 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	}
 	index, ok := p.catalog.FindOrderedNodeIndex(query.Start.Labels[0], orderField.Name)
 	if !ok {
-		return Plan{}, true, p.unavailable("no ordered index for %s.properties.%s", query.Start.Labels[0], orderField.Name)
+		return Plan{}, true, p.missingOrderedIndex(query.Start.Labels[0], orderField.Name)
 	}
 	var low, high *Bound
 	var err error
@@ -448,11 +448,11 @@ func (p planner) resolveBranches(label string, branches []candidateBranch) ([]In
 
 func (p planner) resolveScan(label string, scan IndexScan) (IndexScan, IndexUse, error) {
 	if !p.catalog.Enabled() {
-		return IndexScan{}, IndexUse{}, p.unavailable("indexed query requires an active schema with ordered indexes")
+		return IndexScan{}, IndexUse{}, p.missingOrderedIndex(label, scan.Field.Name)
 	}
 	index, ok := p.catalog.FindOrderedNodeIndex(label, scan.Field.Name)
 	if !ok {
-		return IndexScan{}, IndexUse{}, p.unavailable("no ordered index for %s.properties.%s", label, scan.Field.Name)
+		return IndexScan{}, IndexUse{}, p.missingOrderedIndex(label, scan.Field.Name)
 	}
 	scan.Index = index.Name
 	return scan, schemaIndexUse(index, label), nil
@@ -556,6 +556,16 @@ func (p planner) invalid(format string, args ...any) error {
 
 func (p planner) unavailable(format string, args ...any) error {
 	return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "plan query", fmt.Sprintf(format, args...), nil)
+}
+
+func (p planner) missingOrderedIndex(label string, field string) error {
+	required := label + ".properties." + field
+	return querylogical.NewError(
+		querylogical.ErrorUnavailableAccessPath,
+		"plan query",
+		fmt.Sprintf("no ordered index for %s", required),
+		nil,
+	).WithRequiredIndex(required)
 }
 
 type candidateScan struct {

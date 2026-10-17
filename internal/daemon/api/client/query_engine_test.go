@@ -7,7 +7,9 @@ import (
 
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -15,7 +17,16 @@ import (
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func queryEngineForExplainTest(graphs daegraph.Manager, catalog queryengine.CatalogReader) queryengine.Facade {
+	return queryengine.New(queryengine.Ports{
+		Entities: graphs, Traversals: graphs, Indexes: graphs,
+		Catalog: catalog, Mutations: graphs,
+	})
+}
 
 type recordingQueryEngineFacade struct {
 	prepareCalls int
@@ -44,7 +55,7 @@ func (r *recordingQueryEngineFacade) Execute(context.Context, queryengine.Execut
 	return querylogical.Result{}, nil
 }
 
-func TestQueryServiceObservesEngineBoundariesWithoutDoubleExecution(t *testing.T) {
+func TestQueryServiceUsesPrepareAndExplainBoundariesWithoutDoubleExecution(t *testing.T) {
 	facade := &recordingQueryEngineFacade{}
 	service := (&QueryService{}).WithQueryEngine(facade)
 	tx := sessionmodel.GraphTransaction{
@@ -71,7 +82,9 @@ func TestQueryServiceObservesEngineBoundariesWithoutDoubleExecution(t *testing.T
 		t.Fatalf("logical statement = %#v, want %#v", facade.statement, statement)
 	}
 
-	service.observeQueryEngineExplain(context.Background(), planning, statement)
+	if _, err := service.explainStatement(context.Background(), planning, statement, false); err != nil {
+		t.Fatalf("explain statement: %v", err)
+	}
 	if facade.prepareCalls != 1 || facade.explainCalls != 1 || facade.executeCalls != 0 {
 		t.Fatalf("calls after explain observation = prepare %d, explain %d, execute %d", facade.prepareCalls, facade.explainCalls, facade.executeCalls)
 	}
@@ -85,6 +98,40 @@ type recordingSemanticSearcher struct {
 func (r *recordingSemanticSearcher) Search(_ context.Context, input daemonsemantic.SearchInput) (semanticsearch.Result, error) {
 	r.input = input
 	return r.result, nil
+}
+
+func TestQueryServiceExplainFailsClosedWithoutEngineComposition(t *testing.T) {
+	_, err := (&QueryService{}).explainStatement(context.Background(), queryengine.PlanningContext{}, querylogical.Statement{}, false)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("error = %v, want Internal", err)
+	}
+}
+
+func TestQueryServiceExplainKeepsKnownGQLBindingDeltaOnExplicitBridge(t *testing.T) {
+	schema := qrx3BindingSchema()
+	plan, err := gql.CompileWithSchemaAndParams(
+		"MATCH (p:Person)-[e:WORKS_AT]->(c:Company) RETURN e.missing",
+		analysis.SchemaContext{Schema: &schema}, nil,
+	)
+	if err != nil {
+		t.Fatalf("legacy compile: %v", err)
+	}
+	statement, ok := querylogical.StatementFromGQLPlan(plan)
+	if !ok {
+		t.Fatal("normalize GQL statement")
+	}
+	service := (&QueryService{}).WithQueryEngine(queryengine.New(queryengine.Ports{}))
+	diagnostics, err := service.explainStatement(context.Background(), queryengine.PlanningContext{
+		Transaction: sessionmodel.GraphTransaction{Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive},
+		Schema:      &schema,
+		Domain:      queryengine.DomainPolicy{BroadSearchable: true, ExplicitSearchable: true},
+	}, statement, true)
+	if err != nil {
+		t.Fatalf("Explain compatibility bridge: %v", err)
+	}
+	if diagnostics.GetPlan() != "LegacyValidationBridge" || diagnostics.GetPlanKind() != "legacy_bridge" || diagnostics.GetFallbackMode() != "legacy_validation_bridge" || !diagnostics.GetExplainOnly() {
+		t.Fatalf("compatibility diagnostics = %#v", diagnostics)
+	}
 }
 
 func TestQueryServiceBuildsExplicitEnginePlanningContext(t *testing.T) {
