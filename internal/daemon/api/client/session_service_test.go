@@ -163,6 +163,9 @@ func (g *fakeWriteLeaderGraph) CommitTransactionGraph(ctx context.Context, tx se
 func (g *fakeWriteLeaderGraph) DiscardTransactionGraph(ctx context.Context, transactionID string) error {
 	return nil
 }
+func (g *fakeWriteLeaderGraph) AcknowledgeTransactionFinalization(context.Context, sessionmodel.GraphTransaction) error {
+	return nil
+}
 
 func TestBeginTransactionReadWriteRequiresLocalGraphLeader(t *testing.T) {
 	spaceModule, sessionModule, userID, spaceID, domainID := initSessionServiceTestModules(t)

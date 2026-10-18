@@ -1996,6 +1996,32 @@ func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID stri
 	return nil
 }
 
+// AcknowledgeTransactionFinalization removes the short-lived terminal race
+// barrier only after the authoritative session state is no longer active.
+func (m *Module) AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	lockedCtx, releaseMutation, err := m.lockTransactionMutation(context.WithoutCancel(ctx), tx.ID)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
+	m.mu.Lock()
+	_, finalized := m.finalizedTransactions[tx.ID]
+	validator := m.transactionValidator
+	m.mu.Unlock()
+	if !finalized {
+		return nil
+	}
+	if validator != nil {
+		if err := validator.ValidateTransactionFinalized(lockedCtx, tx); err != nil {
+			return fmt.Errorf("%w: transaction finalization is not authoritative: %v", ErrInvalidState, err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.finalizedTransactions, tx.ID)
+	m.mu.Unlock()
+	return nil
+}
+
 func (m *Module) BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error) {
 	id := domaingraph.BlobID(strings.TrimSpace(blobID))
 	if _, err := id.Bytes(); err != nil {

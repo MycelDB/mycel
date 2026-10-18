@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ type recordingEntityReader struct {
 	calls int
 	tx    sessionmodel.GraphTransaction
 	nodes []graph.Node
+	byID  map[string]graph.Node
 }
 
 func (r *recordingEntityReader) ReadViewIdentity(_ context.Context, tx sessionmodel.GraphTransaction) (string, error) {
@@ -30,9 +32,12 @@ func (r *recordingEntityReader) ReadViewIdentity(_ context.Context, tx sessionmo
 	return "0", nil
 }
 
-func (r *recordingEntityReader) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (graph.Node, error) {
+func (r *recordingEntityReader) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error) {
 	r.calls++
 	r.tx = tx
+	if node, ok := r.byID[nodeID]; ok {
+		return node, nil
+	}
 	return graph.Node{}, nil
 }
 
@@ -60,6 +65,26 @@ func (r *recordingEntityReader) ListEdges(_ context.Context, tx sessionmodel.Gra
 	return nil, "", nil
 }
 
+type repeatedBindingTraversal struct {
+	edges []graph.Edge
+}
+
+func (r repeatedBindingTraversal) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {
+	matched := make([]graph.Edge, 0, len(r.edges))
+	for _, edge := range r.edges {
+		endpointMatches := scan.Direction == graphquery.AdjacencyDirectionOut && edge.FromID.String() == scan.NodeID
+		endpointMatches = endpointMatches || scan.Direction == graphquery.AdjacencyDirectionIn && edge.ToID.String() == scan.NodeID
+		if !endpointMatches || scan.Label != "" && !graph.EdgeHasLabels(edge, []string{scan.Label}) {
+			continue
+		}
+		matched = append(matched, edge)
+	}
+	if scan.Limit > 0 && len(matched) > scan.Limit {
+		matched = matched[:scan.Limit]
+	}
+	return matched, "", graphquery.IndexedReadStats{IndexEntriesScanned: len(matched), EdgesLoaded: len(matched), AdjacencyScanCalls: 1}, nil
+}
+
 type panicIndexReader struct{}
 
 type panicSemanticCandidateReader struct{}
@@ -68,9 +93,12 @@ type panicMutationWriter struct{}
 
 type recordingMutationWriter struct {
 	panicMutationWriter
-	creates int
-	updates int
-	cancel  context.CancelFunc
+	creates        int
+	updates        int
+	updateAttempts int
+	nodeUpdates    map[string]int
+	edgeUpdates    map[string]int
+	cancel         context.CancelFunc
 }
 
 func (panicMutationWriter) BeginMutationStatement(ctx context.Context, _ sessionmodel.GraphTransaction) (context.Context, any, error) {
@@ -105,8 +133,21 @@ func (w *recordingMutationWriter) CreateNode(context.Context, sessionmodel.Graph
 }
 
 func (w *recordingMutationWriter) UpdateNode(_ context.Context, _ sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error) {
+	w.updateAttempts++
 	w.updates++
+	if w.nodeUpdates == nil {
+		w.nodeUpdates = map[string]int{}
+	}
+	w.nodeUpdates[input.NodeID]++
 	return graph.Node{ID: uuid.MustParse(input.NodeID), Labels: input.Labels, Properties: input.Properties, Payload: input.Payload}, nil
+}
+
+func (w *recordingMutationWriter) UpdateEdge(_ context.Context, _ sessionmodel.GraphTransaction, input graph.UpdateEdgeInput) (graph.Edge, error) {
+	if w.edgeUpdates == nil {
+		w.edgeUpdates = map[string]int{}
+	}
+	w.edgeUpdates[input.EdgeID]++
+	return graph.Edge{ID: uuid.MustParse(input.EdgeID), Labels: input.Labels, Properties: input.Properties, Payload: input.Payload}, nil
 }
 
 func (panicMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
@@ -293,6 +334,74 @@ func TestEngineExecuteMutationRestoresSavepointAfterShapingBudgetFailure(t *test
 	}
 }
 
+func TestEngineExecuteMatchedSetCoalescesRepeatedEntityBindings(t *testing.T) {
+	a := graph.Node{ID: uuid.New(), Labels: []string{"Person"}, Properties: map[string]any{"name": "A"}}
+	b := graph.Node{ID: uuid.New(), Labels: []string{"Person"}, Properties: map[string]any{"name": "B"}}
+	c := graph.Node{ID: uuid.New(), Labels: []string{"Person"}, Properties: map[string]any{"name": "C"}}
+	first := graph.Edge{ID: uuid.New(), FromID: a.ID, ToID: b.ID, Labels: []string{"LINK"}}
+	back := graph.Edge{ID: uuid.New(), FromID: b.ID, ToID: a.ID, Labels: []string{"NEXT"}}
+	branch := graph.Edge{ID: uuid.New(), FromID: b.ID, ToID: c.ID, Labels: []string{"NEXT"}}
+	entities := &recordingEntityReader{
+		nodes: []graph.Node{a},
+		byID:  map[string]graph.Node{a.ID.String(): a, b.ID.String(): b, c.ID.String(): c},
+	}
+	writer := &recordingMutationWriter{}
+	engine := queryengine.New(queryengine.Ports{
+		Entities: entities, Traversals: repeatedBindingTraversal{edges: []graph.Edge{first, back, branch}}, Mutations: writer,
+	})
+	tx := sessionmodel.GraphTransaction{ID: "tx-repeated-set", Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}
+	match := &querylogical.Query{
+		Source: querylogical.SourceGQL, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "n", NodeIDs: []string{a.ID.String()}},
+		Steps: []querylogical.Step{
+			{Edge: querylogical.EdgePattern{Alias: "r", Labels: []string{"LINK"}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m"}},
+			{Edge: querylogical.EdgePattern{Alias: "s", Labels: []string{"NEXT"}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "x"}},
+		},
+	}
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationMatchSet, Match: match,
+		Assignments: []querylogical.Assignment{
+			{Field: querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "alpha"}, Value: querylogical.Value{Kind: querylogical.ValueString, String: "one"}},
+			{Field: querylogical.FieldRef{Alias: "x", Namespace: querylogical.NamespaceProperties, Name: "beta"}, Value: querylogical.Value{Kind: querylogical.ValueString, String: "two"}},
+			{Field: querylogical.FieldRef{Alias: "r", Namespace: querylogical.NamespaceProperties, Name: "gamma"}, Value: querylogical.Value{Kind: querylogical.ValueString, String: "edge"}},
+		},
+		Returns: []querylogical.Projection{
+			{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: "n"},
+			{Kind: querylogical.ProjectionNode, Alias: "x", OutputName: "x"},
+			{Kind: querylogical.ProjectionEdge, Alias: "r", OutputName: "r"},
+		},
+		Page: querylogical.PageSpec{Size: 10},
+	})
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if writer.nodeUpdates[a.ID.String()] != 1 || writer.nodeUpdates[c.ID.String()] != 1 || len(writer.nodeUpdates) != 2 {
+		t.Fatalf("node update calls = %+v, want one each for repeated A and C", writer.nodeUpdates)
+	}
+	if writer.edgeUpdates[first.ID.String()] != 1 || len(writer.edgeUpdates) != 1 {
+		t.Fatalf("edge update calls = %+v, want one for repeated first edge", writer.edgeUpdates)
+	}
+	if len(result.Rows) == 0 {
+		t.Fatal("result rows = 0, want propagated bindings")
+	}
+	for _, row := range result.Rows {
+		n := row.Fields["n"].Node
+		x := row.Fields["x"].Node
+		r := row.Fields["r"].Edge
+		if n == nil || n.Properties["alpha"].String != "one" || r == nil || r.Properties["gamma"].String != "edge" {
+			t.Fatalf("propagated repeated bindings = %+v", row.Fields)
+		}
+		if x != nil && x.Properties["beta"].String != "two" {
+			t.Fatalf("propagated target alias = %+v", x)
+		}
+	}
+}
+
 func TestEngineExecuteMatchedMutationAccountsClonedRowsBeforeWriting(t *testing.T) {
 	node := graph.Node{ID: uuid.New(), Labels: []string{"Note"}, Properties: map[string]any{"body": strings.Repeat("x", 64<<10)}}
 	entities := &recordingEntityReader{nodes: []graph.Node{node}}
@@ -323,6 +432,46 @@ func TestEngineExecuteMatchedMutationAccountsClonedRowsBeforeWriting(t *testing.
 	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 	if writer.updates != 0 {
 		t.Fatalf("UpdateNode calls = %d, want 0 before clone memory is reserved", writer.updates)
+	}
+}
+
+func TestEngineExecuteMatchedMutationKeepsCloneChargedThroughShaping(t *testing.T) {
+	node := graph.Node{ID: uuid.New(), Labels: []string{"Note"}, Properties: map[string]any{"body": strings.Repeat("x", 16<<10)}}
+	entities := &recordingEntityReader{nodes: []graph.Node{node}}
+	writer := &recordingMutationWriter{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities, Mutations: writer})
+	tx := sessionmodel.GraphTransaction{ID: "tx-shaped-memory", Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}
+	match := validReadStatement().Read
+	match.Source = querylogical.SourceGQL
+	match.Start = querylogical.NodePattern{Alias: "n"}
+	returns := make([]querylogical.Projection, 16)
+	for index := range returns {
+		returns[index] = querylogical.Projection{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: fmt.Sprintf("n%d", index)}
+	}
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationMatchSet, Match: match,
+		Assignments: []querylogical.Assignment{{
+			Field: querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "status"},
+			Value: querylogical.Value{Kind: querylogical.ValueString, String: "updated"},
+		}},
+		Returns: returns,
+		Page:    querylogical.PageSpec{Size: 10},
+	})
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	rowBytes := queryexecution.EstimateBindingRow(queryexecution.BindingRow{Nodes: map[string]graph.Node{"n": node}})
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{
+		Transaction: tx,
+		Budget:      queryexecution.Budget{MaxMemoryBytes: rowBytes * 4, BatchSize: 1},
+	}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+	if writer.updateAttempts != 1 {
+		t.Fatalf("UpdateNode attempts = %d, want 1 before shaping failure", writer.updateAttempts)
+	}
+	if writer.updates != 0 {
+		t.Fatalf("staged updates after shaping failure = %d, want rollback", writer.updates)
 	}
 }
 

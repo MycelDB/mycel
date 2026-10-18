@@ -140,6 +140,7 @@ type TransactionGraphCommitter interface {
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
 	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string) error
+	AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error
 }
 
 type TransactionGraphDomainRevisioner interface {
@@ -273,6 +274,9 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 		return nil, mapSessionError(err, "commit transaction")
 	}
 	if tx.State != sessionmodel.TransactionStateActive {
+		if s.graphs != nil {
+			_ = s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx)
+		}
 		return nil, status.Error(codes.FailedPrecondition, "commit transaction: transaction is not active")
 	}
 	if tx.Mode != sessionmodel.TransactionModeReadWrite {
@@ -295,6 +299,11 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
+	if s.graphs != nil {
+		if err := s.graphs.AcknowledgeTransactionFinalization(commitCtx, tx); err != nil {
+			return nil, mapGraphError(err, "acknowledge committed graph transaction")
+		}
+	}
 	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit)}, nil
 }
 
@@ -315,6 +324,9 @@ func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clien
 		return nil, mapSessionError(err, "rollback transaction")
 	}
 	if current.State != sessionmodel.TransactionStateActive {
+		if s.graphs != nil {
+			_ = s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), current)
+		}
 		return &clientv1.RollbackTransactionResponse{Transaction: mapGraphTransaction(current)}, nil
 	}
 	if s.graphs != nil {
@@ -325,6 +337,11 @@ func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clien
 	tx, err := s.sessions.RollbackTransaction(context.WithoutCancel(ctx), principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "rollback transaction")
+	}
+	if s.graphs != nil {
+		if err := s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx); err != nil {
+			return nil, mapGraphError(err, "acknowledge rolled back graph transaction")
+		}
 	}
 	return &clientv1.RollbackTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }
@@ -346,6 +363,9 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 		return nil, mapSessionError(err, "close transaction")
 	}
 	if current.State != sessionmodel.TransactionStateActive {
+		if s.graphs != nil {
+			_ = s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), current)
+		}
 		return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(current)}, nil
 	}
 	if s.graphs != nil {
@@ -356,6 +376,11 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 	tx, err := s.sessions.CloseTransaction(context.WithoutCancel(ctx), principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "close transaction")
+	}
+	if s.graphs != nil {
+		if err := s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx); err != nil {
+			return nil, mapGraphError(err, "acknowledge closed graph transaction")
+		}
 	}
 	return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }

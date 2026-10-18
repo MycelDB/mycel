@@ -12,6 +12,7 @@ import (
 // graph operation acquires the transaction mutation lease.
 type TransactionValidator interface {
 	ValidateTransactionActive(ctx context.Context, tx sessionmodel.GraphTransaction) error
+	ValidateTransactionFinalized(ctx context.Context, tx sessionmodel.GraphTransaction) error
 }
 
 // SchemaValidator is the schema capability set required by graph mutations.

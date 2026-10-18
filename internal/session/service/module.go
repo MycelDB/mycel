@@ -251,13 +251,29 @@ func (m *Module) ValidateTransactionActive(ctx context.Context, expected session
 	if err != nil {
 		return err
 	}
-	if actual.State != sessionmodel.TransactionStateActive ||
-		actual.SessionID != expected.SessionID || actual.PrincipalID != expected.PrincipalID ||
-		actual.SpaceID != expected.SpaceID || actual.DomainID != expected.DomainID ||
-		actual.Mode != expected.Mode || actual.BaseRevision != expected.BaseRevision {
+	if actual.State != sessionmodel.TransactionStateActive || !sameTransactionIdentity(actual, expected) {
 		return ErrInvalidState
 	}
 	return nil
+}
+
+// ValidateTransactionFinalized confirms that authoritative session state can
+// replace the graph service's short-lived terminal race barrier.
+func (m *Module) ValidateTransactionFinalized(ctx context.Context, expected sessionmodel.GraphTransaction) error {
+	actual, err := m.GetTransaction(ctx, expected.PrincipalID, expected.ID)
+	if err != nil {
+		return err
+	}
+	if actual.State == sessionmodel.TransactionStateActive || !sameTransactionIdentity(actual, expected) {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+func sameTransactionIdentity(actual, expected sessionmodel.GraphTransaction) bool {
+	return actual.ID == expected.ID && actual.SessionID == expected.SessionID && actual.PrincipalID == expected.PrincipalID &&
+		actual.SpaceID == expected.SpaceID && actual.DomainID == expected.DomainID &&
+		actual.Mode == expected.Mode && actual.BaseRevision == expected.BaseRevision
 }
 
 func (m *Module) GetTransaction(ctx context.Context, principalID string, transactionID string) (sessionmodel.GraphTransaction, error) {

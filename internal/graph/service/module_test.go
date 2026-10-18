@@ -42,6 +42,15 @@ func (v *testTransactionValidator) ValidateTransactionActive(context.Context, se
 	return nil
 }
 
+func (v *testTransactionValidator) ValidateTransactionFinalized(context.Context, sessionmodel.GraphTransaction) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.active {
+		return ErrInvalidState
+	}
+	return nil
+}
+
 func (v *testTransactionValidator) setActive(active bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -721,6 +730,48 @@ func TestCommitTransactionGraphRetriesReturnCachedFinalization(t *testing.T) {
 	}
 	if second.OperationCount != first.OperationCount || second.CommittedRevision != first.CommittedRevision {
 		t.Fatalf("retry result = %+v, want operation count/revision from %+v", second, first)
+	}
+}
+
+func TestAcknowledgedTransactionFinalizationsAreReclaimed(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	validator := &testTransactionValidator{active: true}
+	m.SetTransactionValidator(validator)
+	for index := 0; index < 256; index++ {
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		validator.setActive(true)
+		if index%2 == 0 {
+			if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+				t.Fatalf("CommitTransactionGraph(%d) error = %v", index, err)
+			}
+		} else if err := m.DiscardTransactionGraph(ctx, tx.ID); err != nil {
+			t.Fatalf("DiscardTransactionGraph(%d) error = %v", index, err)
+		}
+		if index == 0 {
+			if err := m.AcknowledgeTransactionFinalization(ctx, tx); !errors.Is(err, ErrInvalidState) {
+				t.Fatalf("AcknowledgeTransactionFinalization(active) error = %v, want ErrInvalidState", err)
+			}
+			m.mu.Lock()
+			finalized := len(m.finalizedTransactions)
+			m.mu.Unlock()
+			if finalized != 1 {
+				t.Fatalf("terminal graph records after premature acknowledgement = %d, want 1", finalized)
+			}
+		}
+		validator.setActive(false)
+		if err := m.AcknowledgeTransactionFinalization(ctx, tx); err != nil {
+			t.Fatalf("AcknowledgeTransactionFinalization(%d) error = %v", index, err)
+		}
+		m.mu.Lock()
+		finalized := len(m.finalizedTransactions)
+		m.mu.Unlock()
+		if finalized != 0 {
+			t.Fatalf("terminal graph records after acknowledgement = %d, want 0", finalized)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "stale"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(stale transaction %d) error = %v, want ErrInvalidState", index, err)
+		}
 	}
 }
 
