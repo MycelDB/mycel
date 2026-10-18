@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX5 are merged into the `improved_querying` integration branch, establishing the [conformance inventory](query-planner-executor-qrx0-conformance-inventory.md), [typed neutral model](query-planner-executor-qrx1-neutral-model.md), [engine façade/access ports](query-planner-executor-qrx2-engine-facade.md), [shared binder](query-planner-executor-qrx3-binding.md), [rule-based physical planner](query-planner-executor-qrx4-physical-planner.md), and [physical-plan-backed Explain](query-planner-executor-qrx5-plan-explain.md). QRX6 is implemented on its feature branch with a bounded [operator runtime and neutral result-shaping pipeline](query-planner-executor-qrx6-operator-runtime.md). Later tranches remain planned.
+In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX9 are merged into the `improved_querying` integration branch, covering the neutral model, shared binding, physical planning and Explain, bounded execution, native indexed and traversal access, and streaming broad fallback. QRX10 is implemented on its feature branch with [native GQL mutations and transport-neutral script orchestration](query-planner-executor-qrx10-mutations-scripts.md). QRX11 remains planned.
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -857,6 +857,8 @@ Replace unconditional whole-domain materialization with explicit, bounded full-s
 - API-local broad `queryExecution` and broad GQL graph adapters are no longer used for reads.
 
 ## QRX10: GQL mutations and script orchestration
+
+Status: implemented on the feature branch. See the [QRX10 native mutation and script-orchestration notes](query-planner-executor-qrx10-mutations-scripts.md).
 
 ### Objective
 

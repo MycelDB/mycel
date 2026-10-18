@@ -19,7 +19,7 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx9"
+	PlannerVersion = "qrx10"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -69,7 +69,7 @@ const (
 	// PlanLegacyBridge means the API adapter must execute the statement exactly
 	// once through its existing implementation.
 	PlanLegacyBridge PlanKind = "legacy_bridge"
-	// PlanIndexed executes a migrated native read family directly.
+	// PlanIndexed executes a migrated native read or mutation family directly.
 	PlanIndexed PlanKind = "indexed"
 )
 
@@ -170,12 +170,15 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	return diagnostics, nil
 }
 
-// Execute runs migrated native read plans directly. An explicit legacy
-// row source remains available for adapter-owned families that only migrated
-// neutral shaping in QRX6.
+// Execute runs migrated native read and mutation plans directly. An explicit
+// legacy row source remains available for adapter-owned read families that only
+// migrated neutral shaping in QRX6.
 func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
 	if err := contextQueryError("execute query", ctx.Err()); err != nil {
 		return querylogical.Result{}, err
+	}
+	if prepared.Statement.Kind == querylogical.StatementMutation {
+		return e.executeMutation(ctx, execution, prepared)
 	}
 	if prepared.Statement.Kind != querylogical.StatementRead || prepared.Statement.Read == nil {
 		return querylogical.Result{}, unsupportedPlan(prepared)

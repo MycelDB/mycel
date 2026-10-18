@@ -334,7 +334,7 @@ func TestQRX9StructuredAndGQLBroadReadsBypassWholeGraphMaterialization(t *testin
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
-			if diagnostics.GetPlan() != "StreamingNodeScan" || diagnostics.GetPlannerVersion() != "qrx9" || !diagnostics.GetFullScan() {
+			if diagnostics.GetPlan() != "StreamingNodeScan" || diagnostics.GetPlannerVersion() != "qrx10" || !diagnostics.GetFullScan() {
 				t.Fatalf("diagnostics = %+v", diagnostics)
 			}
 			if profile.callCount("ListNodes") != 1 || profile.returnedCount("ListNodes") != 2 || profile.callCount("ListEdges") != 0 {
@@ -393,7 +393,7 @@ func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T
 			if !reflect.DeepEqual(titles, []string{"oldest", "middle"}) {
 				t.Fatalf("titles = %v", titles)
 			}
-			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx9" || diagnostics.GetFullScan() {
+			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx10" || diagnostics.GetFullScan() {
 				t.Fatalf("diagnostics = %+v", diagnostics)
 			}
 			if profile.callCount("ScanNodePropertyOrdered") == 0 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {

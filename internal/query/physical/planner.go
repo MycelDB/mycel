@@ -45,12 +45,23 @@ func Build(bound querybinding.BoundStatement, environment Environment) (Plan, er
 		if !environment.Capabilities.Mutations {
 			return Plan{}, p.unavailable("mutation access is not configured")
 		}
-		plan := Plan{
-			Name: "LegacyMutation", Family: FamilyLegacyMutation,
-			Cursor: CursorStrategy{}, Limits: ResourceLimits{},
-			LegacyBridgeReason: legacyBridgeReason, SchemaVersion: bound.SchemaVersion,
+		if statement.Mutation == nil {
+			return Plan{}, p.invalid("mutation statement is missing its command")
 		}
-		plan.Root = legacyRoot(Operator{Kind: OperatorProject, Name: "MutationResult"})
+		name, operator, err := mutationOperator(statement.Mutation.Kind)
+		if err != nil {
+			return Plan{}, p.invalid("%v", err)
+		}
+		limitsQuery := querylogical.Query{}
+		if statement.Mutation.Match != nil {
+			limitsQuery = *statement.Mutation.Match
+		}
+		plan := Plan{
+			Name: name, Family: FamilyMutation, Access: AccessPath{Kind: AccessMutation},
+			Cursor: CursorStrategy{Kind: "mutation_output_offset", LegacyForm: true},
+			Limits: p.resourceLimits(limitsQuery, FamilyMutation), SchemaVersion: bound.SchemaVersion,
+		}
+		plan.Root = Operator{Kind: operator, Name: name}
 		return plan, nil
 	}
 	if statement.Kind != querylogical.StatementRead || statement.Read == nil {
@@ -535,6 +546,25 @@ func (p planner) finish(plan Plan, bound querybinding.BoundStatement, query quer
 	return plan
 }
 
+func mutationOperator(kind querylogical.MutationKind) (string, OperatorKind, error) {
+	switch kind {
+	case querylogical.MutationInsertNode:
+		return "InsertNode", OperatorInsertNode, nil
+	case querylogical.MutationMergeNode:
+		return "MergeNode", OperatorMergeNode, nil
+	case querylogical.MutationMatchSet:
+		return "MatchSet", OperatorMatchSet, nil
+	case querylogical.MutationMatchDelete:
+		return "MatchDelete", OperatorMatchDelete, nil
+	case querylogical.MutationCreateRelationship:
+		return "CreateRelationship", OperatorCreateRelationship, nil
+	case querylogical.MutationMergeRelationship:
+		return "MergeRelationship", OperatorMergeRelationship, nil
+	default:
+		return "", "", fmt.Errorf("unsupported mutation kind %q", kind)
+	}
+}
+
 func nativeReadFamily(family Family) bool {
 	switch family {
 	case FamilyNodeIDLookup, FamilyLabelIndex, FamilyTagIndex, FamilyIndexedPath, FamilyIndexedAdjacency, FamilyIndexedEquality, FamilySemantic, FamilyIndexedPredicate, FamilyIndexedOrder, FamilyIndexedSubtree, FamilyBoundedFullScan:
@@ -798,6 +828,11 @@ func (p planner) resourceLimits(query querylogical.Query, family Family) Resourc
 			limits.MaxStartNodes = defaultPathMaxStartNodes
 			limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 		}
+	case FamilyMutation:
+		limits.MaxIndexEntries = defaultMaxIndexEntries
+		limits.MaxStartNodes = defaultPathMaxStartNodes
+		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
+		limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 	}
 	return limits
 }

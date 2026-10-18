@@ -200,7 +200,7 @@ func TestPhaseFQueryThroughNonHomeIngressRoutesToLeaderStrongRead(t *testing.T) 
 
 func TestPhaseFGQLReadWriteTransactionReadsStagedOverlay(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Note {title: 'draft'})"}); err != nil {
 		t.Fatalf("ExecuteGQL(insert) error = %v", err)

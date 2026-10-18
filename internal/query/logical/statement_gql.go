@@ -4,8 +4,13 @@ import planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
 
 // StatementFromGQLPlan converts the single operation in a compiled GQL plan to
 // the neutral statement family. Read conversion delegates to FromGQLPlan so
-// QRX1 compatibility remains unchanged; mutation execution remains legacy.
+// QRX1 normalization compatibility remains unchanged.
 func StatementFromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Statement, bool) {
+	option := NormalizeOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	page := PageSpec{Size: option.PageSize, Cursor: option.Cursor}
 	if query, ok := FromGQLPlan(plan, options...); ok {
 		return ReadStatement(query), true
 	}
@@ -16,14 +21,14 @@ func StatementFromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Sta
 	switch operation := plan.Operations[0].(type) {
 	case planmodel.InsertNodeOperation:
 		node := mutationNodePattern(operation.Variable, operation.Labels, operation.Properties)
-		return MutationStatement(SourceGQL, Mutation{Kind: MutationInsertNode, Node: &node}), true
+		return MutationStatement(SourceGQL, Mutation{Kind: MutationInsertNode, Node: &node, Page: page}), true
 
 	case planmodel.MergeNodeOperation:
 		node := mutationNodePattern(operation.Variable, operation.Labels, operation.Properties)
 		returns := fromGQLReturns(operation.Returns, map[string]ProjectionKind{operation.Variable: ProjectionNode})
 		return MutationStatement(SourceGQL, Mutation{
 			Kind: MutationMergeNode, Node: &node, Returns: returns, Aggregates: fromGQLReturnAggregates(operation.Returns),
-			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit,
+			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit, Page: page,
 		}), true
 
 	case planmodel.MatchSetOperation:
@@ -43,7 +48,7 @@ func StatementFromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Sta
 		return MutationStatement(SourceGQL, Mutation{
 			Kind: MutationMatchSet, Match: &match, Assignments: assignments,
 			Returns: fromGQLReturns(operation.Returns, kinds), Aggregates: fromGQLReturnAggregates(operation.Returns),
-			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit,
+			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit, Page: page,
 		}), true
 
 	case planmodel.MatchDeleteOperation:
@@ -56,13 +61,13 @@ func StatementFromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Sta
 		return MutationStatement(SourceGQL, Mutation{
 			Kind: MutationMatchDelete, Match: &match, Targets: append([]string(nil), operation.Targets...),
 			Returns: fromGQLReturns(operation.Returns, kinds), Aggregates: fromGQLReturnAggregates(operation.Returns),
-			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit,
+			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit, Page: page,
 		}), true
 
 	case planmodel.MatchCreateRelationshipOperation:
 		return MutationStatement(SourceGQL, Mutation{
 			Kind: MutationCreateRelationship, Nodes: mutationNodePatterns(operation.Matches),
-			Relationship: mutationRelationship(operation.Relationship),
+			Relationship: mutationRelationship(operation.Relationship), Page: page,
 		}), true
 
 	case planmodel.MatchMergeRelationshipOperation:
@@ -74,7 +79,7 @@ func StatementFromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Sta
 			Kind: MutationMergeRelationship, Nodes: mutationNodePatterns(operation.Matches),
 			Relationship: mutationRelationship(operation.Relationship),
 			Returns:      fromGQLReturns(operation.Returns, kinds), Aggregates: fromGQLReturnAggregates(operation.Returns),
-			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit,
+			ReturnGraph: operation.ReturnGraph, Limit: operation.Limit, Page: page,
 		}), true
 
 	default:

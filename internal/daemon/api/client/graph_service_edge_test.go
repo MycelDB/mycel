@@ -1,11 +1,17 @@
 package client
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	graph "github.com/myceldb/mycel/internal/graph/model"
+	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -156,9 +162,27 @@ func TestGraphServiceApplyOperationsReplacesReferencesWithNodeUpdate(t *testing.
 	}
 }
 
+func nativeGQLQueryService(fixture domainPolicyClientAPIFixture) *QueryService {
+	return NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+		WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil))
+}
+
+type failSecondUpdateGraph struct {
+	daegraph.Manager
+	updates int
+}
+
+func (g *failSecondUpdateGraph) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error) {
+	g.updates++
+	if g.updates == 2 {
+		return graph.Node{}, errors.New("injected second update failure")
+	}
+	return g.Manager.UpdateNode(ctx, tx, input)
+}
+
 func TestQueryServiceExecuteGQLComparisonPredicates(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	for _, query := range []string{
 		"INSERT (:Person {name: 'Elizabeth II', role: 'Monarch', birthYear: 1926})",
@@ -185,7 +209,7 @@ func TestQueryServiceExecuteGQLComparisonPredicates(t *testing.T) {
 
 func TestQueryServiceExecuteGQLCreatesRelationshipFromMatchedNodes(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {firstName: 'Martin', lastName: 'Beauvais'})"}); err != nil {
 		t.Fatalf("insert Martin: %v", err)
@@ -215,13 +239,13 @@ func TestQueryServiceExecuteGQLCreatesRelationshipFromMatchedNodes(t *testing.T)
 
 func TestQueryServiceExecuteGQLSetUpdatesNodeProperties(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: 'Martin'})"}); err != nil {
 		t.Fatalf("insert person: %v", err)
 	}
-	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person {name: 'Martin'}) SET p.age = 57, p.sex = 'Male' RETURN p, p.age, p.sex"})
+	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person {name: 'Martin'}) SET p.age = 57, p.sex = 'Male' RETURN GRAPH p, p.age, p.sex"})
 	if err != nil {
 		t.Fatalf("set properties: %v", err)
 	}
@@ -235,6 +259,9 @@ func TestQueryServiceExecuteGQLSetUpdatesNodeProperties(t *testing.T) {
 	fields := rows[0].GetFields()
 	if fields["p"].GetNode().GetProperties().AsMap()["age"] != float64(57) || fields["p.sex"].GetScalar().GetStringValue() != "Male" {
 		t.Fatalf("unexpected update row: %+v", rows[0])
+	}
+	if len(res.GetResult().GetGraph().GetNodes()) != 1 || res.GetResult().GetGraph().GetNodes()[0].GetProperties().AsMap()["age"] != float64(57) {
+		t.Fatalf("unexpected updated result graph: %+v", res.GetResult().GetGraph())
 	}
 	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
 		t.Fatalf("CommitTransaction() error = %v", err)
@@ -250,9 +277,38 @@ func TestQueryServiceExecuteGQLSetUpdatesNodeProperties(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLMutationRestoresOverlayAfterLaterWriteFailure(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	normalService := nativeGQLQueryService(fixture)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, name := range []string{"Ada", "Grace"} {
+		if _, err := normalService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: '" + name + "'})"}); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+	}
+	failing := &failSecondUpdateGraph{Manager: fixture.graphs}
+	engine := queryengine.New(queryengine.Ports{Entities: failing, Traversals: failing, Indexes: failing, Mutations: failing})
+	failingService := NewQueryService(fixture.sessions, failing, fixture.spaces).WithQueryEngine(engine)
+	if _, err := failingService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) SET p.status = 'changed' RETURN p"}); err == nil {
+		t.Fatal("set with injected second failure error = nil, want error")
+	}
+	result, err := normalService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) RETURN p"})
+	if err != nil {
+		t.Fatalf("read after failed mutation: %v", err)
+	}
+	if len(result.GetResult().GetRows()) != 2 {
+		t.Fatalf("rows after failed mutation = %d, want 2", len(result.GetResult().GetRows()))
+	}
+	for _, row := range result.GetResult().GetRows() {
+		if _, changed := row.GetFields()["p"].GetNode().GetProperties().AsMap()["status"]; changed {
+			t.Fatalf("failed statement left staged update: %+v", row)
+		}
+	}
+}
+
 func TestQueryServiceExecuteGQLSetUpdatesEdgeProperties(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	script := `
@@ -290,7 +346,7 @@ MATCH (martin:Person {name: 'Martin'}), (ivy:Person {name: 'Ivy'}) CREATE (marti
 
 func TestQueryServiceExecuteGQLAliasedProjection(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: 'Levi', age: 12})"}); err != nil {
@@ -315,7 +371,7 @@ func TestQueryServiceExecuteGQLAliasedProjection(t *testing.T) {
 
 func TestQueryServiceExecuteGQLParameters(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	params := map[string]*structpb.Value{
 		"name": mustValue(t, "Levi"),
@@ -341,7 +397,7 @@ func TestQueryServiceExecuteGQLParameters(t *testing.T) {
 
 func TestQueryServiceExecuteGQLDeleteEdge(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	script := `
 INSERT (:Person {name: 'Vincent'});
@@ -367,9 +423,33 @@ MATCH (a:Person {name: 'Vincent'}), (b:Person {name: 'Levi'}) CREATE (a)-[:FRIEN
 	}
 }
 
+func TestQueryServiceExecuteGQLDeleteNodeValidatesIncidentEdgesBeforeWriting(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := nativeGQLQueryService(fixture)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	script := `
+INSERT (:Person {name: 'Vincent'});
+INSERT (:Person {name: 'Levi'});
+MATCH (a:Person {name: 'Vincent'}), (b:Person {name: 'Levi'}) CREATE (a)-[:FRIEND_OF]->(b);
+`
+	if _, err := querySvc.ExecuteGQLScript(fixture.ctx, &clientv1.ExecuteGQLScriptRequest{TransactionId: writeTx, Script: script, StopOnError: true}); err != nil {
+		t.Fatalf("seed graph: %v", err)
+	}
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (a:Person {name: 'Vincent'}) DELETE a RETURN a"}); err == nil {
+		t.Fatal("delete node with incident edge error = nil, want error")
+	}
+	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (a:Person)-[r:FRIEND_OF]->(b:Person) RETURN r"})
+	if err != nil {
+		t.Fatalf("query incident edge after failed delete: %v", err)
+	}
+	if got := len(res.GetResult().GetRows()); got != 1 {
+		t.Fatalf("incident edge rows after failed delete = %d, want 1", got)
+	}
+}
+
 func TestQueryServiceExecuteGQLMergeNodeAndRelationship(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	first, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MERGE (p:Person {name: 'Martin'}) RETURN p"})
 	if err != nil {
@@ -405,9 +485,66 @@ func TestQueryServiceExecuteGQLMergeNodeAndRelationship(t *testing.T) {
 	}
 }
 
+func TestQueryServiceExecuteGQLMutationContinuationUsesOutputOffset(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := nativeGQLQueryService(fixture)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, name := range []string{"Ada", "Grace"} {
+		query := "INSERT (:Person {name: '" + name + "', role: 'member'})"
+		if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query}); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+	}
+	query := "MERGE (p:Person {role: 'member'}) RETURN p"
+	first, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query, PageSize: 1})
+	if err != nil {
+		t.Fatalf("first mutation page: %v", err)
+	}
+	token := first.GetResult().GetNextPageToken()
+	if token != "1" || len(first.GetResult().GetRows()) != 1 {
+		t.Fatalf("first mutation page token=%q rows=%+v", token, first.GetResult().GetRows())
+	}
+	second, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query, PageSize: 1, PageToken: token})
+	if err != nil {
+		t.Fatalf("second mutation page: %v", err)
+	}
+	if len(second.GetResult().GetRows()) != 1 || second.GetResult().GetNextPageToken() != "" {
+		t.Fatalf("second mutation page token=%q rows=%+v", second.GetResult().GetNextPageToken(), second.GetResult().GetRows())
+	}
+	firstID := first.GetResult().GetRows()[0].GetFields()["p"].GetNode().GetNodeId()
+	secondID := second.GetResult().GetRows()[0].GetFields()["p"].GetNode().GetNodeId()
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("mutation continuation IDs first=%q second=%q", firstID, secondID)
+	}
+}
+
+func TestQueryServiceExecuteGQLMergeRelationshipReusesSelfLoop(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := nativeGQLQueryService(fixture)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: 'Ada'})"}); err != nil {
+		t.Fatalf("insert self-loop endpoint: %v", err)
+	}
+	query := "MATCH (a:Person {name: 'Ada'}), (b:Person {name: 'Ada'}) MERGE (a)-[r:KNOWS]->(b) RETURN r"
+	first, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query})
+	if err != nil {
+		t.Fatalf("first self-loop merge: %v", err)
+	}
+	second, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query})
+	if err != nil {
+		t.Fatalf("second self-loop merge: %v", err)
+	}
+	if first.GetResult().GetCounters().GetEdgesInserted() != 1 || second.GetResult().GetCounters().GetEdgesInserted() != 0 {
+		t.Fatalf("self-loop counters first=%+v second=%+v", first.GetResult().GetCounters(), second.GetResult().GetCounters())
+	}
+	if len(first.GetResult().GetRows()) != 1 || len(second.GetResult().GetRows()) != 1 || first.GetResult().GetRows()[0].GetFields()["r"].GetEdge().GetEdgeId() != second.GetResult().GetRows()[0].GetFields()["r"].GetEdge().GetEdgeId() {
+		t.Fatalf("self-loop rows first=%+v second=%+v", first.GetResult().GetRows(), second.GetResult().GetRows())
+	}
+}
+
 func TestQueryServiceExecuteGQLMergeRelationshipRejectsBroadEndpointMatches(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	script := `
 INSERT (:Person {name: 'Duplicate'});
@@ -425,7 +562,7 @@ INSERT (:Person {name: 'Target'});
 
 func TestQueryServiceExecuteGQLScriptAggregatesGraphEdges(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	script := `
@@ -452,9 +589,52 @@ FETCH FIRST 20 ROWS ONLY;
 	}
 }
 
+func TestQueryServiceExecuteGQLScriptStopOnErrorControlsSequentialNativeExecution(t *testing.T) {
+	script := `
+INSERT (:Person {name: 'Duplicate'});
+INSERT (:Person {name: 'Duplicate'});
+INSERT (:Person {name: 'Target'});
+MATCH (a:Person {name: 'Duplicate'}), (b:Person {name: 'Target'}) MERGE (a)-[r:KNOWS]->(b) RETURN r;
+INSERT (:Person {name: 'Marker'});
+`
+	for _, stopOnError := range []bool{true, false} {
+		t.Run(map[bool]string{true: "stop", false: "continue"}[stopOnError], func(t *testing.T) {
+			fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+			querySvc := nativeGQLQueryService(fixture)
+			writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+			response, err := querySvc.ExecuteGQLScript(fixture.ctx, &clientv1.ExecuteGQLScriptRequest{TransactionId: writeTx, Script: script, StopOnError: stopOnError})
+			if err != nil {
+				t.Fatalf("ExecuteGQLScript() error = %v", err)
+			}
+			wantStatements, wantInserted := 5, int32(4)
+			if stopOnError {
+				wantStatements, wantInserted = 4, 3
+			}
+			if len(response.GetStatements()) != wantStatements || response.GetResult().GetCounters().GetNodesInserted() != wantInserted {
+				t.Fatalf("statements=%d counters=%+v", len(response.GetStatements()), response.GetResult().GetCounters())
+			}
+			failed := response.GetStatements()[3]
+			if failed.GetSuccess() || failed.GetError() == "" {
+				t.Fatalf("failed statement = %+v", failed)
+			}
+			marker, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person {name: 'Marker'}) RETURN p"})
+			if err != nil {
+				t.Fatalf("query marker: %v", err)
+			}
+			wantMarkers := 1
+			if stopOnError {
+				wantMarkers = 0
+			}
+			if len(marker.GetResult().GetRows()) != wantMarkers {
+				t.Fatalf("marker rows = %d, want %d", len(marker.GetResult().GetRows()), wantMarkers)
+			}
+		})
+	}
+}
+
 func TestQueryServiceReadWriteNoopCommitDoesNotConflictNextWrite(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
 
 	seedTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)

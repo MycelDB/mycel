@@ -48,8 +48,13 @@ type SemanticCandidateReader interface {
 	SearchCandidates(ctx context.Context, request SemanticCandidateRequest) (SemanticCandidateBatch, error)
 }
 
-// MutationWriter provides graph mutations for read-write query plans.
+// MutationWriter provides statement-atomic graph mutations for read-write
+// query plans. BeginMutationStatement returns a scoped context that serializes
+// transaction writes and a graph-owned bounded undo journal. Finish commits the
+// staged statement or restores that journal before releasing the scope.
 type MutationWriter interface {
+	BeginMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, any, error)
+	FinishMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction, scope any, commit bool) error
 	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)
 	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error)
 	UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)

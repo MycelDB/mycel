@@ -176,8 +176,8 @@ func (b *binder) bindRead(query querylogical.Query, mutationMatch bool) error {
 }
 
 func (b *binder) bindMutation(mutation querylogical.Mutation) error {
-	if mutation.Limit < 0 {
-		return b.invalid("mutation limit must be non-negative")
+	if mutation.Limit < 0 || mutation.Page.Offset < 0 || mutation.Page.Limit < 0 || mutation.Page.Size < 0 {
+		return b.invalid("mutation pagination values must be non-negative")
 	}
 	switch mutation.Kind {
 	case querylogical.MutationInsertNode:

@@ -49,5 +49,6 @@ type GraphRuntime interface {
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
 	ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error)
 	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
-	DiscardTransactionGraph(ctx context.Context, transactionID string)
+	DiscardTransactionGraph(ctx context.Context, transactionID string) error
+	AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error
 }

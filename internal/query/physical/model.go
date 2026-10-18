@@ -12,6 +12,7 @@ type Family string
 
 const (
 	FamilyLegacyMutation   Family = "legacy_mutation"
+	FamilyMutation         Family = "mutation"
 	FamilyNodeIDLookup     Family = "node_id_lookup"
 	FamilyLabelIndex       Family = "label_index"
 	FamilyTagIndex         Family = "tag_index"
@@ -50,6 +51,12 @@ const (
 	OperatorTopN               OperatorKind = "top_n"
 	OperatorOffset             OperatorKind = "offset"
 	OperatorLimit              OperatorKind = "limit"
+	OperatorInsertNode         OperatorKind = "insert_node"
+	OperatorMergeNode          OperatorKind = "merge_node"
+	OperatorMatchSet           OperatorKind = "match_set"
+	OperatorMatchDelete        OperatorKind = "match_delete"
+	OperatorCreateRelationship OperatorKind = "create_relationship"
+	OperatorMergeRelationship  OperatorKind = "merge_relationship"
 )
 
 // Operator is one immutable physical-plan node. Inputs flow from access toward
@@ -73,6 +80,7 @@ const (
 	AccessAdjacency        AccessKind = "adjacency_index"
 	AccessNodeScan         AccessKind = "node_scan"
 	AccessFullGraph        AccessKind = "full_graph"
+	AccessMutation         AccessKind = "mutation"
 )
 
 // Bound is one optional ordered-index boundary. Values remain typed and are

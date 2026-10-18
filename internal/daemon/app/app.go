@@ -289,6 +289,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
 	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout})
+	graphService.SetTransactionValidator(sessionService)
 	graphService.SetSchemaValidator(schemaService)
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)

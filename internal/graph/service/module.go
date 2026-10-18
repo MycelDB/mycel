@@ -65,6 +65,10 @@ type Module struct {
 	dataDir                        string
 	stores                         map[domainStoreKey]*graphstorage.LocalStore
 	overlays                       map[string]*overlay
+	transactionMutationLocks       map[string]*transactionMutationLock
+	activeMutationScopes           map[string]*mutationScope
+	finalizedTransactions          map[string]transactionFinalization
+	transactionValidator           TransactionValidator
 	changeSink                     graphchange.Sink
 	raftApplyChangeSink            graphchange.Sink
 	schemaValidator                SchemaValidator
@@ -108,7 +112,11 @@ type overlay struct {
 }
 
 func NewModule() *Module {
-	return &Module{stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{
+		stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{},
+		transactionMutationLocks: map[string]*transactionMutationLock{}, activeMutationScopes: map[string]*mutationScope{}, finalizedTransactions: map[string]transactionFinalization{},
+		checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName),
+	}
 }
 
 func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
@@ -138,6 +146,12 @@ func (m *Module) LastGraphChangeSinkError() error {
 
 type BlobReferenceChecker interface {
 	EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error
+}
+
+func (m *Module) SetTransactionValidator(validator TransactionValidator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transactionValidator = validator
 }
 
 func (m *Module) SetSchemaValidator(validator SchemaValidator) {
@@ -301,6 +315,15 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}
 	}
+	if m.transactionMutationLocks == nil {
+		m.transactionMutationLocks = map[string]*transactionMutationLock{}
+	}
+	if m.activeMutationScopes == nil {
+		m.activeMutationScopes = map[string]*mutationScope{}
+	}
+	if m.finalizedTransactions == nil {
+		m.finalizedTransactions = map[string]transactionFinalization{}
+	}
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -443,7 +466,282 @@ func (m *Module) readViewIdentityLocal(tx sessionmodel.GraphTransaction) string 
 	return "0"
 }
 
+type transactionFinalizationKind uint8
+
+const (
+	transactionCommitted transactionFinalizationKind = iota + 1
+	transactionDiscarded
+)
+
+type transactionFinalization struct {
+	kind   transactionFinalizationKind
+	commit graphchange.CommitResult
+}
+
+type transactionMutationLock struct {
+	token chan struct{}
+	refs  int
+}
+
+type transactionMutationLockOwner struct {
+	module        *Module
+	transactionID string
+}
+
+type transactionMutationLockContextKey struct{}
+
+type nodeMutationUndo struct {
+	put     domaingraph.Node
+	hadPut  bool
+	deleted bool
+	fence   bool
+}
+
+type edgeMutationUndo struct {
+	put     domaingraph.Edge
+	hadPut  bool
+	deleted bool
+	fence   bool
+}
+
+type mutationScope struct {
+	module         *Module
+	transactionID  string
+	release        func()
+	overlayExisted bool
+	initialOpCount int32
+	nodes          map[domaingraph.NodeID]nodeMutationUndo
+	edges          map[domaingraph.EdgeID]edgeMutationUndo
+}
+
+func (m *Module) lockTransactionMutation(ctx context.Context, transactionID string) (context.Context, func(), error) {
+	if owner, _ := ctx.Value(transactionMutationLockContextKey{}).(transactionMutationLockOwner); owner.module == m && owner.transactionID == transactionID {
+		return ctx, func() {}, nil
+	}
+	m.mu.Lock()
+	if m.transactionMutationLocks == nil {
+		m.transactionMutationLocks = map[string]*transactionMutationLock{}
+	}
+	lock := m.transactionMutationLocks[transactionID]
+	if lock == nil {
+		lock = &transactionMutationLock{token: make(chan struct{}, 1)}
+		lock.token <- struct{}{}
+		m.transactionMutationLocks[transactionID] = lock
+	}
+	lock.refs++
+	m.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		m.releaseTransactionMutationLockRef(transactionID, lock)
+		return ctx, nil, ctx.Err()
+	case <-lock.token:
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			lock.token <- struct{}{}
+			m.releaseTransactionMutationLockRef(transactionID, lock)
+		})
+	}
+	owner := transactionMutationLockOwner{module: m, transactionID: transactionID}
+	return context.WithValue(ctx, transactionMutationLockContextKey{}, owner), release, nil
+}
+
+func (m *Module) lockActiveTransactionMutation(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, func(), error) {
+	lockedCtx, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	return lockedCtx, release, nil
+}
+
+func (m *Module) validateTransactionActive(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	m.mu.Lock()
+	finalized := m.finalizedTransactions[tx.ID]
+	validator := m.transactionValidator
+	m.mu.Unlock()
+	if finalized.kind != 0 {
+		return fmt.Errorf("%w: transaction graph is finalized", ErrInvalidState)
+	}
+	if err := ensureReadable(tx); err != nil {
+		return err
+	}
+	if validator != nil {
+		if err := validator.ValidateTransactionActive(ctx, tx); err != nil {
+			return fmt.Errorf("%w: transaction is no longer active: %v", ErrInvalidState, err)
+		}
+	}
+	return nil
+}
+
+func (m *Module) finalizeTransactionLocked(transactionID string, finalization transactionFinalization) error {
+	if m.finalizedTransactions == nil {
+		m.finalizedTransactions = map[string]transactionFinalization{}
+	}
+	if existing := m.finalizedTransactions[transactionID]; existing.kind != 0 {
+		if existing.kind == finalization.kind {
+			return nil
+		}
+		return fmt.Errorf("%w: transaction graph is already finalized", ErrInvalidState)
+	}
+	m.finalizedTransactions[transactionID] = finalization
+	return nil
+}
+
+func (m *Module) releaseTransactionMutationLockRef(transactionID string, lock *transactionMutationLock) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock.refs--
+	if lock.refs == 0 && m.transactionMutationLocks[transactionID] == lock {
+		delete(m.transactionMutationLocks, transactionID)
+	}
+}
+
+// BeginMutationStatement acquires the transaction mutation lease and starts a
+// graph-owned undo journal. The journal stores only pre-existing entries first
+// touched by this statement rather than cloning the accumulated overlay.
+func (m *Module) BeginMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, any, error) {
+	if err := ensureWritable(tx); err != nil {
+		return ctx, nil, err
+	}
+	lockedCtx, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	scope := &mutationScope{
+		module: m, transactionID: tx.ID, release: release,
+		nodes: map[domaingraph.NodeID]nodeMutationUndo{}, edges: map[domaingraph.EdgeID]edgeMutationUndo{},
+	}
+	m.mu.Lock()
+	if m.activeMutationScopes == nil {
+		m.activeMutationScopes = map[string]*mutationScope{}
+	}
+	if m.activeMutationScopes[tx.ID] != nil {
+		m.mu.Unlock()
+		release()
+		return ctx, nil, fmt.Errorf("%w: mutation statement is already active", ErrInvalidState)
+	}
+	if current := m.overlays[tx.ID]; current != nil {
+		scope.overlayExisted = true
+		scope.initialOpCount = current.opCount
+	}
+	m.activeMutationScopes[tx.ID] = scope
+	m.mu.Unlock()
+	return lockedCtx, scope, nil
+}
+
+// FinishMutationStatement releases the transaction mutation lease. Failed
+// statements restore only entries recorded by the bounded undo journal.
+func (m *Module) FinishMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction, captured any, commit bool) error {
+	scope, ok := captured.(*mutationScope)
+	if !ok || scope == nil || scope.module != m || scope.transactionID != tx.ID {
+		return fmt.Errorf("%w: invalid mutation scope", ErrInvalidInput)
+	}
+	var validationErr error
+	if commit {
+		validationErr = m.validateTransactionActive(ctx, tx)
+	}
+	m.mu.Lock()
+	if m.activeMutationScopes[tx.ID] != scope {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: mutation scope is not active", ErrInvalidState)
+	}
+	if !commit || validationErr != nil {
+		m.restoreMutationScopeLocked(scope)
+	}
+	delete(m.activeMutationScopes, tx.ID)
+	m.mu.Unlock()
+	scope.release()
+	return validationErr
+}
+
+func (m *Module) restoreMutationScopeLocked(scope *mutationScope) {
+	if !scope.overlayExisted {
+		delete(m.overlays, scope.transactionID)
+		return
+	}
+	o := m.overlay(scope.transactionID)
+	for id, undo := range scope.nodes {
+		if undo.hadPut {
+			o.putNodes[id] = undo.put
+		} else {
+			delete(o.putNodes, id)
+		}
+		if undo.deleted {
+			o.deleteNodes[id] = struct{}{}
+		} else {
+			delete(o.deleteNodes, id)
+		}
+		if undo.fence {
+			o.automationFenceNodes[id] = struct{}{}
+		} else {
+			delete(o.automationFenceNodes, id)
+		}
+	}
+	for id, undo := range scope.edges {
+		if undo.hadPut {
+			o.putEdges[id] = undo.put
+		} else {
+			delete(o.putEdges, id)
+		}
+		if undo.deleted {
+			o.deleteEdges[id] = struct{}{}
+		} else {
+			delete(o.deleteEdges, id)
+		}
+		if undo.fence {
+			o.automationFenceEdges[id] = struct{}{}
+		} else {
+			delete(o.automationFenceEdges, id)
+		}
+	}
+	o.opCount = scope.initialOpCount
+}
+
+func (m *Module) recordNodeMutationLocked(transactionID string, o *overlay, id domaingraph.NodeID) {
+	scope := m.activeMutationScopes[transactionID]
+	if scope == nil || !scope.overlayExisted {
+		return
+	}
+	if _, recorded := scope.nodes[id]; recorded {
+		return
+	}
+	put, hadPut := o.putNodes[id]
+	_, deleted := o.deleteNodes[id]
+	_, fence := o.automationFenceNodes[id]
+	scope.nodes[id] = nodeMutationUndo{put: put, hadPut: hadPut, deleted: deleted, fence: fence}
+}
+
+func (m *Module) recordEdgeMutationLocked(transactionID string, o *overlay, id domaingraph.EdgeID) {
+	scope := m.activeMutationScopes[transactionID]
+	if scope == nil || !scope.overlayExisted {
+		return
+	}
+	if _, recorded := scope.edges[id]; recorded {
+		return
+	}
+	put, hadPut := o.putEdges[id]
+	_, deleted := o.deleteEdges[id]
+	_, fence := o.automationFenceEdges[id]
+	scope.edges[id] = edgeMutationUndo{put: put, hadPut: hadPut, deleted: deleted, fence: fence}
+}
+
 func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Node{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -514,6 +812,12 @@ func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.UpdateNodeInput) (domaingraph.Node, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Node{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -581,6 +885,12 @@ func (m *Module) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Node{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
@@ -604,6 +914,12 @@ func (m *Module) UpsertNode(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) DeleteNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return nil, nil, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return nil, nil, err
 	}
@@ -713,6 +1029,12 @@ func (m *Module) ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction
 }
 
 func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.EdgeInput) (domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Edge{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -789,6 +1111,12 @@ func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.UpdateEdgeInput) (domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Edge{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -835,6 +1163,12 @@ func (m *Module) UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (string, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return "", lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return "", err
 	}
@@ -855,6 +1189,12 @@ func (m *Module) DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) ReplaceReferences(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.ReplaceReferencesInput) (domaingraph.ReplaceReferencesResult, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.ReplaceReferencesResult{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.ReplaceReferencesResult{}, err
 	}
@@ -1047,6 +1387,12 @@ func (m *Module) GetParent(ctx context.Context, tx sessionmodel.GraphTransaction
 }
 
 func (m *Module) MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Edge{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1107,6 +1453,12 @@ func (m *Module) MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransacti
 }
 
 func (m *Module) ReorderChildren(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return nil, err
 	}
@@ -1200,8 +1552,29 @@ func (m *Module) CurrentDomainRevision(ctx context.Context, spaceID string, doma
 }
 
 func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	if lockErr != nil {
+		return graphchange.CommitResult{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
+	m.mu.Lock()
+	finalized := m.finalizedTransactions[tx.ID]
+	m.mu.Unlock()
+	if finalized.kind == transactionCommitted {
+		return finalized.commit, nil
+	}
+	if finalized.kind == transactionDiscarded {
+		return graphchange.CommitResult{}, fmt.Errorf("%w: transaction graph was discarded", ErrInvalidState)
+	}
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	if tx.Mode == sessionmodel.TransactionModeReadOnly {
-		return graphchange.CommitResult{}, nil
+		m.mu.Lock()
+		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
+		m.mu.Unlock()
+		return graphchange.CommitResult{}, err
 	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return graphchange.CommitResult{}, err
@@ -1220,8 +1593,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	o := m.overlays[tx.ID]
 	if o == nil || o.opCount == 0 {
 		delete(m.overlays, tx.ID)
+		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
 		m.mu.Unlock()
-		return graphchange.CommitResult{}, nil
+		return graphchange.CommitResult{}, err
 	}
 	snapshot := o.clone()
 	delete(m.overlays, tx.ID)
@@ -1362,6 +1736,14 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		info.NextRevision = uint64(committedRevision)
 	}
 	restoreOverlay = false
+	commitResult := graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}
+	cachedCommit := graphchange.CommitResult{OperationCount: commitResult.OperationCount, CommittedRevision: commitResult.CommittedRevision}
+	m.mu.Lock()
+	if err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted, commit: cachedCommit}); err != nil {
+		m.mu.Unlock()
+		return graphchange.CommitResult{}, err
+	}
+	m.mu.Unlock()
 	graphEvent.Changes = changes
 	stepStart = time.Now()
 	recorder := &graphSinkTimingRecorder{}
@@ -1370,7 +1752,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	timing.SinkTimings = recorder.timings
 	timing.Total = time.Since(traceStart)
 	m.logGraphCommitTiming(tx, map[string]int{"operation_count": int(snapshot.opCount), "put_nodes": len(record.PutNodes), "put_edges": len(record.PutEdges), "delete_nodes": len(record.DeleteNodeIDs), "delete_edges": len(record.DeleteEdgeIDs), "changes": len(changes)}, committedRevision, timing)
-	return graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
+	return commitResult, nil
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
@@ -1581,10 +1963,45 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 	return changes, nil
 }
 
-func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID string) {
+func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID string) error {
+	_, releaseMutation, err := m.lockTransactionMutation(context.WithoutCancel(ctx), transactionID)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.finalizeTransactionLocked(transactionID, transactionFinalization{kind: transactionDiscarded}); err != nil {
+		return err
+	}
 	delete(m.overlays, transactionID)
+	return nil
+}
+
+// AcknowledgeTransactionFinalization removes the short-lived terminal race
+// barrier only after the authoritative session state is no longer active.
+func (m *Module) AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	lockedCtx, releaseMutation, err := m.lockTransactionMutation(context.WithoutCancel(ctx), tx.ID)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
+	m.mu.Lock()
+	_, finalized := m.finalizedTransactions[tx.ID]
+	validator := m.transactionValidator
+	m.mu.Unlock()
+	if !finalized {
+		return nil
+	}
+	if validator != nil {
+		if err := validator.ValidateTransactionFinalized(lockedCtx, tx); err != nil {
+			return fmt.Errorf("%w: transaction finalization is not authoritative: %v", ErrInvalidState, err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.finalizedTransactions, tx.ID)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Module) BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error) {
@@ -2235,6 +2652,7 @@ func (m *Module) stageNodeWithFence(ctx context.Context, tx sessionmodel.GraphTr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordNodeMutationLocked(tx.ID, o, node.ID)
 	delete(o.deleteNodes, node.ID)
 	o.putNodes[node.ID] = cloneNode(node)
 	if automationOutputFence {
@@ -2251,6 +2669,7 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx sessionmodel.GraphTrans
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordNodeMutationLocked(tx.ID, o, id)
 	delete(o.putNodes, id)
 	delete(o.automationFenceNodes, id)
 	o.deleteNodes[id] = struct{}{}
@@ -2272,6 +2691,7 @@ func (m *Module) stageEdgeWithFence(ctx context.Context, tx sessionmodel.GraphTr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordEdgeMutationLocked(tx.ID, o, edge.ID)
 	delete(o.deleteEdges, edge.ID)
 	o.putEdges[edge.ID] = cloneEdge(edge)
 	if automationOutputFence {
@@ -2288,6 +2708,7 @@ func (m *Module) stageEdgeDelete(ctx context.Context, tx sessionmodel.GraphTrans
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordEdgeMutationLocked(tx.ID, o, id)
 	delete(o.putEdges, id)
 	delete(o.automationFenceEdges, id)
 	o.deleteEdges[id] = struct{}{}

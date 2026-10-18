@@ -185,7 +185,10 @@ func (f fakeConditionGraph) CurrentRevision(context.Context, string) (int64, err
 func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	panic("unused")
 }
-func (f fakeConditionGraph) DiscardTransactionGraph(context.Context, string) { panic("unused") }
+func (f fakeConditionGraph) DiscardTransactionGraph(context.Context, string) error { panic("unused") }
+func (f fakeConditionGraph) AcknowledgeTransactionFinalization(context.Context, sessionmodel.GraphTransaction) error {
+	panic("unused")
+}
 func (f fakeConditionGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {
 	if scan.Cursor != "" {
 		return nil, "", graphquery.IndexedReadStats{}, nil

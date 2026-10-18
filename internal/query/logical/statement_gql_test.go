@@ -34,7 +34,7 @@ func TestStatementFromGQLPlanPreservesResolvedMutationValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	statement, ok := querylogical.StatementFromGQLPlan(plan)
+	statement, ok := querylogical.StatementFromGQLPlan(plan, querylogical.NormalizeOptions{PageSize: 17, Cursor: "4"})
 	if !ok || statement.Mutation == nil {
 		t.Fatalf("statement = %#v, ok %v", statement, ok)
 	}
@@ -54,6 +54,9 @@ func TestStatementFromGQLPlanPreservesResolvedMutationValues(t *testing.T) {
 	}
 	if mutation.Match.Predicate == nil || len(mutation.Returns) != 2 {
 		t.Fatalf("mutation = %#v", mutation)
+	}
+	if mutation.Page.Size != 17 || mutation.Page.Cursor != "4" {
+		t.Fatalf("mutation page = %#v", mutation.Page)
 	}
 }
 

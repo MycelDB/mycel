@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,35 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type testTransactionValidator struct {
+	mu     sync.Mutex
+	active bool
+}
+
+func (v *testTransactionValidator) ValidateTransactionActive(context.Context, sessionmodel.GraphTransaction) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.active {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+func (v *testTransactionValidator) ValidateTransactionFinalized(context.Context, sessionmodel.GraphTransaction) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.active {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+func (v *testTransactionValidator) setActive(active bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.active = active
+}
 
 func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 	ctx := context.Background()
@@ -478,6 +508,292 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	current.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, current, newNode.ID.String()); err != nil {
 		t.Fatalf("current read-only GetNode(new): %v", err)
+	}
+}
+
+func TestMutationStateRestoresCompleteTransactionOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	original, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "original"})
+	if err != nil {
+		t.Fatalf("CreateNode(original) error = %v", err)
+	}
+	mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	updatedContent := "updated"
+	if _, err := m.UpdateNode(mutationCtx, tx, domaingraph.UpdateNodeInput{NodeID: original.ID.String(), Content: &updatedContent, UpdateMask: []string{"content"}}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	created, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "created-after-savepoint"})
+	if err != nil {
+		t.Fatalf("CreateNode(after savepoint) error = %v", err)
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement() error = %v", err)
+	}
+	got, err := m.GetNode(ctx, tx, original.ID.String())
+	if err != nil {
+		t.Fatalf("GetNode(original) error = %v", err)
+	}
+	if got.Content != "original" {
+		t.Fatalf("restored original content = %q", got.Content)
+	}
+	if _, err := m.GetNode(ctx, tx, created.ID.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetNode(created after savepoint) error = %v, want ErrNotFound", err)
+	}
+	identity, err := m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "1" {
+		t.Fatalf("restored identity = %q, %v; want 1", identity, err)
+	}
+}
+
+func TestMutationStatementJournalTracksTouchedEntriesNotWholeOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	m.mu.Lock()
+	o := m.overlay(tx.ID)
+	ids := make([]domaingraph.NodeID, 256)
+	for index := range ids {
+		ids[index] = uuid.New()
+		o.putNodes[ids[index]] = domaingraph.Node{ID: ids[index], DomainID: mustDomainID(tx.DomainID), Content: fmt.Sprintf("node-%d", index)}
+		o.opCount++
+	}
+	m.mu.Unlock()
+
+	mutationCtx, captured, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	scope := captured.(*mutationScope)
+	if len(scope.nodes) != 0 || len(scope.edges) != 0 {
+		t.Fatalf("journal eagerly copied overlay: nodes=%d edges=%d", len(scope.nodes), len(scope.edges))
+	}
+	updated := "updated"
+	if _, err := m.UpdateNode(mutationCtx, tx, domaingraph.UpdateNodeInput{NodeID: ids[0].String(), Content: &updated, UpdateMask: []string{"content"}}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	if len(scope.nodes) != 1 || len(scope.edges) != 0 {
+		t.Fatalf("journal nodes=%d edges=%d, want one touched node", len(scope.nodes), len(scope.edges))
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement() error = %v", err)
+	}
+}
+
+func TestMutationStatementSerializesConcurrentTransactionWriteBeforeRollback(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "failed-statement"}); err != nil {
+		t.Fatalf("CreateNode(scoped) error = %v", err)
+	}
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	var concurrent domaingraph.Node
+	go func() {
+		close(started)
+		var createErr error
+		concurrent, createErr = m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "concurrent-success"})
+		done <- createErr
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("concurrent write completed inside active mutation scope: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement(rollback) error = %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("concurrent CreateNode() error = %v", err)
+	}
+	if _, err := m.GetNode(ctx, tx, concurrent.ID.String()); err != nil {
+		t.Fatalf("GetNode(concurrent success) error = %v", err)
+	}
+	nodes, _, err := m.ListNodes(ctx, tx, 10, "")
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != concurrent.ID {
+		t.Fatalf("overlay nodes after interleaving = %+v, want concurrent success only", nodes)
+	}
+}
+
+func TestTransactionFinalizationSerializesWithMutationScopes(t *testing.T) {
+	ctx := context.Background()
+	t.Run("mutation before commit", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+		if err != nil {
+			t.Fatalf("BeginMutationStatement() error = %v", err)
+		}
+		if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "before-commit"}); err != nil {
+			t.Fatalf("CreateNode() error = %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, commitErr := m.CommitTransactionGraph(ctx, tx)
+			done <- commitErr
+		}()
+		select {
+		case err := <-done:
+			t.Fatalf("commit completed inside active mutation scope: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if err := m.FinishMutationStatement(ctx, tx, scope, true); err != nil {
+			t.Fatalf("FinishMutationStatement() error = %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("CommitTransactionGraph() error = %v", err)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "after-commit"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(after commit) error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("commit before mutation", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+			t.Fatalf("CommitTransactionGraph() error = %v", err)
+		}
+		if _, _, err := m.BeginMutationStatement(ctx, tx); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("BeginMutationStatement(after commit) error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("mutation before discard", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+		if err != nil {
+			t.Fatalf("BeginMutationStatement() error = %v", err)
+		}
+		if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "before-discard"}); err != nil {
+			t.Fatalf("CreateNode() error = %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- m.DiscardTransactionGraph(ctx, tx.ID) }()
+		select {
+		case err := <-done:
+			t.Fatalf("discard completed inside active mutation scope: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if err := m.FinishMutationStatement(ctx, tx, scope, true); err != nil {
+			t.Fatalf("FinishMutationStatement() error = %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("DiscardTransactionGraph() error = %v", err)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "after-discard"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(after discard) error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("discard before mutation", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		if err := m.DiscardTransactionGraph(ctx, tx.ID); err != nil {
+			t.Fatalf("DiscardTransactionGraph() error = %v", err)
+		}
+		if _, _, err := m.BeginMutationStatement(ctx, tx); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("BeginMutationStatement(after discard) error = %v, want ErrInvalidState", err)
+		}
+	})
+}
+
+func TestCommitTransactionGraphRetriesReturnCachedFinalization(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "cached-commit"}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	first, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("first CommitTransactionGraph() error = %v", err)
+	}
+	second, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("retry CommitTransactionGraph() error = %v", err)
+	}
+	if second.OperationCount != first.OperationCount || second.CommittedRevision != first.CommittedRevision {
+		t.Fatalf("retry result = %+v, want operation count/revision from %+v", second, first)
+	}
+}
+
+func TestAcknowledgedTransactionFinalizationsAreReclaimed(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	validator := &testTransactionValidator{active: true}
+	m.SetTransactionValidator(validator)
+	for index := 0; index < 256; index++ {
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		validator.setActive(true)
+		if index%2 == 0 {
+			if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+				t.Fatalf("CommitTransactionGraph(%d) error = %v", index, err)
+			}
+		} else if err := m.DiscardTransactionGraph(ctx, tx.ID); err != nil {
+			t.Fatalf("DiscardTransactionGraph(%d) error = %v", index, err)
+		}
+		if index == 0 {
+			if err := m.AcknowledgeTransactionFinalization(ctx, tx); !errors.Is(err, ErrInvalidState) {
+				t.Fatalf("AcknowledgeTransactionFinalization(active) error = %v, want ErrInvalidState", err)
+			}
+			m.mu.Lock()
+			finalized := len(m.finalizedTransactions)
+			m.mu.Unlock()
+			if finalized != 1 {
+				t.Fatalf("terminal graph records after premature acknowledgement = %d, want 1", finalized)
+			}
+		}
+		validator.setActive(false)
+		if err := m.AcknowledgeTransactionFinalization(ctx, tx); err != nil {
+			t.Fatalf("AcknowledgeTransactionFinalization(%d) error = %v", index, err)
+		}
+		m.mu.Lock()
+		finalized := len(m.finalizedTransactions)
+		m.mu.Unlock()
+		if finalized != 0 {
+			t.Fatalf("terminal graph records after acknowledgement = %d, want 0", finalized)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "stale"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(stale transaction %d) error = %v, want ErrInvalidState", index, err)
+		}
+	}
+}
+
+func TestMutationStatementRevalidatesTransactionAfterWaitingForLease(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	validator := &testTransactionValidator{active: true}
+	m.SetTransactionValidator(validator)
+	_, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		t.Fatalf("lockTransactionMutation() error = %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, beginErr := m.BeginMutationStatement(ctx, tx)
+		done <- beginErr
+	}()
+	validator.setActive(false)
+	release()
+	if err := <-done; !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("BeginMutationStatement() error = %v, want ErrInvalidState", err)
 	}
 }
 

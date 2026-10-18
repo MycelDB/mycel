@@ -27,6 +27,8 @@ type Manager interface {
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
 	ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
+	BeginMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, any, error)
+	FinishMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction, scope any, commit bool) error
 	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)
 	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error)
 	UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)
@@ -45,7 +47,8 @@ type Manager interface {
 
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
 	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
-	DiscardTransactionGraph(ctx context.Context, transactionID string)
+	DiscardTransactionGraph(ctx context.Context, transactionID string) error
+	AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error
 	ConfigureIndexes(ctx context.Context, tx sessionmodel.GraphTransaction, schemaHash string, indexes []schema.IndexDefinition) error
 	ScanLabel(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.LabelScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
 	ScanTag(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.TagScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
