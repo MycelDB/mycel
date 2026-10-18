@@ -37,6 +37,14 @@ type indexedTestAccess struct {
 	err            error
 }
 
+func (a *indexedTestAccess) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	a.txs = append(a.txs, tx)
+	return "0", nil
+}
+
 func (a *indexedTestAccess) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, id string) (graph.Node, error) {
 	a.getCalls++
 	a.txs = append(a.txs, tx)

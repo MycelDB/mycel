@@ -23,6 +23,7 @@ var (
 )
 
 type Manager interface {
+	ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error)
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
 	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)

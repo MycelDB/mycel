@@ -15,12 +15,21 @@ and GQL broad reads once through the engine; API-local `queryExecution`,
 read plans. Removal of the remaining unreachable compatibility helpers and
 mutation/script bridges remains QRX11 work.
 
-`NodeScan` calls `ListNodes` only with finite positive limits. It retains at
-most one finite page, accounts node payload memory and node/candidate work, and
-closes its source when downstream demand is satisfied. Start labels, IDs, and
-literal properties are applied before traversal. Predicates that reference
-only the start alias are also pushed ahead of expansion; predicates involving
-later bindings remain residual.
+`NodeScan` calls `ListNodes` only with finite positive limits. The graph service
+backs new node-list continuations with a derived, ID-ordered storage scan, so it
+hydrates only the requested committed page instead of cloning and sorting the
+complete domain before pagination. The derived index is rebuilt from retained
+storage history and supports both current and revision-pinned scans without a
+persisted-format change. Numeric node-list tokens issued by older versions
+remain readable through an explicit compatibility path when no staged overlay
+must be bound; new tokens are versioned, checksum-protected,
+transaction-bound cursors.
+
+The operator retains at most one finite page, accounts node payload memory and
+node/candidate work, and closes its source when downstream demand is satisfied.
+Start labels, IDs, and literal properties are applied before traversal.
+Predicates that reference only the start alias are also pushed ahead of
+expansion; predicates involving later bindings remain residual.
 
 A small response page therefore reads only the finite page needed for the
 response and its lookahead. A finite query `LIMIT` further clamps source page
@@ -33,12 +42,15 @@ Broad traversal starts from the paged node scan and uses finite
 edges.
 
 GQL and explicit path queries use the bounded `PathExpand` operator. Structured
-queries without a path alias use `CollectExpand`, preserving the existing
-one-row-per-root contract, first target/edge bindings, deduplicated matched
-nodes, and tree projections. Only outgoing `contains` edges establish tree
-parent/child relationships; incoming and non-containment results remain flat.
-All root, edge, endpoint, depth, intermediate-row, and retained-memory work is
-charged to the shared tracker.
+queries without a path or edge alias use `CollectExpand`, preserving the
+existing one-row-per-root contract, deduplicated matched nodes, and tree
+projections. A structured traversal that binds an edge alias instead uses
+row-producing expansion, preserving one row per matching edge (including
+parallel edges), target-tree projection compatibility, and the legacy one-hop
+edge-alias validation gate. Only outgoing `contains` edges establish collected
+tree parent/child relationships; incoming and non-containment results remain
+flat. All root, edge, endpoint, depth, intermediate-row, and retained-memory
+work is charged to the shared tracker.
 
 The complete `sessionmodel.GraphTransaction` is passed to every node page,
 adjacency page, and endpoint read, preserving graph-owned snapshot and
@@ -60,9 +72,13 @@ Unordered node-only scans use source checkpoints in the checksum-protected
 traversal broad plans use protected output-offset replay. Replay is honest: a
 broad ordered page without a supporting index rescans and re-sorts the bounded
 candidate set, and diagnostics report `output_offset_replay`; it is not
-presented as efficient index continuation. Compatible legacy decimal broad
-cursors remain accepted as output offsets, while tampered or plan, parameter,
-snapshot, or schema mismatches fail stale.
+presented as efficient index continuation. Cursor identity includes the graph
+transaction's mutable overlay generation as well as its transaction and base
+revision. Mutation between pages, or during one execution, therefore fails
+stale instead of replaying an offset against changed node or edge state.
+Compatible legacy decimal broad cursors remain accepted as output offsets only
+when no staged overlay must be bound, while tampered or plan, parameter,
+snapshot, schema, or overlay mismatches fail stale.
 
 Structured ordered queries, and schema-declared indexed shapes whose required
 index is missing, continue to fail closed with `unavailable_access_path`.
@@ -85,9 +101,11 @@ Coverage includes:
   tampered-cursor rejection;
 - structured and GQL daemon reads that bypass whole-graph materialization;
 - paged adjacency traversal without `ListEdges`, including structured
-  collection and tree compatibility;
+  collection, edge-distinct parallel-edge rows, and tree compatibility;
 - start-predicate pushdown, Top-N planning, output replay, snapshot transaction
   propagation, and caller cancellation after dependency return;
+- cursor-driven graph storage pages for current and snapshot reads, plus stale
+  overlay-continuation rejection;
 - deterministic memory/resource exhaustion and retained-memory cleanup; and
 - full query, daemon API, CLI, build, documentation, architecture-boundary,
   and race validation.

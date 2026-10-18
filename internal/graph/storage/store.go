@@ -34,19 +34,27 @@ type Options struct {
 }
 
 type LocalStore struct {
-	mu                        sync.RWMutex
-	path                      string
-	encryption                *encryption.Service
-	state                     StoreState
-	manifest                  manifest
-	nodes                     *segment
-	edges                     *segment
-	txns                      *segment
-	nodeRecords               map[graph.NodeID]graph.Node
-	edgeRecords               map[graph.EdgeID]graph.Edge
-	nodeMeta                  map[graph.NodeID]NodeMeta
-	edgeMeta                  map[graph.EdgeID]EdgeMeta
-	nodesByDomain             map[graph.DomainID]map[graph.NodeID]struct{}
+	mu            sync.RWMutex
+	path          string
+	encryption    *encryption.Service
+	state         StoreState
+	manifest      manifest
+	nodes         *segment
+	edges         *segment
+	txns          *segment
+	nodeRecords   map[graph.NodeID]graph.Node
+	edgeRecords   map[graph.EdgeID]graph.Edge
+	nodeMeta      map[graph.NodeID]NodeMeta
+	edgeMeta      map[graph.EdgeID]EdgeMeta
+	nodesByDomain map[graph.DomainID]map[graph.NodeID]struct{}
+	// nodeIDsByDomain is a derived, ID-ordered index of every node observed in a
+	// domain since the retained history boundary. IDs remain after deletion so
+	// snapshot scans can still resolve historical versions without hydrating or
+	// sorting the complete domain on every page. The companion set prevents
+	// duplicates, while dirty domains are sorted lazily after out-of-order puts.
+	nodeIDsByDomain           map[graph.DomainID][]graph.NodeID
+	nodeIDSetByDomain         map[graph.DomainID]map[graph.NodeID]struct{}
+	nodeIDOrderDirty          map[graph.DomainID]bool
 	labelIndex                map[graph.DomainID]map[string]map[graph.NodeID]struct{}
 	tagIndex                  map[graph.DomainID]map[string]map[graph.NodeID]struct{}
 	configuredIndexes         map[graph.DomainID][]schema.IndexDefinition
@@ -203,6 +211,9 @@ func (s *LocalStore) resetIndexes() {
 	s.nodeMeta = map[graph.NodeID]NodeMeta{}
 	s.edgeMeta = map[graph.EdgeID]EdgeMeta{}
 	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
+	s.nodeIDsByDomain = map[graph.DomainID][]graph.NodeID{}
+	s.nodeIDSetByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
+	s.nodeIDOrderDirty = map[graph.DomainID]bool{}
 	s.labelIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
 	s.tagIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
 	s.configuredIndexes = map[graph.DomainID][]schema.IndexDefinition{}
@@ -328,6 +339,69 @@ func (s *LocalStore) ListNodesByDomainAt(ctx context.Context, domainID graph.Dom
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
 	return out, ctx.Err()
+}
+
+// ScanNodesByDomain returns at most Limit visible nodes after Cursor. The
+// ordered derived ID index lets broad query scans hydrate only the requested
+// page rather than cloning and sorting every node in the domain first.
+func (s *LocalStore) ScanNodesByDomain(ctx context.Context, scan DomainNodeScan) ([]graph.Node, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	if scan.Limit <= 0 {
+		return nil, "", fmt.Errorf("%w: node scan limit must be positive", ErrInvalidRecord)
+	}
+	if scan.Limit > 500 {
+		scan.Limit = 500
+	}
+	if scan.Cursor != "" {
+		if _, err := uuid.Parse(scan.Cursor); err != nil {
+			return nil, "", fmt.Errorf("%w: invalid node scan cursor", ErrInvalidRecord)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, "", err
+	}
+	if s.nodeIDOrderDirty[scan.DomainID] {
+		sort.Slice(s.nodeIDsByDomain[scan.DomainID], func(i, j int) bool {
+			return s.nodeIDsByDomain[scan.DomainID][i].String() < s.nodeIDsByDomain[scan.DomainID][j].String()
+		})
+		delete(s.nodeIDOrderDirty, scan.DomainID)
+	}
+	ids := s.nodeIDsByDomain[scan.DomainID]
+	start := 0
+	if scan.Cursor != "" {
+		start = sort.Search(len(ids), func(i int) bool { return ids[i].String() > scan.Cursor })
+	}
+	out := make([]graph.Node, 0, min(scan.Limit, len(ids)-start))
+	last := ""
+	for i := start; i < len(ids); i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		node, ok := s.scanNodeVersion(ids[i], scan)
+		if !ok {
+			continue
+		}
+		if len(out) == scan.Limit {
+			return out, last, nil
+		}
+		out = append(out, cloneNode(node))
+		last = ids[i].String()
+	}
+	return out, "", nil
+}
+
+func (s *LocalStore) scanNodeVersion(id graph.NodeID, scan DomainNodeScan) (graph.Node, bool) {
+	if scan.Snapshot {
+		node, ok := entityAtRevision(s.nodeHistory[id], scan.Revision, func(node graph.Node) graph.Node { return node })
+		return node, ok && node.DomainID == scan.DomainID
+	}
+	node, ok := s.nodeRecords[id]
+	return node, ok && node.DomainID == scan.DomainID
 }
 
 func (s *LocalStore) GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, error) {
@@ -606,6 +680,7 @@ func (s *LocalStore) applyNodePutWithIndexes(n graph.Node, loc RecordLocation, l
 	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
+		s.trackNodeID(n.DomainID, n.ID)
 		if labelTagIndexes {
 			s.addNodeLabelIndexes(n)
 			s.addNodeTagIndexes(n)
@@ -627,6 +702,19 @@ func (s *LocalStore) applyNodePutWithIndexes(n graph.Node, loc RecordLocation, l
 		ensureNodeSet(s.blobRefs, *n.BlobRef)[n.ID] = struct{}{}
 	}
 }
+func (s *LocalStore) trackNodeID(domainID graph.DomainID, id graph.NodeID) {
+	seen := ensureNodeSet(s.nodeIDSetByDomain, domainID)
+	if _, exists := seen[id]; exists {
+		return
+	}
+	seen[id] = struct{}{}
+	ids := s.nodeIDsByDomain[domainID]
+	if len(ids) > 0 && ids[len(ids)-1].String() > id.String() {
+		s.nodeIDOrderDirty[domainID] = true
+	}
+	s.nodeIDsByDomain[domainID] = append(ids, id)
+}
+
 func (s *LocalStore) applyNodeDelete(id graph.NodeID, loc RecordLocation) {
 	if old, ok := s.nodeRecords[id]; ok {
 		s.removeNodeIndexes(old)

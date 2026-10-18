@@ -22,6 +22,12 @@ type recordingEntityReader struct {
 	tx    sessionmodel.GraphTransaction
 }
 
+func (r *recordingEntityReader) ReadViewIdentity(_ context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	r.calls++
+	r.tx = tx
+	return "0", nil
+}
+
 func (r *recordingEntityReader) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, _ string) (graph.Node, error) {
 	r.calls++
 	r.tx = tx

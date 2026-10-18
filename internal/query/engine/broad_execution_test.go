@@ -23,9 +23,19 @@ type cancelingBroadAccess struct {
 	cancel context.CancelFunc
 }
 
+type changingViewBroadAccess struct {
+	*broadTestAccess
+}
+
 func (a *cancelingBroadAccess) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, limit int, cursor string) ([]graph.Node, string, error) {
 	nodes, next, err := a.broadTestAccess.ListNodes(ctx, tx, limit, cursor)
 	a.cancel()
+	return nodes, next, err
+}
+
+func (a *changingViewBroadAccess) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, limit int, cursor string) ([]graph.Node, string, error) {
+	nodes, next, err := a.broadTestAccess.ListNodes(ctx, tx, limit, cursor)
+	a.viewIdentity = "1"
 	return nodes, next, err
 }
 
@@ -37,9 +47,18 @@ type broadTestAccess struct {
 	listEdgeCalls  int
 	adjacencyCalls int
 	getNodeCalls   int
+	viewIdentity   string
 	limits         []int
 	cursors        []string
 	txs            []sessionmodel.GraphTransaction
+}
+
+func (a *broadTestAccess) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	a.txs = append(a.txs, tx)
+	return a.viewIdentity, nil
 }
 
 func (a *broadTestAccess) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, id string) (graph.Node, error) {
@@ -203,14 +222,12 @@ func TestEngineBroadSourceContinuationPreservesPageCheckpointUntilQueryLimit(t *
 
 func TestEngineBroadTraversalUsesPagedAdjacencyWithoutWholeEdgeListing(t *testing.T) {
 	root := broadNode(10, "Document", 1)
-	left := broadNode(11, "Section", 1)
-	right := broadNode(12, "Section", 2)
+	target := broadNode(11, "Section", 1)
 	access := newBroadTestAccess([]graph.Node{root})
-	access.byID[left.ID.String()] = left
-	access.byID[right.ID.String()] = right
+	access.byID[target.ID.String()] = target
 	access.edges[root.ID.String()] = []graph.Edge{
-		broadEdge(21, root, left, "contains"),
-		broadEdge(22, root, right, "contains"),
+		broadEdge(21, root, target, "contains"),
+		broadEdge(22, root, target, "contains"),
 	}
 	engine := queryengine.New(queryengine.Ports{Entities: access, Traversals: access})
 	tx := sessionmodel.GraphTransaction{ID: "tx-broad-traversal", BaseRevision: 57}
@@ -228,19 +245,24 @@ func TestEngineBroadTraversalUsesPagedAdjacencyWithoutWholeEdgeListing(t *testin
 		Page: querylogical.PageSpec{Size: 10},
 	})
 	prepared := prepareBroad(t, engine, tx, statement)
-	if !operatorTreeContains(prepared.Physical.Root, queryphysical.OperatorCollectTraversal) {
+	if operatorTreeContains(prepared.Physical.Root, queryphysical.OperatorCollectTraversal) || !operatorTreeContains(prepared.Physical.Root, queryphysical.OperatorIndexedPath) {
 		t.Fatalf("physical operators = %#v", prepared.Physical.Root)
 	}
 	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
 	if err != nil {
 		t.Fatalf("execute traversal: %v", err)
 	}
-	if len(result.Rows) != 1 || result.Rows[0].Fields["edge"].Edge == nil || result.Rows[0].Fields["edge"].Edge.ID != access.edges[root.ID.String()][0].ID.String() {
-		t.Fatalf("structured collected rows = %#v", result.Rows)
+	if len(result.Rows) != 2 {
+		t.Fatalf("structured edge rows = %#v", result.Rows)
 	}
-	tree := result.Rows[0].Fields["tree"].Tree
-	if tree == nil || len(tree.Roots) != 2 {
-		t.Fatalf("collected tree = %#v", tree)
+	for i, row := range result.Rows {
+		if row.Fields["edge"].Edge == nil || row.Fields["edge"].Edge.ID != access.edges[root.ID.String()][i].ID.String() {
+			t.Fatalf("structured edge row %d = %#v", i, row)
+		}
+		tree := row.Fields["tree"].Tree
+		if tree == nil || len(tree.Roots) != 1 {
+			t.Fatalf("edge row tree %d = %#v", i, tree)
+		}
 	}
 	if access.listEdgeCalls != 0 || access.adjacencyCalls != 1 || access.getNodeCalls != 2 {
 		t.Fatalf("traversal calls: listEdges=%d adjacency=%d getNode=%d limits=%v", access.listEdgeCalls, access.adjacencyCalls, access.getNodeCalls, access.limits)
@@ -311,6 +333,41 @@ func TestEngineBroadScanHonorsCancellationAfterPageRead(t *testing.T) {
 	}
 }
 
+func TestEngineBroadExecutionRejectsOverlayMutationDuringRead(t *testing.T) {
+	base := newBroadTestAccess([]graph.Node{broadNode(37, "Document", 1)})
+	access := &changingViewBroadAccess{broadTestAccess: base}
+	engine := queryengine.New(queryengine.Ports{Entities: access})
+	tx := sessionmodel.GraphTransaction{ID: "tx-broad-changing-overlay", Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: 68}
+	prepared := prepareBroad(t, engine, tx, broadNodeStatement(1))
+	_, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorStaleCursor)
+}
+
+func TestEngineBroadCursorRejectsChangedReadWriteOverlay(t *testing.T) {
+	nodes := []graph.Node{broadNode(38, "Document", 1), broadNode(39, "Document", 2)}
+	access := newBroadTestAccess(nodes)
+	engine := queryengine.New(queryengine.Ports{Entities: access})
+	tx := sessionmodel.GraphTransaction{ID: "tx-broad-overlay", Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: 69}
+	statement := broadNodeStatement(1)
+	prepared := prepareBroad(t, engine, tx, statement)
+	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	if err != nil {
+		t.Fatalf("execute first overlay page: %v", err)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first overlay page did not return a cursor")
+	}
+	calls := access.listNodeCalls
+	access.viewIdentity = "1"
+	statement.Read.Page.Cursor = first.NextCursor
+	prepared = prepareBroad(t, engine, tx, statement)
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorStaleCursor)
+	if access.listNodeCalls != calls {
+		t.Fatalf("stale overlay cursor reached node scan: calls=%d, want %d", access.listNodeCalls, calls)
+	}
+}
+
 func TestEngineBroadScanRejectsTamperedCursorAndMemoryExhaustion(t *testing.T) {
 	nodes := []graph.Node{broadNode(41, "Document", 3), broadNode(42, "Document", 2), broadNode(43, "Document", 1)}
 	access := newBroadTestAccess(nodes)
@@ -341,7 +398,7 @@ func TestEngineBroadScanRejectsTamperedCursorAndMemoryExhaustion(t *testing.T) {
 }
 
 func newBroadTestAccess(nodes []graph.Node) *broadTestAccess {
-	access := &broadTestAccess{nodes: append([]graph.Node(nil), nodes...), byID: map[string]graph.Node{}, edges: map[string][]graph.Edge{}}
+	access := &broadTestAccess{nodes: append([]graph.Node(nil), nodes...), byID: map[string]graph.Node{}, edges: map[string][]graph.Edge{}, viewIdentity: "0"}
 	for _, node := range nodes {
 		access.byID[node.ID.String()] = node
 	}

@@ -320,6 +320,19 @@ func TestBuildBroadTraversalRequiresAdjacencyAndUsesFiniteResolvedDepth(t *testi
 	assertPlanError(t, query, plannerSchema(), environment, querylogical.ErrorUnavailableAccessPath)
 }
 
+func TestBuildStructuredBroadEdgeAliasUsesRowsAndRejectsVariableDepth(t *testing.T) {
+	query := baseQuery()
+	query.Steps = []querylogical.Step{traversalStep("edge")}
+	query.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionEdge, Alias: "edge", OutputName: "edge"}}
+	plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || operatorTreeContains(plan.Root, queryphysical.OperatorCollectTraversal) || !operatorTreeContains(plan.Root, queryphysical.OperatorIndexedPath) {
+		t.Fatalf("structured edge-alias plan = %#v", plan)
+	}
+
+	query.Steps[0].Depth.Max = 2
+	assertPlanError(t, query, plannerSchema(), plannerEnvironment(), querylogical.ErrorInvalidQuery)
+}
+
 func TestBuildSchemalessGQLFiltersAndOrderingUseBoundedBroadFallback(t *testing.T) {
 	query := baseQuery()
 	query.Source = querylogical.SourceGQL

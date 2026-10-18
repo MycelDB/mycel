@@ -87,6 +87,11 @@ type raftGraphNodesResponse struct {
 	NextPageToken string             `json:"next_page_token"`
 	Read          *StrongReadContext `json:"read,omitempty"`
 }
+
+type raftGraphReadViewResponse struct {
+	Identity string             `json:"identity"`
+	Read     *StrongReadContext `json:"read,omitempty"`
+}
 type raftGraphEdgeResponse struct {
 	Edge domaingraph.Edge   `json:"edge"`
 	Read *StrongReadContext `json:"read,omitempty"`
@@ -318,6 +323,8 @@ func recordForwardedRaftGraphRead(ctx context.Context, out any) {
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphNodesResponse:
 		RecordStrongReadContext(ctx, res.Read)
+	case *raftGraphReadViewResponse:
+		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphEdgeResponse:
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphOptionalEdgeResponse:
@@ -391,6 +398,8 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 			return nil, err
 		}
 		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Read: read})
+	case "read_view_identity":
+		return json.Marshal(raftGraphReadViewResponse{Identity: m.readViewIdentityLocal(tx), Read: read})
 	case "configure_indexes":
 		store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 		if err != nil {

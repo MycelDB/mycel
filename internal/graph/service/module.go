@@ -2,6 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +40,25 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
-const childOrderStep = 1000
+const (
+	childOrderStep      = 1000
+	nodePageTokenPrefix = "nodes-v1:"
+)
+
+type nodePageCursor struct {
+	TransactionID string `json:"transaction_id"`
+	BaseRevision  int64  `json:"base_revision"`
+	OverlayOps    int32  `json:"overlay_ops"`
+	AfterNodeID   string `json:"after_node_id"`
+	Checksum      string `json:"checksum"`
+}
+
+type nodeOverlayPage struct {
+	operations int32
+	putNodes   []domaingraph.Node
+	replaced   map[domaingraph.NodeID]struct{}
+	deleted    map[domaingraph.NodeID]struct{}
+}
 
 type Module struct {
 	mu                             sync.Mutex
@@ -365,6 +387,35 @@ func (m *Module) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction
 		return nil, "", err
 	}
 	return m.listNodesLocal(ctx, tx, pageSize, pageToken)
+}
+
+// ReadViewIdentity identifies the mutable transaction overlay observed by query
+// execution. BaseRevision and transaction identity are already bound by query
+// cursors; the operation count changes for every staged node or edge mutation.
+func (m *Module) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := ensureReadable(tx); err != nil {
+		return "", err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return "", err
+	} else if forward {
+		req := raftReadRequest("read_view_identity", tx)
+		var res raftGraphReadViewResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return "", err
+		}
+		return res.Identity, nil
+	}
+	return m.readViewIdentityLocal(tx), ctx.Err()
+}
+
+func (m *Module) readViewIdentityLocal(tx sessionmodel.GraphTransaction) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if overlay := m.overlays[tx.ID]; overlay != nil {
+		return strconv.FormatInt(int64(overlay.opCount), 10)
+	}
+	return "0"
 }
 
 func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
@@ -1868,20 +1919,188 @@ func (m *Module) listNodesLocal(ctx context.Context, tx sessionmodel.GraphTransa
 	if err != nil {
 		return nil, "", err
 	}
-	var base []domaingraph.Node
-	if revision, ok := snapshotRevision(tx); ok {
-		base, err = store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	} else {
-		base, err = store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+	pageSize = boundedGraphPageSize(pageSize)
+	pageToken = strings.TrimSpace(pageToken)
+	// Numeric offsets remain readable as a compatibility path for tokens issued
+	// before the cursor-driven node scan. New scans always emit nodes-v1 tokens.
+	if pageToken != "" && !strings.HasPrefix(pageToken, nodePageTokenPrefix) {
+		if _, err := pageStart(pageToken); err != nil {
+			return nil, "", err
+		}
+		m.mu.Lock()
+		overlay := m.overlays[tx.ID]
+		mutableView := overlay != nil && overlay.opCount != 0
+		m.mu.Unlock()
+		if mutableView {
+			return nil, "", fmt.Errorf("%w: legacy page_token is not bound to the transaction overlay", ErrInvalidInput)
+		}
+		var base []domaingraph.Node
+		if revision, ok := snapshotRevision(tx); ok {
+			base, err = store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
+		} else {
+			base, err = store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+		}
+		if err != nil {
+			return nil, "", mapStorageError(err)
+		}
+		m.mu.Lock()
+		overlay = m.overlays[tx.ID]
+		if overlay != nil && overlay.opCount != 0 {
+			m.mu.Unlock()
+			return nil, "", fmt.Errorf("%w: legacy page_token is not bound to the transaction overlay", ErrInvalidInput)
+		}
+		merged := mergeNodes(base, overlay, mustDomainID(tx.DomainID))
+		m.mu.Unlock()
+		return paginateNodes(merged, pageSize, pageToken)
 	}
+
+	cursor, err := decodeNodePageCursor(tx, pageToken)
 	if err != nil {
-		return nil, "", mapStorageError(err)
+		return nil, "", err
 	}
+	overlay, err := m.nodeOverlayPageSnapshot(tx, cursor, pageSize+1)
+	if err != nil {
+		return nil, "", err
+	}
+	scan := graphstorage.DomainNodeScan{DomainID: mustDomainID(tx.DomainID), Limit: pageSize, Cursor: cursor.AfterNodeID}
+	if revision, ok := snapshotRevision(tx); ok {
+		scan.Snapshot = true
+		scan.Revision = revision
+	}
+	if len(overlay.replaced) == 0 && len(overlay.deleted) == 0 {
+		items, storageNext, scanErr := store.ScanNodesByDomain(ctx, scan)
+		if scanErr != nil {
+			return nil, "", mapStorageError(scanErr)
+		}
+		if storageNext == "" {
+			return items, "", nil
+		}
+		next := encodeNodePageCursor(tx, nodePageCursor{
+			OverlayOps:  overlay.operations,
+			AfterNodeID: items[len(items)-1].ID.String(),
+		})
+		return items, next, nil
+	}
+
+	// A mutable node overlay requires a finite merge lookahead. The committed
+	// storage page remains bounded, and overlay identity prevents continuation
+	// if that merge input changes.
+	scan.Limit = pageSize + 1
+	items := make([]domaingraph.Node, 0, pageSize+1+len(overlay.putNodes))
+	storageCursor := scan.Cursor
+	for len(items) < pageSize+1 {
+		scan.Cursor = storageCursor
+		scan.Limit = min(500, pageSize+1-len(items))
+		base, next, scanErr := store.ScanNodesByDomain(ctx, scan)
+		if scanErr != nil {
+			return nil, "", mapStorageError(scanErr)
+		}
+		for _, node := range base {
+			if _, deleted := overlay.deleted[node.ID]; deleted {
+				continue
+			}
+			if _, replaced := overlay.replaced[node.ID]; replaced {
+				continue
+			}
+			items = append(items, node)
+		}
+		if next == "" {
+			break
+		}
+		storageCursor = next
+	}
+	items = append(items, overlay.putNodes...)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID.String() < items[j].ID.String() })
+	if len(items) <= pageSize {
+		return items, "", nil
+	}
+	items = items[:pageSize]
+	next := encodeNodePageCursor(tx, nodePageCursor{
+		OverlayOps:  overlay.operations,
+		AfterNodeID: items[len(items)-1].ID.String(),
+	})
+	return items, next, nil
+}
+
+func boundedGraphPageSize(pageSize int) int {
+	if pageSize <= 0 || pageSize > 500 {
+		return 500
+	}
+	return pageSize
+}
+
+func (m *Module) nodeOverlayPageSnapshot(tx sessionmodel.GraphTransaction, cursor nodePageCursor, limit int) (nodeOverlayPage, error) {
 	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	merged := mergeNodes(base, o, mustDomainID(tx.DomainID))
-	m.mu.Unlock()
-	return paginateNodes(merged, pageSize, pageToken)
+	defer m.mu.Unlock()
+	page := nodeOverlayPage{replaced: map[domaingraph.NodeID]struct{}{}, deleted: map[domaingraph.NodeID]struct{}{}}
+	overlay := m.overlays[tx.ID]
+	if overlay == nil {
+		if cursor.AfterNodeID != "" && cursor.OverlayOps != 0 {
+			return nodeOverlayPage{}, fmt.Errorf("%w: page_token transaction overlay changed", ErrInvalidInput)
+		}
+		return page, nil
+	}
+	page.operations = overlay.opCount
+	if cursor.AfterNodeID != "" && cursor.OverlayOps != overlay.opCount {
+		return nodeOverlayPage{}, fmt.Errorf("%w: page_token transaction overlay changed", ErrInvalidInput)
+	}
+	ids := make([]domaingraph.NodeID, 0, len(overlay.putNodes))
+	domainID := mustDomainID(tx.DomainID)
+	for id, node := range overlay.putNodes {
+		page.replaced[id] = struct{}{}
+		if node.DomainID == domainID && (cursor.AfterNodeID == "" || id.String() > cursor.AfterNodeID) {
+			ids = append(ids, id)
+		}
+	}
+	for id := range overlay.deleteNodes {
+		page.deleted[id] = struct{}{}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	page.putNodes = make([]domaingraph.Node, 0, len(ids))
+	for _, id := range ids {
+		page.putNodes = append(page.putNodes, cloneNode(overlay.putNodes[id]))
+	}
+	return page, nil
+}
+
+func decodeNodePageCursor(tx sessionmodel.GraphTransaction, token string) (nodePageCursor, error) {
+	if token == "" {
+		return nodePageCursor{}, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, nodePageTokenPrefix))
+	if err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	var cursor nodePageCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	want := nodePageCursorChecksum(cursor)
+	if subtle.ConstantTimeCompare([]byte(cursor.Checksum), []byte(want)) != 1 || cursor.TransactionID != tx.ID || cursor.BaseRevision != tx.BaseRevision {
+		return nodePageCursor{}, fmt.Errorf("%w: page_token does not match transaction view", ErrInvalidInput)
+	}
+	if _, err := uuid.Parse(cursor.AfterNodeID); err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	return cursor, nil
+}
+
+func encodeNodePageCursor(tx sessionmodel.GraphTransaction, cursor nodePageCursor) string {
+	cursor.TransactionID = tx.ID
+	cursor.BaseRevision = tx.BaseRevision
+	cursor.Checksum = nodePageCursorChecksum(cursor)
+	payload, _ := json.Marshal(cursor)
+	return nodePageTokenPrefix + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func nodePageCursorChecksum(cursor nodePageCursor) string {
+	cursor.Checksum = ""
+	payload, _ := json.Marshal(cursor)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func (m *Module) listEdgesLocal(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {

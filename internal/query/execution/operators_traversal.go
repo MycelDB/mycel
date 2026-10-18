@@ -438,14 +438,15 @@ func (s *AdjacencySource) Close() error {
 // PathExpand expands one logical traversal step over an input binding stream.
 type PathExpand struct {
 	unaryOperator
-	currentAlias string
-	step         querylogical.Step
-	pathAlias    string
-	edgeReader   TraversalEdgePageReader
-	nodeReader   TraversalNodeReader
-	batchSize    int
-	tracker      *Tracker
-	eval         evaluator
+	currentAlias   string
+	step           querylogical.Step
+	pathAlias      string
+	edgeReader     TraversalEdgePageReader
+	nodeReader     TraversalNodeReader
+	batchSize      int
+	tracker        *Tracker
+	eval           evaluator
+	bindTargetTree bool
 
 	inputs       []bufferedTraversalRow
 	inputOffset  int
@@ -464,6 +465,13 @@ func NewPathExpand(input Operator, currentAlias string, step querylogical.Step, 
 		pathAlias: pathAlias, edgeReader: edgeReader, nodeReader: nodeReader,
 		batchSize: batchSize, tracker: tracker, eval: newEvaluator(parameters, now),
 	}
+}
+
+// WithTargetTree binds a singleton tree for each edge-distinct target row.
+// Structured compatibility uses it only when the query projects that tree.
+func (o *PathExpand) WithTargetTree() *PathExpand {
+	o.bindTargetTree = true
+	return o
 }
 
 func (o *PathExpand) Open(ctx context.Context) error {
@@ -669,6 +677,15 @@ func (o *PathExpand) visit(ctx context.Context, base BindingRow, node graph.Node
 						child.Edges = map[string]graph.Edge{}
 					}
 					child.Edges[o.step.Edge.Alias] = edge
+					if o.bindTargetTree {
+						// Structured edge-row traversal historically permits a tree
+						// projection of the target binding. Each edge-distinct row binds
+						// one target, so its compatible tree is a singleton.
+						if child.Trees == nil {
+							child.Trees = map[string]querylogical.Tree{}
+						}
+						child.Trees[o.step.Target.Alias] = buildTree([]graph.Node{endpoint}, nil, nil)
+					}
 				}
 				if o.pathAlias != "" {
 					path := child.Paths[o.pathAlias]

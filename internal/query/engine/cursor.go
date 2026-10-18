@@ -23,18 +23,19 @@ const (
 )
 
 type indexedCursor struct {
-	Version       int    `json:"version"`
-	PlanHash      string `json:"plan_hash"`
-	TransactionID string `json:"transaction_id"`
-	BaseRevision  int64  `json:"base_revision"`
-	SchemaVersion string `json:"schema_version,omitempty"`
-	Mode          string `json:"mode"`
-	StartIndex    int    `json:"start_index,omitempty"`
-	PageCursor    string `json:"page_cursor,omitempty"`
-	PageOffset    int    `json:"page_offset,omitempty"`
-	OutputOffset  int    `json:"output_offset,omitempty"`
-	RowsReturned  int64  `json:"rows_returned,omitempty"`
-	Checksum      string `json:"checksum"`
+	Version          int    `json:"version"`
+	PlanHash         string `json:"plan_hash"`
+	TransactionID    string `json:"transaction_id"`
+	BaseRevision     int64  `json:"base_revision"`
+	SchemaVersion    string `json:"schema_version,omitempty"`
+	ReadViewIdentity string `json:"read_view_identity,omitempty"`
+	Mode             string `json:"mode"`
+	StartIndex       int    `json:"start_index,omitempty"`
+	PageCursor       string `json:"page_cursor,omitempty"`
+	PageOffset       int    `json:"page_offset,omitempty"`
+	OutputOffset     int    `json:"output_offset,omitempty"`
+	RowsReturned     int64  `json:"rows_returned,omitempty"`
+	Checksum         string `json:"checksum"`
 }
 
 type legacyShapedCursor struct {
@@ -66,6 +67,9 @@ func decodeIndexedCursor(prepared PreparedQuery) (indexedCursor, error) {
 			return indexedCursor{}, err
 		}
 		return cursor, nil
+	}
+	if prepared.readViewIdentity != "" && prepared.readViewIdentity != "0" {
+		return indexedCursor{}, staleCursor("legacy cursor is not bound to the current transaction overlay", nil)
 	}
 	if strings.HasPrefix(token, legacyShapedCursorPrefix) {
 		if !legacyIndexSourceFamily(prepared.Physical.Family) || !nativeSourceCursorSupported(prepared) {
@@ -145,6 +149,11 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if cursor.TransactionID != prepared.Planning.Transaction.ID || cursor.BaseRevision != prepared.Planning.Transaction.BaseRevision {
 		return staleCursor("cursor transaction snapshot does not match the prepared query", nil)
 	}
+	// Version-1 cursors issued before read-view binding omitted this field. They
+	// remain compatible only with an unchanged/empty overlay.
+	if cursor.ReadViewIdentity != prepared.readViewIdentity && !(cursor.ReadViewIdentity == "" && prepared.readViewIdentity == "0") {
+		return staleCursor("cursor transaction overlay does not match the current read view", nil)
+	}
 	if cursor.SchemaVersion != prepared.Physical.SchemaVersion {
 		return staleCursor("cursor schema version does not match the prepared query", nil)
 	}
@@ -160,6 +169,7 @@ func encodeIndexedCursor(prepared PreparedQuery, cursor indexedCursor) string {
 	cursor.TransactionID = prepared.Planning.Transaction.ID
 	cursor.BaseRevision = prepared.Planning.Transaction.BaseRevision
 	cursor.SchemaVersion = prepared.Physical.SchemaVersion
+	cursor.ReadViewIdentity = prepared.readViewIdentity
 	cursor.Checksum = indexedCursorChecksum(cursor)
 	payload, _ := json.Marshal(cursor)
 	return indexedCursorPrefix + base64.RawURLEncoding.EncodeToString(payload)

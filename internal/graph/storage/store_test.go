@@ -73,6 +73,80 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	}
 }
 
+func TestScanNodesByDomainPagesCurrentAndSnapshotViewsByID(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+	nodes := []graph.Node{
+		{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000001")), DomainID: domainID, Content: "one"},
+		{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000002")), DomainID: domainID, Content: "two"},
+		{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000003")), DomainID: domainID, Content: "three"},
+	}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range nodes {
+		if err := seed.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	change, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change.ExpectRevision(1)
+	if err := change.DeleteNode(nodes[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	four := graph.Node{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000004")), DomainID: domainID, Content: "four"}
+	if err := change.PutNode(four); err != nil {
+		t.Fatal(err)
+	}
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	collect := func(scan DomainNodeScan) []string {
+		t.Helper()
+		var got []string
+		for {
+			page, next, err := store.ScanNodesByDomain(ctx, scan)
+			if err != nil {
+				t.Fatalf("ScanNodesByDomain(%+v) error = %v", scan, err)
+			}
+			if len(page) == 0 && next != "" {
+				t.Fatalf("empty non-terminal page: next=%q", next)
+			}
+			for _, node := range page {
+				got = append(got, node.ID.String())
+			}
+			if next == "" {
+				return got
+			}
+			scan.Cursor = next
+		}
+	}
+	current := collect(DomainNodeScan{DomainID: domainID, Limit: 1})
+	wantCurrent := []string{nodes[1].ID.String(), nodes[2].ID.String(), four.ID.String()}
+	if !reflect.DeepEqual(current, wantCurrent) {
+		t.Fatalf("current scan = %v, want %v", current, wantCurrent)
+	}
+	snapshot := collect(DomainNodeScan{DomainID: domainID, Limit: 1, Snapshot: true, Revision: 1})
+	wantSnapshot := []string{nodes[0].ID.String(), nodes[1].ID.String(), nodes[2].ID.String()}
+	if !reflect.DeepEqual(snapshot, wantSnapshot) {
+		t.Fatalf("snapshot scan = %v, want %v", snapshot, wantSnapshot)
+	}
+}
+
 func TestLocalStoreWriteCheckpointAndOpenWithoutHistoricalReplay(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

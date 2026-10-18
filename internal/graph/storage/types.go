@@ -77,6 +77,17 @@ type ContainsChild struct {
 	Order   int
 }
 
+// DomainNodeScan describes one finite ID-ordered domain scan. Snapshot selects
+// the historical node version visible at Revision; otherwise the current
+// committed node is returned.
+type DomainNodeScan struct {
+	DomainID graph.DomainID
+	Limit    int
+	Cursor   string
+	Snapshot bool
+	Revision uint64
+}
+
 type Store interface {
 	State() StoreState
 	Revision() uint64
@@ -85,6 +96,7 @@ type Store interface {
 	GetNode(ctx context.Context, id graph.NodeID) (graph.Node, error)
 	ListNodes(ctx context.Context) ([]graph.Node, error)
 	ListNodesByDomain(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error)
+	ScanNodesByDomain(ctx context.Context, scan DomainNodeScan) ([]graph.Node, string, error)
 	GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, error)
 	ListEdges(ctx context.Context) ([]graph.Edge, error)
 	Children(ctx context.Context, parentID graph.NodeID) ([]graph.Edge, error)

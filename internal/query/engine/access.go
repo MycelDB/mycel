@@ -189,17 +189,38 @@ func (e *Engine) broadScanSource(execution ExecutionContext, prepared PreparedQu
 	}
 	currentAlias := query.Start.Alias
 	for index, step := range steps {
-		source = queryexecution.NewPathExpand(
+		expansion := queryexecution.NewPathExpand(
 			source, currentAlias, step, query.PathAlias, readers[index], nodeReader,
 			batchSize, prepared.Planning.Parameters, execution.Now, tracker,
 		)
+		if queryProjectsTree(query, step.Target.Alias) {
+			expansion.WithTargetTree()
+		}
+		source = expansion
 		currentAlias = step.Target.Alias
 	}
 	return source, nil
 }
 
+func queryProjectsTree(query querylogical.Query, alias string) bool {
+	for _, projection := range query.Returns {
+		if projection.Kind == querylogical.ProjectionTree && projection.Alias == alias {
+			return true
+		}
+	}
+	return false
+}
+
 func broadCollectTraversal(query querylogical.Query) bool {
-	return query.Source == querylogical.SourceStructured && strings.TrimSpace(query.PathAlias) == "" && len(query.Steps) > 0
+	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" || len(query.Steps) == 0 {
+		return false
+	}
+	for _, step := range query.Steps {
+		if strings.TrimSpace(step.Edge.Alias) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) adjacencySource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64, batchSize int) (queryexecution.Operator, error) {
@@ -249,7 +270,11 @@ func (e *Engine) pathSource(ctx context.Context, execution ExecutionContext, pre
 		nodeReader := func(ctx context.Context, nodeID string) (graph.Node, error) {
 			return e.ports.Entities.GetNode(ctx, execution.Transaction, nodeID)
 		}
-		source = queryexecution.NewPathExpand(source, currentAlias, step, query.PathAlias, edgeReader, nodeReader, batchSize, prepared.Planning.Parameters, execution.Now, tracker)
+		expansion := queryexecution.NewPathExpand(source, currentAlias, step, query.PathAlias, edgeReader, nodeReader, batchSize, prepared.Planning.Parameters, execution.Now, tracker)
+		if queryProjectsTree(query, step.Target.Alias) {
+			expansion.WithTargetTree()
+		}
+		source = expansion
 		currentAlias = step.Target.Alias
 	}
 	return source, nil

@@ -468,6 +468,9 @@ func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 		if maxDepth < step.Depth.Min || maxDepth <= 0 {
 			return Plan{}, p.invalid("broad traversal step %d has invalid depth bounds", i)
 		}
+		if strings.TrimSpace(step.Edge.Alias) != "" && (step.Depth.Min > 1 || maxDepth != 1) {
+			return Plan{}, p.invalid("edge_alias currently supports one-hop traversal only")
+		}
 		access.Steps = append(access.Steps, TraversalStep{
 			EdgeAlias: step.Edge.Alias, Labels: append([]string(nil), step.Edge.Labels...), Direction: step.Edge.Direction,
 			MinDepth: step.Depth.Min, MaxDepth: maxDepth, TargetAlias: step.Target.Alias,
@@ -582,7 +585,15 @@ func operatorPipeline(plan Plan, query querylogical.Query) Operator {
 }
 
 func structuredCollectTraversal(query querylogical.Query) bool {
-	return query.Source == querylogical.SourceStructured && strings.TrimSpace(query.PathAlias) == "" && len(query.Steps) > 0
+	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" || len(query.Steps) == 0 {
+		return false
+	}
+	for _, step := range query.Steps {
+		if strings.TrimSpace(step.Edge.Alias) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operator {
