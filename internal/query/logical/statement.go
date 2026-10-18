@@ -83,6 +83,7 @@ type Mutation struct {
 	Aggregates   []Aggregate           `json:"aggregates,omitempty"`
 	ReturnGraph  bool                  `json:"return_graph,omitempty"`
 	Limit        int64                 `json:"limit,omitempty"`
+	Page         PageSpec              `json:"page,omitempty"`
 }
 
 // RelationshipMutation creates or merges one relationship between aliases.

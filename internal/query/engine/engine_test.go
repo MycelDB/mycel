@@ -64,6 +64,16 @@ type panicSemanticCandidateReader struct{}
 
 type panicMutationWriter struct{}
 
+type recordingMutationWriter struct {
+	panicMutationWriter
+	creates int
+}
+
+func (w *recordingMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
+	w.creates++
+	return graph.Node{}, nil
+}
+
 func (panicMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
 	panic("Explain must not create nodes")
 }
@@ -201,8 +211,27 @@ func TestEngineExplainMutationPlanDoesNotInvokeWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explain mutation plan: %v", err)
 	}
-	if diagnostics.PlanKind != string(queryphysical.FamilyLegacyMutation) || !diagnostics.LegacyBridge {
+	if diagnostics.PlanKind != string(queryphysical.FamilyMutation) || diagnostics.LegacyBridge || diagnostics.AccessPath != string(queryphysical.AccessMutation) {
 		t.Fatalf("mutation diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestEngineExecuteMutationValidatesCursorBeforeWriting(t *testing.T) {
+	writer := &recordingMutationWriter{}
+	engine := queryengine.New(queryengine.Ports{Mutations: writer})
+	tx := sessionmodel.GraphTransaction{ID: "tx-1", Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationInsertNode, Node: &querylogical.NodePattern{Labels: []string{"Note"}},
+		Page: querylogical.PageSpec{Cursor: "not-an-offset"},
+	})
+	prepared, err := engine.Prepare(context.Background(), queryengine.PlanningContext{Transaction: tx}, statement)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
+	if writer.creates != 0 {
+		t.Fatalf("CreateNode calls = %d, want 0", writer.creates)
 	}
 }
 
@@ -239,7 +268,7 @@ func TestEngineExplainDescribesNativeBroadScanWithoutExecuting(t *testing.T) {
 	if diagnostics.Plan != "StreamingNodeScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx9" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || diagnostics.LegacyBridge || diagnostics.AccessPath != string(queryphysical.AccessNodeScan) {
+	if diagnostics.PlannerVersion != "qrx10" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || diagnostics.LegacyBridge || diagnostics.AccessPath != string(queryphysical.AccessNodeScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if len(diagnostics.Operators) == 0 || diagnostics.ResourceLimits.MaxNodesLoaded == 0 || diagnostics.RowsScanned != 0 || diagnostics.NodesLoaded != 0 {
@@ -285,7 +314,7 @@ func TestEngineExecuteShapesExplicitLegacyBindingsWithoutAccess(t *testing.T) {
 	if len(result.Rows) != 1 || result.Rows[0].Fields["node"].Node == nil || result.Rows[0].Fields["node"].Node.ID != node.ID.String() {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Diagnostics.PlannerVersion != "qrx9" || result.Diagnostics.ExplainOnly || result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
+	if result.Diagnostics.PlannerVersion != "qrx10" || result.Diagnostics.ExplainOnly || result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
 		t.Fatalf("diagnostics = %#v", result.Diagnostics)
 	}
 	if entities.calls != 0 {

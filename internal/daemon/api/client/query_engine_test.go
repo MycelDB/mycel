@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
+	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
@@ -29,17 +31,25 @@ func queryEngineForExplainTest(graphs daegraph.Manager, catalog queryengine.Cata
 }
 
 type recordingQueryEngineFacade struct {
-	prepareCalls int
-	explainCalls int
-	executeCalls int
-	planning     queryengine.PlanningContext
-	statement    querylogical.Statement
+	prepareCalls  int
+	explainCalls  int
+	executeCalls  int
+	planning      queryengine.PlanningContext
+	statement     querylogical.Statement
+	prepareResult queryengine.PreparedQuery
+	executeResult querylogical.Result
 }
 
 func (r *recordingQueryEngineFacade) Prepare(_ context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) (queryengine.PreparedQuery, error) {
 	r.prepareCalls++
 	r.planning = planning
 	r.statement = statement
+	if r.prepareResult.Kind != "" {
+		result := r.prepareResult
+		result.Statement = statement
+		result.Planning = planning
+		return result, nil
+	}
 	return queryengine.PreparedQuery{Statement: statement, Planning: planning, Kind: queryengine.PlanLegacyBridge}, nil
 }
 
@@ -52,7 +62,30 @@ func (r *recordingQueryEngineFacade) Explain(_ context.Context, planning queryen
 
 func (r *recordingQueryEngineFacade) Execute(context.Context, queryengine.ExecutionContext, queryengine.PreparedQuery) (querylogical.Result, error) {
 	r.executeCalls++
-	return querylogical.Result{}, nil
+	return r.executeResult, nil
+}
+
+func TestQueryServiceExecutesGQLMutationThroughEngineOnce(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	facade := &recordingQueryEngineFacade{
+		prepareResult: queryengine.PreparedQuery{Kind: queryengine.PlanIndexed, Physical: queryphysical.Plan{Family: queryphysical.FamilyMutation}},
+		executeResult: querylogical.Result{Counters: querylogical.Counters{NodesInserted: 1}},
+	}
+	service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithQueryEngine(facade)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	response, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: 'Ada'})"})
+	if err != nil {
+		t.Fatalf("ExecuteGQL() error = %v", err)
+	}
+	if facade.prepareCalls != 1 || facade.executeCalls != 1 {
+		t.Fatalf("prepare=%d execute=%d, want one each", facade.prepareCalls, facade.executeCalls)
+	}
+	if facade.statement.Kind != querylogical.StatementMutation || facade.statement.Mutation == nil || facade.statement.Mutation.Kind != querylogical.MutationInsertNode {
+		t.Fatalf("statement = %#v", facade.statement)
+	}
+	if response.GetResult().GetCounters().GetNodesInserted() != 1 {
+		t.Fatalf("response counters = %+v", response.GetResult().GetCounters())
+	}
 }
 
 func TestQueryServiceUsesExplainBoundaryWithoutExecution(t *testing.T) {

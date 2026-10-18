@@ -1,0 +1,71 @@
+# QRX10: native GQL mutations and script orchestration
+
+## Status
+
+Implemented on `feat/query-refactor-qrx10-mutations-scripts` for [mycel#213](https://github.com/MycelDB/mycel/issues/213).
+
+## Scope
+
+QRX10 moves supported GQL writes and sequential script execution behind the transport-neutral query boundary. The daemon API adapter retains principal, transaction, domain, protobuf, and gRPC mapping responsibilities, but it no longer executes mutation plans or owns the script statement loop.
+
+## Native mutation plans
+
+The physical planner emits `FamilyMutation` with `AccessMutation` and one explicit command operator:
+
+- `InsertNode`;
+- `MergeNode`;
+- `MatchSet`;
+- `MatchDelete`;
+- `CreateRelationship`;
+- `MergeRelationship`.
+
+Mutation plans require the consumer-owned `engine.MutationWriter` capability. They never use `OperatorLegacyBridge` and Explain remains side-effect-free.
+
+Matched mutations prepare native read subplans and reuse finite node/index/adjacency sources, residual predicate evaluation, transaction snapshot/overlay propagation, cancellation checks, and shared resource budgets. Node deletes perform bounded incoming and outgoing adjacency validation before staging any selected edge deletion, preserving the existing incident-edge rule without leaving a partially changed overlay on validation failure.
+
+All graph calls carry the complete `sessionmodel.GraphTransaction`. The engine stages writes in the existing read-write overlay and never commits or rolls back the enclosing transaction.
+
+## Result compatibility
+
+Mutation execution preserves:
+
+- insert, update, delete, and relationship counters;
+- returned rows and graph projection;
+- parameter resolution;
+- mutation `LIMIT` behavior;
+- response page size and continuation behavior;
+- node/relationship merge identity rules;
+- read-write access enforcement.
+
+A mutating statement is prepared once and executed once. There is no shadow or fallback execution after native execution starts.
+
+## Script application boundary
+
+`internal/query/application.ExecuteScript` now owns transport-neutral script orchestration:
+
+1. compile the complete script with schema and parameters;
+2. reject read-write scripts before statement execution when the transaction is read-only;
+3. normalize, prepare, and execute statements sequentially;
+4. preserve source indexes and statement text;
+5. stop after the first failure only when `stop_on_error` is set;
+6. aggregate successful counters and result graphs;
+7. invoke an optional neutral completion observer so the daemon can snapshot per-statement read metadata;
+8. never commit, roll back, retry, or execute a statement twice.
+
+The daemon converts neutral statement outcomes to protobuf responses and maps query errors to gRPC status codes.
+
+## Compatibility and cleanup boundary
+
+`internal/query/gql/execution` and daemon-local read helpers remain in the tree for still-referenced compatibility code. Supported GQL mutation requests and scripts no longer invoke them. Removing unreachable bridges and duplicate helpers is QRX11 work.
+
+## Validation
+
+Coverage includes:
+
+- native physical mutation plan and Explain assertions;
+- existing daemon GQL insert, set, delete, node merge, relationship create/merge, parameters, counters, rows, graph, and overlay tests;
+- incident-edge validation before mutation writes;
+- sequential script aggregation and graph compatibility;
+- stop-on-error and continue-on-error exact-once application tests;
+- read-only script rejection before engine work;
+- query-core transport/import boundary checks.

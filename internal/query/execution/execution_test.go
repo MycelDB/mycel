@@ -536,6 +536,29 @@ func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
 	}
 }
 
+func TestCollectMatchesRetainsBindingsWithoutConsumingResponseOutputBudget(t *testing.T) {
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 1, MaxOutputRows: 1}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []queryexecution.BindingRow{
+		bindingRow("00000000-0000-0000-0000-000000000001", "alpha", "x", 1),
+		bindingRow("00000000-0000-0000-0000-000000000002", "beta", "x", 2),
+	}
+	matches, err := queryexecution.CollectMatches(context.Background(), queryexecution.NewLegacySource(rows, 1, tracker), querylogical.Query{}, tracker, queryexecution.ShapeOptions{})
+	if err != nil {
+		t.Fatalf("CollectMatches() error = %v", err)
+	}
+	if len(matches.Rows) != 2 || tracker.Snapshot().OutputRows != 0 || tracker.Snapshot().RetainedMemory == 0 {
+		t.Fatalf("matches=%d usage=%#v", len(matches.Rows), tracker.Snapshot())
+	}
+	matches.Release()
+	if tracker.Snapshot().RetainedMemory != 0 {
+		t.Fatalf("usage after release = %#v", tracker.Snapshot())
+	}
+}
+
 func TestShapeRunsDeterministicBoundedPipeline(t *testing.T) {
 	rows := []queryexecution.BindingRow{
 		bindingRow("00000000-0000-0000-0000-000000000001", "alpha", "x", 1),

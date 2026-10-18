@@ -143,6 +143,15 @@ func TestBindRejectsReadWriteAccessAndReadOnlyDomains(t *testing.T) {
 	assertQueryError(t, err, querylogical.ErrorUnavailableAccessPath, "domain is read-only")
 }
 
+func TestBindRejectsNegativeMutationPagination(t *testing.T) {
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationInsertNode, Node: &querylogical.NodePattern{Labels: []string{"Person"}},
+		Page: querylogical.PageSpec{Size: -1},
+	})
+	_, err := binding.Bind(statement, writeEnvironment())
+	assertQueryError(t, err, querylogical.ErrorInvalidQuery, "mutation pagination values must be non-negative")
+}
+
 func TestBindRejectsMergeRelationshipWithoutEndpointIdentifiers(t *testing.T) {
 	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
 		Kind: querylogical.MutationMergeRelationship,

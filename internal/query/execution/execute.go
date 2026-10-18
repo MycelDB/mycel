@@ -18,6 +18,64 @@ type ShapeOptions struct {
 	Now        time.Time
 }
 
+// Matches owns retained binding rows produced by a mutation's read phase.
+// Release must be called after the command finishes consuming the bindings.
+type Matches struct {
+	Rows        []BindingRow
+	Diagnostics querylogical.Diagnostics
+	retained    int64
+	tracker     *Tracker
+}
+
+// Release drops the retained-memory charge for matched bindings.
+func (m *Matches) Release() {
+	if m == nil || m.tracker == nil || m.retained == 0 {
+		return
+	}
+	m.tracker.ReleaseMemory(m.retained)
+	m.retained = 0
+}
+
+// CollectMatches runs the common residual-filter and mutation-limit operators
+// without projection or response pagination. Storage access remains supplied by
+// the engine-selected source.
+func CollectMatches(ctx context.Context, source Operator, query querylogical.Query, tracker *Tracker, options ShapeOptions) (Matches, error) {
+	if source == nil {
+		return Matches{}, executionInvalid("match mutation rows", "binding source is required")
+	}
+	if tracker == nil {
+		return Matches{}, invalidState("match mutation rows", "resource tracker is required")
+	}
+	var root Operator = source
+	if query.Predicate != nil {
+		root = NewFilter(root, query.Predicate, options.Parameters, options.Now, tracker)
+	}
+	if query.Page.Offset > 0 {
+		root = NewOffset(root, query.Page.Offset)
+	}
+	if query.Page.Limit > 0 {
+		root = NewLimit(root, query.Page.Limit)
+	}
+	started := time.Now()
+	rows, retained, err := drain(ctx, root, tracker, false)
+	if err != nil {
+		return Matches{}, err
+	}
+	return Matches{Rows: rows, Diagnostics: runtimeDiagnostics(tracker.Snapshot(), time.Since(started)), retained: retained, tracker: tracker}, nil
+}
+
+// EstimateBindingRow reports the retained-memory estimate used by operators.
+func EstimateBindingRow(row BindingRow) int64 { return estimateBindingRow(row) }
+
+// ValidatePage rejects pagination state before callers perform side effects.
+func ValidatePage(page querylogical.PageSpec) error {
+	if page.Offset < 0 || page.Limit < 0 || page.Size < 0 {
+		return executionInvalid("paginate query results", "pagination values must be non-negative")
+	}
+	_, _, err := paginationBounds(page.Size, page.Cursor)
+	return err
+}
+
 // Shape runs the non-storage operators over a supplied binding source.
 func Shape(ctx context.Context, source Operator, query querylogical.Query, tracker *Tracker, options ShapeOptions) (querylogical.Result, error) {
 	if source == nil {
@@ -26,10 +84,7 @@ func Shape(ctx context.Context, source Operator, query querylogical.Query, track
 	if tracker == nil {
 		return querylogical.Result{}, invalidState("execute query", "resource tracker is required")
 	}
-	if query.Page.Offset < 0 || query.Page.Limit < 0 || query.Page.Size < 0 {
-		return querylogical.Result{}, executionInvalid("paginate query results", "pagination values must be non-negative")
-	}
-	if _, _, err := paginationBounds(query.Page.Size, query.Page.Cursor); err != nil {
+	if err := ValidatePage(query.Page); err != nil {
 		return querylogical.Result{}, err
 	}
 	if err := validateAggregates(query.Aggregates); err != nil {
@@ -41,7 +96,7 @@ func Shape(ctx context.Context, source Operator, query querylogical.Query, track
 		return querylogical.Result{}, err
 	}
 	started := time.Now()
-	rows, outputMemory, err := drain(ctx, root, tracker)
+	rows, outputMemory, err := drain(ctx, root, tracker, true)
 	if err != nil {
 		return querylogical.Result{}, err
 	}
@@ -173,7 +228,7 @@ func safeTopN(query querylogical.Query) (int, bool) {
 	return int(n), true
 }
 
-func drain(ctx context.Context, root Operator, tracker *Tracker) ([]BindingRow, int64, error) {
+func drain(ctx context.Context, root Operator, tracker *Tracker, accountOutput bool) ([]BindingRow, int64, error) {
 	if err := root.Open(ctx); err != nil {
 		_ = root.Close()
 		return nil, 0, err
@@ -199,8 +254,10 @@ func drain(ctx context.Context, root Operator, tracker *Tracker) ([]BindingRow, 
 		if len(batch.Rows) == 0 {
 			continue
 		}
-		if err := tracker.ProduceOutput(int64(len(batch.Rows))); err != nil {
-			return fail(err)
+		if accountOutput {
+			if err := tracker.ProduceOutput(int64(len(batch.Rows))); err != nil {
+				return fail(err)
+			}
 		}
 		for _, row := range batch.Rows {
 			bytes := estimateBindingRow(row)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	querybinding "github.com/myceldb/mycel/internal/query/binding"
+	"github.com/myceldb/mycel/internal/query/gql"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -493,7 +494,46 @@ func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {
 	}
 }
 
-func TestBuildPlansMutationOnlyForAvailableLegacyMutationAccess(t *testing.T) {
+func TestBuildPlansEveryNativeMutationFamily(t *testing.T) {
+	tests := []struct {
+		name     string
+		gql      string
+		operator queryphysical.OperatorKind
+	}{
+		{name: "insert node", gql: "INSERT (:Document {name: 'Ada'})", operator: queryphysical.OperatorInsertNode},
+		{name: "merge node", gql: "MERGE (n:Document {name: 'Ada'}) RETURN n", operator: queryphysical.OperatorMergeNode},
+		{name: "match set", gql: "MATCH (n:Document {name: 'Ada'}) SET n.name = 'Grace' RETURN n", operator: queryphysical.OperatorMatchSet},
+		{name: "match delete", gql: "MATCH (n:Document {name: 'Ada'}) DELETE n RETURN n", operator: queryphysical.OperatorMatchDelete},
+		{name: "create relationship", gql: "MATCH (a:Document {name: 'Ada'}), (b:Document {name: 'Bob'}) CREATE (a)-[:LINKS]->(b)", operator: queryphysical.OperatorCreateRelationship},
+		{name: "merge relationship", gql: "MATCH (a:Document {name: 'Ada'}), (b:Document {name: 'Bob'}) MERGE (a)-[r:LINKS]->(b) RETURN r", operator: queryphysical.OperatorMergeRelationship},
+	}
+	schema := plannerSchema()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			compiled, err := gql.Compile(test.gql)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			statement, ok := querylogical.StatementFromGQLPlan(compiled)
+			if !ok {
+				t.Fatal("normalize mutation = false")
+			}
+			bound, err := querybinding.Bind(statement, bindingEnvironment(&schema, true))
+			if err != nil {
+				t.Fatalf("bind: %v", err)
+			}
+			plan, err := queryphysical.Build(bound, plannerEnvironment())
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			if plan.Family != queryphysical.FamilyMutation || plan.RequiresLegacy() || plan.Access.Kind != queryphysical.AccessMutation || plan.Root.Kind != test.operator {
+				t.Fatalf("mutation plan = %#v", plan)
+			}
+		})
+	}
+}
+
+func TestBuildPlansNativeMutationOnlyWithMutationAccess(t *testing.T) {
 	schema := plannerSchema()
 	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
 		Kind: querylogical.MutationInsertNode,
@@ -507,7 +547,7 @@ func TestBuildPlansMutationOnlyForAvailableLegacyMutationAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	if plan.Family != queryphysical.FamilyLegacyMutation || !plan.RequiresLegacy() {
+	if plan.Family != queryphysical.FamilyMutation || plan.RequiresLegacy() || plan.Root.Kind != queryphysical.OperatorInsertNode {
 		t.Fatalf("mutation plan = %#v", plan)
 	}
 	environment := plannerEnvironment()
