@@ -56,30 +56,44 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	}
 
 	mutation := *prepared.Statement.Mutation
-	rows, counters, err := e.runMutation(mutationCtx, execution, prepared, mutation, tracker)
+	run, err := e.runMutation(mutationCtx, execution, prepared, mutation, tracker)
+	if err != nil {
+		tracker.ReleaseMemory(tracker.Snapshot().RetainedMemory)
+		return finish(false, err)
+	}
+	releaseRows := func() {
+		tracker.ReleaseMemory(run.retained)
+		run.retained = 0
+	}
+	defer releaseRows()
+	result, err := shapeMutationResult(mutationCtx, run.rows, mutation, prepared, execution, tracker, budget)
 	if err != nil {
 		return finish(false, err)
 	}
-	result, err := shapeMutationResult(mutationCtx, rows, mutation, prepared, execution, tracker, budget)
-	if err != nil {
-		return finish(false, err)
-	}
+	releaseRows()
+	result.Diagnostics.RetainedMemoryBytes = tracker.Snapshot().RetainedMemory
 	if _, err := finish(true, nil); err != nil {
 		return querylogical.Result{}, err
 	}
-	result.Counters.NodesInserted = counters.NodesInserted
-	result.Counters.NodesUpdated = counters.NodesUpdated
-	result.Counters.NodesDeleted = counters.NodesDeleted
-	result.Counters.EdgesInserted = counters.EdgesInserted
-	result.Counters.EdgesUpdated = counters.EdgesUpdated
-	result.Counters.EdgesDeleted = counters.EdgesDeleted
+	result.Counters.NodesInserted = run.counters.NodesInserted
+	result.Counters.NodesUpdated = run.counters.NodesUpdated
+	result.Counters.NodesDeleted = run.counters.NodesDeleted
+	result.Counters.EdgesInserted = run.counters.EdgesInserted
+	result.Counters.EdgesUpdated = run.counters.EdgesUpdated
+	result.Counters.EdgesDeleted = run.counters.EdgesDeleted
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
 	result.Diagnostics.Planner = PlannerName
 	result.Diagnostics.PlannerVersion = PlannerVersion
 	return result, nil
 }
 
-func (e *Engine) runMutation(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) ([]queryexecution.BindingRow, querylogical.Counters, error) {
+type mutationRunResult struct {
+	rows     []queryexecution.BindingRow
+	counters querylogical.Counters
+	retained int64
+}
+
+func (e *Engine) runMutation(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) (mutationRunResult, error) {
 	switch mutation.Kind {
 	case querylogical.MutationInsertNode:
 		return e.insertNode(ctx, execution, prepared, mutation)
@@ -94,122 +108,231 @@ func (e *Engine) runMutation(ctx context.Context, execution ExecutionContext, pr
 	case querylogical.MutationMergeRelationship:
 		return e.createRelationship(ctx, execution, prepared, mutation, tracker, true)
 	default:
-		return nil, querylogical.Counters{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "execute mutation", fmt.Sprintf("unsupported mutation kind %q", mutation.Kind), nil)
+		return mutationRunResult{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "execute mutation", fmt.Sprintf("unsupported mutation kind %q", mutation.Kind), nil)
 	}
 }
 
-func (e *Engine) insertNode(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation) ([]queryexecution.BindingRow, querylogical.Counters, error) {
+func (e *Engine) insertNode(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation) (mutationRunResult, error) {
 	properties, err := resolveMutationValues(mutation.Node.Properties, prepared.Planning.Parameters, execution.Now)
 	if err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
 	_, err = e.ports.Mutations.CreateNode(ctx, execution.Transaction, graph.NodeInput{Labels: append([]string(nil), mutation.Node.Labels...), Properties: properties})
 	if err := mutationDependencyError(ctx, "insert node", err); err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
-	return nil, querylogical.Counters{NodesInserted: 1}, nil
+	return mutationRunResult{counters: querylogical.Counters{NodesInserted: 1}}, nil
 }
 
-func (e *Engine) mergeNode(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) ([]queryexecution.BindingRow, querylogical.Counters, error) {
+func (e *Engine) mergeNode(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) (mutationRunResult, error) {
 	query := querylogical.Query{
 		Source: querylogical.SourceGQL, AccessMode: querylogical.AccessModeReadOnly,
 		Start: *mutation.Node, Page: querylogical.PageSpec{Limit: mutation.Limit},
 	}
 	matches, err := e.collectMutationMatches(ctx, execution, prepared, query, tracker)
 	if err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
 	defer matches.Release()
-	rows := cloneMutationRows(matches.Rows)
+	rows, retained, err := cloneMutationRowsTracked(matches.Rows, tracker)
+	if err != nil {
+		return mutationRunResult{}, err
+	}
 	counters := querylogical.Counters{}
 	if len(rows) == 0 {
 		properties, resolveErr := resolveMutationValues(mutation.Node.Properties, prepared.Planning.Parameters, execution.Now)
 		if resolveErr != nil {
-			return nil, counters, resolveErr
+			return mutationRunResult{}, resolveErr
 		}
 		node, createErr := e.ports.Mutations.CreateNode(ctx, execution.Transaction, graph.NodeInput{Labels: append([]string(nil), mutation.Node.Labels...), Properties: properties})
 		if err := mutationDependencyError(ctx, "merge node", createErr); err != nil {
-			return nil, counters, err
+			return mutationRunResult{}, err
 		}
 		rows = []queryexecution.BindingRow{{Nodes: map[string]graph.Node{mutation.Node.Alias: node}}}
+		retained = mutationRowsSize(rows)
+		if err := tracker.ReserveMemory(retained); err != nil {
+			return mutationRunResult{}, err
+		}
 		counters.NodesInserted = 1
 	}
-	prepareMutationGraph(rows, mutation.ReturnGraph)
-	return rows, counters, nil
+	if err := prepareMutationGraphTracked(rows, mutation.ReturnGraph, tracker, &retained); err != nil {
+		return mutationRunResult{}, err
+	}
+	return mutationRunResult{rows: rows, counters: counters, retained: retained}, nil
 }
 
-func (e *Engine) matchSet(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) ([]queryexecution.BindingRow, querylogical.Counters, error) {
+type nodeSetState struct {
+	node        graph.Node
+	assignments map[int]struct{}
+}
+
+type edgeSetState struct {
+	edge        graph.Edge
+	assignments map[int]struct{}
+}
+
+func prepareSetStates(rows []queryexecution.BindingRow, assignments []querylogical.Assignment, values []any, tracker *queryexecution.Tracker) (map[string]*nodeSetState, map[string]*edgeSetState, int64, error) {
+	nodes := map[string]*nodeSetState{}
+	edges := map[string]*edgeSetState{}
+	var retained int64
+	for rowIndex := range rows {
+		for assignmentIndex, assignment := range assignments {
+			if node, ok := rows[rowIndex].Nodes[assignment.Field.Alias]; ok {
+				id := node.ID.String()
+				state := nodes[id]
+				if state == nil {
+					bytes := mutationNodeSize(node)
+					if err := tracker.ReserveMemory(bytes); err != nil {
+						return nil, nil, retained, err
+					}
+					retained += bytes
+					state = &nodeSetState{node: cloneMutationNode(node), assignments: map[int]struct{}{}}
+					nodes[id] = state
+				}
+				state.assignments[assignmentIndex] = struct{}{}
+				continue
+			}
+			if edge, ok := rows[rowIndex].Edges[assignment.Field.Alias]; ok {
+				id := edge.ID.String()
+				state := edges[id]
+				if state == nil {
+					bytes := mutationEdgeSize(edge)
+					if err := tracker.ReserveMemory(bytes); err != nil {
+						return nil, nil, retained, err
+					}
+					retained += bytes
+					state = &edgeSetState{edge: cloneMutationEdge(edge), assignments: map[int]struct{}{}}
+					edges[id] = state
+				}
+				state.assignments[assignmentIndex] = struct{}{}
+				continue
+			}
+			return nil, nil, retained, querylogical.NewError(querylogical.ErrorInvalidQuery, "set mutation", fmt.Sprintf("alias %q is not bound", assignment.Field.Alias), nil)
+		}
+	}
+	for assignmentIndex, assignment := range assignments {
+		for _, state := range nodes {
+			if _, ok := state.assignments[assignmentIndex]; ok {
+				if err := assignNodeValue(&state.node, assignment.Field, values[assignmentIndex]); err != nil {
+					return nil, nil, retained, err
+				}
+			}
+		}
+		for _, state := range edges {
+			if _, ok := state.assignments[assignmentIndex]; ok {
+				if err := assignEdgeValue(&state.edge, assignment.Field, values[assignmentIndex]); err != nil {
+					return nil, nil, retained, err
+				}
+			}
+		}
+	}
+	var after int64
+	for _, state := range nodes {
+		after += mutationNodeSize(state.node)
+	}
+	for _, state := range edges {
+		after += mutationEdgeSize(state.edge)
+	}
+	if after > retained {
+		growth := after - retained
+		if err := tracker.ReserveMemory(growth); err != nil {
+			return nil, nil, retained, err
+		}
+		retained += growth
+	}
+	return nodes, edges, retained, nil
+}
+
+func (e *Engine) matchSet(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) (mutationRunResult, error) {
 	query := *mutation.Match
 	query.Page.Limit = mutation.Limit
 	matches, err := e.collectMutationMatches(ctx, execution, prepared, query, tracker)
 	if err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
 	defer matches.Release()
-	rows := cloneMutationRows(matches.Rows)
+	rows, retained, err := cloneMutationRowsTracked(matches.Rows, tracker)
+	if err != nil {
+		return mutationRunResult{}, err
+	}
 	assignmentValues := make([]any, len(mutation.Assignments))
 	for index, assignment := range mutation.Assignments {
 		value, resolveErr := queryexecution.StaticValue(assignment.Value, prepared.Planning.Parameters, execution.Now)
 		if resolveErr != nil {
-			return nil, querylogical.Counters{}, resolveErr
+			return mutationRunResult{}, resolveErr
 		}
 		assignmentValues[index] = value
 	}
-	updatedNodes := map[string]struct{}{}
-	updatedEdges := map[string]struct{}{}
-	for index := range rows {
-		for assignmentIndex, assignment := range mutation.Assignments {
-			value := assignmentValues[assignmentIndex]
-			if node, ok := rows[index].Nodes[assignment.Field.Alias]; ok {
-				updated := cloneMutationNode(node)
-				if err := assignNodeValue(&updated, assignment.Field, value); err != nil {
-					return nil, querylogical.Counters{}, err
-				}
-				written, writeErr := e.ports.Mutations.UpdateNode(ctx, execution.Transaction, graph.UpdateNodeInput{
-					NodeID: updated.ID.String(), Labels: append([]string(nil), updated.Labels...),
-					Properties: cloneAnyMap(updated.Properties), Payload: cloneAnyMap(updated.Payload),
-					UpdateMask: []string{"labels", "properties", "payload"},
-				})
-				if err := mutationDependencyError(ctx, "set node", writeErr); err != nil {
-					return nil, querylogical.Counters{}, err
-				}
-				rows[index].Nodes[assignment.Field.Alias] = written
-				updatedNodes[written.ID.String()] = struct{}{}
-				continue
+
+	nodes, edges, workspaceRetained, err := prepareSetStates(rows, mutation.Assignments, assignmentValues, tracker)
+	defer func() { tracker.ReleaseMemory(workspaceRetained) }()
+	if err != nil {
+		return mutationRunResult{}, err
+	}
+
+	writtenNodes := map[string]graph.Node{}
+	nodeIDs := sortedMutationKeys(nodes)
+	for _, id := range nodeIDs {
+		updated := nodes[id].node
+		written, writeErr := e.ports.Mutations.UpdateNode(ctx, execution.Transaction, graph.UpdateNodeInput{
+			NodeID: updated.ID.String(), Labels: append([]string(nil), updated.Labels...),
+			Properties: cloneAnyMap(updated.Properties), Payload: cloneAnyMap(updated.Payload),
+			UpdateMask: []string{"labels", "properties", "payload"},
+		})
+		if err := mutationDependencyError(ctx, "set node", writeErr); err != nil {
+			return mutationRunResult{}, err
+		}
+		writtenNodes[id] = written
+	}
+	writtenEdges := map[string]graph.Edge{}
+	edgeIDs := sortedMutationKeys(edges)
+	for _, id := range edgeIDs {
+		updated := edges[id].edge
+		written, writeErr := e.ports.Mutations.UpdateEdge(ctx, execution.Transaction, graph.UpdateEdgeInput{
+			EdgeID: updated.ID.String(), Labels: append([]string(nil), updated.Labels...),
+			Properties: cloneAnyMap(updated.Properties), Payload: cloneAnyMap(updated.Payload),
+			UpdateMask: []string{"labels", "properties", "payload"},
+		})
+		if err := mutationDependencyError(ctx, "set edge", writeErr); err != nil {
+			return mutationRunResult{}, err
+		}
+		writtenEdges[id] = written
+	}
+	before := mutationRowsSize(rows)
+	for rowIndex := range rows {
+		for alias, node := range rows[rowIndex].Nodes {
+			if written, ok := writtenNodes[node.ID.String()]; ok {
+				rows[rowIndex].Nodes[alias] = written
 			}
-			if edge, ok := rows[index].Edges[assignment.Field.Alias]; ok {
-				updated := cloneMutationEdge(edge)
-				if err := assignEdgeValue(&updated, assignment.Field, value); err != nil {
-					return nil, querylogical.Counters{}, err
-				}
-				written, writeErr := e.ports.Mutations.UpdateEdge(ctx, execution.Transaction, graph.UpdateEdgeInput{
-					EdgeID: updated.ID.String(), Labels: append([]string(nil), updated.Labels...),
-					Properties: cloneAnyMap(updated.Properties), Payload: cloneAnyMap(updated.Payload),
-					UpdateMask: []string{"labels", "properties", "payload"},
-				})
-				if err := mutationDependencyError(ctx, "set edge", writeErr); err != nil {
-					return nil, querylogical.Counters{}, err
-				}
-				rows[index].Edges[assignment.Field.Alias] = written
-				updatedEdges[written.ID.String()] = struct{}{}
-				continue
+		}
+		for alias, edge := range rows[rowIndex].Edges {
+			if written, ok := writtenEdges[edge.ID.String()]; ok {
+				rows[rowIndex].Edges[alias] = written
 			}
-			return nil, querylogical.Counters{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "set mutation", fmt.Sprintf("alias %q is not bound", assignment.Field.Alias), nil)
 		}
 	}
 	prepareMutationGraph(rows, mutation.ReturnGraph)
-	return rows, querylogical.Counters{NodesUpdated: int64(len(updatedNodes)), EdgesUpdated: int64(len(updatedEdges))}, nil
+	if err := reserveMutationGrowth(tracker, before, rows, &retained); err != nil {
+		return mutationRunResult{}, err
+	}
+	return mutationRunResult{
+		rows: rows, retained: retained,
+		counters: querylogical.Counters{NodesUpdated: int64(len(writtenNodes)), EdgesUpdated: int64(len(writtenEdges))},
+	}, nil
 }
 
-func (e *Engine) matchDelete(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) ([]queryexecution.BindingRow, querylogical.Counters, error) {
+func (e *Engine) matchDelete(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker) (mutationRunResult, error) {
 	query := *mutation.Match
 	query.Page.Limit = mutation.Limit
 	matches, err := e.collectMutationMatches(ctx, execution, prepared, query, tracker)
 	if err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
 	defer matches.Release()
-	rows := cloneMutationRows(matches.Rows)
+	rows, retained, err := cloneMutationRowsTracked(matches.Rows, tracker)
+	if err != nil {
+		return mutationRunResult{}, err
+	}
 	edges := map[string]struct{}{}
 	nodes := map[string]struct{}{}
 	for _, row := range rows {
@@ -223,22 +346,27 @@ func (e *Engine) matchDelete(ctx context.Context, execution ExecutionContext, pr
 		}
 	}
 	if err := e.validateNodeDeletes(ctx, execution, nodes, edges, tracker); err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
 	for edgeID := range edges {
 		_, deleteErr := e.ports.Mutations.DeleteEdge(ctx, execution.Transaction, edgeID)
 		if err := mutationDependencyError(ctx, "delete edge", deleteErr); err != nil {
-			return nil, querylogical.Counters{}, err
+			return mutationRunResult{}, err
 		}
 	}
 	for nodeID := range nodes {
 		_, _, deleteErr := e.ports.Mutations.DeleteNode(ctx, execution.Transaction, nodeID, false)
 		if err := mutationDependencyError(ctx, "delete node", deleteErr); err != nil {
-			return nil, querylogical.Counters{}, err
+			return mutationRunResult{}, err
 		}
 	}
-	prepareMutationGraph(rows, mutation.ReturnGraph)
-	return rows, querylogical.Counters{NodesDeleted: int64(len(nodes)), EdgesDeleted: int64(len(edges))}, nil
+	if err := prepareMutationGraphTracked(rows, mutation.ReturnGraph, tracker, &retained); err != nil {
+		return mutationRunResult{}, err
+	}
+	return mutationRunResult{
+		rows: rows, retained: retained,
+		counters: querylogical.Counters{NodesDeleted: int64(len(nodes)), EdgesDeleted: int64(len(edges))},
+	}, nil
 }
 
 func (e *Engine) validateNodeDeletes(ctx context.Context, execution ExecutionContext, nodes, deletedEdges map[string]struct{}, tracker *queryexecution.Tracker) error {
@@ -286,31 +414,31 @@ func (e *Engine) validateNodeDeletes(ctx context.Context, execution ExecutionCon
 	return nil
 }
 
-func (e *Engine) createRelationship(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker, merge bool) ([]queryexecution.BindingRow, querylogical.Counters, error) {
+func (e *Engine) createRelationship(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker, merge bool) (mutationRunResult, error) {
 	bindings := []queryexecution.BindingRow{{Nodes: map[string]graph.Node{}, Edges: map[string]graph.Edge{}}}
 	var retained int64
-	defer tracker.ReleaseMemory(retained)
 	for _, pattern := range mutation.Nodes {
 		query := querylogical.Query{Source: querylogical.SourceGQL, AccessMode: querylogical.AccessModeReadOnly, Start: pattern}
 		matches, err := e.collectMutationMatches(ctx, execution, prepared, query, tracker)
 		if err != nil {
-			return nil, querylogical.Counters{}, err
+			return mutationRunResult{}, err
 		}
 		next := make([]queryexecution.BindingRow, 0, len(bindings)*len(matches.Rows))
 		for _, binding := range bindings {
 			for _, matched := range matches.Rows {
-				row := cloneMutationRow(binding)
-				row.Nodes[pattern.Alias] = matched.Nodes[pattern.Alias]
-				bytes := queryexecution.EstimateBindingRow(row)
+				node := matched.Nodes[pattern.Alias]
+				bytes := queryexecution.EstimateBindingRow(binding) + mutationNodeSize(node)
 				if err := tracker.ProduceIntermediate(1); err != nil {
 					matches.Release()
-					return nil, querylogical.Counters{}, err
+					return mutationRunResult{}, err
 				}
 				if err := tracker.ReserveMemory(bytes); err != nil {
 					matches.Release()
-					return nil, querylogical.Counters{}, err
+					return mutationRunResult{}, err
 				}
 				retained += bytes
+				row := cloneMutationRow(binding)
+				row.Nodes[pattern.Alias] = node
 				next = append(next, row)
 			}
 		}
@@ -318,25 +446,28 @@ func (e *Engine) createRelationship(ctx context.Context, execution ExecutionCont
 		bindings = next
 	}
 	if merge && len(bindings) > 1 {
-		return nil, querylogical.Counters{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "merge relationship", fmt.Sprintf("matched %d endpoint bindings; refine endpoint predicates", len(bindings)), nil)
+		return mutationRunResult{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "merge relationship", fmt.Sprintf("matched %d endpoint bindings; refine endpoint predicates", len(bindings)), nil)
 	}
 	properties, err := resolveMutationValues(mutation.Relationship.Properties, prepared.Planning.Parameters, execution.Now)
 	if err != nil {
-		return nil, querylogical.Counters{}, err
+		return mutationRunResult{}, err
 	}
 	counters := querylogical.Counters{}
 	rows := make([]queryexecution.BindingRow, 0, len(bindings))
+	var workspaceRetained int64
+	defer func() { tracker.ReleaseMemory(workspaceRetained) }()
 	for _, binding := range bindings {
 		from, fromOK := binding.Nodes[mutation.Relationship.FromAlias]
 		to, toOK := binding.Nodes[mutation.Relationship.ToAlias]
 		if !fromOK || !toOK {
-			return nil, counters, querylogical.NewError(querylogical.ErrorInvalidQuery, "create relationship", "relationship endpoint is not bound", nil)
+			return mutationRunResult{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "create relationship", "relationship endpoint is not bound", nil)
 		}
 		var edge graph.Edge
 		if merge {
-			existing, findErr := e.findRelationship(ctx, execution, prepared, tracker, from, to, mutation.Relationship)
+			existing, edgeRetained, findErr := e.findRelationship(ctx, execution, prepared, tracker, from, to, mutation.Relationship)
+			workspaceRetained += edgeRetained
 			if findErr != nil {
-				return nil, counters, findErr
+				return mutationRunResult{}, findErr
 			}
 			if existing != nil {
 				edge = *existing
@@ -347,27 +478,43 @@ func (e *Engine) createRelationship(ctx context.Context, execution ExecutionCont
 				FromNodeID: from.ID.String(), ToNodeID: to.ID.String(), Labels: append([]string(nil), mutation.Relationship.Labels...), Properties: cloneAnyMap(properties),
 			})
 			if err := mutationDependencyError(ctx, "create relationship", createErr); err != nil {
-				return nil, counters, err
+				return mutationRunResult{}, err
 			}
 			edge = created
 			counters.EdgesInserted++
 		}
 		if merge {
-			row := cloneMutationRow(binding)
+			beforeBinding := queryexecution.EstimateBindingRow(binding)
 			if mutation.Relationship.Alias != "" {
-				row.Edges[mutation.Relationship.Alias] = edge
+				binding.Edges[mutation.Relationship.Alias] = edge
 			}
-			rows = append(rows, row)
+			afterBinding := queryexecution.EstimateBindingRow(binding)
+			if afterBinding > beforeBinding {
+				growth := afterBinding - beforeBinding
+				if err := tracker.ReserveMemory(growth); err != nil {
+					return mutationRunResult{}, err
+				}
+				retained += growth
+			}
+			rows = append(rows, binding)
 		}
 	}
 	if merge && mutation.Limit > 0 && int64(len(rows)) > mutation.Limit {
 		rows = rows[:mutation.Limit]
 	}
+	if !merge {
+		tracker.ReleaseMemory(retained)
+		return mutationRunResult{counters: counters}, nil
+	}
+	before := mutationRowsSize(rows)
 	prepareMutationGraph(rows, mutation.ReturnGraph)
-	return rows, counters, nil
+	if err := reserveMutationGrowth(tracker, before, rows, &retained); err != nil {
+		return mutationRunResult{}, err
+	}
+	return mutationRunResult{rows: rows, counters: counters, retained: retained}, nil
 }
 
-func (e *Engine) findRelationship(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, from, to graph.Node, relationship *querylogical.RelationshipMutation) (*graph.Edge, error) {
+func (e *Engine) findRelationship(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, from, to graph.Node, relationship *querylogical.RelationshipMutation) (*graph.Edge, int64, error) {
 	query := querylogical.Query{
 		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
 		Start: querylogical.NodePattern{Alias: "__merge_from", NodeIDs: []string{from.ID.String()}},
@@ -379,14 +526,19 @@ func (e *Engine) findRelationship(ctx context.Context, execution ExecutionContex
 	}
 	matches, err := e.collectMutationMatches(ctx, execution, prepared, query, tracker)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer matches.Release()
 	if len(matches.Rows) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
-	edge := cloneMutationEdge(matches.Rows[0].Edges["__merge_edge"])
-	return &edge, nil
+	matched := matches.Rows[0].Edges["__merge_edge"]
+	retained := mutationEdgeSize(matched)
+	if err := tracker.ReserveMemory(retained); err != nil {
+		return nil, 0, err
+	}
+	edge := cloneMutationEdge(matched)
+	return &edge, retained, nil
 }
 
 func (e *Engine) collectMutationMatches(ctx context.Context, execution ExecutionContext, outer PreparedQuery, query querylogical.Query, tracker *queryexecution.Tracker) (queryexecution.Matches, error) {
@@ -554,12 +706,60 @@ func prepareMutationGraph(rows []queryexecution.BindingRow, include bool) {
 	}
 }
 
-func cloneMutationRows(rows []queryexecution.BindingRow) []queryexecution.BindingRow {
+func cloneMutationRowsTracked(rows []queryexecution.BindingRow, tracker *queryexecution.Tracker) ([]queryexecution.BindingRow, int64, error) {
+	retained := mutationRowsSize(rows)
+	if err := tracker.ReserveMemory(retained); err != nil {
+		return nil, 0, err
+	}
 	out := make([]queryexecution.BindingRow, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, cloneMutationRow(row))
 	}
-	return out
+	return out, retained, nil
+}
+
+func mutationRowsSize(rows []queryexecution.BindingRow) int64 {
+	var bytes int64
+	for _, row := range rows {
+		bytes += queryexecution.EstimateBindingRow(row)
+	}
+	return bytes
+}
+
+func mutationNodeSize(node graph.Node) int64 {
+	return queryexecution.EstimateBindingRow(queryexecution.BindingRow{Nodes: map[string]graph.Node{"n": node}})
+}
+
+func mutationEdgeSize(edge graph.Edge) int64 {
+	return queryexecution.EstimateBindingRow(queryexecution.BindingRow{Edges: map[string]graph.Edge{"e": edge}})
+}
+
+func reserveMutationGrowth(tracker *queryexecution.Tracker, before int64, rows []queryexecution.BindingRow, retained *int64) error {
+	after := mutationRowsSize(rows)
+	if after <= before {
+		return nil
+	}
+	growth := after - before
+	if err := tracker.ReserveMemory(growth); err != nil {
+		return err
+	}
+	*retained += growth
+	return nil
+}
+
+func prepareMutationGraphTracked(rows []queryexecution.BindingRow, enabled bool, tracker *queryexecution.Tracker, retained *int64) error {
+	before := mutationRowsSize(rows)
+	prepareMutationGraph(rows, enabled)
+	return reserveMutationGrowth(tracker, before, rows, retained)
+}
+
+func sortedMutationKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cloneMutationRow(row queryexecution.BindingRow) queryexecution.BindingRow {

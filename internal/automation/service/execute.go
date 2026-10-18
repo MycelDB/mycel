@@ -288,7 +288,7 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 
 func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Context, principalID string, transactionID string) {
 	if m.graphs != nil {
-		m.graphs.DiscardTransactionGraph(ctx, transactionID)
+		_ = m.graphs.DiscardTransactionGraph(ctx, transactionID)
 	}
 	if m.sessions != nil {
 		_, _ = m.sessions.RollbackTransaction(ctx, principalID, transactionID)

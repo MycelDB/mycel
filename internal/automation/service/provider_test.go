@@ -441,7 +441,7 @@ func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, er
 func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	return graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
 }
-func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) {}
+func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) error { return nil }
 func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {
 	if scan.Cursor != "" {
 		return nil, "", graphquery.IndexedReadStats{}, nil

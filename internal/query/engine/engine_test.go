@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -20,6 +21,7 @@ import (
 type recordingEntityReader struct {
 	calls int
 	tx    sessionmodel.GraphTransaction
+	nodes []graph.Node
 }
 
 func (r *recordingEntityReader) ReadViewIdentity(_ context.Context, tx sessionmodel.GraphTransaction) (string, error) {
@@ -43,13 +45,13 @@ func (r *recordingEntityReader) GetEdge(_ context.Context, tx sessionmodel.Graph
 func (r *recordingEntityReader) ListNodes(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Node, string, error) {
 	r.calls++
 	r.tx = tx
-	return nil, "", nil
+	return append([]graph.Node(nil), r.nodes...), "", nil
 }
 
 func (r *recordingEntityReader) ScanNodes(_ context.Context, tx sessionmodel.GraphTransaction, _ graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
 	r.calls++
 	r.tx = tx
-	return nil, "", graphquery.IndexedReadStats{}, nil
+	return append([]graph.Node(nil), r.nodes...), "", graphquery.IndexedReadStats{NodesLoaded: len(r.nodes), IndexEntriesScanned: len(r.nodes)}, nil
 }
 
 func (r *recordingEntityReader) ListEdges(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
@@ -67,6 +69,7 @@ type panicMutationWriter struct{}
 type recordingMutationWriter struct {
 	panicMutationWriter
 	creates int
+	updates int
 	cancel  context.CancelFunc
 }
 
@@ -77,12 +80,19 @@ func (panicMutationWriter) FinishMutationStatement(context.Context, sessionmodel
 	return nil
 }
 
+type mutationWriterState struct {
+	creates int
+	updates int
+}
+
 func (w *recordingMutationWriter) BeginMutationStatement(ctx context.Context, _ sessionmodel.GraphTransaction) (context.Context, any, error) {
-	return ctx, w.creates, nil
+	return ctx, mutationWriterState{creates: w.creates, updates: w.updates}, nil
 }
 func (w *recordingMutationWriter) FinishMutationStatement(_ context.Context, _ sessionmodel.GraphTransaction, state any, commit bool) error {
 	if !commit {
-		w.creates = state.(int)
+		captured := state.(mutationWriterState)
+		w.creates = captured.creates
+		w.updates = captured.updates
 	}
 	return nil
 }
@@ -92,6 +102,11 @@ func (w *recordingMutationWriter) CreateNode(context.Context, sessionmodel.Graph
 		w.cancel()
 	}
 	return graph.Node{ID: uuid.New(), Labels: []string{"Note"}}, nil
+}
+
+func (w *recordingMutationWriter) UpdateNode(_ context.Context, _ sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error) {
+	w.updates++
+	return graph.Node{ID: uuid.MustParse(input.NodeID), Labels: input.Labels, Properties: input.Properties, Payload: input.Payload}, nil
 }
 
 func (panicMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
@@ -275,6 +290,39 @@ func TestEngineExecuteMutationRestoresSavepointAfterShapingBudgetFailure(t *test
 	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 	if writer.creates != 0 {
 		t.Fatalf("staged creates after failed statement = %d, want 0", writer.creates)
+	}
+}
+
+func TestEngineExecuteMatchedMutationAccountsClonedRowsBeforeWriting(t *testing.T) {
+	node := graph.Node{ID: uuid.New(), Labels: []string{"Note"}, Properties: map[string]any{"body": strings.Repeat("x", 64<<10)}}
+	entities := &recordingEntityReader{nodes: []graph.Node{node}}
+	writer := &recordingMutationWriter{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities, Mutations: writer})
+	tx := sessionmodel.GraphTransaction{ID: "tx-1", Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}
+	match := validReadStatement().Read
+	match.Source = querylogical.SourceGQL
+	match.Start = querylogical.NodePattern{Alias: "n"}
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind:  querylogical.MutationMatchSet,
+		Match: match,
+		Assignments: []querylogical.Assignment{{
+			Field: querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "status"},
+			Value: querylogical.Value{Kind: querylogical.ValueString, String: "updated"},
+		}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: "n"}},
+	})
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	rowBytes := queryexecution.EstimateBindingRow(queryexecution.BindingRow{Nodes: map[string]graph.Node{"n": node}})
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{
+		Transaction: tx,
+		Budget:      queryexecution.Budget{MaxMemoryBytes: rowBytes*2 + 1024, BatchSize: 1},
+	}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+	if writer.updates != 0 {
+		t.Fatalf("UpdateNode calls = %d, want 0 before clone memory is reserved", writer.updates)
 	}
 }
 

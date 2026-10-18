@@ -23,7 +23,9 @@ Mutation plans require the consumer-owned `engine.MutationWriter` capability. Th
 
 Matched mutations prepare native read subplans and reuse finite node/index/adjacency sources, residual predicate evaluation, transaction snapshot/overlay propagation, cancellation checks, and shared resource budgets. Node deletes perform bounded incoming and outgoing adjacency validation before staging any selected edge deletion, preserving the existing incident-edge rule without leaving a partially changed overlay on validation failure.
 
-All graph calls carry the complete `sessionmodel.GraphTransaction`. Before a statement writes, the engine enters an opaque graph-owned mutation scope. A per-transaction lease serializes the statement with primitive writes, compound writes, commit, and discard. The graph records a bounded undo journal only for pre-existing node and edge entries first touched by the statement; it does not clone the accumulated transaction overlay. Any writer, cancellation, shaping, or resource-budget failure restores that journal before releasing the lease, so a failed statement cannot leave a partial overlay or erase a concurrent acknowledged write. Successful statements retain their staged writes; the engine never commits or rolls back the enclosing transaction.
+All graph calls carry the complete `sessionmodel.GraphTransaction`. Before a statement writes, the engine enters an opaque graph-owned mutation scope. A per-transaction lease serializes the statement with primitive writes, compound writes, commit, and discard. After acquiring the lease, production composition revalidates the transaction against the authoritative session manager. Commit and discard record terminal graph state before releasing the lease, and rollback/close discard graph state before transitioning session state, so a queued stale request cannot stage or acknowledge writes after finalization.
+
+The graph records a bounded undo journal only for pre-existing node and edge entries first touched by the statement; it does not clone the accumulated transaction overlay. Any writer, cancellation, shaping, or resource-budget failure restores that journal before releasing the lease, so a failed statement cannot leave a partial overlay or erase a concurrent acknowledged write. Successful statements retain their staged writes; the engine never commits or rolls back the enclosing transaction. Matched rows and mutable `SET` workspaces remain charged through result shaping. `SET` coalesces assignments by entity ID, writes each entity once, and propagates the resulting value to every alias bound to that entity.
 
 ## Result compatibility
 
@@ -68,7 +70,11 @@ Coverage includes:
 - mutation continuation round trips across multiple result pages;
 - overlay restoration after shaping-budget exhaustion, post-write cancellation, and a later writer failure;
 - per-transaction write serialization across rollback and concurrent primitive writes;
+- both mutation-before-finalization and finalization-before-mutation orderings for commit and discard, plus stale primitive-write rejection after commit, rollback, and close;
+- authoritative active-state revalidation after a queued statement acquires its lease;
 - undo-journal growth based on statement-touched entries rather than accumulated overlay size;
+- repeated node/edge binding coalescing for `SET`;
+- matched-row clone accounting under a tight memory budget before writer invocation;
 - sequential script aggregation and graph compatibility;
 - stop-on-error and continue-on-error exact-once application tests;
 - read-only script rejection before engine work;

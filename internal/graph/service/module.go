@@ -67,6 +67,8 @@ type Module struct {
 	overlays                       map[string]*overlay
 	transactionMutationLocks       map[string]*transactionMutationLock
 	activeMutationScopes           map[string]*mutationScope
+	finalizedTransactions          map[string]transactionFinalization
+	transactionValidator           TransactionValidator
 	changeSink                     graphchange.Sink
 	raftApplyChangeSink            graphchange.Sink
 	schemaValidator                SchemaValidator
@@ -112,7 +114,7 @@ type overlay struct {
 func NewModule() *Module {
 	return &Module{
 		stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{},
-		transactionMutationLocks: map[string]*transactionMutationLock{}, activeMutationScopes: map[string]*mutationScope{},
+		transactionMutationLocks: map[string]*transactionMutationLock{}, activeMutationScopes: map[string]*mutationScope{}, finalizedTransactions: map[string]transactionFinalization{},
 		checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName),
 	}
 }
@@ -144,6 +146,12 @@ func (m *Module) LastGraphChangeSinkError() error {
 
 type BlobReferenceChecker interface {
 	EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error
+}
+
+func (m *Module) SetTransactionValidator(validator TransactionValidator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transactionValidator = validator
 }
 
 func (m *Module) SetSchemaValidator(validator SchemaValidator) {
@@ -313,6 +321,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.activeMutationScopes == nil {
 		m.activeMutationScopes = map[string]*mutationScope{}
 	}
+	if m.finalizedTransactions == nil {
+		m.finalizedTransactions = map[string]transactionFinalization{}
+	}
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -455,6 +466,18 @@ func (m *Module) readViewIdentityLocal(tx sessionmodel.GraphTransaction) string 
 	return "0"
 }
 
+type transactionFinalizationKind uint8
+
+const (
+	transactionCommitted transactionFinalizationKind = iota + 1
+	transactionDiscarded
+)
+
+type transactionFinalization struct {
+	kind   transactionFinalizationKind
+	commit graphchange.CommitResult
+}
+
 type transactionMutationLock struct {
 	token chan struct{}
 	refs  int
@@ -525,6 +548,39 @@ func (m *Module) lockTransactionMutation(ctx context.Context, transactionID stri
 	return context.WithValue(ctx, transactionMutationLockContextKey{}, owner), release, nil
 }
 
+func (m *Module) validateTransactionActive(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	m.mu.Lock()
+	finalized := m.finalizedTransactions[tx.ID]
+	validator := m.transactionValidator
+	m.mu.Unlock()
+	if finalized.kind != 0 {
+		return fmt.Errorf("%w: transaction graph is finalized", ErrInvalidState)
+	}
+	if err := ensureReadable(tx); err != nil {
+		return err
+	}
+	if validator != nil {
+		if err := validator.ValidateTransactionActive(ctx, tx); err != nil {
+			return fmt.Errorf("%w: transaction is no longer active: %v", ErrInvalidState, err)
+		}
+	}
+	return nil
+}
+
+func (m *Module) finalizeTransactionLocked(transactionID string, finalization transactionFinalization) error {
+	if m.finalizedTransactions == nil {
+		m.finalizedTransactions = map[string]transactionFinalization{}
+	}
+	if existing := m.finalizedTransactions[transactionID]; existing.kind != 0 {
+		if existing.kind == finalization.kind {
+			return nil
+		}
+		return fmt.Errorf("%w: transaction graph is already finalized", ErrInvalidState)
+	}
+	m.finalizedTransactions[transactionID] = finalization
+	return nil
+}
+
 func (m *Module) releaseTransactionMutationLockRef(transactionID string, lock *transactionMutationLock) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -543,6 +599,10 @@ func (m *Module) BeginMutationStatement(ctx context.Context, tx sessionmodel.Gra
 	}
 	lockedCtx, release, err := m.lockTransactionMutation(ctx, tx.ID)
 	if err != nil {
+		return ctx, nil, err
+	}
+	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
 		return ctx, nil, err
 	}
 	scope := &mutationScope{
@@ -569,23 +629,27 @@ func (m *Module) BeginMutationStatement(ctx context.Context, tx sessionmodel.Gra
 
 // FinishMutationStatement releases the transaction mutation lease. Failed
 // statements restore only entries recorded by the bounded undo journal.
-func (m *Module) FinishMutationStatement(_ context.Context, tx sessionmodel.GraphTransaction, captured any, commit bool) error {
+func (m *Module) FinishMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction, captured any, commit bool) error {
 	scope, ok := captured.(*mutationScope)
 	if !ok || scope == nil || scope.module != m || scope.transactionID != tx.ID {
 		return fmt.Errorf("%w: invalid mutation scope", ErrInvalidInput)
+	}
+	var validationErr error
+	if commit {
+		validationErr = m.validateTransactionActive(ctx, tx)
 	}
 	m.mu.Lock()
 	if m.activeMutationScopes[tx.ID] != scope {
 		m.mu.Unlock()
 		return fmt.Errorf("%w: mutation scope is not active", ErrInvalidState)
 	}
-	if !commit {
+	if !commit || validationErr != nil {
 		m.restoreMutationScopeLocked(scope)
 	}
 	delete(m.activeMutationScopes, tx.ID)
 	m.mu.Unlock()
 	scope.release()
-	return nil
+	return validationErr
 }
 
 func (m *Module) restoreMutationScopeLocked(scope *mutationScope) {
@@ -666,6 +730,9 @@ func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.Node{}, err
+	}
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -742,6 +809,9 @@ func (m *Module) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.Node{}, err
+	}
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -815,6 +885,9 @@ func (m *Module) UpsertNode(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.Node{}, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
@@ -844,6 +917,9 @@ func (m *Module) DeleteNode(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return nil, nil, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return nil, nil, err
 	}
@@ -959,6 +1035,9 @@ func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1041,6 +1120,9 @@ func (m *Module) UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1093,6 +1175,9 @@ func (m *Module) DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return "", err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return "", err
 	}
@@ -1119,6 +1204,9 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx sessionmodel.GraphTra
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.ReplaceReferencesResult{}, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.ReplaceReferencesResult{}, err
 	}
@@ -1317,6 +1405,9 @@ func (m *Module) MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransacti
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return domaingraph.Edge{}, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1383,6 +1474,9 @@ func (m *Module) ReorderChildren(ctx context.Context, tx sessionmodel.GraphTrans
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := ensureWritable(tx); err != nil {
 		return nil, err
 	}
@@ -1482,8 +1576,23 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
+	m.mu.Lock()
+	finalized := m.finalizedTransactions[tx.ID]
+	m.mu.Unlock()
+	if finalized.kind == transactionCommitted {
+		return finalized.commit, nil
+	}
+	if finalized.kind == transactionDiscarded {
+		return graphchange.CommitResult{}, fmt.Errorf("%w: transaction graph was discarded", ErrInvalidState)
+	}
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	if tx.Mode == sessionmodel.TransactionModeReadOnly {
-		return graphchange.CommitResult{}, nil
+		m.mu.Lock()
+		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
+		m.mu.Unlock()
+		return graphchange.CommitResult{}, err
 	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return graphchange.CommitResult{}, err
@@ -1502,8 +1611,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	o := m.overlays[tx.ID]
 	if o == nil || o.opCount == 0 {
 		delete(m.overlays, tx.ID)
+		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
 		m.mu.Unlock()
-		return graphchange.CommitResult{}, nil
+		return graphchange.CommitResult{}, err
 	}
 	snapshot := o.clone()
 	delete(m.overlays, tx.ID)
@@ -1644,6 +1754,14 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		info.NextRevision = uint64(committedRevision)
 	}
 	restoreOverlay = false
+	commitResult := graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}
+	cachedCommit := graphchange.CommitResult{OperationCount: commitResult.OperationCount, CommittedRevision: commitResult.CommittedRevision}
+	m.mu.Lock()
+	if err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted, commit: cachedCommit}); err != nil {
+		m.mu.Unlock()
+		return graphchange.CommitResult{}, err
+	}
+	m.mu.Unlock()
 	graphEvent.Changes = changes
 	stepStart = time.Now()
 	recorder := &graphSinkTimingRecorder{}
@@ -1652,7 +1770,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	timing.SinkTimings = recorder.timings
 	timing.Total = time.Since(traceStart)
 	m.logGraphCommitTiming(tx, map[string]int{"operation_count": int(snapshot.opCount), "put_nodes": len(record.PutNodes), "put_edges": len(record.PutEdges), "delete_nodes": len(record.DeleteNodeIDs), "delete_edges": len(record.DeleteEdgeIDs), "changes": len(changes)}, committedRevision, timing)
-	return graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
+	return commitResult, nil
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
@@ -1863,15 +1981,19 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 	return changes, nil
 }
 
-func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID string) {
+func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID string) error {
 	_, releaseMutation, err := m.lockTransactionMutation(context.WithoutCancel(ctx), transactionID)
 	if err != nil {
-		return
+		return err
 	}
 	defer releaseMutation()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.finalizeTransactionLocked(transactionID, transactionFinalization{kind: transactionDiscarded}); err != nil {
+		return err
+	}
 	delete(m.overlays, transactionID)
+	return nil
 }
 
 func (m *Module) BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error) {
