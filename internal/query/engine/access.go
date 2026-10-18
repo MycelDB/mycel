@@ -61,12 +61,12 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		}
 		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 	case queryphysical.FamilyTagIndex:
-		return e.tagSetSource(execution, prepared, tracker)
+		return e.tagSetSource(execution, prepared, tracker, false)
 	case queryphysical.FamilyIndexedPredicate:
 		if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
 			return nil, err
 		}
-		return e.predicateSetSource(execution, prepared, tracker)
+		return e.predicateSetSource(execution, prepared, tracker, false)
 	case queryphysical.FamilySemantic:
 		return e.semanticSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
 	case queryphysical.FamilyIndexedAdjacency:
@@ -189,14 +189,14 @@ func (e *Engine) pathStartSource(ctx context.Context, execution ExecutionContext
 		}
 		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, nil, "", 0, false, batchSize, tracker).WithStartNodeBudget(false), true, nil
 	case queryphysical.AccessTag:
-		source, err := e.tagSetSource(execution, prepared, tracker)
-		return source, false, err
+		source, err := e.tagSetSource(execution, prepared, tracker, true)
+		return source, true, err
 	case queryphysical.AccessCompoundProperty:
 		if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
 			return nil, false, err
 		}
-		source, err := e.predicateSetSource(execution, prepared, tracker)
-		return source, false, err
+		source, err := e.predicateSetSource(execution, prepared, tracker, true)
+		return source, true, err
 	default:
 		return nil, false, querylogical.NewError(querylogical.ErrorInternal, "execute indexed path", "unsupported indexed path start access", nil)
 	}
@@ -332,8 +332,17 @@ func (e *Engine) configureIndexes(ctx context.Context, tx sessionmodel.GraphTran
 	return nil
 }
 
-func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker) (queryexecution.Operator, error) {
+func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, accountStartNodes bool) (queryexecution.Operator, error) {
+	if accountStartNodes && len(prepared.Physical.Access.TagBranches) == 1 && len(prepared.Physical.Access.TagBranches[0]) == 1 {
+		tag := prepared.Physical.Access.TagBranches[0][0]
+		reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+			nodes, next, stats, err := e.ports.Indexes.ScanTag(ctx, execution.Transaction, graphquery.TagScan{Tag: tag, Limit: limit, Cursor: cursor})
+			return executionNodePage(nodes, next, stats), err
+		}
+		return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker).WithStartNodeBudget(false), nil
+	}
 	branches := make([]queryexecution.Operator, 0, len(prepared.Physical.Access.TagBranches))
+	branchSets := make([]*queryexecution.NodeSetOperator, 0, len(prepared.Physical.Access.TagBranches))
 	for _, tags := range prepared.Physical.Access.TagBranches {
 		children := make([]queryexecution.Operator, 0, len(tags))
 		for _, tag := range tags {
@@ -344,16 +353,32 @@ func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery
 			}
 			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker))
 		}
-		branches = append(branches, queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker))
+		branch := queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker)
+		branches = append(branches, branch)
+		branchSets = append(branchSets, branch)
 	}
+	var source *queryexecution.NodeSetOperator
 	if len(branches) == 1 {
-		return branches[0], nil
+		source = branchSets[0]
+	} else {
+		source = queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker)
 	}
-	return queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker), nil
+	if accountStartNodes {
+		source.WithStartNodeBudget()
+	}
+	return source, nil
 }
 
-func (e *Engine) predicateSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker) (queryexecution.Operator, error) {
+func (e *Engine) predicateSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, accountStartNodes bool) (queryexecution.Operator, error) {
+	if accountStartNodes && len(prepared.Physical.Access.Branches) == 1 && len(prepared.Physical.Access.Branches[0].Scans) == 1 {
+		reader, err := e.indexScanReader(execution, prepared, prepared.Physical.Access.Branches[0].Scans[0])
+		if err != nil {
+			return nil, err
+		}
+		return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker).WithStartNodeBudget(false), nil
+	}
 	branches := make([]queryexecution.Operator, 0, len(prepared.Physical.Access.Branches))
+	branchSets := make([]*queryexecution.NodeSetOperator, 0, len(prepared.Physical.Access.Branches))
 	for _, branch := range prepared.Physical.Access.Branches {
 		children := make([]queryexecution.Operator, 0, len(branch.Scans))
 		for _, scan := range branch.Scans {
@@ -363,12 +388,20 @@ func (e *Engine) predicateSetSource(execution ExecutionContext, prepared Prepare
 			}
 			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker))
 		}
-		branches = append(branches, queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker))
+		branchSet := queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker)
+		branches = append(branches, branchSet)
+		branchSets = append(branchSets, branchSet)
 	}
+	var source *queryexecution.NodeSetOperator
 	if len(branches) == 1 {
-		return branches[0], nil
+		source = branchSets[0]
+	} else {
+		source = queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker)
 	}
-	return queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker), nil
+	if accountStartNodes {
+		source.WithStartNodeBudget()
+	}
+	return source, nil
 }
 
 func (e *Engine) indexScanReader(execution ExecutionContext, prepared PreparedQuery, scan queryphysical.IndexScan) (queryexecution.NodePageReader, error) {

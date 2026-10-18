@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -671,6 +672,104 @@ func TestEngineExecutesBoundedPathsWithOutputContinuation(t *testing.T) {
 	filtered, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepareIndexed(t, engine, tx, query))
 	if err != nil || fmt.Sprint(resultNames(filtered)) != "[leaf leaf]" {
 		t.Fatalf("target residual=%#v err=%v", filtered, err)
+	}
+}
+
+func TestEngineClampsSingleTagAndPropertyPathStartsBeforeNextIndexRead(t *testing.T) {
+	nodes := indexedNodes("first", "second")
+	for index := range nodes {
+		nodes[index].Properties[graph.NodePropTags] = []string{"project"}
+	}
+	for _, test := range []struct {
+		name      string
+		predicate *querylogical.Predicate
+		configure func(*indexedTestAccess)
+		calls     func(*indexedTestAccess) int
+	}{
+		{
+			name: "tag",
+			predicate: querylogical.LeafPredicate(querylogical.Leaf{
+				Kind: querylogical.LeafHasTag, Field: &querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: graph.NodePropTags}, Tag: "project",
+			}),
+			configure: func(access *indexedTestAccess) { access.tags["project"] = nodes },
+			calls:     func(access *indexedTestAccess) int { return access.tagCalls },
+		},
+		{
+			name:      "property",
+			predicate: indexedComparison("n", "rank", ">=", querylogical.NativeValue(1)),
+			configure: func(access *indexedTestAccess) { access.indexes["document_rank"] = nodes },
+			calls:     func(access *indexedTestAccess) int { return access.orderedCalls },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := newIndexedTestAccess(nodes)
+			test.configure(base)
+			access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{}}
+			engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+			tx := indexedTransaction()
+			field := querylogical.FieldRef{Alias: "m", Namespace: querylogical.NamespaceProperties, Name: "name"}
+			query := querylogical.Query{
+				Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+				Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}, Predicate: test.predicate, PathAlias: "path",
+				Steps: []querylogical.Step{{
+					Edge:  querylogical.EdgePattern{Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing},
+					Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+				}},
+				Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "m", Field: &field, OutputName: "name"}},
+				Page:    querylogical.PageSpec{Size: 10},
+			}
+			prepared := prepareIndexed(t, engine, tx, query)
+			if prepared.Physical.Family != queryphysical.FamilyIndexedPath {
+				t.Fatalf("plan = %#v", prepared.Physical)
+			}
+			_, err := engine.Execute(context.Background(), queryengine.ExecutionContext{
+				Transaction: tx,
+				Budget:      queryengine.WorkBudget{BatchSize: 8, MaxStartNodes: 1, MaxNodesLoaded: 10},
+			}, prepared)
+			assertEngineQueryCode(t, err, querylogical.ErrorResourceExhausted)
+			if got := test.calls(base); got != 1 {
+				t.Fatalf("index calls = %d, want 1", got)
+			}
+			if !reflect.DeepEqual(base.limits, []int{1}) {
+				t.Fatalf("index limits = %v, want [1]", base.limits)
+			}
+		})
+	}
+}
+
+func TestEngineAccountsCompoundPathRootsAfterFinalDeduplication(t *testing.T) {
+	nodes := indexedNodes("a", "b", "c")
+	base := newIndexedTestAccess(nodes)
+	base.indexes["document_name"] = nodes[1:2]
+	base.indexes["document_rank"] = nodes[1:]
+	access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{}}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+	tx := indexedTransaction()
+	name := indexedComparison("n", "name", "=", querylogical.NativeValue("b"))
+	rank := indexedComparison("n", "rank", ">=", querylogical.NativeValue(2))
+	field := querylogical.FieldRef{Alias: "m", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query := querylogical.Query{
+		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}, PathAlias: "path",
+		Predicate: querylogical.CombinePredicate(querylogical.PredicateOrOp, []querylogical.Predicate{*name, *rank}),
+		Steps: []querylogical.Step{{
+			Edge:  querylogical.EdgePattern{Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing},
+			Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+		}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "m", Field: &field, OutputName: "name"}},
+		Page:    querylogical.PageSpec{Size: 10},
+	}
+	prepared := prepareIndexed(t, engine, tx, query)
+	if prepared.Physical.Family != queryphysical.FamilyIndexedPath || prepared.Physical.Access.Kind != queryphysical.AccessCompoundProperty {
+		t.Fatalf("plan = %#v", prepared.Physical)
+	}
+	_, err := engine.Execute(context.Background(), queryengine.ExecutionContext{
+		Transaction: tx,
+		Budget:      queryengine.WorkBudget{BatchSize: 8, MaxStartNodes: 1, MaxNodesLoaded: 10},
+	}, prepared)
+	assertEngineQueryCode(t, err, querylogical.ErrorResourceExhausted)
+	if access.adjacencyCalls != 0 {
+		t.Fatalf("adjacency calls = %d, want no expansion past start budget", access.adjacencyCalls)
 	}
 }
 

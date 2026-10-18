@@ -32,9 +32,12 @@ engine.
 
 All operators share one tracker for start nodes, candidates, index entries,
 node and edge payloads, adjacency calls, intermediate rows, output rows,
-traversal depth, and retained memory. Node and start-node capacity clamps each
-root-source request before dependency work; subtree roots are pulled one at a
-time so exhaustion stops at a stable root boundary. Every adjacency page is
+traversal depth, and retained memory. Direct ID, label, tag, property, and
+subtree root requests are clamped to remaining node/start capacity before
+dependency work. Compound tag/property branches remain separately bounded
+candidate work; their final deduplicated set consumes the start-node budget
+once, before traversal expansion. Subtree roots are pulled one at a time so
+exhaustion stops at a stable root boundary. Every adjacency page is
 memory-accounted while it is processed, including filtered edges and pages
 retained across recursive path expansion. Caller cancellation wins even if a
 dependency returns success after cancellation, and operator close/error paths
@@ -102,8 +105,9 @@ Coverage includes:
 - finite adjacency limits and absence of subtree-wide/unbounded index calls;
 - stable adjacency and root-boundary continuation, legacy cursor upgrade, and
   stale/tampered cursor rejection;
-- query limits, subtree per-page limits, root-source budget clamping,
-  truncation, adjacency-page memory accounting, and resource exhaustion;
+- query limits, subtree per-page limits, adjacency and direct indexed-root
+  pre-read budget checks, deduplicated compound-root accounting, truncation,
+  adjacency-page memory accounting, and resource exhaustion;
 - read-only snapshots and read-write overlays;
 - cancellation and retained-memory cleanup; and
 - static Explain versus runtime traversal diagnostics.

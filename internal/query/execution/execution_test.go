@@ -218,6 +218,54 @@ func TestTraversalOperatorsCancellationWinsAndReleasesMemory(t *testing.T) {
 	})
 }
 
+func TestAdjacencySourceChecksStartBudgetBeforeReadingNextStart(t *testing.T) {
+	starts := []graph.Node{
+		{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), Labels: []string{"Document"}},
+		{ID: uuid.MustParse("00000000-0000-0000-0000-000000000002"), Labels: []string{"Document"}},
+	}
+	target := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Labels: []string{"Document"}}
+	edge := graph.Edge{ID: uuid.New(), FromID: starts[0].ID, ToID: target.ID, Labels: []string{"LINKS"}}
+	tracked := tracker(t, queryexecution.Budget{BatchSize: 1, MaxStartNodes: 1, MaxNodesLoaded: 10})
+	startReads := 0
+	source := queryexecution.NewAdjacencySource(
+		"n", querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}, querylogical.Step{
+			Edge:  querylogical.EdgePattern{Labels: []string{"LINKS"}, Direction: querylogical.DirectionOutgoing},
+			Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+		}, []string{starts[0].ID.String(), starts[1].ID.String()},
+		func(_ context.Context, nodeID string) (graph.Node, error) {
+			if nodeID == target.ID.String() {
+				return target, nil
+			}
+			startReads++
+			if nodeID == starts[0].ID.String() {
+				return starts[0], nil
+			}
+			return starts[1], nil
+		},
+		func(_ context.Context, nodeID string, _ int, _ string) (queryexecution.TraversalEdgePage, error) {
+			if nodeID == starts[0].ID.String() {
+				return queryexecution.TraversalEdgePage{Edges: []graph.Edge{edge}, IndexEntries: 1, EdgesLoaded: 1}, nil
+			}
+			return queryexecution.TraversalEdgePage{}, nil
+		}, nil, 0, "", 0, false, 1, nil, time.Time{}, tracked,
+	)
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := source.Next(context.Background())
+	if err != nil || len(batch.Rows) != 1 {
+		t.Fatalf("first batch = %#v, %v", batch, err)
+	}
+	_, err = source.Next(context.Background())
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+	if startReads != 1 {
+		t.Fatalf("start reads = %d, want 1", startReads)
+	}
+	if tracked.Snapshot().RetainedMemory != 0 {
+		t.Fatalf("retained memory = %d", tracked.Snapshot().RetainedMemory)
+	}
+}
+
 func TestPagedNodeSourceClampsTraversalStartReadsBeforeDependencyWork(t *testing.T) {
 	node := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001")}
 	for _, test := range []struct {
@@ -358,6 +406,46 @@ func TestPathAndSubtreeAccountAdjacencyPageMemory(t *testing.T) {
 			assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 			if usage := tracked.Snapshot(); usage.RetainedMemory != 0 {
 				t.Fatalf("retained memory after failure = %d", usage.RetainedMemory)
+			}
+		})
+	}
+}
+
+func TestNodeSetAccountsFinalDeduplicatedTraversalRootsOnce(t *testing.T) {
+	first := bindingRow("00000000-0000-0000-0000-000000000001", "a", "x", 1)
+	second := bindingRow("00000000-0000-0000-0000-000000000002", "b", "x", 2)
+	for _, test := range []struct {
+		name string
+		mode queryexecution.NodeSetMode
+		want int64
+	}{
+		{name: "union", mode: queryexecution.NodeSetUnion, want: 2},
+		{name: "intersection", mode: queryexecution.NodeSetIntersection, want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracked := tracker(t, queryexecution.Budget{BatchSize: 1, MaxStartNodes: 2})
+			source := queryexecution.NewNodeSet([]queryexecution.Operator{
+				queryexecution.NewLegacySource([]queryexecution.BindingRow{first}, 1, tracked),
+				queryexecution.NewLegacySource([]queryexecution.BindingRow{first, second}, 1, tracked),
+			}, test.mode, 1, tracked).WithStartNodeBudget()
+			if err := source.Open(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				_, err := source.Next(context.Background())
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := source.Close(); err != nil {
+				t.Fatal(err)
+			}
+			usage := tracked.Snapshot()
+			if usage.StartNodes != test.want || usage.RetainedMemory != 0 {
+				t.Fatalf("usage = %#v", usage)
 			}
 		})
 	}

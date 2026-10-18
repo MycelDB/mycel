@@ -406,10 +406,11 @@ const (
 // NodeSetOperator materializes bounded child sets, deduplicates by node ID,
 // and emits a deterministic ID order.
 type NodeSetOperator struct {
-	children  []Operator
-	mode      NodeSetMode
-	batchSize int
-	tracker   *Tracker
+	children          []Operator
+	mode              NodeSetMode
+	batchSize         int
+	tracker           *Tracker
+	accountStartNodes bool
 
 	rows     []BindingRow
 	sizes    []int64
@@ -424,6 +425,14 @@ func NewNodeSet(children []Operator, mode NodeSetMode, batchSize int, tracker *T
 		batchSize = DefaultBatchSize
 	}
 	return &NodeSetOperator{children: append([]Operator(nil), children...), mode: mode, batchSize: batchSize, tracker: tracker}
+}
+
+// WithStartNodeBudget accounts the final deduplicated set as traversal roots.
+// Intermediate intersection and union branches remain candidate work and do
+// not consume the root budget more than once.
+func (o *NodeSetOperator) WithStartNodeBudget() *NodeSetOperator {
+	o.accountStartNodes = true
+	return o
 }
 
 func (o *NodeSetOperator) Open(ctx context.Context) error {
@@ -536,6 +545,11 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 		}
 		if childIndex == 0 {
 			retained, retainedSizes = current, currentSizes
+			if o.mode == NodeSetUnion {
+				if err := o.ensureStartCapacity(len(retained)); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if o.mode == NodeSetUnion {
@@ -549,6 +563,9 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 				retained[id] = row
 				retainedSizes[id] = currentSizes[id]
 			}
+			if err := o.ensureStartCapacity(len(retained)); err != nil {
+				return err
+			}
 			continue
 		}
 		for id := range retained {
@@ -561,12 +578,20 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 			}
 		}
 		releaseSizeMap(o.tracker, currentSizes)
+		if len(retained) == 0 {
+			break
+		}
 	}
 	ids := make([]string, 0, len(retained))
 	for id := range retained {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	if o.accountStartNodes && o.tracker != nil {
+		if err := o.tracker.UseStartNodes(int64(len(ids))); err != nil {
+			return err
+		}
+	}
 	o.rows = make([]BindingRow, 0, len(ids))
 	o.sizes = make([]int64, 0, len(ids))
 	for _, id := range ids {
@@ -581,6 +606,13 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (o *NodeSetOperator) ensureStartCapacity(count int) error {
+	if !o.accountStartNodes || o.tracker == nil || int64(count) <= o.tracker.RemainingStartNodes() {
+		return nil
+	}
+	return o.tracker.UseStartNodes(int64(count))
 }
 
 func releaseSizeMap(tracker *Tracker, sizes map[string]int64) {
@@ -658,6 +690,9 @@ func (o *StartNodeLimit) Open(ctx context.Context) error {
 func (o *StartNodeLimit) Next(ctx context.Context) (Batch, error) {
 	if err := o.ready(ctx, "read traversal starts"); err != nil {
 		return Batch{}, err
+	}
+	if o.tracker != nil && o.tracker.RemainingStartNodes() == 0 {
+		return Batch{}, o.fail(o.tracker.UseStartNodes(1))
 	}
 	batch, err := o.input.Next(ctx)
 	if err != nil {

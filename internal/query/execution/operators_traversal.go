@@ -239,8 +239,13 @@ func (s *AdjacencySource) nextRow(ctx context.Context) (BindingRow, error) {
 }
 
 func (s *AdjacencySource) loadStart(ctx context.Context) error {
-	if s.tracker != nil && s.tracker.RemainingNodesLoaded() == 0 {
-		return s.tracker.LoadNodes(1)
+	if s.tracker != nil {
+		if s.tracker.RemainingStartNodes() == 0 {
+			return s.tracker.UseStartNodes(1)
+		}
+		if s.tracker.RemainingNodesLoaded() == 0 {
+			return s.tracker.LoadNodes(1)
+		}
 	}
 	node, err := s.nodeReader(ctx, s.startIDs[s.startIndex])
 	if err := traversalDependencyError(ctx, "read adjacency start node", err); err != nil {
