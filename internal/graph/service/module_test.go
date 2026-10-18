@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -477,6 +478,137 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	current.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, current, newNode.ID.String()); err != nil {
 		t.Fatalf("current read-only GetNode(new): %v", err)
+	}
+}
+
+func TestListNodesUsesCursorDrivenPagesBoundToTransactionOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	for i := 0; i < 3; i++ {
+		if _, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: fmt.Sprintf("node-%d", i)}); err != nil {
+			t.Fatalf("CreateNode(seed %d) error = %v", i, err)
+		}
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph(seed) error = %v", err)
+	}
+
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	identity, err := m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "0" {
+		t.Fatalf("ReadViewIdentity(initial) = %q, %v", identity, err)
+	}
+	first, next, err := m.ListNodes(ctx, tx, 1, "")
+	if err != nil {
+		t.Fatalf("ListNodes(first) error = %v", err)
+	}
+	if len(first) != 1 || !strings.HasPrefix(next, nodePageTokenPrefix) {
+		t.Fatalf("ListNodes(first) nodes=%+v next=%q", first, next)
+	}
+	staleAfterMutation := next
+	ids := []string{first[0].ID.String()}
+	for next != "" {
+		page, continuation, err := m.ListNodes(ctx, tx, 1, next)
+		if err != nil {
+			t.Fatalf("ListNodes(continuation) error = %v", err)
+		}
+		if len(page) != 1 {
+			t.Fatalf("ListNodes(continuation) nodes=%+v next=%q", page, continuation)
+		}
+		ids = append(ids, page[0].ID.String())
+		next = continuation
+	}
+	if len(ids) != 3 || !(ids[0] < ids[1] && ids[1] < ids[2]) {
+		t.Fatalf("cursor-driven node IDs = %v", ids)
+	}
+	if legacy, _, err := m.ListNodes(ctx, tx, 1, "1"); err != nil || len(legacy) != 1 {
+		t.Fatalf("ListNodes(legacy token) nodes=%+v error=%v", legacy, err)
+	}
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "overlay"}); err != nil {
+		t.Fatalf("CreateNode(overlay) error = %v", err)
+	}
+	identity, err = m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "1" {
+		t.Fatalf("ReadViewIdentity(mutated) = %q, %v", identity, err)
+	}
+	if _, _, err := m.ListNodes(ctx, tx, 1, staleAfterMutation); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListNodes(stale overlay cursor) error = %v, want ErrInvalidInput", err)
+	}
+	if _, _, err := m.ListNodes(ctx, tx, 1, "1"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListNodes(legacy overlay cursor) error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestScanAdjacencyOverlayMakesBoundedEmptyProgressAndPreservesOrder(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	parent, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := make([]domaingraph.Node, 3)
+	for i := range children {
+		children[i], err = m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: fmt.Sprintf("child-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[0].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(2)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[2].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(4)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	if _, err := m.DeleteEdge(ctx, tx, deleted.ID.String()); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[1].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(3)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cursor := ""
+	emptyProgress := 0
+	var got []domaingraph.EdgeID
+	for {
+		page, next, stats, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{NodeID: parent.ID.String(), Label: "contains", Direction: graphquery.AdjacencyDirectionOut, Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("ScanAdjacency() error = %v", err)
+		}
+		if stats.IndexEntriesScanned <= 0 {
+			t.Fatalf("ScanAdjacency() stats = %+v", stats)
+		}
+		if len(page) == 0 && next != "" {
+			emptyProgress++
+		}
+		for _, edge := range page {
+			got = append(got, edge.ID)
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("non-progressing cursor %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) || emptyProgress != 1 {
+		t.Fatalf("adjacency IDs=%v empty progress=%d", got, emptyProgress)
 	}
 }
 

@@ -15,9 +15,12 @@ import (
 // graph transaction so snapshot and read-write overlay semantics remain owned
 // by the graph subsystem.
 type EntityReader interface {
+	// ReadViewIdentity changes whenever the mutable read-write overlay changes.
+	// It lets continuation cursors reject replay against a different view.
+	ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error)
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	GetEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (graph.Edge, error)
-	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
+	ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
 	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
 }
 

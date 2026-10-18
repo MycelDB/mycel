@@ -171,6 +171,13 @@ func (g *qrx0InstrumentedGraph) ListNodes(ctx context.Context, tx sessionmodel.G
 	return nodes, next, err
 }
 
+func (g *qrx0InstrumentedGraph) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	nodes, next, stats, err := g.Manager.ScanNodes(ctx, tx, scan)
+	g.profile.record("ListNodes", scan.Limit, len(nodes))
+	g.profile.recordIndexedStats(stats)
+	return nodes, next, stats, err
+}
+
 func (g *qrx0InstrumentedGraph) ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
 	edges, next, err := g.Manager.ListEdges(ctx, tx, pageSize, pageToken)
 	g.profile.record("ListEdges", pageSize, len(edges))
@@ -225,6 +232,10 @@ type qrx0ListNodesErrorGraph struct {
 
 func (g *qrx0ListNodesErrorGraph) ListNodes(context.Context, sessionmodel.GraphTransaction, int, string) ([]domaingraph.Node, string, error) {
 	return nil, "", g.err
+}
+
+func (g *qrx0ListNodesErrorGraph) ScanNodes(context.Context, sessionmodel.GraphTransaction, graphquery.NodeScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	return nil, "", graphquery.IndexedReadStats{}, g.err
 }
 
 type qrx0InstrumentedSemantic struct {

@@ -77,6 +77,17 @@ func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder P
 	}
 }
 
+// NodeScan is the finite, cursor-driven broad node access operator. It embeds
+// the shared paged source so full scans use the same cursor, budget,
+// cancellation, and retained-memory rules as indexed node sources.
+type NodeScan struct {
+	*PagedNodeSource
+}
+
+func NewNodeScan(alias string, reader NodePageReader, checkpointEncoder PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int, tracker *Tracker) *NodeScan {
+	return &NodeScan{PagedNodeSource: NewPagedNodeSource(alias, reader, checkpointEncoder, resumeCursor, resumeOffset, resuming, batchSize, tracker)}
+}
+
 // WithStartNodeBudget makes this source account returned nodes as traversal
 // roots and clamp every dependency request to the remaining root/node budget.
 // Subtree roots may stop cleanly at a root boundary; path starts fail closed.
@@ -142,7 +153,10 @@ func (s *PagedNodeSource) Next(ctx context.Context) (Batch, error) {
 				if len(rows) > 0 {
 					return Batch{Rows: rows}, nil
 				}
-				return Batch{}, io.EOF
+				if s.exhausted {
+					return Batch{}, io.EOF
+				}
+				continue
 			}
 		}
 		item := &s.buffer[s.offset]
@@ -248,8 +262,8 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 	if s.resuming && s.pendingResume >= len(page.Nodes) {
 		return querylogical.NewError(querylogical.ErrorStaleCursor, "resume indexed node source", "source cursor offset exceeds the indexed page", nil)
 	}
-	if len(page.Nodes) == 0 && page.NextCursor != "" {
-		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", "access method returned an empty non-terminal page", nil)
+	if len(page.Nodes) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", "access method returned a non-progressing empty page", nil)
 	}
 	s.releaseBuffer()
 	s.pageCursor = cursor

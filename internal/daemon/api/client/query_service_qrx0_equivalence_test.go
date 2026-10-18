@@ -214,7 +214,10 @@ func TestQRX0TraversalAndProjectionEquivalence(t *testing.T) {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	querySvc := newQRX8QueryService(fixture, manager)
+	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+		WithSchemaManager(manager).
+		WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
 
 	broadSyntheticQuery := &clientv1.GraphQuery{
 		Match: &clientv1.GraphPattern{
@@ -236,6 +239,14 @@ func TestQRX0TraversalAndProjectionEquivalence(t *testing.T) {
 	}
 	if len(broad.GetRows()) != 1 || !broad.GetDiagnostics().GetFullScan() {
 		t.Fatalf("broad synthetic result = %+v, diagnostics = %+v", broad.GetRows(), broad.GetDiagnostics())
+	}
+	if profile.callCount("ListNodes") == 0 || profile.callCount("ScanAdjacency") == 0 || profile.callCount("ListEdges") != 0 {
+		t.Fatalf("broad traversal access profile = %+v", profile.callsSnapshot())
+	}
+	for _, limit := range append(profile.requestedLimits("ListNodes"), profile.requestedLimits("ScanAdjacency")...) {
+		if limit <= 0 {
+			t.Fatalf("broad traversal used unbounded access limit: %+v", profile.callsSnapshot())
+		}
 	}
 	fields := broad.GetRows()[0].GetFields()
 	wantSynthetic := map[string]string{
@@ -279,8 +290,7 @@ func TestQRX0TraversalAndProjectionEquivalence(t *testing.T) {
 	}
 	assertQRX0EquivalentRead(t, fixture, querySvc, readTx, qrx0EquivalentRead{
 		name: "adjacency edge and scalar projections", structured: adjacency,
-		gql:                           "MATCH (d:Document {rank: 1})-[edge:contains]->(s:Section) RETURN d.title AS document, edge, s.title AS section",
-		knownTemporalMetadataMismatch: true,
+		gql: "MATCH (d:Document {rank: 1})-[edge:contains]->(s:Section) RETURN d.title AS document, edge, s.title AS section",
 	}, "")
 }
 

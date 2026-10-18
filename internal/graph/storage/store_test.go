@@ -73,6 +73,93 @@ func TestLocalStoreTransactionsAndIndexRebuild(t *testing.T) {
 	}
 }
 
+func TestScanNodesByDomainPagesCurrentAndSnapshotViewsByID(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+	nodes := []graph.Node{
+		{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000001")), DomainID: domainID, Content: "one"},
+		{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000002")), DomainID: domainID, Content: "two"},
+		{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000003")), DomainID: domainID, Content: "three"},
+	}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range nodes {
+		if err := seed.PutNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	change, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change.ExpectRevision(1)
+	if err := change.DeleteNode(nodes[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	four := graph.Node{ID: graph.NodeID(uuid.MustParse("00000000-0000-0000-0000-000000000004")), DomainID: domainID, Content: "four"}
+	if err := change.PutNode(four); err != nil {
+		t.Fatal(err)
+	}
+	if err := change.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	collect := func(scan DomainNodeScan) []string {
+		t.Helper()
+		var got []string
+		for {
+			page, next, _, err := store.ScanNodesByDomain(ctx, scan)
+			if err != nil {
+				t.Fatalf("ScanNodesByDomain(%+v) error = %v", scan, err)
+			}
+			if len(page) == 0 && next != "" {
+				t.Fatalf("empty non-terminal page: next=%q", next)
+			}
+			for _, node := range page {
+				got = append(got, node.ID.String())
+			}
+			if next == "" {
+				return got
+			}
+			scan.Cursor = next
+		}
+	}
+	currentPage, _, currentExamined, err := store.ScanNodesByDomain(ctx, DomainNodeScan{DomainID: domainID, Limit: 1, ExamineLimit: 1})
+	if err != nil || currentExamined != 1 || len(currentPage) != 1 || currentPage[0].ID != nodes[1].ID {
+		t.Fatalf("bounded current page=%+v examined=%d error=%v", currentPage, currentExamined, err)
+	}
+	invisible, progress, snapshotExamined, err := store.ScanNodesByDomain(ctx, DomainNodeScan{DomainID: domainID, Limit: 1, ExamineLimit: 1, Snapshot: true, Revision: 2})
+	if err != nil || snapshotExamined != 1 || len(invisible) != 0 || progress == "" {
+		t.Fatalf("bounded snapshot progress page=%+v next=%q examined=%d error=%v", invisible, progress, snapshotExamined, err)
+	}
+	visible, _, snapshotExamined, err := store.ScanNodesByDomain(ctx, DomainNodeScan{DomainID: domainID, Limit: 1, ExamineLimit: 1, Snapshot: true, Revision: 2, Cursor: progress})
+	if err != nil || snapshotExamined != 1 || len(visible) != 1 || visible[0].ID != nodes[1].ID {
+		t.Fatalf("bounded snapshot visible page=%+v examined=%d error=%v", visible, snapshotExamined, err)
+	}
+
+	current := collect(DomainNodeScan{DomainID: domainID, Limit: 1})
+	wantCurrent := []string{nodes[1].ID.String(), nodes[2].ID.String(), four.ID.String()}
+	if !reflect.DeepEqual(current, wantCurrent) {
+		t.Fatalf("current scan = %v, want %v", current, wantCurrent)
+	}
+	snapshot := collect(DomainNodeScan{DomainID: domainID, Limit: 1, Snapshot: true, Revision: 1})
+	wantSnapshot := []string{nodes[0].ID.String(), nodes[1].ID.String(), nodes[2].ID.String()}
+	if !reflect.DeepEqual(snapshot, wantSnapshot) {
+		t.Fatalf("snapshot scan = %v, want %v", snapshot, wantSnapshot)
+	}
+}
+
 func TestLocalStoreWriteCheckpointAndOpenWithoutHistoricalReplay(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -1474,6 +1561,73 @@ func TestLocalStoreAdjacencyScanByLabelOrderAndPagination(t *testing.T) {
 	incoming, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: to1.ID, Label: "REFERENCES", Direction: AdjacencyDirectionIn, Limit: 10})
 	if err != nil || !reflect.DeepEqual(incoming, []graph.EdgeID{first.ID}) {
 		t.Fatalf("incoming=%+v err=%v", incoming, err)
+	}
+}
+
+func TestLocalStoreSnapshotAdjacencyMakesBoundedProgressAcrossHistoricalKeys(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	from := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	to := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
+	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"order": int64(0)}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(from); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(to); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutEdge(edge); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for revision, order := range []int64{1, 2} {
+		update, err := store.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		update.ExpectRevision(uint64(revision + 1))
+		edge.Properties = map[string]any{"order": order}
+		if err := update.PutEdge(edge); err != nil {
+			t.Fatal(err)
+		}
+		if err := update.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scan := AdjacencyScan{DomainID: domainID, NodeID: from.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 1}
+	var got []graph.EdgeID
+	emptyProgress := 0
+	for {
+		page, next, examined, err := store.ScanAdjacencyAt(ctx, scan, 3, 1)
+		if err != nil {
+			t.Fatalf("ScanAdjacencyAt() error = %v", err)
+		}
+		if examined > 1 {
+			t.Fatalf("examined = %d, want at most 1", examined)
+		}
+		if len(page) == 0 && next != "" {
+			emptyProgress++
+		}
+		got = append(got, page...)
+		if next == "" {
+			break
+		}
+		scan.Cursor = next
+	}
+	if !reflect.DeepEqual(got, []graph.EdgeID{edge.ID}) || emptyProgress != 2 {
+		t.Fatalf("snapshot adjacency IDs=%v empty progress pages=%d", got, emptyProgress)
 	}
 }
 

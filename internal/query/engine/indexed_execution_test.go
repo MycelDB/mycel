@@ -37,6 +37,14 @@ type indexedTestAccess struct {
 	err            error
 }
 
+func (a *indexedTestAccess) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	a.txs = append(a.txs, tx)
+	return "0", nil
+}
+
 func (a *indexedTestAccess) GetNode(_ context.Context, tx sessionmodel.GraphTransaction, id string) (graph.Node, error) {
 	a.getCalls++
 	a.txs = append(a.txs, tx)
@@ -55,6 +63,9 @@ func (a *indexedTestAccess) GetEdge(context.Context, sessionmodel.GraphTransacti
 }
 func (a *indexedTestAccess) ListNodes(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Node, string, error) {
 	return nil, "", errors.New("unexpected node list")
+}
+func (a *indexedTestAccess) ScanNodes(context.Context, sessionmodel.GraphTransaction, graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	return nil, "", graphquery.IndexedReadStats{}, errors.New("unexpected node scan")
 }
 func (a *indexedTestAccess) ListEdges(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Edge, string, error) {
 	return nil, "", errors.New("unexpected edge list")

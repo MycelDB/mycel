@@ -6,6 +6,29 @@ import (
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
 
+type adjacencyOrderIdentity struct {
+	DomainID  graph.DomainID
+	NodeID    graph.NodeID
+	Label     string
+	Direction AdjacencyDirection
+}
+
+func newAdjacencyOrder() *orderedTree[string, graph.EdgeID] {
+	return newOrderedTree[string, graph.EdgeID](
+		func(left, right string) bool { return left < right },
+		func(key string) uint64 { return hashOrderedBytes([]byte(key)) },
+	)
+}
+
+func (s *LocalStore) ensureAdjacencyOrder(index map[adjacencyOrderIdentity]*orderedTree[string, graph.EdgeID], identity adjacencyOrderIdentity) *orderedTree[string, graph.EdgeID] {
+	order := index[identity]
+	if order == nil {
+		order = newAdjacencyOrder()
+		index[identity] = order
+	}
+	return order
+}
+
 func (s *LocalStore) validateEdgeIndexes(edge graph.Edge) error {
 	for _, idx := range s.configuredIndexes[edge.DomainID] {
 		if idx.TargetKind != schema.IndexTargetEdge {
@@ -30,6 +53,22 @@ func (s *LocalStore) addEdgeAdjacencyIndexes(edge graph.Edge) {
 		ensureAdjacencySet(s.edgeAdjacencyOut, edge.DomainID, edge.FromID, label)[key] = edge.ID
 		ensureAdjacencySet(s.edgeAdjacencyIn, edge.DomainID, edge.ToID, label)[key] = edge.ID
 	}
+	s.addEdgeAdjacencyOrders(edge)
+}
+
+func (s *LocalStore) addEdgeAdjacencyOrders(edge graph.Edge) {
+	key := encodeAdjacencyKey(edge)
+	for _, label := range edge.Labels {
+		if label == "" {
+			continue
+		}
+		out := adjacencyOrderIdentity{DomainID: edge.DomainID, NodeID: edge.FromID, Label: label, Direction: AdjacencyDirectionOut}
+		in := adjacencyOrderIdentity{DomainID: edge.DomainID, NodeID: edge.ToID, Label: label, Direction: AdjacencyDirectionIn}
+		s.ensureAdjacencyOrder(s.currentAdjacencyOrder, out).Put(key, edge.ID)
+		s.ensureAdjacencyOrder(s.currentAdjacencyOrder, in).Put(key, edge.ID)
+		s.ensureAdjacencyOrder(s.historyAdjacencyOrder, out).Put(key, edge.ID)
+		s.ensureAdjacencyOrder(s.historyAdjacencyOrder, in).Put(key, edge.ID)
+	}
 }
 
 func (s *LocalStore) removeEdgeAdjacencyIndexes(edge graph.Edge) {
@@ -37,6 +76,14 @@ func (s *LocalStore) removeEdgeAdjacencyIndexes(edge graph.Edge) {
 	for _, label := range edge.Labels {
 		deleteAdjacencyKey(s.edgeAdjacencyOut, edge.DomainID, edge.FromID, label, key)
 		deleteAdjacencyKey(s.edgeAdjacencyIn, edge.DomainID, edge.ToID, label, key)
+		out := adjacencyOrderIdentity{DomainID: edge.DomainID, NodeID: edge.FromID, Label: label, Direction: AdjacencyDirectionOut}
+		in := adjacencyOrderIdentity{DomainID: edge.DomainID, NodeID: edge.ToID, Label: label, Direction: AdjacencyDirectionIn}
+		if order := s.currentAdjacencyOrder[out]; order != nil {
+			order.Delete(key)
+		}
+		if order := s.currentAdjacencyOrder[in]; order != nil {
+			order.Delete(key)
+		}
 	}
 }
 

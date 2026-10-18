@@ -1,6 +1,7 @@
 package graphstorage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,19 +35,24 @@ type Options struct {
 }
 
 type LocalStore struct {
-	mu                        sync.RWMutex
-	path                      string
-	encryption                *encryption.Service
-	state                     StoreState
-	manifest                  manifest
-	nodes                     *segment
-	edges                     *segment
-	txns                      *segment
-	nodeRecords               map[graph.NodeID]graph.Node
-	edgeRecords               map[graph.EdgeID]graph.Edge
-	nodeMeta                  map[graph.NodeID]NodeMeta
-	edgeMeta                  map[graph.EdgeID]EdgeMeta
-	nodesByDomain             map[graph.DomainID]map[graph.NodeID]struct{}
+	mu            sync.RWMutex
+	path          string
+	encryption    *encryption.Service
+	state         StoreState
+	manifest      manifest
+	nodes         *segment
+	edges         *segment
+	txns          *segment
+	nodeRecords   map[graph.NodeID]graph.Node
+	edgeRecords   map[graph.EdgeID]graph.Edge
+	nodeMeta      map[graph.NodeID]NodeMeta
+	edgeMeta      map[graph.EdgeID]EdgeMeta
+	nodesByDomain map[graph.DomainID]map[graph.NodeID]struct{}
+	// Current and retained-history node orders are derived cursor indexes. The
+	// current tree excludes tombstones; the history tree retains IDs so
+	// revision-pinned scans can resolve the visible version pagewise.
+	currentNodeOrder          map[graph.DomainID]*orderedTree[graph.NodeID, struct{}]
+	historyNodeOrder          map[graph.DomainID]*orderedTree[graph.NodeID, struct{}]
 	labelIndex                map[graph.DomainID]map[string]map[graph.NodeID]struct{}
 	tagIndex                  map[graph.DomainID]map[string]map[graph.NodeID]struct{}
 	configuredIndexes         map[graph.DomainID][]schema.IndexDefinition
@@ -55,6 +61,8 @@ type LocalStore struct {
 	edgePropertyIndex         map[string]map[string]edgePropertyIndexEntry
 	edgeAdjacencyOut          map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
 	edgeAdjacencyIn           map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
+	currentAdjacencyOrder     map[adjacencyOrderIdentity]*orderedTree[string, graph.EdgeID]
+	historyAdjacencyOrder     map[adjacencyOrderIdentity]*orderedTree[string, graph.EdgeID]
 	containsChildren          map[graph.NodeID][]graph.EdgeID
 	containsParent            map[graph.NodeID]graph.EdgeID
 	edgeIndex                 adjacency.EdgeIndex
@@ -203,6 +211,8 @@ func (s *LocalStore) resetIndexes() {
 	s.nodeMeta = map[graph.NodeID]NodeMeta{}
 	s.edgeMeta = map[graph.EdgeID]EdgeMeta{}
 	s.nodesByDomain = map[graph.DomainID]map[graph.NodeID]struct{}{}
+	s.currentNodeOrder = map[graph.DomainID]*orderedTree[graph.NodeID, struct{}]{}
+	s.historyNodeOrder = map[graph.DomainID]*orderedTree[graph.NodeID, struct{}]{}
 	s.labelIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
 	s.tagIndex = map[graph.DomainID]map[string]map[graph.NodeID]struct{}{}
 	s.configuredIndexes = map[graph.DomainID][]schema.IndexDefinition{}
@@ -211,6 +221,8 @@ func (s *LocalStore) resetIndexes() {
 	s.edgePropertyIndex = map[string]map[string]edgePropertyIndexEntry{}
 	s.edgeAdjacencyOut = map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}
 	s.edgeAdjacencyIn = map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}
+	s.currentAdjacencyOrder = map[adjacencyOrderIdentity]*orderedTree[string, graph.EdgeID]{}
+	s.historyAdjacencyOrder = map[adjacencyOrderIdentity]*orderedTree[string, graph.EdgeID]{}
 	s.containsChildren = map[graph.NodeID][]graph.EdgeID{}
 	s.containsParent = map[graph.NodeID]graph.EdgeID{}
 	s.edgeIndex = adjacency.NewMemoryEdgeIndex()
@@ -328,6 +340,75 @@ func (s *LocalStore) ListNodesByDomainAt(ctx context.Context, domainID graph.Dom
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
 	return out, ctx.Err()
+}
+
+// ScanNodesByDomain returns at most Limit visible nodes after Cursor and
+// examines at most ExamineLimit ordered IDs. Current scans use the live tree,
+// while revision-pinned scans make bounded progress through retained IDs.
+func (s *LocalStore) ScanNodesByDomain(ctx context.Context, scan DomainNodeScan) ([]graph.Node, string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
+	if scan.Limit <= 0 {
+		return nil, "", 0, fmt.Errorf("%w: node scan limit must be positive", ErrInvalidRecord)
+	}
+	if scan.Limit > 500 {
+		scan.Limit = 500
+	}
+	if scan.ExamineLimit <= 0 {
+		scan.ExamineLimit = scan.Limit
+	}
+	var cursor graph.NodeID
+	hasCursor := scan.Cursor != ""
+	if hasCursor {
+		parsed, err := uuid.Parse(scan.Cursor)
+		if err != nil {
+			return nil, "", 0, fmt.Errorf("%w: invalid node scan cursor", ErrInvalidRecord)
+		}
+		cursor = parsed
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, "", 0, err
+	}
+	order := s.currentNodeOrder[scan.DomainID]
+	if scan.Snapshot {
+		order = s.historyNodeOrder[scan.DomainID]
+	}
+	if order == nil {
+		return []graph.Node{}, "", 0, nil
+	}
+	iterator := order.IteratorAfter(cursor, hasCursor)
+	out := make([]graph.Node, 0, scan.Limit)
+	examined := 0
+	lastExamined := ""
+	for iterator.HasNext() && examined < scan.ExamineLimit && len(out) < scan.Limit {
+		if err := ctx.Err(); err != nil {
+			return nil, "", examined, err
+		}
+		id, _, _ := iterator.Next()
+		examined++
+		lastExamined = id.String()
+		node, ok := s.scanNodeVersion(id, scan)
+		if ok {
+			out = append(out, cloneNode(node))
+		}
+	}
+	if iterator.HasNext() {
+		return out, lastExamined, examined, nil
+	}
+	return out, "", examined, nil
+}
+
+func (s *LocalStore) scanNodeVersion(id graph.NodeID, scan DomainNodeScan) (graph.Node, bool) {
+	if scan.Snapshot {
+		node, ok := entityAtRevision(s.nodeHistory[id], scan.Revision, func(node graph.Node) graph.Node { return node })
+		return node, ok && node.DomainID == scan.DomainID
+	}
+	node, ok := s.nodeRecords[id]
+	return node, ok && node.DomainID == scan.DomainID
 }
 
 func (s *LocalStore) GetEdge(ctx context.Context, id graph.EdgeID) (graph.Edge, error) {
@@ -606,6 +687,8 @@ func (s *LocalStore) applyNodePutWithIndexes(n graph.Node, loc RecordLocation, l
 	s.nodeMeta[n.ID] = NodeMeta{ID: n.ID, DomainID: n.DomainID, Location: loc}
 	if n.DomainID != uuid.Nil {
 		ensureNodeSet(s.nodesByDomain, n.DomainID)[n.ID] = struct{}{}
+		s.ensureCurrentNodeOrder(n.DomainID).Put(n.ID, struct{}{})
+		s.ensureHistoryNodeOrder(n.DomainID).Put(n.ID, struct{}{})
 		if labelTagIndexes {
 			s.addNodeLabelIndexes(n)
 			s.addNodeTagIndexes(n)
@@ -627,6 +710,31 @@ func (s *LocalStore) applyNodePutWithIndexes(n graph.Node, loc RecordLocation, l
 		ensureNodeSet(s.blobRefs, *n.BlobRef)[n.ID] = struct{}{}
 	}
 }
+func newNodeOrder() *orderedTree[graph.NodeID, struct{}] {
+	return newOrderedTree[graph.NodeID, struct{}](
+		func(left, right graph.NodeID) bool { return bytes.Compare(left[:], right[:]) < 0 },
+		func(id graph.NodeID) uint64 { return hashOrderedBytes(id[:]) },
+	)
+}
+
+func (s *LocalStore) ensureCurrentNodeOrder(domainID graph.DomainID) *orderedTree[graph.NodeID, struct{}] {
+	order := s.currentNodeOrder[domainID]
+	if order == nil {
+		order = newNodeOrder()
+		s.currentNodeOrder[domainID] = order
+	}
+	return order
+}
+
+func (s *LocalStore) ensureHistoryNodeOrder(domainID graph.DomainID) *orderedTree[graph.NodeID, struct{}] {
+	order := s.historyNodeOrder[domainID]
+	if order == nil {
+		order = newNodeOrder()
+		s.historyNodeOrder[domainID] = order
+	}
+	return order
+}
+
 func (s *LocalStore) applyNodeDelete(id graph.NodeID, loc RecordLocation) {
 	if old, ok := s.nodeRecords[id]; ok {
 		s.removeNodeIndexes(old)
@@ -637,6 +745,9 @@ func (s *LocalStore) applyNodeDelete(id graph.NodeID, loc RecordLocation) {
 func (s *LocalStore) removeNodeIndexes(n graph.Node) {
 	if n.DomainID != uuid.Nil {
 		delete(s.nodesByDomain[n.DomainID], n.ID)
+		if order := s.currentNodeOrder[n.DomainID]; order != nil {
+			order.Delete(n.ID)
+		}
 		if len(s.nodesByDomain[n.DomainID]) == 0 {
 			delete(s.nodesByDomain, n.DomainID)
 		}

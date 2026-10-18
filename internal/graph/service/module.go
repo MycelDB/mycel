@@ -2,6 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +40,25 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
-const childOrderStep = 1000
+const (
+	childOrderStep      = 1000
+	nodePageTokenPrefix = "nodes-v1:"
+)
+
+type nodePageCursor struct {
+	TransactionID string `json:"transaction_id"`
+	BaseRevision  int64  `json:"base_revision"`
+	OverlayOps    int32  `json:"overlay_ops"`
+	AfterNodeID   string `json:"after_node_id"`
+	Checksum      string `json:"checksum"`
+}
+
+type nodeOverlayPage struct {
+	operations int32
+	putNodes   []domaingraph.Node
+	replaced   map[domaingraph.NodeID]struct{}
+	deleted    map[domaingraph.NodeID]struct{}
+}
 
 type Module struct {
 	mu                             sync.Mutex
@@ -364,7 +386,61 @@ func (m *Module) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", err
 	}
-	return m.listNodesLocal(ctx, tx, pageSize, pageToken)
+	nodes, next, _, err := m.scanNodesLocal(ctx, tx, graphquery.NodeScan{Limit: pageSize, Cursor: pageToken, ExamineLimit: pageSize})
+	return nodes, next, err
+}
+
+// ScanNodes exposes the finite node cursor together with examined-entry work
+// so the query runtime can charge revision-history progress to its budget.
+func (m *Module) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "NodeScan", IndexName: "node_id", FullScan: true, NextCursorKind: "node_key"}
+	if err := ensureReadable(tx); err != nil {
+		return nil, "", stats, err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return nil, "", stats, err
+	} else if forward {
+		req := raftReadRequest("scan_nodes", tx)
+		req.NodeScan = scan
+		var res raftGraphNodesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", stats, err
+		}
+		return res.Nodes, res.NextPageToken, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, "", stats, err
+	}
+	return m.scanNodesLocal(ctx, tx, scan)
+}
+
+// ReadViewIdentity identifies the mutable transaction overlay observed by query
+// execution. BaseRevision and transaction identity are already bound by query
+// cursors; the operation count changes for every staged node or edge mutation.
+func (m *Module) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := ensureReadable(tx); err != nil {
+		return "", err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return "", err
+	} else if forward {
+		req := raftReadRequest("read_view_identity", tx)
+		var res raftGraphReadViewResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return "", err
+		}
+		return res.Identity, nil
+	}
+	return m.readViewIdentityLocal(tx), ctx.Err()
+}
+
+func (m *Module) readViewIdentityLocal(tx sessionmodel.GraphTransaction) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if overlay := m.overlays[tx.ID]; overlay != nil {
+		return strconv.FormatInt(int64(overlay.opCount), 10)
+	}
+	return "0"
 }
 
 func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
@@ -1863,25 +1939,206 @@ func (m *Module) hierarchyPathExists(ctx context.Context, tx sessionmodel.GraphT
 	return false, nil
 }
 
-func (m *Module) listNodesLocal(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
+func (m *Module) scanNodesLocal(ctx context.Context, tx sessionmodel.GraphTransaction, request graphquery.NodeScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "NodeScan", IndexName: "node_id", FullScan: true, NextCursorKind: "node_key"}
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", stats, err
 	}
-	var base []domaingraph.Node
-	if revision, ok := snapshotRevision(tx); ok {
-		base, err = store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	} else {
-		base, err = store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+	pageSize := boundedGraphPageSize(request.Limit)
+	pageToken := strings.TrimSpace(request.Cursor)
+	examineLimit := request.ExamineLimit
+	if examineLimit <= 0 {
+		examineLimit = pageSize
+	} else if examineLimit > 500 {
+		examineLimit = 500
 	}
+	// Numeric offsets remain readable as a compatibility path for tokens issued
+	// before the cursor-driven node scan. New scans always emit nodes-v1 tokens.
+	if pageToken != "" && !strings.HasPrefix(pageToken, nodePageTokenPrefix) {
+		if _, err := pageStart(pageToken); err != nil {
+			return nil, "", stats, err
+		}
+		m.mu.Lock()
+		overlay := m.overlays[tx.ID]
+		mutableView := overlay != nil && overlay.opCount != 0
+		m.mu.Unlock()
+		if mutableView {
+			return nil, "", stats, fmt.Errorf("%w: legacy page_token is not bound to the transaction overlay", ErrInvalidInput)
+		}
+		var base []domaingraph.Node
+		if revision, ok := snapshotRevision(tx); ok {
+			base, err = store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
+		} else {
+			base, err = store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+		}
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		m.mu.Lock()
+		overlay = m.overlays[tx.ID]
+		if overlay != nil && overlay.opCount != 0 {
+			m.mu.Unlock()
+			return nil, "", stats, fmt.Errorf("%w: legacy page_token is not bound to the transaction overlay", ErrInvalidInput)
+		}
+		merged := mergeNodes(base, overlay, mustDomainID(tx.DomainID))
+		m.mu.Unlock()
+		out, next, pageErr := paginateNodes(merged, pageSize, pageToken)
+		stats.IndexEntriesScanned = len(base)
+		stats.NodesLoaded = len(out)
+		return out, next, stats, pageErr
+	}
+
+	cursor, err := decodeNodePageCursor(tx, pageToken)
 	if err != nil {
-		return nil, "", mapStorageError(err)
+		return nil, "", stats, err
 	}
+	overlay, err := m.nodeOverlayPageSnapshot(tx, cursor, pageSize+1)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	scan := graphstorage.DomainNodeScan{
+		DomainID: mustDomainID(tx.DomainID), Limit: pageSize, Cursor: cursor.AfterNodeID, ExamineLimit: examineLimit,
+	}
+	if revision, ok := snapshotRevision(tx); ok {
+		scan.Snapshot = true
+		scan.Revision = revision
+	}
+	if len(overlay.replaced) == 0 && len(overlay.deleted) == 0 {
+		items, storageNext, examined, scanErr := store.ScanNodesByDomain(ctx, scan)
+		stats.IndexEntriesScanned += examined
+		stats.NodesLoaded = len(items)
+		if scanErr != nil {
+			return nil, "", stats, mapStorageError(scanErr)
+		}
+		if storageNext == "" {
+			return items, "", stats, nil
+		}
+		next := encodeNodePageCursor(tx, nodePageCursor{OverlayOps: overlay.operations, AfterNodeID: storageNext})
+		return items, next, stats, nil
+	}
+
+	// A mutable node overlay requires a finite merge lookahead. The current
+	// committed order excludes tombstones; overlay identity prevents
+	// continuation if the merge input changes.
+	scan.Limit = pageSize + 1
+	scan.ExamineLimit = min(500, pageSize+1+len(overlay.replaced)+len(overlay.deleted))
+	items := make([]domaingraph.Node, 0, pageSize+1+len(overlay.putNodes))
+	storageCursor := scan.Cursor
+	for len(items) < pageSize+1 {
+		scan.Cursor = storageCursor
+		scan.Limit = min(500, pageSize+1-len(items))
+		base, next, examined, scanErr := store.ScanNodesByDomain(ctx, scan)
+		stats.IndexEntriesScanned += examined
+		stats.NodesLoaded += len(base)
+		if scanErr != nil {
+			return nil, "", stats, mapStorageError(scanErr)
+		}
+		for _, node := range base {
+			if _, deleted := overlay.deleted[node.ID]; deleted {
+				continue
+			}
+			if _, replaced := overlay.replaced[node.ID]; replaced {
+				continue
+			}
+			items = append(items, node)
+		}
+		if next == "" {
+			break
+		}
+		storageCursor = next
+	}
+	items = append(items, overlay.putNodes...)
+	stats.IndexEntriesScanned += len(overlay.replaced) + len(overlay.deleted)
+	stats.NodesLoaded += len(overlay.putNodes)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID.String() < items[j].ID.String() })
+	if len(items) <= pageSize {
+		return items, "", stats, nil
+	}
+	items = items[:pageSize]
+	next := encodeNodePageCursor(tx, nodePageCursor{OverlayOps: overlay.operations, AfterNodeID: items[len(items)-1].ID.String()})
+	return items, next, stats, nil
+}
+
+func boundedGraphPageSize(pageSize int) int {
+	if pageSize <= 0 || pageSize > 500 {
+		return 500
+	}
+	return pageSize
+}
+
+func (m *Module) nodeOverlayPageSnapshot(tx sessionmodel.GraphTransaction, cursor nodePageCursor, limit int) (nodeOverlayPage, error) {
 	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	merged := mergeNodes(base, o, mustDomainID(tx.DomainID))
-	m.mu.Unlock()
-	return paginateNodes(merged, pageSize, pageToken)
+	defer m.mu.Unlock()
+	page := nodeOverlayPage{replaced: map[domaingraph.NodeID]struct{}{}, deleted: map[domaingraph.NodeID]struct{}{}}
+	overlay := m.overlays[tx.ID]
+	if overlay == nil {
+		if cursor.AfterNodeID != "" && cursor.OverlayOps != 0 {
+			return nodeOverlayPage{}, fmt.Errorf("%w: page_token transaction overlay changed", ErrInvalidInput)
+		}
+		return page, nil
+	}
+	page.operations = overlay.opCount
+	if cursor.AfterNodeID != "" && cursor.OverlayOps != overlay.opCount {
+		return nodeOverlayPage{}, fmt.Errorf("%w: page_token transaction overlay changed", ErrInvalidInput)
+	}
+	ids := make([]domaingraph.NodeID, 0, len(overlay.putNodes))
+	domainID := mustDomainID(tx.DomainID)
+	for id, node := range overlay.putNodes {
+		page.replaced[id] = struct{}{}
+		if node.DomainID == domainID && (cursor.AfterNodeID == "" || id.String() > cursor.AfterNodeID) {
+			ids = append(ids, id)
+		}
+	}
+	for id := range overlay.deleteNodes {
+		page.deleted[id] = struct{}{}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	page.putNodes = make([]domaingraph.Node, 0, len(ids))
+	for _, id := range ids {
+		page.putNodes = append(page.putNodes, cloneNode(overlay.putNodes[id]))
+	}
+	return page, nil
+}
+
+func decodeNodePageCursor(tx sessionmodel.GraphTransaction, token string) (nodePageCursor, error) {
+	if token == "" {
+		return nodePageCursor{}, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, nodePageTokenPrefix))
+	if err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	var cursor nodePageCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	want := nodePageCursorChecksum(cursor)
+	if subtle.ConstantTimeCompare([]byte(cursor.Checksum), []byte(want)) != 1 || cursor.TransactionID != tx.ID || cursor.BaseRevision != tx.BaseRevision {
+		return nodePageCursor{}, fmt.Errorf("%w: page_token does not match transaction view", ErrInvalidInput)
+	}
+	if _, err := uuid.Parse(cursor.AfterNodeID); err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	return cursor, nil
+}
+
+func encodeNodePageCursor(tx sessionmodel.GraphTransaction, cursor nodePageCursor) string {
+	cursor.TransactionID = tx.ID
+	cursor.BaseRevision = tx.BaseRevision
+	cursor.Checksum = nodePageCursorChecksum(cursor)
+	payload, _ := json.Marshal(cursor)
+	return nodePageTokenPrefix + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func nodePageCursorChecksum(cursor nodePageCursor) string {
+	cursor.Checksum = ""
+	payload, _ := json.Marshal(cursor)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 func (m *Module) listEdgesLocal(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
@@ -2729,65 +2986,112 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransac
 	if scan.Direction == graphquery.AdjacencyDirectionIn {
 		storageDirection = graphstorage.AdjacencyDirectionIn
 	}
+	limit := scan.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	storageScan := graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: id, Label: label, Direction: storageDirection, Limit: limit, Cursor: scan.Cursor}
 	snapshotRev, snapshoted := snapshotRevision(tx)
-	if overlaySnapshot != nil || snapshoted {
-		view := transactionEdgeView{store: store, overlay: overlaySnapshot, revision: snapshotRev, snapshoted: snapshoted}
-		var endpointEdges []domaingraph.Edge
-		if scan.Direction == graphquery.AdjacencyDirectionIn {
-			endpointEdges, err = view.incoming(ctx, id)
-		} else {
-			endpointEdges, err = view.outgoing(ctx, id)
+	if snapshoted {
+		edgeIDs, next, examined, scanErr := store.ScanAdjacencyAt(ctx, storageScan, snapshotRev, limit)
+		stats.IndexEntriesScanned = examined
+		if scanErr != nil {
+			return nil, "", stats, mapStorageError(scanErr)
 		}
-		if err != nil {
-			return nil, "", stats, err
-		}
-		cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
-		if err != nil {
-			return nil, "", stats, mapStorageError(err)
-		}
-		items := make([]domaingraph.Edge, 0, len(endpointEdges))
-		for _, edge := range endpointEdges {
-			if edge.DomainID != mustDomainID(tx.DomainID) || !domaingraph.EdgeHasLabels(edge, []string{label}) {
-				continue
+		out := make([]domaingraph.Edge, 0, len(edgeIDs))
+		for _, edgeID := range edgeIDs {
+			edge, readErr := store.GetEdgeAt(ctx, edgeID, snapshotRev)
+			if readErr != nil {
+				return nil, "", stats, mapStorageError(readErr)
 			}
-			key := adjacencyServiceKey(edge)
-			if cursorKey != "" && key <= cursorKey {
-				continue
-			}
-			items = append(items, cloneEdge(edge))
-		}
-		sort.Slice(items, func(i, j int) bool { return adjacencyServiceKey(items[i]) < adjacencyServiceKey(items[j]) })
-		limit := scan.Limit
-		if limit <= 0 || limit > len(items) {
-			limit = len(items)
-		}
-		out := make([]domaingraph.Edge, 0, limit)
-		for _, edge := range items[:limit] {
 			out = append(out, cloneEdge(edge))
 		}
-		next := ""
-		if limit < len(items) && limit > 0 {
-			next = graphstorage.EncodeIndexCursor(adjacencyServiceKey(items[limit-1]))
-		}
-		stats.IndexEntriesScanned = len(items)
 		stats.EdgesLoaded = len(out)
 		return out, next, stats, nil
 	}
-	edgeIDs, next, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: id, Label: label, Direction: storageDirection, Limit: scan.Limit, Cursor: scan.Cursor})
+	if overlaySnapshot != nil {
+		out, next, examined, loaded, scanErr := scanAdjacencyWithOverlay(ctx, store, mustDomainID(tx.DomainID), id, label, storageDirection, limit, scan.Cursor, overlaySnapshot)
+		stats.IndexEntriesScanned = examined
+		stats.EdgesLoaded = loaded
+		if scanErr != nil {
+			return nil, "", stats, scanErr
+		}
+		return out, next, stats, nil
+	}
+	edgeIDs, next, err := store.ScanAdjacency(ctx, storageScan)
 	if err != nil {
 		return nil, "", stats, mapStorageError(err)
 	}
 	stats.IndexEntriesScanned = len(edgeIDs)
 	out := make([]domaingraph.Edge, 0, len(edgeIDs))
 	for _, edgeID := range edgeIDs {
-		edge, err := store.GetEdge(ctx, edgeID)
-		if err != nil {
-			return nil, "", stats, mapStorageError(err)
+		edge, readErr := store.GetEdge(ctx, edgeID)
+		if readErr != nil {
+			return nil, "", stats, mapStorageError(readErr)
 		}
 		out = append(out, cloneEdge(edge))
 	}
 	stats.EdgesLoaded = len(out)
 	return out, next, stats, nil
+}
+
+func scanAdjacencyWithOverlay(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, nodeID domaingraph.NodeID, label string, direction graphstorage.AdjacencyDirection, limit int, cursor string, overlaySnapshot *overlay) ([]domaingraph.Edge, string, int, int, error) {
+	storageLimit := limit
+	edgeIDs, storageNext, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{
+		DomainID: domainID, NodeID: nodeID, Label: label, Direction: direction, Limit: storageLimit, Cursor: cursor,
+	})
+	if err != nil {
+		return nil, "", 0, 0, mapStorageError(err)
+	}
+	examined := len(edgeIDs)
+	loaded := 0
+	items := make([]domaingraph.Edge, 0, len(edgeIDs)+len(overlaySnapshot.putEdges))
+	for _, edgeID := range edgeIDs {
+		if _, deleted := overlaySnapshot.deleteEdges[edgeID]; deleted {
+			continue
+		}
+		if _, replaced := overlaySnapshot.putEdges[edgeID]; replaced {
+			continue
+		}
+		edge, readErr := store.GetEdge(ctx, edgeID)
+		if readErr != nil {
+			return nil, "", examined, loaded, mapStorageError(readErr)
+		}
+		loaded++
+		items = append(items, cloneEdge(edge))
+	}
+	cursorKey, err := graphstorage.DecodeIndexCursor(cursor)
+	if err != nil {
+		return nil, "", examined, loaded, mapStorageError(err)
+	}
+	storageBoundary := ""
+	if storageNext != "" {
+		storageBoundary, err = graphstorage.DecodeIndexCursor(storageNext)
+		if err != nil {
+			return nil, "", examined, loaded, mapStorageError(err)
+		}
+	}
+	for _, edge := range overlaySnapshot.putEdges {
+		examined++
+		if edge.DomainID != domainID || !domaingraph.EdgeHasLabels(edge, []string{label}) {
+			continue
+		}
+		if direction == graphstorage.AdjacencyDirectionIn && edge.ToID != nodeID || direction == graphstorage.AdjacencyDirectionOut && edge.FromID != nodeID {
+			continue
+		}
+		key := adjacencyServiceKey(edge)
+		if cursorKey != "" && key <= cursorKey || storageBoundary != "" && key > storageBoundary {
+			continue
+		}
+		loaded++
+		items = append(items, cloneEdge(edge))
+	}
+	sort.Slice(items, func(i, j int) bool { return adjacencyServiceKey(items[i]) < adjacencyServiceKey(items[j]) })
+	if len(items) > limit {
+		items = items[:limit]
+		return items, graphstorage.EncodeIndexCursor(adjacencyServiceKey(items[len(items)-1])), examined, loaded, nil
+	}
+	return items, storageNext, examined, loaded, nil
 }
 
 func (m *Module) ScanSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.SubtreeScan) (graphquery.SubtreeResult, graphquery.IndexedReadStats, error) {

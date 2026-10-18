@@ -39,6 +39,8 @@ const (
 	OperatorCompoundIndex      OperatorKind = "compound_ordered_index_scan"
 	OperatorSemanticCandidates OperatorKind = "semantic_candidate_scan"
 	OperatorSubtree            OperatorKind = "bounded_subtree_scan"
+	OperatorNodeScan           OperatorKind = "node_scan"
+	OperatorCollectTraversal   OperatorKind = "bounded_collect_traversal"
 	OperatorFullGraph          OperatorKind = "bounded_full_graph_scan"
 	OperatorFilter             OperatorKind = "residual_filter"
 	OperatorProject            OperatorKind = "project"
@@ -69,6 +71,7 @@ const (
 	AccessCompoundProperty AccessKind = "compound_ordered_property_indexes"
 	AccessSemantic         AccessKind = "semantic_candidates"
 	AccessAdjacency        AccessKind = "adjacency_index"
+	AccessNodeScan         AccessKind = "node_scan"
 	AccessFullGraph        AccessKind = "full_graph"
 )
 

@@ -19,7 +19,7 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx8"
+	PlannerVersion = "qrx9"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -69,7 +69,7 @@ const (
 	// PlanLegacyBridge means the API adapter must execute the statement exactly
 	// once through its existing implementation.
 	PlanLegacyBridge PlanKind = "legacy_bridge"
-	// PlanIndexed executes a migrated QRX7 node access family directly.
+	// PlanIndexed executes a migrated native read family directly.
 	PlanIndexed PlanKind = "indexed"
 )
 
@@ -81,6 +81,7 @@ type PreparedQuery struct {
 	Planning          PlanningContext
 	Kind              PlanKind
 	UnsupportedReason string
+	readViewIdentity  string
 }
 
 // RequiresLegacy reports whether the existing adapter must remain the sole
@@ -89,9 +90,9 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX7 executes indexed node and
-// semantic plans directly; later plan families can still provide an explicit
-// temporary legacy source for neutral QRX6 shaping.
+// Engine implements the neutral query facade. Indexed, traversal, and bounded
+// broad read plans execute directly; later plan families can still provide an
+// explicit temporary legacy source for neutral QRX6 shaping.
 type Engine struct {
 	ports Ports
 }
@@ -169,7 +170,7 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	return diagnostics, nil
 }
 
-// Execute runs migrated QRX7 indexed node plans directly. An explicit legacy
+// Execute runs migrated native read plans directly. An explicit legacy
 // row source remains available for adapter-owned families that only migrated
 // neutral shaping in QRX6.
 func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
@@ -199,6 +200,7 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 	query := *prepared.Statement.Read
 	var source queryexecution.Operator
 	var cursor indexedCursor
+	readViewIdentity := ""
 	if execution.LegacyRows != nil {
 		source = queryexecution.NewLegacySource(execution.LegacyRows, budget.BatchSize, tracker)
 		query.Predicate = prepared.Physical.ResidualPredicate
@@ -206,6 +208,11 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		if prepared.Kind != PlanIndexed {
 			return querylogical.Result{}, unsupportedPlan(prepared)
 		}
+		readViewIdentity, err = e.readViewIdentity(ctx, execution.Transaction)
+		if err != nil {
+			return querylogical.Result{}, err
+		}
+		prepared.readViewIdentity = readViewIdentity
 		cursor, err = decodeIndexedCursor(prepared)
 		if err != nil {
 			return querylogical.Result{}, err
@@ -230,9 +237,25 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		Now:        execution.Now,
 	})
 	if err != nil {
+		// A graph page can detect an overlay generation change before shaping
+		// reaches the normal post-execution check. Prefer a typed stale-cursor
+		// result over surfacing that internal page-token rejection as a generic
+		// dependency error.
+		if execution.LegacyRows == nil && execution.Transaction.Mode == sessionmodel.TransactionModeReadWrite && ctx.Err() == nil {
+			if currentReadView, viewErr := e.readViewIdentity(ctx, execution.Transaction); viewErr == nil && currentReadView != readViewIdentity {
+				return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
+			}
+		}
 		return querylogical.Result{}, err
 	}
 	if execution.LegacyRows == nil {
+		currentReadView, viewErr := e.readViewIdentity(ctx, execution.Transaction)
+		if viewErr != nil {
+			return querylogical.Result{}, viewErr
+		}
+		if currentReadView != readViewIdentity {
+			return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
+		}
 		result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor)
 	}
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
@@ -363,6 +386,26 @@ func IsUnsupportedPlan(err error) bool {
 	}
 	var queryErr *querylogical.QueryError
 	return errors.As(err, &queryErr) && queryErr.Code == querylogical.ErrorUnsupportedPlan
+}
+
+func (e *Engine) readViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := contextQueryError("read query view identity", ctx.Err()); err != nil {
+		return "", err
+	}
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
+		return "0", nil
+	}
+	if e.ports.Entities == nil {
+		return "", querylogical.NewError(querylogical.ErrorInternal, "read query view identity", "entity reader is required", nil)
+	}
+	identity, err := e.ports.Entities.ReadViewIdentity(ctx, tx)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return "", contextQueryError("read query view identity", contextErr)
+	}
+	if err != nil {
+		return "", err
+	}
+	return identity, nil
 }
 
 func contextQueryError(operation string, err error) error {
