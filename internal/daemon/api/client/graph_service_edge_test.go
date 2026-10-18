@@ -226,7 +226,7 @@ func TestQueryServiceExecuteGQLSetUpdatesNodeProperties(t *testing.T) {
 	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: 'Martin'})"}); err != nil {
 		t.Fatalf("insert person: %v", err)
 	}
-	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person {name: 'Martin'}) SET p.age = 57, p.sex = 'Male' RETURN p, p.age, p.sex"})
+	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person {name: 'Martin'}) SET p.age = 57, p.sex = 'Male' RETURN GRAPH p, p.age, p.sex"})
 	if err != nil {
 		t.Fatalf("set properties: %v", err)
 	}
@@ -240,6 +240,9 @@ func TestQueryServiceExecuteGQLSetUpdatesNodeProperties(t *testing.T) {
 	fields := rows[0].GetFields()
 	if fields["p"].GetNode().GetProperties().AsMap()["age"] != float64(57) || fields["p.sex"].GetScalar().GetStringValue() != "Male" {
 		t.Fatalf("unexpected update row: %+v", rows[0])
+	}
+	if len(res.GetResult().GetGraph().GetNodes()) != 1 || res.GetResult().GetGraph().GetNodes()[0].GetProperties().AsMap()["age"] != float64(57) {
+		t.Fatalf("unexpected updated result graph: %+v", res.GetResult().GetGraph())
 	}
 	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
 		t.Fatalf("CommitTransaction() error = %v", err)

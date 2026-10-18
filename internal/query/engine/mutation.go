@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
@@ -487,10 +488,41 @@ func prepareMutationGraph(rows []queryexecution.BindingRow, include bool) {
 		return
 	}
 	for index := range rows {
-		for _, node := range rows[index].Nodes {
+		nodeIndex := make(map[string]int, len(rows[index].GraphNodes)+len(rows[index].Nodes))
+		for nodePosition, node := range rows[index].GraphNodes {
+			nodeIndex[node.ID.String()] = nodePosition
+		}
+		nodeAliases := make([]string, 0, len(rows[index].Nodes))
+		for alias := range rows[index].Nodes {
+			nodeAliases = append(nodeAliases, alias)
+		}
+		sort.Strings(nodeAliases)
+		for _, alias := range nodeAliases {
+			node := rows[index].Nodes[alias]
+			if position, ok := nodeIndex[node.ID.String()]; ok {
+				rows[index].GraphNodes[position] = node
+				continue
+			}
+			nodeIndex[node.ID.String()] = len(rows[index].GraphNodes)
 			rows[index].GraphNodes = append(rows[index].GraphNodes, node)
 		}
-		for _, edge := range rows[index].Edges {
+
+		edgeIndex := make(map[string]int, len(rows[index].GraphEdges)+len(rows[index].Edges))
+		for edgePosition, edge := range rows[index].GraphEdges {
+			edgeIndex[edge.ID.String()] = edgePosition
+		}
+		edgeAliases := make([]string, 0, len(rows[index].Edges))
+		for alias := range rows[index].Edges {
+			edgeAliases = append(edgeAliases, alias)
+		}
+		sort.Strings(edgeAliases)
+		for _, alias := range edgeAliases {
+			edge := rows[index].Edges[alias]
+			if position, ok := edgeIndex[edge.ID.String()]; ok {
+				rows[index].GraphEdges[position] = edge
+				continue
+			}
+			edgeIndex[edge.ID.String()] = len(rows[index].GraphEdges)
 			rows[index].GraphEdges = append(rows[index].GraphEdges, edge)
 		}
 	}
