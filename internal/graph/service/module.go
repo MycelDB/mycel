@@ -443,6 +443,50 @@ func (m *Module) readViewIdentityLocal(tx sessionmodel.GraphTransaction) string 
 	return "0"
 }
 
+type mutationState struct {
+	transactionID string
+	overlay       *overlay
+}
+
+// CaptureMutationState snapshots the staged transaction overlay for one
+// statement-level savepoint. The opaque value is consumed only by
+// RestoreMutationState.
+func (m *Module) CaptureMutationState(ctx context.Context, tx sessionmodel.GraphTransaction) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := ensureWritable(tx); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := mutationState{transactionID: tx.ID}
+	if current := m.overlays[tx.ID]; current != nil {
+		state.overlay = current.clone()
+	}
+	return state, nil
+}
+
+// RestoreMutationState atomically replaces the staged transaction overlay with
+// a previously captured statement savepoint.
+func (m *Module) RestoreMutationState(ctx context.Context, tx sessionmodel.GraphTransaction, captured any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state, ok := captured.(mutationState)
+	if !ok || state.transactionID == "" || state.transactionID != tx.ID {
+		return fmt.Errorf("%w: invalid mutation savepoint", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state.overlay == nil {
+		delete(m.overlays, tx.ID)
+		return nil
+	}
+	m.overlays[tx.ID] = state.overlay.clone()
+	return nil
+}
+
 func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
 	traceStart := time.Now()
 	var timing graphStageTiming

@@ -38,14 +38,31 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	if err != nil {
 		return querylogical.Result{}, err
 	}
+	savepoint, err := e.ports.Mutations.CaptureMutationState(ctx, execution.Transaction)
+	if err := mutationDependencyError(ctx, "capture mutation savepoint", err); err != nil {
+		return querylogical.Result{}, err
+	}
+	rollback := func(statementErr error) (querylogical.Result, error) {
+		restoreErr := e.ports.Mutations.RestoreMutationState(context.WithoutCancel(ctx), execution.Transaction, savepoint)
+		if restoreErr != nil {
+			return querylogical.Result{}, querylogical.NewError(
+				querylogical.ErrorDependencyFailure,
+				"restore failed mutation statement",
+				fmt.Sprintf("statement failed: %v; restore failed: %v", statementErr, restoreErr),
+				restoreErr,
+			)
+		}
+		return querylogical.Result{}, statementErr
+	}
+
 	mutation := *prepared.Statement.Mutation
 	rows, counters, err := e.runMutation(ctx, execution, prepared, mutation, tracker)
 	if err != nil {
-		return querylogical.Result{}, err
+		return rollback(err)
 	}
 	result, err := shapeMutationResult(ctx, rows, mutation, prepared, execution, tracker, budget)
 	if err != nil {
-		return querylogical.Result{}, err
+		return rollback(err)
 	}
 	result.Counters.NodesInserted = counters.NodesInserted
 	result.Counters.NodesUpdated = counters.NodesUpdated
@@ -422,6 +439,12 @@ func shapeMutationResult(ctx context.Context, rows []queryexecution.BindingRow, 
 		Returns: mutation.Returns, Aggregates: mutation.Aggregates, ReturnGraph: mutation.ReturnGraph, Page: mutation.Page,
 	}
 	sourceRows := rows
+	for index := range sourceRows {
+		// Mutation continuations preserve the legacy output-offset contract. A
+		// native read-source checkpoint would be rejected by mutation pagination
+		// and must never escape as the response cursor.
+		sourceRows[index].Cursor = ""
+	}
 	if mutation.Kind == querylogical.MutationInsertNode || mutation.Kind == querylogical.MutationCreateRelationship {
 		sourceRows = nil
 	}

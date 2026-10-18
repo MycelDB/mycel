@@ -67,11 +67,29 @@ type panicMutationWriter struct{}
 type recordingMutationWriter struct {
 	panicMutationWriter
 	creates int
+	cancel  context.CancelFunc
 }
 
+func (panicMutationWriter) CaptureMutationState(context.Context, sessionmodel.GraphTransaction) (any, error) {
+	return struct{}{}, nil
+}
+func (panicMutationWriter) RestoreMutationState(context.Context, sessionmodel.GraphTransaction, any) error {
+	return nil
+}
+
+func (w *recordingMutationWriter) CaptureMutationState(context.Context, sessionmodel.GraphTransaction) (any, error) {
+	return w.creates, nil
+}
+func (w *recordingMutationWriter) RestoreMutationState(_ context.Context, _ sessionmodel.GraphTransaction, state any) error {
+	w.creates = state.(int)
+	return nil
+}
 func (w *recordingMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
 	w.creates++
-	return graph.Node{}, nil
+	if w.cancel != nil {
+		w.cancel()
+	}
+	return graph.Node{ID: uuid.New(), Labels: []string{"Note"}}, nil
 }
 
 func (panicMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
@@ -232,6 +250,50 @@ func TestEngineExecuteMutationValidatesCursorBeforeWriting(t *testing.T) {
 	assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
 	if writer.creates != 0 {
 		t.Fatalf("CreateNode calls = %d, want 0", writer.creates)
+	}
+}
+
+func TestEngineExecuteMutationRestoresSavepointAfterShapingBudgetFailure(t *testing.T) {
+	entities := &recordingEntityReader{}
+	writer := &recordingMutationWriter{}
+	engine := queryengine.New(queryengine.Ports{Entities: entities, Mutations: writer})
+	tx := sessionmodel.GraphTransaction{ID: "tx-1", Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind:    querylogical.MutationMergeNode,
+		Node:    &querylogical.NodePattern{Alias: "n", Labels: []string{"Note"}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: "n"}},
+	})
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{
+		Transaction: tx, Budget: queryexecution.Budget{MaxMemoryBytes: 1},
+	}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+	if writer.creates != 0 {
+		t.Fatalf("staged creates after failed statement = %d, want 0", writer.creates)
+	}
+}
+
+func TestEngineExecuteMutationRestoresSavepointWhenDependencyCancelsAfterWriting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	entities := &recordingEntityReader{}
+	writer := &recordingMutationWriter{cancel: cancel}
+	engine := queryengine.New(queryengine.Ports{Entities: entities, Mutations: writer})
+	tx := sessionmodel.GraphTransaction{ID: "tx-1", Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}
+	statement := querylogical.MutationStatement(querylogical.SourceGQL, querylogical.Mutation{
+		Kind: querylogical.MutationMergeNode, Node: &querylogical.NodePattern{Alias: "n", Labels: []string{"Note"}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: "n"}},
+	})
+	prepared, err := engine.Prepare(ctx, broadPlanningContext(tx), statement)
+	if err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	_, err = engine.Execute(ctx, queryengine.ExecutionContext{Transaction: tx}, prepared)
+	assertQueryErrorCode(t, err, querylogical.ErrorCanceled)
+	if writer.creates != 0 {
+		t.Fatalf("staged creates after canceled statement = %d, want 0", writer.creates)
 	}
 }
 

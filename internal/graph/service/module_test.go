@@ -481,6 +481,45 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 }
 
+func TestMutationStateRestoresCompleteTransactionOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	original, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "original"})
+	if err != nil {
+		t.Fatalf("CreateNode(original) error = %v", err)
+	}
+	savepoint, err := m.CaptureMutationState(ctx, tx)
+	if err != nil {
+		t.Fatalf("CaptureMutationState() error = %v", err)
+	}
+	updatedContent := "updated"
+	if _, err := m.UpdateNode(ctx, tx, domaingraph.UpdateNodeInput{NodeID: original.ID.String(), Content: &updatedContent, UpdateMask: []string{"content"}}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	created, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "created-after-savepoint"})
+	if err != nil {
+		t.Fatalf("CreateNode(after savepoint) error = %v", err)
+	}
+	if err := m.RestoreMutationState(ctx, tx, savepoint); err != nil {
+		t.Fatalf("RestoreMutationState() error = %v", err)
+	}
+	got, err := m.GetNode(ctx, tx, original.ID.String())
+	if err != nil {
+		t.Fatalf("GetNode(original) error = %v", err)
+	}
+	if got.Content != "original" {
+		t.Fatalf("restored original content = %q", got.Content)
+	}
+	if _, err := m.GetNode(ctx, tx, created.ID.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetNode(created after savepoint) error = %v, want ErrNotFound", err)
+	}
+	identity, err := m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "1" {
+		t.Fatalf("restored identity = %q, %v; want 1", identity, err)
+	}
+}
+
 func TestListNodesUsesCursorDrivenPagesBoundToTransactionOverlay(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)

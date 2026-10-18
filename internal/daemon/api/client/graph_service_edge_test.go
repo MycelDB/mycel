@@ -1,11 +1,17 @@
 package client
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	graph "github.com/myceldb/mycel/internal/graph/model"
+	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -161,6 +167,19 @@ func nativeGQLQueryService(fixture domainPolicyClientAPIFixture) *QueryService {
 		WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil))
 }
 
+type failSecondUpdateGraph struct {
+	daegraph.Manager
+	updates int
+}
+
+func (g *failSecondUpdateGraph) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error) {
+	g.updates++
+	if g.updates == 2 {
+		return graph.Node{}, errors.New("injected second update failure")
+	}
+	return g.Manager.UpdateNode(ctx, tx, input)
+}
+
 func TestQueryServiceExecuteGQLComparisonPredicates(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	querySvc := nativeGQLQueryService(fixture)
@@ -255,6 +274,35 @@ func TestQueryServiceExecuteGQLSetUpdatesNodeProperties(t *testing.T) {
 	readFields := read.GetResult().GetRows()[0].GetFields()
 	if readFields["p.age"].GetScalar().GetNumberValue() != 57 || readFields["p.sex"].GetScalar().GetStringValue() != "Male" {
 		t.Fatalf("unexpected persisted properties: %+v", read.GetResult().GetRows())
+	}
+}
+
+func TestQueryServiceExecuteGQLMutationRestoresOverlayAfterLaterWriteFailure(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	normalService := nativeGQLQueryService(fixture)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, name := range []string{"Ada", "Grace"} {
+		if _, err := normalService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: '" + name + "'})"}); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+	}
+	failing := &failSecondUpdateGraph{Manager: fixture.graphs}
+	engine := queryengine.New(queryengine.Ports{Entities: failing, Traversals: failing, Indexes: failing, Mutations: failing})
+	failingService := NewQueryService(fixture.sessions, failing, fixture.spaces).WithQueryEngine(engine)
+	if _, err := failingService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) SET p.status = 'changed' RETURN p"}); err == nil {
+		t.Fatal("set with injected second failure error = nil, want error")
+	}
+	result, err := normalService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) RETURN p"})
+	if err != nil {
+		t.Fatalf("read after failed mutation: %v", err)
+	}
+	if len(result.GetResult().GetRows()) != 2 {
+		t.Fatalf("rows after failed mutation = %d, want 2", len(result.GetResult().GetRows()))
+	}
+	for _, row := range result.GetResult().GetRows() {
+		if _, changed := row.GetFields()["p"].GetNode().GetProperties().AsMap()["status"]; changed {
+			t.Fatalf("failed statement left staged update: %+v", row)
+		}
 	}
 }
 
@@ -434,6 +482,39 @@ func TestQueryServiceExecuteGQLMergeNodeAndRelationship(t *testing.T) {
 	}
 	if got := len(listed.GetResult().GetRows()); got != 1 {
 		t.Fatalf("merged relationship rows = %d, want 1", got)
+	}
+}
+
+func TestQueryServiceExecuteGQLMutationContinuationUsesOutputOffset(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := nativeGQLQueryService(fixture)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	for _, name := range []string{"Ada", "Grace"} {
+		query := "INSERT (:Person {name: '" + name + "', role: 'member'})"
+		if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query}); err != nil {
+			t.Fatalf("insert %s: %v", name, err)
+		}
+	}
+	query := "MERGE (p:Person {role: 'member'}) RETURN p"
+	first, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query, PageSize: 1})
+	if err != nil {
+		t.Fatalf("first mutation page: %v", err)
+	}
+	token := first.GetResult().GetNextPageToken()
+	if token != "1" || len(first.GetResult().GetRows()) != 1 {
+		t.Fatalf("first mutation page token=%q rows=%+v", token, first.GetResult().GetRows())
+	}
+	second, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query, PageSize: 1, PageToken: token})
+	if err != nil {
+		t.Fatalf("second mutation page: %v", err)
+	}
+	if len(second.GetResult().GetRows()) != 1 || second.GetResult().GetNextPageToken() != "" {
+		t.Fatalf("second mutation page token=%q rows=%+v", second.GetResult().GetNextPageToken(), second.GetResult().GetRows())
+	}
+	firstID := first.GetResult().GetRows()[0].GetFields()["p"].GetNode().GetNodeId()
+	secondID := second.GetResult().GetRows()[0].GetFields()["p"].GetNode().GetNodeId()
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("mutation continuation IDs first=%q second=%q", firstID, secondID)
 	}
 }
 
