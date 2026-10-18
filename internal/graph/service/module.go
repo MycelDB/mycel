@@ -548,6 +548,18 @@ func (m *Module) lockTransactionMutation(ctx context.Context, transactionID stri
 	return context.WithValue(ctx, transactionMutationLockContextKey{}, owner), release, nil
 }
 
+func (m *Module) lockActiveTransactionMutation(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, func(), error) {
+	lockedCtx, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	return lockedCtx, release, nil
+}
+
 func (m *Module) validateTransactionActive(ctx context.Context, tx sessionmodel.GraphTransaction) error {
 	m.mu.Lock()
 	finalized := m.finalizedTransactions[tx.ID]
@@ -724,15 +736,12 @@ func (m *Module) recordEdgeMutationLocked(transactionID string, o *overlay, id d
 }
 
 func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.Node{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.Node{}, err
-	}
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -803,15 +812,12 @@ func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.UpdateNodeInput) (domaingraph.Node, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.Node{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.Node{}, err
-	}
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -879,15 +885,12 @@ func (m *Module) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.Node{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.Node{}, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
@@ -911,15 +914,12 @@ func (m *Module) UpsertNode(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) DeleteNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return nil, nil, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return nil, nil, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return nil, nil, err
 	}
@@ -1029,15 +1029,12 @@ func (m *Module) ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction
 }
 
 func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.EdgeInput) (domaingraph.Edge, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.Edge{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.Edge{}, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1114,15 +1111,12 @@ func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.UpdateEdgeInput) (domaingraph.Edge, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.Edge{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.Edge{}, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1169,15 +1163,12 @@ func (m *Module) UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (string, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return "", lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return "", err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return "", err
 	}
@@ -1198,15 +1189,12 @@ func (m *Module) DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransactio
 }
 
 func (m *Module) ReplaceReferences(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.ReplaceReferencesInput) (domaingraph.ReplaceReferencesResult, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.ReplaceReferencesResult{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.ReplaceReferencesResult{}, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.ReplaceReferencesResult{}, err
 	}
@@ -1399,15 +1387,12 @@ func (m *Module) GetParent(ctx context.Context, tx sessionmodel.GraphTransaction
 }
 
 func (m *Module) MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return domaingraph.Edge{}, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return domaingraph.Edge{}, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1468,15 +1453,12 @@ func (m *Module) MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransacti
 }
 
 func (m *Module) ReorderChildren(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error) {
-	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
 	if lockErr != nil {
 		return nil, lockErr
 	}
 	ctx = lockedCtx
 	defer releaseMutation()
-	if err := m.validateTransactionActive(ctx, tx); err != nil {
-		return nil, err
-	}
 	if err := ensureWritable(tx); err != nil {
 		return nil, err
 	}

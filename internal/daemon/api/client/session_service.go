@@ -319,29 +319,9 @@ func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clien
 	if err != nil {
 		return nil, err
 	}
-	current, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
+	tx, err := s.discardAndTransitionTransaction(ctx, principal.PrincipalID, req.GetTransactionId(), "rollback", "rolled back", s.sessions.RollbackTransaction)
 	if err != nil {
-		return nil, mapSessionError(err, "rollback transaction")
-	}
-	if current.State != sessionmodel.TransactionStateActive {
-		if s.graphs != nil {
-			_ = s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), current)
-		}
-		return &clientv1.RollbackTransactionResponse{Transaction: mapGraphTransaction(current)}, nil
-	}
-	if s.graphs != nil {
-		if err := s.graphs.DiscardTransactionGraph(ctx, req.GetTransactionId()); err != nil {
-			return nil, mapGraphError(err, "rollback graph transaction")
-		}
-	}
-	tx, err := s.sessions.RollbackTransaction(context.WithoutCancel(ctx), principal.PrincipalID, req.GetTransactionId())
-	if err != nil {
-		return nil, mapSessionError(err, "rollback transaction")
-	}
-	if s.graphs != nil {
-		if err := s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx); err != nil {
-			return nil, mapGraphError(err, "acknowledge rolled back graph transaction")
-		}
+		return nil, err
 	}
 	return &clientv1.RollbackTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }
@@ -358,31 +338,47 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	current, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
+	tx, err := s.discardAndTransitionTransaction(ctx, principal.PrincipalID, req.GetTransactionId(), "close", "closed", s.sessions.CloseTransaction)
 	if err != nil {
-		return nil, mapSessionError(err, "close transaction")
-	}
-	if current.State != sessionmodel.TransactionStateActive {
-		if s.graphs != nil {
-			_ = s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), current)
-		}
-		return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(current)}, nil
-	}
-	if s.graphs != nil {
-		if err := s.graphs.DiscardTransactionGraph(ctx, req.GetTransactionId()); err != nil {
-			return nil, mapGraphError(err, "close graph transaction")
-		}
-	}
-	tx, err := s.sessions.CloseTransaction(context.WithoutCancel(ctx), principal.PrincipalID, req.GetTransactionId())
-	if err != nil {
-		return nil, mapSessionError(err, "close transaction")
-	}
-	if s.graphs != nil {
-		if err := s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx); err != nil {
-			return nil, mapGraphError(err, "acknowledge closed graph transaction")
-		}
+		return nil, err
 	}
 	return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
+}
+
+func (s *TransactionService) discardAndTransitionTransaction(
+	ctx context.Context,
+	principalID string,
+	transactionID string,
+	action string,
+	completedAction string,
+	transition func(context.Context, string, string) (sessionmodel.GraphTransaction, error),
+) (sessionmodel.GraphTransaction, error) {
+	current, err := s.sessions.GetTransaction(ctx, principalID, transactionID)
+	if err != nil {
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, action+" transaction")
+	}
+	finalizeCtx := context.WithoutCancel(ctx)
+	if current.State != sessionmodel.TransactionStateActive {
+		if s.graphs != nil {
+			_ = s.graphs.AcknowledgeTransactionFinalization(finalizeCtx, current)
+		}
+		return current, nil
+	}
+	if s.graphs != nil {
+		if err := s.graphs.DiscardTransactionGraph(ctx, transactionID); err != nil {
+			return sessionmodel.GraphTransaction{}, mapGraphError(err, action+" graph transaction")
+		}
+	}
+	tx, err := transition(finalizeCtx, principalID, transactionID)
+	if err != nil {
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, action+" transaction")
+	}
+	if s.graphs != nil {
+		if err := s.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx); err != nil {
+			return sessionmodel.GraphTransaction{}, mapGraphError(err, "acknowledge "+completedAction+" graph transaction")
+		}
+	}
+	return tx, nil
 }
 
 func mapGraphSession(session sessionmodel.GraphSession) *clientv1.GraphSession {
