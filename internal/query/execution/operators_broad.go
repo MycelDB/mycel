@@ -186,8 +186,8 @@ func (o *CollectExpand) collectStep(ctx context.Context, row *BindingRow, starts
 				if len(page.Edges) > limit {
 					return nil, nil, nil, nil, invalidState("scan broad traversal adjacency", "access method returned an oversized page")
 				}
-				if len(page.Edges) == 0 && page.NextCursor != "" {
-					return nil, nil, nil, nil, querylogical.NewError(querylogical.ErrorDependencyFailure, "scan broad traversal adjacency", "access method returned an empty non-terminal page", nil)
+				if len(page.Edges) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+					return nil, nil, nil, nil, querylogical.NewError(querylogical.ErrorDependencyFailure, "scan broad traversal adjacency", "access method returned a non-progressing empty page", nil)
 				}
 				if err := withTraversalPageMemory(o.tracker, page.Edges, func() error {
 					if o.tracker != nil {

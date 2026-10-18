@@ -403,6 +403,8 @@ func (s *LocalStore) applyCheckpointEdgePut(e graph.Edge, loc RecordLocation, pe
 	_ = s.edgeIndex.Put(context.Background(), stored)
 	if !persistentAdjacencyIndexes {
 		s.addEdgeAdjacencyIndexes(stored)
+	} else {
+		s.addEdgeAdjacencyOrders(stored)
 	}
 	if !persistentQueryIndexes {
 		for _, idx := range s.configuredIndexes[e.DomainID] {

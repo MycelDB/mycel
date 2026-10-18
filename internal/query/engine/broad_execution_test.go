@@ -27,16 +27,32 @@ type changingViewBroadAccess struct {
 	*broadTestAccess
 }
 
-func (a *cancelingBroadAccess) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, limit int, cursor string) ([]graph.Node, string, error) {
-	nodes, next, err := a.broadTestAccess.ListNodes(ctx, tx, limit, cursor)
+func (a *cancelingBroadAccess) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	nodes, next, stats, err := a.broadTestAccess.ScanNodes(ctx, tx, scan)
 	a.cancel()
-	return nodes, next, err
+	return nodes, next, stats, err
 }
 
-func (a *changingViewBroadAccess) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, limit int, cursor string) ([]graph.Node, string, error) {
-	nodes, next, err := a.broadTestAccess.ListNodes(ctx, tx, limit, cursor)
+func (a *changingViewBroadAccess) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	nodes, next, stats, err := a.broadTestAccess.ScanNodes(ctx, tx, scan)
 	a.viewIdentity = "1"
-	return nodes, next, err
+	return nodes, next, stats, err
+}
+
+type emptyProgressBroadAccess struct {
+	*broadTestAccess
+	scanCalls int
+}
+
+func (a *emptyProgressBroadAccess) ScanNodes(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	a.scanCalls++
+	if scan.Cursor == "" {
+		return nil, "progress", graphquery.IndexedReadStats{IndexEntriesScanned: 1}, nil
+	}
+	if scan.Cursor != "progress" {
+		return nil, "", graphquery.IndexedReadStats{}, errors.New("unexpected node scan cursor")
+	}
+	return []graph.Node{a.nodes[0]}, "", graphquery.IndexedReadStats{IndexEntriesScanned: 1, NodesLoaded: 1}, nil
 }
 
 type broadTestAccess struct {
@@ -98,6 +114,11 @@ func (a *broadTestAccess) ListNodes(_ context.Context, tx sessionmodel.GraphTran
 	return append([]graph.Node(nil), a.nodes[start:end]...), next, nil
 }
 
+func (a *broadTestAccess) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	nodes, next, err := a.ListNodes(ctx, tx, scan.Limit, scan.Cursor)
+	return nodes, next, graphquery.IndexedReadStats{IndexEntriesScanned: len(nodes), NodesLoaded: len(nodes)}, err
+}
+
 func (a *broadTestAccess) ListEdges(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Edge, string, error) {
 	a.listEdgeCalls++
 	return nil, "", errors.New("whole-domain edge listing is forbidden")
@@ -136,6 +157,24 @@ func broadOffset(cursor string, length int) (int, error) {
 		return 0, fmt.Errorf("bad cursor %q", cursor)
 	}
 	return offset, nil
+}
+
+func TestEngineBroadNodeScanAcceptsBoundedEmptyProgressPages(t *testing.T) {
+	node := broadNode(90, "Document", 1)
+	access := &emptyProgressBroadAccess{broadTestAccess: newBroadTestAccess([]graph.Node{node})}
+	engine := queryengine.New(queryengine.Ports{Entities: access})
+	tx := sessionmodel.GraphTransaction{ID: "tx-empty-progress", BaseRevision: 90}
+	prepared := prepareBroad(t, engine, tx, broadNodeStatement(10))
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if access.scanCalls != 2 || len(result.Rows) != 1 || result.Rows[0].Fields["node"].Node == nil || result.Rows[0].Fields["node"].Node.ID != node.ID.String() {
+		t.Fatalf("scan calls=%d rows=%+v", access.scanCalls, result.Rows)
+	}
+	if result.Diagnostics.IndexEntriesScanned != 2 || result.Diagnostics.NodesLoaded != 1 {
+		t.Fatalf("diagnostics = %+v", result.Diagnostics)
+	}
 }
 
 func TestEngineBroadNodeScanUsesFinitePagesAndPlanBoundContinuation(t *testing.T) {
@@ -217,6 +256,76 @@ func TestEngineBroadSourceContinuationPreservesPageCheckpointUntilQueryLimit(t *
 	want := []string{nodes[0].ID.String(), nodes[1].ID.String(), nodes[2].ID.String(), nodes[3].ID.String(), nodes[4].ID.String()}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("continued IDs = %v, want %v", got, want)
+	}
+}
+
+func TestQRX9StructuredEdgeRowsPreserveSelfLoops(t *testing.T) {
+	node := broadNode(91, "Document", 1)
+	node.Properties["title"] = "A"
+	loop := broadEdge(91, node, node, "REFERENCES")
+	loop.Properties = map[string]any{"kind": "loop"}
+	access := newBroadTestAccess([]graph.Node{node})
+	access.edges[node.ID.String()] = []graph.Edge{loop}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Traversals: access})
+	tx := sessionmodel.GraphTransaction{ID: "tx-self-loop", BaseRevision: 91}
+	statement := querylogical.ReadStatement(querylogical.Query{
+		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "a", Labels: []string{"Document"}},
+		Steps: []querylogical.Step{{
+			Edge:  querylogical.EdgePattern{Alias: "e", Labels: []string{"REFERENCES"}, Properties: map[string]querylogical.Value{"kind": querylogical.NativeValue("loop")}, Direction: querylogical.DirectionOutgoing},
+			Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "b", Labels: []string{"Document"}, Properties: map[string]querylogical.Value{"title": querylogical.NativeValue("A")}},
+		}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionEdge, Alias: "e", OutputName: "edge"}, {Kind: querylogical.ProjectionNode, Alias: "b", OutputName: "target"}, {Kind: querylogical.ProjectionTree, Alias: "b", OutputName: "tree"}},
+		Page:    querylogical.PageSpec{Size: 10},
+	})
+	prepared := prepareBroad(t, engine, tx, statement)
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0].Fields["edge"].Edge == nil || result.Rows[0].Fields["edge"].Edge.ID != loop.ID.String() || result.Rows[0].Fields["target"].Node == nil || result.Rows[0].Fields["target"].Node.ID != node.ID.String() {
+		t.Fatalf("self-loop rows = %+v", result.Rows)
+	}
+	if tree := result.Rows[0].Fields["tree"].Tree; tree == nil || len(tree.Roots) != 1 || tree.Roots[0].Node.ID != node.ID.String() {
+		t.Fatalf("self-loop tree = %+v", tree)
+	}
+}
+
+func TestQRX9StructuredEdgeRowsPreserveMultiStepCycles(t *testing.T) {
+	root := broadNode(92, "Document", 1)
+	root.Properties["title"] = "A"
+	middle := broadNode(93, "Section", 1)
+	middle.Properties["title"] = "B"
+	first := broadEdge(92, root, middle, "REFERENCES")
+	first.Properties = map[string]any{"kind": "out"}
+	second := broadEdge(93, middle, root, "REFERENCES")
+	second.Properties = map[string]any{"kind": "back"}
+	access := newBroadTestAccess([]graph.Node{root})
+	access.byID[middle.ID.String()] = middle
+	access.edges[root.ID.String()] = []graph.Edge{first}
+	access.edges[middle.ID.String()] = []graph.Edge{second}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Traversals: access})
+	tx := sessionmodel.GraphTransaction{ID: "tx-cycle", BaseRevision: 92}
+	statement := querylogical.ReadStatement(querylogical.Query{
+		Source: querylogical.SourceStructured, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "a", Labels: []string{"Document"}},
+		Steps: []querylogical.Step{
+			{Edge: querylogical.EdgePattern{Alias: "e1", Labels: []string{"REFERENCES"}, Properties: map[string]querylogical.Value{"kind": querylogical.NativeValue("out")}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "b", Labels: []string{"Section"}, Properties: map[string]querylogical.Value{"title": querylogical.NativeValue("B")}}},
+			{Edge: querylogical.EdgePattern{Alias: "e2", Labels: []string{"REFERENCES"}, Properties: map[string]querylogical.Value{"kind": querylogical.NativeValue("back")}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "c", Labels: []string{"Document"}, Properties: map[string]querylogical.Value{"title": querylogical.NativeValue("A")}}},
+		},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionEdge, Alias: "e1", OutputName: "out"}, {Kind: querylogical.ProjectionEdge, Alias: "e2", OutputName: "back"}, {Kind: querylogical.ProjectionNode, Alias: "c", OutputName: "target"}, {Kind: querylogical.ProjectionTree, Alias: "c", OutputName: "tree"}},
+		Page:    querylogical.PageSpec{Size: 10},
+	})
+	prepared := prepareBroad(t, engine, tx, statement)
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0].Fields["out"].Edge == nil || result.Rows[0].Fields["out"].Edge.ID != first.ID.String() || result.Rows[0].Fields["back"].Edge == nil || result.Rows[0].Fields["back"].Edge.ID != second.ID.String() || result.Rows[0].Fields["target"].Node == nil || result.Rows[0].Fields["target"].Node.ID != root.ID.String() {
+		t.Fatalf("cycle rows = %+v", result.Rows)
+	}
+	if tree := result.Rows[0].Fields["tree"].Tree; tree == nil || len(tree.Roots) != 1 || tree.Roots[0].Node.ID != root.ID.String() {
+		t.Fatalf("cycle tree = %+v", tree)
 	}
 }
 

@@ -3,6 +3,7 @@ package graphstorage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -202,43 +203,100 @@ func (s *LocalStore) ScanAdjacency(ctx context.Context, scan AdjacencyScan) ([]g
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
+	cursor, err := decodeIndexCursor(scan.Cursor)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if err := s.ensureReady(); err != nil {
 		return nil, "", err
 	}
-	var byDomain map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
-	if scan.Direction == AdjacencyDirectionIn {
-		byDomain = s.edgeAdjacencyIn
-	} else {
-		byDomain = s.edgeAdjacencyOut
+	identity := adjacencyOrderIdentity{DomainID: scan.DomainID, NodeID: scan.NodeID, Label: scan.Label, Direction: scan.Direction}
+	order := s.currentAdjacencyOrder[identity]
+	if order == nil {
+		return []graph.EdgeID{}, "", nil
 	}
-	entries := byDomain[scan.DomainID][scan.NodeID][scan.Label]
+	iterator := order.IteratorAfter(cursor, cursor != "")
+	limit := scan.Limit
+	if limit <= 0 {
+		limit = int(^uint(0) >> 1)
+	}
+	out := make([]graph.EdgeID, 0, min(limit, 500))
+	last := ""
+	for iterator.HasNext() && len(out) < limit {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		key, id, _ := iterator.Next()
+		last = key
+		out = append(out, id)
+	}
+	if iterator.HasNext() {
+		return out, encodeIndexCursor(last), nil
+	}
+	return out, "", nil
+}
+
+// ScanAdjacencyAt makes bounded progress through the retained multiversion
+// adjacency order and returns only entries visible at revision. The examined
+// count includes historical keys skipped because a different edge version is
+// visible, allowing query budgets to charge the actual index work.
+func (s *LocalStore) ScanAdjacencyAt(ctx context.Context, scan AdjacencyScan, revision uint64, examineLimit int) ([]graph.EdgeID, string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
+	if scan.Limit <= 0 {
+		return nil, "", 0, fmt.Errorf("%w: adjacency scan limit must be positive", ErrInvalidRecord)
+	}
+	if examineLimit <= 0 {
+		examineLimit = scan.Limit
+	}
 	cursor, err := decodeIndexCursor(scan.Cursor)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	keys := make([]string, 0, len(entries))
-	for key := range entries {
-		if cursor != "" && key <= cursor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, "", 0, err
+	}
+	identity := adjacencyOrderIdentity{DomainID: scan.DomainID, NodeID: scan.NodeID, Label: scan.Label, Direction: scan.Direction}
+	order := s.historyAdjacencyOrder[identity]
+	if order == nil {
+		return []graph.EdgeID{}, "", 0, nil
+	}
+	iterator := order.IteratorAfter(cursor, cursor != "")
+	out := make([]graph.EdgeID, 0, scan.Limit)
+	examined := 0
+	last := ""
+	for iterator.HasNext() && examined < examineLimit && len(out) < scan.Limit {
+		if err := ctx.Err(); err != nil {
+			return nil, "", examined, err
+		}
+		key, id, _ := iterator.Next()
+		examined++
+		last = key
+		edge, ok := entityAtRevision(s.edgeHistory[id], revision, func(edge graph.Edge) graph.Edge { return edge })
+		if !ok || encodeAdjacencyKey(edge) != key || !edgeMatchesAdjacencyScan(edge, scan) {
 			continue
 		}
-		keys = append(keys, key)
+		out = append(out, id)
 	}
-	sort.Strings(keys)
-	limit := scan.Limit
-	if limit <= 0 || limit > len(keys) {
-		limit = len(keys)
+	if iterator.HasNext() {
+		return out, encodeIndexCursor(last), examined, nil
 	}
-	out := make([]graph.EdgeID, 0, limit)
-	for _, key := range keys[:limit] {
-		out = append(out, entries[key])
+	return out, "", examined, nil
+}
+
+func edgeMatchesAdjacencyScan(edge graph.Edge, scan AdjacencyScan) bool {
+	if edge.DomainID != scan.DomainID || !edgeHasAnyLabel(edge, []string{scan.Label}) {
+		return false
 	}
-	next := ""
-	if limit < len(keys) && limit > 0 {
-		next = encodeIndexCursor(keys[limit-1])
+	if scan.Direction == AdjacencyDirectionIn {
+		return edge.ToID == scan.NodeID
 	}
-	return out, next, nil
+	return edge.FromID == scan.NodeID
 }
 
 func (s *LocalStore) ScanLabel(ctx context.Context, scan LabelScan) ([]graph.NodeID, string, error) {

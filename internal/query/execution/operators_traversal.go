@@ -182,9 +182,8 @@ func (s *AdjacencySource) nextRow(ctx context.Context) (BindingRow, error) {
 			if len(s.edges) == 0 {
 				if s.nextCursor == "" {
 					s.advanceStart()
-					continue
 				}
-				return BindingRow{}, querylogical.NewError(querylogical.ErrorDependencyFailure, "scan adjacency", "access method returned an empty non-terminal page", nil)
+				continue
 			}
 		}
 
@@ -306,6 +305,9 @@ func (s *AdjacencySource) loadEdgePage(ctx context.Context) error {
 	}
 	if len(page.Edges) > limit {
 		return invalidState("scan adjacency", "access method returned an oversized page")
+	}
+	if len(page.Edges) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan adjacency", "access method returned a non-progressing empty page", nil)
 	}
 	if s.resuming && s.pendingResume >= len(page.Edges) {
 		return querylogical.NewError(querylogical.ErrorStaleCursor, "resume adjacency source", "edge offset exceeds the adjacency page", nil)
@@ -438,15 +440,16 @@ func (s *AdjacencySource) Close() error {
 // PathExpand expands one logical traversal step over an input binding stream.
 type PathExpand struct {
 	unaryOperator
-	currentAlias   string
-	step           querylogical.Step
-	pathAlias      string
-	edgeReader     TraversalEdgePageReader
-	nodeReader     TraversalNodeReader
-	batchSize      int
-	tracker        *Tracker
-	eval           evaluator
-	bindTargetTree bool
+	currentAlias     string
+	step             querylogical.Step
+	pathAlias        string
+	edgeReader       TraversalEdgePageReader
+	nodeReader       TraversalNodeReader
+	batchSize        int
+	tracker          *Tracker
+	eval             evaluator
+	bindTargetTree   bool
+	allowNodeRevisit bool
 
 	inputs       []bufferedTraversalRow
 	inputOffset  int
@@ -471,6 +474,13 @@ func NewPathExpand(input Operator, currentAlias string, step querylogical.Step, 
 // Structured compatibility uses it only when the query projects that tree.
 func (o *PathExpand) WithTargetTree() *PathExpand {
 	o.bindTargetTree = true
+	return o
+}
+
+// WithNodeRevisits preserves structured edge-row semantics, where each
+// one-hop step emits matching edges even when an endpoint was bound earlier.
+func (o *PathExpand) WithNodeRevisits() *PathExpand {
+	o.allowNodeRevisit = true
 	return o
 }
 
@@ -614,8 +624,8 @@ func (o *PathExpand) visit(ctx context.Context, base BindingRow, node graph.Node
 		if len(page.Edges) > limit {
 			return invalidState("scan path adjacency", "access method returned an oversized page")
 		}
-		if len(page.Edges) == 0 && page.NextCursor != "" {
-			return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan path adjacency", "access method returned an empty non-terminal page", nil)
+		if len(page.Edges) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+			return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan path adjacency", "access method returned a non-progressing empty page", nil)
 		}
 		if o.tracker != nil {
 			if err := o.tracker.ScanIndexEntries(page.IndexEntries); err != nil {
@@ -640,7 +650,7 @@ func (o *PathExpand) visit(ctx context.Context, base BindingRow, node graph.Node
 					continue
 				}
 				endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
-				if _, cycle := seen[endpointID]; cycle {
+				if _, cycle := seen[endpointID]; cycle && !o.allowNodeRevisit {
 					continue
 				}
 				if o.tracker != nil && o.tracker.RemainingNodesLoaded() == 0 {
@@ -710,7 +720,9 @@ func (o *PathExpand) visit(ctx context.Context, base BindingRow, node graph.Node
 					}
 				}
 				nextSeen := cloneSeen(seen)
-				nextSeen[endpointID] = struct{}{}
+				if !o.allowNodeRevisit {
+					nextSeen[endpointID] = struct{}{}
+				}
 				err = o.visit(ctx, child, endpoint, childDepth, nextSeen)
 				if o.tracker != nil {
 					o.tracker.ReleaseMemory(childBytes)
@@ -963,8 +975,8 @@ func (o *SubtreeExpand) expandRow(ctx context.Context, row BindingRow) (truncate
 			if len(page.Edges) > limit {
 				return false, invalidState("scan subtree adjacency", "access method returned an oversized page")
 			}
-			if len(page.Edges) == 0 && page.NextCursor != "" {
-				return false, querylogical.NewError(querylogical.ErrorDependencyFailure, "scan subtree adjacency", "access method returned an empty non-terminal page", nil)
+			if len(page.Edges) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+				return false, querylogical.NewError(querylogical.ErrorDependencyFailure, "scan subtree adjacency", "access method returned a non-progressing empty page", nil)
 			}
 			if o.tracker != nil {
 				if err = o.tracker.ScanIndexEntries(page.IndexEntries); err != nil {

@@ -543,6 +543,75 @@ func TestListNodesUsesCursorDrivenPagesBoundToTransactionOverlay(t *testing.T) {
 	}
 }
 
+func TestScanAdjacencyOverlayMakesBoundedEmptyProgressAndPreservesOrder(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	parent, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := make([]domaingraph.Node, 3)
+	for i := range children {
+		children[i], err = m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: fmt.Sprintf("child-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[0].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(2)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[2].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(4)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	if _, err := m.DeleteEdge(ctx, tx, deleted.ID.String()); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[1].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(3)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cursor := ""
+	emptyProgress := 0
+	var got []domaingraph.EdgeID
+	for {
+		page, next, stats, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{NodeID: parent.ID.String(), Label: "contains", Direction: graphquery.AdjacencyDirectionOut, Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("ScanAdjacency() error = %v", err)
+		}
+		if stats.IndexEntriesScanned <= 0 {
+			t.Fatalf("ScanAdjacency() stats = %+v", stats)
+		}
+		if len(page) == 0 && next != "" {
+			emptyProgress++
+		}
+		for _, edge := range page {
+			got = append(got, edge.ID)
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("non-progressing cursor %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) || emptyProgress != 1 {
+		t.Fatalf("adjacency IDs=%v empty progress=%d", got, emptyProgress)
+	}
+}
+
 func graphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
 	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}

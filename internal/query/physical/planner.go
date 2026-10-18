@@ -454,6 +454,7 @@ func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 	}
 	indexes := []IndexUse{}
 	name := "StreamingNodeScan"
+	edgeRows := structuredEdgeRowTraversal(query)
 	for i, step := range query.Steps {
 		if !p.environment.Capabilities.Traversals {
 			return Plan{}, p.unavailable("broad traversal requires adjacency access")
@@ -468,7 +469,7 @@ func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 		if maxDepth < step.Depth.Min || maxDepth <= 0 {
 			return Plan{}, p.invalid("broad traversal step %d has invalid depth bounds", i)
 		}
-		if strings.TrimSpace(step.Edge.Alias) != "" && (step.Depth.Min > 1 || maxDepth != 1) {
+		if edgeRows && (step.Depth.Min > 1 || maxDepth != 1) {
 			return Plan{}, p.invalid("edge_alias currently supports one-hop traversal only")
 		}
 		access.Steps = append(access.Steps, TraversalStep{
@@ -584,16 +585,20 @@ func operatorPipeline(plan Plan, query querylogical.Query) Operator {
 	return shapingPipeline(Operator{Kind: accessKind, Name: plan.Name}, plan, query)
 }
 
-func structuredCollectTraversal(query querylogical.Query) bool {
-	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" || len(query.Steps) == 0 {
+func structuredEdgeRowTraversal(query querylogical.Query) bool {
+	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" {
 		return false
 	}
 	for _, step := range query.Steps {
 		if strings.TrimSpace(step.Edge.Alias) != "" {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func structuredCollectTraversal(query querylogical.Query) bool {
+	return query.Source == querylogical.SourceStructured && strings.TrimSpace(query.PathAlias) == "" && len(query.Steps) > 0 && !structuredEdgeRowTraversal(query)
 }
 
 func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operator {

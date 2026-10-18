@@ -157,8 +157,11 @@ func (e *Engine) broadScanSource(execution ExecutionContext, prepared PreparedQu
 		rootBatchSize = 1
 	}
 	reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
-		nodes, next, err := e.ports.Entities.ListNodes(ctx, execution.Transaction, limit, cursor)
-		return queryexecution.NodePage{Nodes: nodes, NextCursor: next, NodesLoaded: int64(len(nodes))}, err
+		nodes, next, stats, err := e.ports.Entities.ScanNodes(ctx, execution.Transaction, graphquery.NodeScan{Limit: limit, Cursor: cursor, ExamineLimit: limit})
+		return queryexecution.NodePage{
+			Nodes: nodes, NextCursor: next,
+			IndexEntries: int64(stats.IndexEntriesScanned), NodesLoaded: int64(stats.NodesLoaded),
+		}, err
 	}
 	var source queryexecution.Operator = queryexecution.NewNodeScan(
 		query.Start.Alias, reader, checkpoint, resumeCursor, resumeOffset, resuming, rootBatchSize, tracker,
@@ -188,6 +191,7 @@ func (e *Engine) broadScanSource(execution ExecutionContext, prepared PreparedQu
 		), nil
 	}
 	currentAlias := query.Start.Alias
+	edgeRows := structuredEdgeRowTraversal(query)
 	for index, step := range steps {
 		expansion := queryexecution.NewPathExpand(
 			source, currentAlias, step, query.PathAlias, readers[index], nodeReader,
@@ -195,6 +199,9 @@ func (e *Engine) broadScanSource(execution ExecutionContext, prepared PreparedQu
 		)
 		if queryProjectsTree(query, step.Target.Alias) {
 			expansion.WithTargetTree()
+		}
+		if edgeRows {
+			expansion.WithNodeRevisits()
 		}
 		source = expansion
 		currentAlias = step.Target.Alias
@@ -211,16 +218,20 @@ func queryProjectsTree(query querylogical.Query, alias string) bool {
 	return false
 }
 
-func broadCollectTraversal(query querylogical.Query) bool {
-	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" || len(query.Steps) == 0 {
+func structuredEdgeRowTraversal(query querylogical.Query) bool {
+	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" {
 		return false
 	}
 	for _, step := range query.Steps {
 		if strings.TrimSpace(step.Edge.Alias) != "" {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func broadCollectTraversal(query querylogical.Query) bool {
+	return query.Source == querylogical.SourceStructured && strings.TrimSpace(query.PathAlias) == "" && len(query.Steps) > 0 && !structuredEdgeRowTraversal(query)
 }
 
 func (e *Engine) adjacencySource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64, batchSize int) (queryexecution.Operator, error) {
@@ -264,6 +275,7 @@ func (e *Engine) pathSource(ctx context.Context, execution ExecutionContext, pre
 		source = queryexecution.NewStartNodeLimit(source, tracker)
 	}
 	currentAlias := query.Start.Alias
+	edgeRows := structuredEdgeRowTraversal(query)
 	for index, logicalStep := range query.Steps {
 		step := resolvedTraversalStep(logicalStep, prepared.Physical.Access.Steps[index])
 		edgeReader := e.traversalEdgeReader(execution, step)
@@ -273,6 +285,9 @@ func (e *Engine) pathSource(ctx context.Context, execution ExecutionContext, pre
 		expansion := queryexecution.NewPathExpand(source, currentAlias, step, query.PathAlias, edgeReader, nodeReader, batchSize, prepared.Planning.Parameters, execution.Now, tracker)
 		if queryProjectsTree(query, step.Target.Alias) {
 			expansion.WithTargetTree()
+		}
+		if edgeRows {
+			expansion.WithNodeRevisits()
 		}
 		source = expansion
 		currentAlias = step.Target.Alias

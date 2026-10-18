@@ -153,7 +153,10 @@ func (s *PagedNodeSource) Next(ctx context.Context) (Batch, error) {
 				if len(rows) > 0 {
 					return Batch{Rows: rows}, nil
 				}
-				return Batch{}, io.EOF
+				if s.exhausted {
+					return Batch{}, io.EOF
+				}
+				continue
 			}
 		}
 		item := &s.buffer[s.offset]
@@ -259,8 +262,8 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 	if s.resuming && s.pendingResume >= len(page.Nodes) {
 		return querylogical.NewError(querylogical.ErrorStaleCursor, "resume indexed node source", "source cursor offset exceeds the indexed page", nil)
 	}
-	if len(page.Nodes) == 0 && page.NextCursor != "" {
-		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", "access method returned an empty non-terminal page", nil)
+	if len(page.Nodes) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", "access method returned a non-progressing empty page", nil)
 	}
 	s.releaseBuffer()
 	s.pageCursor = cursor

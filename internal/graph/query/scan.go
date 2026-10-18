@@ -5,6 +5,13 @@ import (
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
 
+// NodeScan describes a finite ID-ordered domain node scan.
+type NodeScan struct {
+	Limit        int
+	Cursor       string
+	ExamineLimit int
+}
+
 // LabelScan describes a paginated label-index scan.
 type LabelScan struct {
 	Label  string

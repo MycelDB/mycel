@@ -20,7 +20,7 @@ type EntityReader interface {
 	ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error)
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	GetEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (graph.Edge, error)
-	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
+	ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
 	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
 }
 

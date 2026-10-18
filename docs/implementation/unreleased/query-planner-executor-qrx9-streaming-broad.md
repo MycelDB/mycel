@@ -15,12 +15,14 @@ and GQL broad reads once through the engine; API-local `queryExecution`,
 read plans. Removal of the remaining unreachable compatibility helpers and
 mutation/script bridges remains QRX11 work.
 
-`NodeScan` calls `ListNodes` only with finite positive limits. The graph service
-backs new node-list continuations with a derived, ID-ordered storage scan, so it
-hydrates only the requested committed page instead of cloning and sorting the
-complete domain before pagination. The derived index is rebuilt from retained
-storage history and supports both current and revision-pinned scans without a
-persisted-format change. Numeric node-list tokens issued by older versions
+`NodeScan` calls the graph-owned `ScanNodes` contract only with finite positive
+limits. The graph storage layer maintains derived ID-ordered current and
+retained-history trees during replay and writes, so it hydrates and examines
+only a bounded page instead of cloning or sorting the complete domain per
+request. Revision-pinned scans may return an empty non-terminal page when a
+bounded slice contains only invisible historical IDs; the cursor still advances
+and the operator charges that examined work before requesting another page.
+No persisted format changes. Numeric node-list tokens issued by older versions
 remain readable through an explicit compatibility path when no staged overlay
 must be bound; new tokens are versioned, checksum-protected,
 transaction-bound cursors.
@@ -47,10 +49,20 @@ existing one-row-per-root contract, deduplicated matched nodes, and tree
 projections. A structured traversal that binds an edge alias instead uses
 row-producing expansion, preserving one row per matching edge (including
 parallel edges), target-tree projection compatibility, and the legacy one-hop
-edge-alias validation gate. Only outgoing `contains` edges establish collected
-tree parent/child relationships; incoming and non-containment results remain
-flat. All root, edge, endpoint, depth, intermediate-row, and retained-memory
-work is charged to the shared tracker.
+edge-alias validation gate. Each step remains fixed at one hop across the whole
+edge-row pattern, but endpoints may revisit a node bound by an earlier alias;
+valid self-loops and multi-step cycles therefore retain their rows without
+weakening cycle suppression for path traversal. Only outgoing `contains` edges
+establish collected tree parent/child relationships; incoming and
+non-containment results remain flat. All root, edge, endpoint, depth,
+intermediate-row, and retained-memory work is charged to the shared tracker.
+
+Current adjacency scans use write-maintained ordered trees rather than sorting
+an endpoint's complete edge-key set on each request. Revision-pinned adjacency
+uses a retained historical key tree and bounded visibility checks, emitting a
+progress cursor for slices containing only stale keys. Operators accept these
+advancing empty pages, reject non-progressing empty pages, and include examined
+historical keys in the shared index-work budget.
 
 The complete `sessionmodel.GraphTransaction` is passed to every node page,
 adjacency page, and endpoint read, preserving graph-owned snapshot and
@@ -101,10 +113,12 @@ Coverage includes:
   tampered-cursor rejection;
 - structured and GQL daemon reads that bypass whole-graph materialization;
 - paged adjacency traversal without `ListEdges`, including structured
-  collection, edge-distinct parallel-edge rows, and tree compatibility;
+  collection, edge-distinct parallel-edge rows, self-loops, multi-step cycles,
+  and tree compatibility;
 - start-predicate pushdown, Top-N planning, output replay, snapshot transaction
   propagation, and caller cancellation after dependency return;
-- cursor-driven graph storage pages for current and snapshot reads, plus stale
+- cursor-driven graph storage pages for current and snapshot reads, bounded
+  empty-page progress through invisible node and adjacency history, and stale
   overlay-continuation rejection;
 - deterministic memory/resource exhaustion and retained-memory cleanup; and
 - full query, daemon API, CLI, build, documentation, architecture-boundary,

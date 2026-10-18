@@ -64,6 +64,9 @@ func (a *indexedTestAccess) GetEdge(context.Context, sessionmodel.GraphTransacti
 func (a *indexedTestAccess) ListNodes(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Node, string, error) {
 	return nil, "", errors.New("unexpected node list")
 }
+func (a *indexedTestAccess) ScanNodes(context.Context, sessionmodel.GraphTransaction, graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	return nil, "", graphquery.IndexedReadStats{}, errors.New("unexpected node scan")
+}
 func (a *indexedTestAccess) ListEdges(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Edge, string, error) {
 	return nil, "", errors.New("unexpected edge list")
 }

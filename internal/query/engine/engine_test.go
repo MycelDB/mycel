@@ -46,6 +46,12 @@ func (r *recordingEntityReader) ListNodes(_ context.Context, tx sessionmodel.Gra
 	return nil, "", nil
 }
 
+func (r *recordingEntityReader) ScanNodes(_ context.Context, tx sessionmodel.GraphTransaction, _ graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error) {
+	r.calls++
+	r.tx = tx
+	return nil, "", graphquery.IndexedReadStats{}, nil
+}
+
 func (r *recordingEntityReader) ListEdges(_ context.Context, tx sessionmodel.GraphTransaction, _ int, _ string) ([]graph.Edge, string, error) {
 	r.calls++
 	r.tx = tx

@@ -331,6 +331,13 @@ func TestBuildStructuredBroadEdgeAliasUsesRowsAndRejectsVariableDepth(t *testing
 
 	query.Steps[0].Depth.Max = 2
 	assertPlanError(t, query, plannerSchema(), plannerEnvironment(), querylogical.ErrorInvalidQuery)
+
+	query.Steps[0].Depth.Max = 1
+	second := traversalStep("")
+	second.Target.Alias = "z"
+	second.Depth.Max = 2
+	query.Steps = append(query.Steps, second)
+	assertPlanError(t, query, plannerSchema(), plannerEnvironment(), querylogical.ErrorInvalidQuery)
 }
 
 func TestBuildSchemalessGQLFiltersAndOrderingUseBoundedBroadFallback(t *testing.T) {

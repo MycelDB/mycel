@@ -59,6 +59,7 @@ type raftGraphReadRequest struct {
 	ID                      string                             `json:"id,omitempty"`
 	PageSize                int                                `json:"page_size,omitempty"`
 	PageToken               string                             `json:"page_token,omitempty"`
+	NodeScan                graphquery.NodeScan                `json:"node_scan,omitempty"`
 	SchemaHash              string                             `json:"schema_hash,omitempty"`
 	Indexes                 []schemamodel.IndexDefinition      `json:"indexes,omitempty"`
 	LabelScan               graphquery.LabelScan               `json:"label_scan,omitempty"`
@@ -83,9 +84,10 @@ type raftGraphNodeResponse struct {
 	Read *StrongReadContext `json:"read,omitempty"`
 }
 type raftGraphNodesResponse struct {
-	Nodes         []domaingraph.Node `json:"nodes"`
-	NextPageToken string             `json:"next_page_token"`
-	Read          *StrongReadContext `json:"read,omitempty"`
+	Nodes         []domaingraph.Node          `json:"nodes"`
+	NextPageToken string                      `json:"next_page_token"`
+	Stats         graphquery.IndexedReadStats `json:"stats,omitempty"`
+	Read          *StrongReadContext          `json:"read,omitempty"`
 }
 
 type raftGraphReadViewResponse struct {
@@ -393,11 +395,17 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		}
 		return json.Marshal(raftGraphNodeResponse{Node: n, Read: read})
 	case "list_nodes":
-		n, next, err := m.listNodesLocal(ctx, tx, req.PageSize, req.PageToken)
+		n, next, stats, err := m.scanNodesLocal(ctx, tx, graphquery.NodeScan{Limit: req.PageSize, Cursor: req.PageToken, ExamineLimit: req.PageSize})
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Read: read})
+		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
+	case "scan_nodes":
+		n, next, stats, err := m.scanNodesLocal(ctx, tx, req.NodeScan)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
 	case "read_view_identity":
 		return json.Marshal(raftGraphReadViewResponse{Identity: m.readViewIdentityLocal(tx), Read: read})
 	case "configure_indexes":
