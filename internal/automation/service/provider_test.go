@@ -134,6 +134,56 @@ func TestGenerateTextEnforcesTokenCeilings(t *testing.T) {
 	}
 }
 
+func TestAutomationFinalizesAfterGraphCommitCancelsRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	inference, ids, _ := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	acknowledgements := 0
+	graphs := &automationE2EGraph{node: node, cancelOnCommit: cancel, acknowledgements: &acknowledgements}
+	commitCalls := 0
+	var commitContextError error
+	sessions := automationE2ESessions{
+		spaceID: ids.spaceID, domainID: ids.domainID.String(),
+		commitCalls: &commitCalls, commitContextError: &commitContextError,
+	}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
+	def := automation.Definition{
+		ID: "cancel-after-graph-commit", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{
+		ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID,
+		Origin:  graphchange.OriginMetadata{PrincipalID: "principal-a"},
+		Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}},
+	}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatalf("HandleGraphChange() error = %v", err)
+	}
+	_, err := mgr.ProcessPending(ctx, ids.domainID, 10)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessPending() error = %v", err)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("request context error = %v, want canceled", ctx.Err())
+	}
+	if commitCalls != 1 {
+		t.Fatalf("session commit calls = %d, want 1", commitCalls)
+	}
+	if commitContextError != nil {
+		t.Fatalf("session commit context error = %v, want nil", commitContextError)
+	}
+	if acknowledgements != 1 {
+		t.Fatalf("graph finalization acknowledgements = %d, want 1", acknowledgements)
+	}
+}
+
 func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
@@ -353,8 +403,10 @@ func newAutomationInferenceRuntime(t *testing.T, ctx context.Context, deny bool)
 }
 
 type automationE2ESessions struct {
-	spaceID  string
-	domainID string
+	spaceID            string
+	domainID           string
+	commitCalls        *int
+	commitContextError *error
 }
 
 func (s automationE2ESessions) OpenSession(context.Context, sessionmodel.OpenSessionInput) (sessionmodel.GraphSession, error) {
@@ -363,7 +415,16 @@ func (s automationE2ESessions) OpenSession(context.Context, sessionmodel.OpenSes
 func (s automationE2ESessions) BeginTransaction(context.Context, sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
 	return sessionmodel.GraphTransaction{ID: "tx", SessionID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}, nil
 }
-func (s automationE2ESessions) CommitTransactionAtRevision(context.Context, string, string, int32, int64) (sessionmodel.TransactionCommit, error) {
+func (s automationE2ESessions) CommitTransactionAtRevision(ctx context.Context, _ string, _ string, _ int32, _ int64) (sessionmodel.TransactionCommit, error) {
+	if s.commitCalls != nil {
+		(*s.commitCalls)++
+	}
+	if s.commitContextError != nil {
+		*s.commitContextError = ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return sessionmodel.TransactionCommit{}, err
+	}
 	return sessionmodel.TransactionCommit{ID: "commit"}, nil
 }
 func (s automationE2ESessions) RollbackTransaction(context.Context, string, string) (sessionmodel.GraphTransaction, error) {
@@ -371,9 +432,11 @@ func (s automationE2ESessions) RollbackTransaction(context.Context, string, stri
 }
 
 type automationE2EGraph struct {
-	node  graph.Node
-	nodes map[string]graph.Node
-	edges []graph.Edge
+	node             graph.Node
+	nodes            map[string]graph.Node
+	edges            []graph.Edge
+	cancelOnCommit   context.CancelFunc
+	acknowledgements *int
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -439,10 +502,19 @@ func (g *automationE2EGraph) CreateEdge(context.Context, sessionmodel.GraphTrans
 }
 func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, error) { return 1, nil }
 func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	if g.cancelOnCommit != nil {
+		g.cancelOnCommit()
+	}
 	return graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
 }
 func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) error { return nil }
-func (g *automationE2EGraph) AcknowledgeTransactionFinalization(context.Context, sessionmodel.GraphTransaction) error {
+func (g *automationE2EGraph) AcknowledgeTransactionFinalization(ctx context.Context, _ sessionmodel.GraphTransaction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if g.acknowledgements != nil {
+		(*g.acknowledgements)++
+	}
 	return nil
 }
 func (g *automationE2EGraph) ScanAdjacency(_ context.Context, _ sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error) {

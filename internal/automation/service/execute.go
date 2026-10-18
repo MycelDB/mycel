@@ -229,11 +229,12 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			}
 			return false, err
 		}
-		commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
+		finalizeCtx := context.WithoutCancel(ctx)
+		commit, err := m.sessions.CommitTransactionAtRevision(finalizeCtx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
 		if err != nil {
 			return false, err
 		}
-		if err := m.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx); err != nil {
+		if err := m.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx); err != nil {
 			return false, err
 		}
 		run.MutationID = commit.ID
