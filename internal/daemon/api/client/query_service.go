@@ -164,7 +164,7 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 			}, nil
 		}
 	}
-	if !domaingraph.DomainBroadSearchable(domain) && !isIndexedAdjacencyQuery(req.GetQuery()) && !isIndexedPathQuery(req.GetQuery()) && !isIndexedRootSubtreeQuery(req.GetQuery()) && !isSemanticPredicateNodeQuery(req.GetQuery()) && !isIndexedPredicateNodeQuery(req.GetQuery()) && !isIndexedEqualityNodeQuery(req.GetQuery()) {
+	if !domaingraph.DomainBroadSearchable(domain) && !isSemanticPredicateNodeQuery(req.GetQuery()) && !isIndexedPredicateNodeQuery(req.GetQuery()) && !isIndexedEqualityNodeQuery(req.GetQuery()) {
 		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
 	}
 	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
@@ -2107,12 +2107,6 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	if query == nil || query.GetMatch() == nil || query.GetMatch().GetStart() == nil {
 		return false, nil, nil
 	}
-	if indexed, res, err := s.tryExecuteIndexedPathQuery(ctx, req, tx, schemaCtx, recorder); indexed || err != nil {
-		return indexed, res, err
-	}
-	if indexed, res, err := s.tryExecuteIndexedAdjacencyQuery(ctx, req, tx, recorder); indexed || err != nil {
-		return indexed, res, err
-	}
 	if len(query.GetOrderBy()) == 0 {
 		if indexed, res, err := s.tryExecuteIndexedEqualityNodeQuery(ctx, req, tx, schemaCtx, recorder); indexed || err != nil {
 			return indexed, res, err
@@ -2154,11 +2148,8 @@ func (s *QueryService) tryExecuteIndexedQuery(ctx context.Context, req *clientv1
 	if err := s.graphs.ConfigureIndexes(ctx, tx, schemacompile.Hash(*schemaCtx.Schema), schemaCtx.Schema.Indexes); err != nil {
 		return true, nil, mapGraphError(err, "configure query indexes")
 	}
-	if len(match.GetSteps()) == 1 {
-		return s.executeIndexedRootSubtreeQuery(ctx, req, tx, recorder, idx, bounds)
-	}
 	if len(match.GetSteps()) != 0 {
-		return true, nil, status.Error(codes.FailedPrecondition, "ORDER BY traversal requires an indexed bounded subtree query")
+		return false, nil, nil
 	}
 	cursor, hasShapedCursor, err := decodeShapedIndexCursor(req.GetPageToken())
 	if err != nil {
@@ -3582,9 +3573,6 @@ func nextShapedIndexCursor(rawNext string, pageRows int, priorRowsReturned int, 
 func (s *QueryService) tryExecuteIndexedGQL(ctx context.Context, tx sessionmodel.GraphTransaction, schemaCtx analysis.SchemaContext, plan planmodel.Plan, pageSize int, pageToken string, recorder *daegraph.ReadMetadataRecorder) (bool, *clientv1.ExecuteGQLResponse, error) {
 	if len(plan.Operations) != 1 {
 		return false, nil, nil
-	}
-	if path, ok := plan.Operations[0].(planmodel.QueryPathOperation); ok {
-		return s.tryExecuteIndexedGQLPath(ctx, tx, schemaCtx, path, pageSize, pageToken, recorder)
 	}
 	op, ok := plan.Operations[0].(planmodel.QueryNodesOperation)
 	if !ok {

@@ -19,6 +19,7 @@ type NodePage struct {
 	NextCursor         string
 	IndexEntries       int64
 	NodesLoaded        int64
+	NodeReadCalls      int64
 	SemanticCandidates int64
 	// SourceRetainedBytes accounts for source state retained across page reads.
 	// A source reports each allocation once; PagedNodeSource releases it on Close.
@@ -40,16 +41,18 @@ type bufferedNodeRow struct {
 // A checkpoint identifies a row before it is emitted, allowing the lookahead
 // row retained by response pagination to become the next page's first row.
 type PagedNodeSource struct {
-	alias             string
-	reader            NodePageReader
-	checkpointEncoder PageCheckpointEncoder
-	resumeCursor      string
-	resumeOffset      int
-	resumeRequested   bool
-	pendingResume     int
-	resuming          bool
-	batchSize         int
-	tracker           *Tracker
+	alias                   string
+	reader                  NodePageReader
+	checkpointEncoder       PageCheckpointEncoder
+	resumeCursor            string
+	resumeOffset            int
+	resumeRequested         bool
+	pendingResume           int
+	resuming                bool
+	batchSize               int
+	tracker                 *Tracker
+	trackStartNodes         bool
+	truncateOnStartCapacity bool
 
 	pageCursor     string
 	nextCursor     string
@@ -72,6 +75,15 @@ func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder P
 		resumeCursor: resumeCursor, resumeOffset: resumeOffset, resumeRequested: resuming,
 		batchSize: batchSize, tracker: tracker,
 	}
+}
+
+// WithStartNodeBudget makes this source account returned nodes as traversal
+// roots and clamp every dependency request to the remaining root/node budget.
+// Subtree roots may stop cleanly at a root boundary; path starts fail closed.
+func (s *PagedNodeSource) WithStartNodeBudget(truncate bool) *PagedNodeSource {
+	s.trackStartNodes = true
+	s.truncateOnStartCapacity = truncate
+	return s
 }
 
 func (s *PagedNodeSource) Open(ctx context.Context) error {
@@ -116,6 +128,13 @@ func (s *PagedNodeSource) Next(ctx context.Context) (Batch, error) {
 				return Batch{}, io.EOF
 			}
 			if err := s.fetch(ctx); err != nil {
+				if err == io.EOF {
+					s.exhausted = true
+					if len(rows) > 0 {
+						return Batch{Rows: rows}, nil
+					}
+					return Batch{}, io.EOF
+				}
 				_ = s.Close()
 				return Batch{}, err
 			}
@@ -155,7 +174,34 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 	if s.buffer != nil {
 		cursor = s.nextCursor
 	}
-	page, err := s.reader(ctx, s.batchSize, cursor)
+	limit := s.batchSize
+	if s.tracker != nil {
+		remainingNodes := s.tracker.RemainingNodesLoaded()
+		if remainingNodes == 0 {
+			if s.trackStartNodes && s.truncateOnStartCapacity {
+				s.tracker.MarkTruncated("max_nodes exceeded")
+				return io.EOF
+			}
+			return s.tracker.LoadNodes(1)
+		}
+		if remainingNodes < int64(limit) {
+			limit = int(remainingNodes)
+		}
+		if s.trackStartNodes {
+			remainingStarts := s.tracker.RemainingStartNodes()
+			if remainingStarts == 0 {
+				if s.truncateOnStartCapacity {
+					s.tracker.MarkTruncated("max_start_nodes exceeded")
+					return io.EOF
+				}
+				return s.tracker.UseStartNodes(1)
+			}
+			if remainingStarts < int64(limit) {
+				limit = int(remainingStarts)
+			}
+		}
+	}
+	page, err := s.reader(ctx, limit, cursor)
 	if contextErr := ctx.Err(); contextErr != nil {
 		return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", contextErr)
 	}
@@ -170,7 +216,7 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 			return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", err.Error(), err)
 		}
 	}
-	if len(page.Nodes) > s.batchSize {
+	if len(page.Nodes) > limit {
 		return invalidState("scan indexed nodes", "access method returned an oversized page")
 	}
 	if page.SourceRetainedBytes < 0 {
@@ -185,6 +231,14 @@ func (s *PagedNodeSource) fetch(ctx context.Context) error {
 			return err
 		}
 		if err := s.tracker.LoadNodes(page.NodesLoaded); err != nil {
+			return err
+		}
+		if s.trackStartNodes {
+			if err := s.tracker.UseStartNodes(int64(len(page.Nodes))); err != nil {
+				return err
+			}
+		}
+		if err := s.tracker.RecordNodeReads(page.NodeReadCalls); err != nil {
 			return err
 		}
 		if err := s.tracker.UseSemanticCandidates(page.SemanticCandidates); err != nil {
@@ -327,28 +381,7 @@ func (o *NodePatternFilter) matches(row BindingRow) (bool, error) {
 	if !ok {
 		return false, executionInvalid("filter start nodes", fmt.Sprintf("alias %q is not bound", o.pattern.Alias))
 	}
-	if len(o.pattern.NodeIDs) > 0 && !containsString(o.pattern.NodeIDs, node.ID.String()) {
-		return false, nil
-	}
-	for _, label := range o.pattern.Labels {
-		if !containsString(node.Labels, label) {
-			return false, nil
-		}
-	}
-	for name, expected := range o.pattern.Properties {
-		actual, exists := graph.Property(node, name)
-		if !exists {
-			return false, nil
-		}
-		resolved, err := o.eval.value(row, expected)
-		if err != nil {
-			return false, err
-		}
-		if compareValues(querylogical.NativeValue(actual), resolved) != 0 {
-			return false, nil
-		}
-	}
-	return true, nil
+	return matchesNodePattern(row, node, o.pattern, o.eval)
 }
 
 func (o *NodePatternFilter) Close() error { return o.close() }
@@ -373,10 +406,11 @@ const (
 // NodeSetOperator materializes bounded child sets, deduplicates by node ID,
 // and emits a deterministic ID order.
 type NodeSetOperator struct {
-	children  []Operator
-	mode      NodeSetMode
-	batchSize int
-	tracker   *Tracker
+	children          []Operator
+	mode              NodeSetMode
+	batchSize         int
+	tracker           *Tracker
+	accountStartNodes bool
 
 	rows     []BindingRow
 	sizes    []int64
@@ -391,6 +425,14 @@ func NewNodeSet(children []Operator, mode NodeSetMode, batchSize int, tracker *T
 		batchSize = DefaultBatchSize
 	}
 	return &NodeSetOperator{children: append([]Operator(nil), children...), mode: mode, batchSize: batchSize, tracker: tracker}
+}
+
+// WithStartNodeBudget accounts the final deduplicated set as traversal roots.
+// Intermediate intersection and union branches remain candidate work and do
+// not consume the root budget more than once.
+func (o *NodeSetOperator) WithStartNodeBudget() *NodeSetOperator {
+	o.accountStartNodes = true
+	return o
 }
 
 func (o *NodeSetOperator) Open(ctx context.Context) error {
@@ -503,6 +545,11 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 		}
 		if childIndex == 0 {
 			retained, retainedSizes = current, currentSizes
+			if o.mode == NodeSetUnion {
+				if err := o.ensureStartCapacity(len(retained)); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if o.mode == NodeSetUnion {
@@ -516,6 +563,9 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 				retained[id] = row
 				retainedSizes[id] = currentSizes[id]
 			}
+			if err := o.ensureStartCapacity(len(retained)); err != nil {
+				return err
+			}
 			continue
 		}
 		for id := range retained {
@@ -528,12 +578,20 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 			}
 		}
 		releaseSizeMap(o.tracker, currentSizes)
+		if len(retained) == 0 {
+			break
+		}
 	}
 	ids := make([]string, 0, len(retained))
 	for id := range retained {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	if o.accountStartNodes && o.tracker != nil {
+		if err := o.tracker.UseStartNodes(int64(len(ids))); err != nil {
+			return err
+		}
+	}
 	o.rows = make([]BindingRow, 0, len(ids))
 	o.sizes = make([]int64, 0, len(ids))
 	for _, id := range ids {
@@ -548,6 +606,13 @@ func (o *NodeSetOperator) materialize(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (o *NodeSetOperator) ensureStartCapacity(count int) error {
+	if !o.accountStartNodes || o.tracker == nil || int64(count) <= o.tracker.RemainingStartNodes() {
+		return nil
+	}
+	return o.tracker.UseStartNodes(int64(count))
 }
 
 func releaseSizeMap(tracker *Tracker, sizes map[string]int64) {
@@ -606,6 +671,45 @@ func (o *NodeSetOperator) releaseRows() {
 	o.sizes = nil
 	o.offset = 0
 }
+
+// StartNodeLimit accounts for start candidates independently from expanded
+// rows, so traversal fan-out cannot hide an over-broad root source.
+type StartNodeLimit struct {
+	unaryOperator
+	tracker *Tracker
+}
+
+func NewStartNodeLimit(input Operator, tracker *Tracker) *StartNodeLimit {
+	return &StartNodeLimit{unaryOperator: unaryOperator{input: input}, tracker: tracker}
+}
+
+func (o *StartNodeLimit) Open(ctx context.Context) error {
+	return o.open(ctx, "open traversal start limiter")
+}
+
+func (o *StartNodeLimit) Next(ctx context.Context) (Batch, error) {
+	if err := o.ready(ctx, "read traversal starts"); err != nil {
+		return Batch{}, err
+	}
+	if o.tracker != nil && o.tracker.RemainingStartNodes() == 0 {
+		return Batch{}, o.fail(o.tracker.UseStartNodes(1))
+	}
+	batch, err := o.input.Next(ctx)
+	if err != nil {
+		if err == io.EOF {
+			return Batch{}, io.EOF
+		}
+		return Batch{}, o.fail(err)
+	}
+	if o.tracker != nil {
+		if err := o.tracker.UseStartNodes(int64(len(batch.Rows))); err != nil {
+			return Batch{}, o.fail(err)
+		}
+	}
+	return batch, nil
+}
+
+func (o *StartNodeLimit) Close() error { return o.close() }
 
 // StaticValue resolves a bound literal/parameter/date for a storage boundary.
 func StaticValue(value querylogical.Value, parameters map[string]querylogical.Value, now time.Time) (any, error) {

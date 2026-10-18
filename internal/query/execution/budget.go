@@ -12,6 +12,7 @@ import (
 const (
 	defaultMaxCandidates         int64 = 50_000
 	defaultMaxIndexEntries       int64 = 50_000
+	defaultMaxStartNodes         int64 = 1_000
 	defaultMaxNodesLoaded        int64 = 50_000
 	defaultMaxEdgesLoaded        int64 = 50_000
 	defaultMaxAdjacencyCalls     int64 = 10_000
@@ -27,6 +28,7 @@ const (
 type Budget struct {
 	MaxCandidates         int64
 	MaxIndexEntries       int64
+	MaxStartNodes         int64
 	MaxNodesLoaded        int64
 	MaxEdgesLoaded        int64
 	MaxAdjacencyCalls     int64
@@ -44,6 +46,7 @@ func ResolveBudget(requested Budget, static Budget) Budget {
 	resolved := Budget{
 		MaxCandidates:         resolveLimit(requested.MaxCandidates, defaultMaxCandidates),
 		MaxIndexEntries:       resolveLimit(requested.MaxIndexEntries, defaultMaxIndexEntries),
+		MaxStartNodes:         resolveLimit(requested.MaxStartNodes, defaultMaxStartNodes),
 		MaxNodesLoaded:        resolveLimit(requested.MaxNodesLoaded, defaultMaxNodesLoaded),
 		MaxEdgesLoaded:        resolveLimit(requested.MaxEdgesLoaded, defaultMaxEdgesLoaded),
 		MaxAdjacencyCalls:     resolveLimit(requested.MaxAdjacencyCalls, defaultMaxAdjacencyCalls),
@@ -56,6 +59,7 @@ func ResolveBudget(requested Budget, static Budget) Budget {
 	}
 	resolved.MaxCandidates = tighten(resolved.MaxCandidates, static.MaxCandidates)
 	resolved.MaxIndexEntries = tighten(resolved.MaxIndexEntries, static.MaxIndexEntries)
+	resolved.MaxStartNodes = tighten(resolved.MaxStartNodes, static.MaxStartNodes)
 	resolved.MaxNodesLoaded = tighten(resolved.MaxNodesLoaded, static.MaxNodesLoaded)
 	resolved.MaxEdgesLoaded = tighten(resolved.MaxEdgesLoaded, static.MaxEdgesLoaded)
 	resolved.MaxAdjacencyCalls = tighten(resolved.MaxAdjacencyCalls, static.MaxAdjacencyCalls)
@@ -100,15 +104,19 @@ func tightenInt(value int, cap int) int {
 type Usage struct {
 	CandidatesExamined int64
 	IndexEntries       int64
+	StartNodes         int64
 	NodesLoaded        int64
 	EdgesLoaded        int64
 	AdjacencyCalls     int64
+	NodeReadCalls      int64
 	IntermediateRows   int64
 	OutputRows         int64
 	SemanticCandidates int64
 	RetainedMemory     int64
 	PeakRetainedMemory int64
 	TraversalDepth     int
+	Truncated          bool
+	TruncationReason   string
 }
 
 // Tracker is shared by all operators in one execution.
@@ -132,6 +140,7 @@ func validateBudget(b Budget) error {
 	}{
 		{"max candidates", b.MaxCandidates},
 		{"max index entries", b.MaxIndexEntries},
+		{"max start nodes", b.MaxStartNodes},
 		{"max nodes loaded", b.MaxNodesLoaded},
 		{"max edges loaded", b.MaxEdgesLoaded},
 		{"max adjacency calls", b.MaxAdjacencyCalls},
@@ -162,12 +171,37 @@ func (t *Tracker) Snapshot() Usage {
 	return t.usage
 }
 
+// RemainingStartNodes reports how many additional traversal roots can be read.
+func (t *Tracker) RemainingStartNodes() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return max(0, t.limits.MaxStartNodes-t.usage.StartNodes)
+}
+
+// RemainingNodesLoaded reports how many additional node payloads can be read.
+func (t *Tracker) RemainingNodesLoaded() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return max(0, t.limits.MaxNodesLoaded-t.usage.NodesLoaded)
+}
+
+// RemainingEdgesLoaded reports how many additional edge payloads can be read.
+func (t *Tracker) RemainingEdgesLoaded() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return max(0, t.limits.MaxEdgesLoaded-t.usage.EdgesLoaded)
+}
+
 func (t *Tracker) ExamineCandidates(delta int64) error {
 	return t.add("candidate", delta, &t.usage.CandidatesExamined, t.limits.MaxCandidates)
 }
 
 func (t *Tracker) ScanIndexEntries(delta int64) error {
 	return t.add("index entry", delta, &t.usage.IndexEntries, t.limits.MaxIndexEntries)
+}
+
+func (t *Tracker) UseStartNodes(delta int64) error {
+	return t.add("start node", delta, &t.usage.StartNodes, t.limits.MaxStartNodes)
 }
 
 func (t *Tracker) LoadNodes(delta int64) error {
@@ -180,6 +214,16 @@ func (t *Tracker) LoadEdges(delta int64) error {
 
 func (t *Tracker) UseAdjacency(delta int64) error {
 	return t.add("adjacency call", delta, &t.usage.AdjacencyCalls, t.limits.MaxAdjacencyCalls)
+}
+
+func (t *Tracker) RecordNodeReads(delta int64) error {
+	if delta < 0 {
+		return invalidState("track query resources", "node read delta must be non-negative")
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.usage.NodeReadCalls += delta
+	return nil
 }
 
 func (t *Tracker) ProduceIntermediate(delta int64) error {
@@ -204,6 +248,15 @@ func (t *Tracker) ObserveTraversalDepth(depth int) error {
 		t.usage.TraversalDepth = depth
 	}
 	return nil
+}
+
+func (t *Tracker) MarkTruncated(reason string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.usage.Truncated = true
+	if t.usage.TruncationReason == "" {
+		t.usage.TruncationReason = reason
+	}
 }
 
 func (t *Tracker) ReserveMemory(bytes int64) error {

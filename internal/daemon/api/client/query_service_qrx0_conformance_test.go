@@ -331,7 +331,7 @@ func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T
 			if !reflect.DeepEqual(titles, []string{"oldest", "middle"}) {
 				t.Fatalf("titles = %v", titles)
 			}
-			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx7" || diagnostics.GetFullScan() {
+			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx8" || diagnostics.GetFullScan() {
 				t.Fatalf("diagnostics = %+v", diagnostics)
 			}
 			if profile.callCount("ScanNodePropertyOrdered") == 0 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
@@ -624,7 +624,8 @@ func TestQRX0AdjacencyAccessProfile(t *testing.T) {
 	}
 
 	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces)
+	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+		WithQueryEngine(queryEngineForExplainTest(instrumented, nil))
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")
 	res, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
@@ -639,8 +640,8 @@ func TestQRX0AdjacencyAccessProfile(t *testing.T) {
 		t.Fatalf("adjacency query used broad reads: %+v", profile.callsSnapshot())
 	}
 	limits := profile.requestedLimits("ScanAdjacency")
-	if len(limits) == 0 || limits[0] != 1 {
-		t.Fatalf("adjacency scan limits = %v, want first limit 1", limits)
+	if len(limits) == 0 || limits[0] != 2 {
+		t.Fatalf("adjacency scan limits = %v, want first bounded lookahead limit 2", limits)
 	}
 	work := profile.workSnapshot()
 	if work.IndexEntriesScanned == 0 || work.CandidatesExamined == 0 || work.NodesLoaded < 2 || work.EdgesLoaded == 0 || work.ReturnedRows != 1 {

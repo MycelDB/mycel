@@ -19,7 +19,7 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx7"
+	PlannerVersion = "qrx8"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -210,7 +210,7 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		if err != nil {
 			return querylogical.Result{}, err
 		}
-		pageRows := indexedPageRows(query, cursor)
+		pageRows := indexedPageRows(query, cursor, prepared.Physical.Family)
 		if pageRows == 0 {
 			source = queryexecution.NewLegacySource([]queryexecution.BindingRow{}, budget.BatchSize, tracker)
 		} else {
@@ -218,7 +218,9 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 			if err != nil {
 				return querylogical.Result{}, err
 			}
-			source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+			if !nativeTraversalFamily(prepared.Physical.Family) {
+				source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+			}
 		}
 		query = executionQuery(query, prepared.Physical, cursor)
 	}
@@ -234,6 +236,9 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor)
 	}
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
+	if prepared.Physical.Family == queryphysical.FamilyIndexedSubtree {
+		result.Diagnostics.RootCount = result.Diagnostics.RowsReturned
+	}
 	result.Diagnostics.Planner = PlannerName
 	result.Diagnostics.PlannerVersion = PlannerVersion
 	return result, nil
@@ -242,19 +247,25 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 func physicalBudget(plan queryphysical.Plan) queryexecution.Budget {
 	return queryexecution.Budget{
 		MaxCandidates: plan.Limits.MaxCandidates, MaxIndexEntries: plan.Limits.MaxIndexEntries,
-		MaxNodesLoaded: plan.Limits.MaxNodesLoaded, MaxEdgesLoaded: plan.Limits.MaxEdgesLoaded,
+		MaxStartNodes: plan.Limits.MaxStartNodes, MaxNodesLoaded: plan.Limits.MaxNodesLoaded, MaxEdgesLoaded: plan.Limits.MaxEdgesLoaded,
 		MaxAdjacencyCalls: plan.Limits.MaxAdjacencyCalls, MaxIntermediateRows: plan.Limits.MaxIntermediateRows,
 		MaxOutputRows: plan.Limits.MaxOutputRows, MaxMemoryBytes: plan.Limits.MaxMemoryBytes,
 		MaxSemanticCandidates: plan.Limits.MaxSemanticCandidates, MaxTraversalDepth: plan.Limits.MaxTraversalDepth,
 	}
 }
 
-func indexedPageRows(query querylogical.Query, cursor indexedCursor) int {
+func indexedPageRows(query querylogical.Query, cursor indexedCursor, families ...queryphysical.Family) int {
 	pageSize := int(query.Page.Size)
 	if pageSize <= 0 || pageSize > 500 {
 		pageSize = 500
 	}
 	if query.Page.Limit <= 0 {
+		return pageSize
+	}
+	if len(families) > 0 && families[0] == queryphysical.FamilyIndexedSubtree {
+		if query.Page.Limit < int64(pageSize) {
+			return int(query.Page.Limit)
+		}
 		return pageSize
 	}
 	remaining := query.Page.Limit - cursor.RowsReturned
@@ -272,7 +283,18 @@ func indexedPageRows(query querylogical.Query, cursor indexedCursor) int {
 
 func executionQuery(query querylogical.Query, plan queryphysical.Plan, cursor indexedCursor) querylogical.Query {
 	query.Predicate = plan.ResidualPredicate
-	if plan.Family == queryphysical.FamilyIndexedOrder && len(query.Aggregates) == 0 {
+	if plan.Family == queryphysical.FamilyIndexedSubtree {
+		pageSize := query.Page.Size
+		if pageSize <= 0 || pageSize > 500 {
+			pageSize = 500
+		}
+		if query.Page.Limit > 0 && query.Page.Limit < int64(pageSize) {
+			pageSize = int32(query.Page.Limit)
+		}
+		query.Page.Size = pageSize
+		query.Page.Limit = 0
+	}
+	if (plan.Family == queryphysical.FamilyIndexedOrder || plan.Family == queryphysical.FamilyIndexedSubtree) && len(query.Aggregates) == 0 {
 		query.OrderBy = nil
 	}
 	if cursor.Mode == cursorModeSource {
@@ -280,7 +302,7 @@ func executionQuery(query querylogical.Query, plan queryphysical.Plan, cursor in
 			query.Page.Offset = 0
 		}
 		query.Page.Cursor = ""
-		if query.Page.Limit > 0 {
+		if query.Page.Limit > 0 && plan.Family != queryphysical.FamilyIndexedSubtree {
 			query.Page.Limit -= cursor.RowsReturned
 			if query.Page.Limit < 0 {
 				query.Page.Limit = 0
@@ -321,6 +343,10 @@ func mergeRuntimeDiagnostics(plan querylogical.Diagnostics, runtime querylogical
 	plan.RowsReturned = runtime.RowsReturned
 	plan.CandidateCount = runtime.CandidateCount
 	plan.AdjacencyScanCalls = runtime.AdjacencyScanCalls
+	plan.NodeReadCalls = runtime.NodeReadCalls
+	plan.RootCount = runtime.RootCount
+	plan.Truncated = runtime.Truncated
+	plan.TruncationReason = runtime.TruncationReason
 	plan.IntermediateRows = runtime.IntermediateRows
 	plan.PeakMemoryBytes = runtime.PeakMemoryBytes
 	plan.RetainedMemoryBytes = runtime.RetainedMemoryBytes

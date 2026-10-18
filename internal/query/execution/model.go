@@ -17,11 +17,13 @@ const DefaultBatchSize = 128
 // populated by projection or aggregation operators; the source bindings remain
 // available for ordering and graph-result assembly.
 type BindingRow struct {
-	Nodes     map[string]graph.Node
-	Edges     map[string]graph.Edge
-	Paths     map[string]querylogical.Path
-	Trees     map[string]querylogical.Tree
-	Projected querylogical.Row
+	Nodes      map[string]graph.Node
+	Edges      map[string]graph.Edge
+	Paths      map[string]querylogical.Path
+	Trees      map[string]querylogical.Tree
+	GraphNodes []graph.Node
+	GraphEdges []graph.Edge
+	Projected  querylogical.Row
 	// Cursor resumes the access source at this row. Streaming operators retain
 	// it so response pagination can continue from its lookahead row.
 	Cursor   string

@@ -52,13 +52,13 @@ func TestBuildSelectsAccessFamiliesInPrecedenceOrder(t *testing.T) {
 		cursorKind string
 		legacy     bool
 	}{
-		{name: "path before adjacency", query: path, family: queryphysical.FamilyIndexedPath, operator: queryphysical.OperatorIndexedPath, cursorKind: "offset", legacy: true},
-		{name: "adjacency", query: adjacency, family: queryphysical.FamilyIndexedAdjacency, operator: queryphysical.OperatorAdjacency, cursorKind: "adjacency_key", legacy: true},
+		{name: "path before adjacency", query: path, family: queryphysical.FamilyIndexedPath, operator: queryphysical.OperatorIndexedPath, cursorKind: "traversal_offset"},
+		{name: "adjacency", query: adjacency, family: queryphysical.FamilyIndexedAdjacency, operator: queryphysical.OperatorAdjacency, cursorKind: "adjacency_key"},
 		{name: "equality before compound", query: equality, family: queryphysical.FamilyIndexedEquality, operator: queryphysical.OperatorOrderedIndex, cursorKind: "index_key"},
 		{name: "semantic", query: semantic, family: queryphysical.FamilySemantic, operator: queryphysical.OperatorSemanticCandidates, cursorKind: "semantic_rank"},
 		{name: "compound", query: compound, family: queryphysical.FamilyIndexedPredicate, operator: queryphysical.OperatorCompoundIndex, cursorKind: "node_set_offset"},
 		{name: "ordered", query: ordered, family: queryphysical.FamilyIndexedOrder, operator: queryphysical.OperatorOrderedIndex, cursorKind: "index_key"},
-		{name: "subtree", query: subtree, family: queryphysical.FamilyIndexedSubtree, operator: queryphysical.OperatorSubtree, cursorKind: "root_index_key", legacy: true},
+		{name: "subtree", query: subtree, family: queryphysical.FamilyIndexedSubtree, operator: queryphysical.OperatorSubtree, cursorKind: "root_index_key"},
 		{name: "full", query: full, family: queryphysical.FamilyBoundedFullScan, operator: queryphysical.OperatorFullGraph, cursorKind: "offset", legacy: true},
 	}
 	for _, test := range tests {
@@ -175,6 +175,37 @@ func TestBuildSelectsIndexedPathStartAccess(t *testing.T) {
 	}
 }
 
+func TestBuildIndexedPathSeparatesStartAndTraversalResidualPredicates(t *testing.T) {
+	base := baseQuery()
+	base.PathAlias = "path"
+	base.Steps = []querylogical.Step{traversalStep("edge")}
+
+	targetOnly := base
+	targetOnly.Predicate = comparison("m", "name", "=", stringValue("target"))
+	plan := buildRead(t, targetOnly, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyIndexedPath || plan.Access.Kind != queryphysical.AccessLabel || plan.PushedPredicate != nil || plan.ResidualPredicate == nil {
+		t.Fatalf("target residual plan = %#v", plan)
+	}
+
+	startAndTarget := base
+	startAndTarget.Predicate = querylogical.CombinePredicate(querylogical.PredicateAndOp, []querylogical.Predicate{
+		*comparison("n", "name", "=", stringValue("start")),
+		*comparison("m", "name", "=", stringValue("target")),
+	})
+	plan = buildRead(t, startAndTarget, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyIndexedPath || plan.Access.Kind != queryphysical.AccessCompoundProperty || plan.PushedPredicate == nil || plan.ResidualPredicate == nil {
+		t.Fatalf("split residual plan = %#v", plan)
+	}
+
+	gated := base
+	gated.Source = querylogical.SourceGQL
+	gated.Predicate = comparison("n", "name", "!=", stringValue("start"))
+	plan = buildRead(t, gated, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || !plan.RequiresLegacy() {
+		t.Fatalf("GQL non-equality compatibility gate = %#v", plan)
+	}
+}
+
 func TestBuildRecordsIndexesPredicatesOrderingAndBounds(t *testing.T) {
 	query := baseQuery()
 	query.Predicate = querylogical.CombinePredicate(querylogical.PredicateAndOp, []querylogical.Predicate{
@@ -226,8 +257,9 @@ func TestBuildRecordsBoundedPathAndFullScanLimits(t *testing.T) {
 	step := traversalStep("edge")
 	step.Depth = querylogical.DepthBounds{Min: 1, Max: 3}
 	path.Steps = []querylogical.Step{step}
+	path.Safety = querylogical.SafetyLimits{MaxNodes: 321, MaxEdges: 654}
 	plan := buildRead(t, path, plannerSchema(), plannerEnvironment())
-	if plan.Limits.MaxCandidates != 50000 || plan.Limits.MaxStartNodes != 1000 || plan.Limits.MaxIntermediateRows != 10000 || plan.Limits.MaxOutputRows != 10000 || plan.Limits.MaxMemoryBytes != 64<<20 || plan.Limits.MaxNodesLoaded != 50000 || plan.Limits.MaxEdgesLoaded != 50000 || plan.Limits.MaxAdjacencyCalls != 10000 || plan.Limits.MaxTraversalDepth != 3 {
+	if plan.Limits.MaxCandidates != 50000 || plan.Limits.MaxStartNodes != 1000 || plan.Limits.MaxIntermediateRows != 10000 || plan.Limits.MaxOutputRows != 10000 || plan.Limits.MaxMemoryBytes != 64<<20 || plan.Limits.MaxNodesLoaded != 321 || plan.Limits.MaxEdgesLoaded != 654 || plan.Limits.MaxAdjacencyCalls != 10000 || plan.Limits.MaxTraversalDepth != 3 {
 		t.Fatalf("path limits = %#v", plan.Limits)
 	}
 
@@ -280,7 +312,7 @@ func TestBuildGQLOrderedStringFilterRetainsLegacyIndexFamilyAsResidual(t *testin
 	}
 }
 
-func TestBuildMalformedPathPredicatesUseBroadFallback(t *testing.T) {
+func TestBuildPathPredicateFallbackAndResidualSelection(t *testing.T) {
 	base := baseQuery()
 	base.PathAlias = "path"
 	base.Steps = []querylogical.Step{traversalStep("edge")}
@@ -293,12 +325,13 @@ func TestBuildMalformedPathPredicatesUseBroadFallback(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		predicate *querylogical.Predicate
-	}{{name: "reversed less-than", predicate: reversedLess}, {name: "target alias string", predicate: targetString}} {
+		family    queryphysical.Family
+	}{{name: "reversed less-than", predicate: reversedLess, family: queryphysical.FamilyBoundedFullScan}, {name: "target alias string", predicate: targetString, family: queryphysical.FamilyIndexedPath}} {
 		t.Run(test.name, func(t *testing.T) {
 			query := base
 			query.Predicate = test.predicate
 			plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
-			if plan.Family != queryphysical.FamilyBoundedFullScan {
+			if plan.Family != test.family {
 				t.Fatalf("plan = %#v", plan)
 			}
 		})
@@ -350,6 +383,16 @@ func TestBuildRejectsUnavailableOrInvalidAccessPaths(t *testing.T) {
 		}(), schema: plannerSchema(), environment: func() queryphysical.Environment {
 			env := plannerEnvironment()
 			env.Capabilities.Indexes = false
+			return env
+		}(), code: querylogical.ErrorUnavailableAccessPath},
+		{name: "subtree missing entity capability", query: func() querylogical.Query {
+			q := baseQuery()
+			q.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
+			q.Steps = []querylogical.Step{traversalStep("")}
+			return q
+		}(), schema: plannerSchema(), environment: func() queryphysical.Environment {
+			env := plannerEnvironment()
+			env.Capabilities.EntityReads = false
 			return env
 		}(), code: querylogical.ErrorUnavailableAccessPath},
 	}
@@ -415,23 +458,14 @@ func TestBuildRecordsSortAndTopNShapingOperators(t *testing.T) {
 		t.Fatalf("ordered index should satisfy ordering directly: %#v", plan.Root)
 	}
 
-	for _, test := range []struct {
-		name     string
-		distinct bool
-		want     queryphysical.OperatorKind
-	}{
-		{name: "subtree finite limit uses Top-N", want: queryphysical.OperatorTopN},
-		{name: "subtree distinct requires complete sort", distinct: true, want: queryphysical.OperatorSort},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			query := ordered
-			query.Steps = []querylogical.Step{traversalStep("")}
-			query.Distinct = test.distinct
-			plan := buildRead(t, query, schema, plannerEnvironment())
-			if !operatorTreeContains(plan.Root, test.want) {
-				t.Fatalf("operator tree = %#v, want %q", plan.Root, test.want)
-			}
-		})
+	for _, distinct := range []bool{false, true} {
+		query := ordered
+		query.Steps = []querylogical.Step{traversalStep("")}
+		query.Distinct = distinct
+		plan := buildRead(t, query, schema, plannerEnvironment())
+		if operatorTreeContains(plan.Root, queryphysical.OperatorSort) || operatorTreeContains(plan.Root, queryphysical.OperatorTopN) {
+			t.Fatalf("ordered subtree should preserve root ordering directly: %#v", plan.Root)
+		}
 	}
 
 	aggregate := ordered

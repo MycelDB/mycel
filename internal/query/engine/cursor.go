@@ -29,6 +29,7 @@ type indexedCursor struct {
 	BaseRevision  int64  `json:"base_revision"`
 	SchemaVersion string `json:"schema_version,omitempty"`
 	Mode          string `json:"mode"`
+	StartIndex    int    `json:"start_index,omitempty"`
 	PageCursor    string `json:"page_cursor,omitempty"`
 	PageOffset    int    `json:"page_offset,omitempty"`
 	OutputOffset  int    `json:"output_offset,omitempty"`
@@ -38,6 +39,12 @@ type indexedCursor struct {
 
 type legacyShapedCursor struct {
 	IndexCursor  string `json:"index_cursor,omitempty"`
+	RowsReturned int64  `json:"rows_returned,omitempty"`
+}
+
+type legacyAdjacencyCursor struct {
+	StartIndex   int    `json:"start_index"`
+	EdgeCursor   string `json:"edge_cursor,omitempty"`
 	RowsReturned int64  `json:"rows_returned,omitempty"`
 }
 
@@ -61,7 +68,7 @@ func decodeIndexedCursor(prepared PreparedQuery) (indexedCursor, error) {
 		return cursor, nil
 	}
 	if strings.HasPrefix(token, legacyShapedCursorPrefix) {
-		if (prepared.Physical.Family != queryphysical.FamilyIndexedOrder && prepared.Physical.Family != queryphysical.FamilyIndexedEquality) || !nativeSourceCursorSupported(prepared) {
+		if !legacyIndexSourceFamily(prepared.Physical.Family) || !nativeSourceCursorSupported(prepared) {
 			return indexedCursor{}, staleCursor("legacy shaped cursor is not compatible with the indexed plan", nil)
 		}
 		payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, legacyShapedCursorPrefix))
@@ -77,10 +84,33 @@ func decodeIndexedCursor(prepared PreparedQuery) (indexedCursor, error) {
 	if offset, err := strconv.Atoi(token); err == nil && offset >= 0 {
 		return indexedCursor{Mode: cursorModeOutput, OutputOffset: offset, RowsReturned: int64(offset)}, nil
 	}
-	if (prepared.Physical.Family == queryphysical.FamilyIndexedOrder || prepared.Physical.Family == queryphysical.FamilyIndexedEquality) && nativeSourceCursorSupported(prepared) {
+	if prepared.Physical.Family == queryphysical.FamilyIndexedAdjacency && nativeSourceCursorSupported(prepared) {
+		if strings.HasPrefix(token, "multi:") {
+			payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "multi:"))
+			if err != nil {
+				return indexedCursor{}, staleCursor("legacy adjacency cursor is malformed", err)
+			}
+			var legacy legacyAdjacencyCursor
+			if err := json.Unmarshal(payload, &legacy); err != nil || legacy.StartIndex < 0 || legacy.RowsReturned < 0 {
+				return indexedCursor{}, staleCursor("legacy adjacency cursor is malformed", err)
+			}
+			return indexedCursor{Mode: cursorModeSource, StartIndex: legacy.StartIndex, PageCursor: legacy.EdgeCursor, RowsReturned: legacy.RowsReturned}, nil
+		}
+		return indexedCursor{Mode: cursorModeSource, PageCursor: token}, nil
+	}
+	if legacyIndexSourceFamily(prepared.Physical.Family) && nativeSourceCursorSupported(prepared) {
 		return indexedCursor{Mode: cursorModeSource, PageCursor: token}, nil
 	}
 	return indexedCursor{}, staleCursor("cursor is not valid for the indexed plan", nil)
+}
+
+func legacyIndexSourceFamily(family queryphysical.Family) bool {
+	switch family {
+	case queryphysical.FamilyIndexedOrder, queryphysical.FamilyIndexedEquality, queryphysical.FamilyIndexedSubtree:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
@@ -94,7 +124,7 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if cursor.Mode != cursorModeSource && cursor.Mode != cursorModeOutput {
 		return staleCursor("cursor mode is unsupported", nil)
 	}
-	if cursor.PageOffset < 0 || cursor.OutputOffset < 0 || cursor.RowsReturned < 0 {
+	if cursor.StartIndex < 0 || cursor.PageOffset < 0 || cursor.OutputOffset < 0 || cursor.RowsReturned < 0 {
 		return staleCursor("cursor contains a negative position", nil)
 	}
 	if cursor.Mode == cursorModeSource && cursor.OutputOffset != 0 {
@@ -103,10 +133,13 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if cursor.Mode == cursorModeSource && !nativeSourceCursorSupported(prepared) {
 		return staleCursor("source cursor is not supported by the indexed plan", nil)
 	}
-	if prepared.Statement.Read != nil && prepared.Statement.Read.Page.Limit > 0 && cursor.RowsReturned >= prepared.Statement.Read.Page.Limit {
+	if prepared.Statement.Read != nil && prepared.Physical.Family != queryphysical.FamilyIndexedSubtree && prepared.Statement.Read.Page.Limit > 0 && cursor.RowsReturned >= prepared.Statement.Read.Page.Limit {
 		return staleCursor("cursor returned-row count reaches or exceeds the query limit", nil)
 	}
-	if cursor.Mode == cursorModeOutput && (cursor.PageCursor != "" || cursor.PageOffset != 0 || cursor.RowsReturned != int64(cursor.OutputOffset)) {
+	if cursor.Mode == cursorModeSource && prepared.Physical.Family != queryphysical.FamilyIndexedAdjacency && cursor.StartIndex != 0 {
+		return staleCursor("source cursor contains incompatible traversal state", nil)
+	}
+	if cursor.Mode == cursorModeOutput && (cursor.StartIndex != 0 || cursor.PageCursor != "" || cursor.PageOffset != 0 || cursor.RowsReturned != int64(cursor.OutputOffset)) {
 		return staleCursor("output cursor contains incompatible source continuation state", nil)
 	}
 	if cursor.TransactionID != prepared.Planning.Transaction.ID || cursor.BaseRevision != prepared.Planning.Transaction.BaseRevision {

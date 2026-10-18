@@ -21,10 +21,9 @@ type EntityReader interface {
 	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
 }
 
-// TraversalReader provides indexed adjacency and hierarchy traversal.
+// TraversalReader provides finite indexed adjacency pages used by traversal operators.
 type TraversalReader interface {
 	ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error)
-	ScanSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.SubtreeScan) (graphquery.SubtreeResult, graphquery.IndexedReadStats, error)
 }
 
 // IndexReader provides bounded graph index access.

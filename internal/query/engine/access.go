@@ -24,12 +24,17 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 	if requested := int(prepared.Statement.Read.Page.Size) + 1; prepared.Statement.Read.Page.Size > 0 && requested < batchSize {
 		batchSize = requested
 	}
+	if prepared.Physical.Family == queryphysical.FamilyIndexedSubtree && prepared.Statement.Read.Page.Limit > 0 {
+		if requested := int(prepared.Statement.Read.Page.Limit) + 1; requested < batchSize {
+			batchSize = requested
+		}
+	}
 	checkpoint := sourceCheckpointEncoder(prepared, cursor, nextRowsReturned)
 	resumeCursor, resumeOffset := "", 0
 	resuming := false
 	if cursor.Mode == cursorModeSource {
 		resumeCursor, resumeOffset = cursor.PageCursor, cursor.PageOffset
-		resuming = cursor.Version > 0 || resumeCursor != "" || resumeOffset > 0 || cursor.RowsReturned > 0
+		resuming = cursor.Version > 0 || cursor.StartIndex > 0 || resumeCursor != "" || resumeOffset > 0 || cursor.RowsReturned > 0
 		if resumeOffset >= batchSize {
 			return nil, staleCursor("source cursor offset exceeds the indexed page size", nil)
 		}
@@ -56,14 +61,20 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		}
 		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 	case queryphysical.FamilyTagIndex:
-		return e.tagSetSource(execution, prepared, tracker)
+		return e.tagSetSource(execution, prepared, tracker, false)
 	case queryphysical.FamilyIndexedPredicate:
 		if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
 			return nil, err
 		}
-		return e.predicateSetSource(execution, prepared, tracker)
+		return e.predicateSetSource(execution, prepared, tracker, false)
 	case queryphysical.FamilySemantic:
 		return e.semanticSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
+	case queryphysical.FamilyIndexedAdjacency:
+		return e.adjacencySource(execution, prepared, tracker, cursor, nextRowsReturned, batchSize)
+	case queryphysical.FamilyIndexedPath:
+		return e.pathSource(ctx, execution, prepared, tracker, batchSize)
+	case queryphysical.FamilyIndexedSubtree:
+		return e.subtreeSource(ctx, execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
 	default:
 		return nil, unsupportedPlan(prepared)
 	}
@@ -87,7 +98,8 @@ func nativeSourceCursorSupported(prepared PreparedQuery) bool {
 	}
 	switch prepared.Physical.Family {
 	case queryphysical.FamilyNodeIDLookup, queryphysical.FamilyLabelIndex,
-		queryphysical.FamilyIndexedEquality, queryphysical.FamilyIndexedOrder,
+		queryphysical.FamilyIndexedAdjacency, queryphysical.FamilyIndexedEquality,
+		queryphysical.FamilyIndexedOrder, queryphysical.FamilyIndexedSubtree,
 		queryphysical.FamilySemantic:
 		return true
 	default:
@@ -99,7 +111,142 @@ func sourceCursorSafe(query querylogical.Query, plan queryphysical.Plan) bool {
 	if query.Distinct || len(query.Aggregates) != 0 {
 		return false
 	}
-	return len(query.OrderBy) == 0 || plan.Family == queryphysical.FamilyIndexedOrder
+	return len(query.OrderBy) == 0 || plan.Family == queryphysical.FamilyIndexedOrder || plan.Family == queryphysical.FamilyIndexedSubtree
+}
+
+func nativeTraversalFamily(family queryphysical.Family) bool {
+	switch family {
+	case queryphysical.FamilyIndexedAdjacency, queryphysical.FamilyIndexedPath, queryphysical.FamilyIndexedSubtree:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) adjacencySource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64, batchSize int) (queryexecution.Operator, error) {
+	query := *prepared.Statement.Read
+	if len(query.Steps) != 1 || len(prepared.Physical.Access.Steps) != 1 {
+		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute adjacency query", "adjacency plan requires one traversal step", nil)
+	}
+	step := resolvedTraversalStep(query.Steps[0], prepared.Physical.Access.Steps[0])
+	edgeReader := e.traversalEdgeReader(execution, step)
+	nodeReader := func(ctx context.Context, nodeID string) (graph.Node, error) {
+		return e.ports.Entities.GetNode(ctx, execution.Transaction, nodeID)
+	}
+	var checkpoint queryexecution.AdjacencyCheckpointEncoder
+	if cursor.Mode != cursorModeOutput && nativeSourceCursorSupported(prepared) {
+		checkpoint = func(startIndex int, pageCursor string, pageOffset int) string {
+			return encodeIndexedCursor(prepared, indexedCursor{
+				Mode: cursorModeSource, StartIndex: startIndex, PageCursor: pageCursor,
+				PageOffset: pageOffset, RowsReturned: nextRowsReturned,
+			})
+		}
+	}
+	resuming := cursor.Mode == cursorModeSource && (cursor.Version > 0 || cursor.StartIndex > 0 || cursor.PageCursor != "" || cursor.PageOffset > 0 || cursor.RowsReturned > 0)
+	return queryexecution.NewAdjacencySource(
+		query.Start.Alias, query.Start, step, prepared.Physical.Access.NodeIDs,
+		nodeReader, edgeReader, checkpoint, cursor.StartIndex, cursor.PageCursor,
+		cursor.PageOffset, resuming, batchSize, prepared.Planning.Parameters, execution.Now, tracker,
+	), nil
+}
+
+func (e *Engine) pathSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, batchSize int) (queryexecution.Operator, error) {
+	query := *prepared.Statement.Read
+	if len(query.Steps) == 0 || len(query.Steps) != len(prepared.Physical.Access.Steps) {
+		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute indexed path", "path plan has incompatible traversal steps", nil)
+	}
+	source, startNodesAccounted, err := e.pathStartSource(ctx, execution, prepared, tracker, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+	if !startNodesAccounted {
+		source = queryexecution.NewStartNodeLimit(source, tracker)
+	}
+	currentAlias := query.Start.Alias
+	for index, logicalStep := range query.Steps {
+		step := resolvedTraversalStep(logicalStep, prepared.Physical.Access.Steps[index])
+		edgeReader := e.traversalEdgeReader(execution, step)
+		nodeReader := func(ctx context.Context, nodeID string) (graph.Node, error) {
+			return e.ports.Entities.GetNode(ctx, execution.Transaction, nodeID)
+		}
+		source = queryexecution.NewPathExpand(source, currentAlias, step, query.PathAlias, edgeReader, nodeReader, batchSize, prepared.Planning.Parameters, execution.Now, tracker)
+		currentAlias = step.Target.Alias
+	}
+	return source, nil
+}
+
+func (e *Engine) pathStartSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, batchSize int) (queryexecution.Operator, bool, error) {
+	access := prepared.Physical.Access
+	switch access.Kind {
+	case queryphysical.AccessNodeIDs:
+		return queryexecution.NewPagedNodeSource(access.StartAlias, e.nodeIDPageReader(execution, access.NodeIDs), nil, "", 0, false, batchSize, tracker).WithStartNodeBudget(false), true, nil
+	case queryphysical.AccessLabel:
+		label := access.Labels[0]
+		reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+			nodes, next, stats, err := e.ports.Indexes.ScanLabel(ctx, execution.Transaction, graphquery.LabelScan{Label: label, Limit: limit, Cursor: cursor})
+			return executionNodePage(nodes, next, stats), err
+		}
+		return queryexecution.NewPagedNodeSource(access.StartAlias, reader, nil, "", 0, false, batchSize, tracker).WithStartNodeBudget(false), true, nil
+	case queryphysical.AccessTag:
+		source, err := e.tagSetSource(execution, prepared, tracker, true)
+		return source, true, err
+	case queryphysical.AccessCompoundProperty:
+		if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
+			return nil, false, err
+		}
+		source, err := e.predicateSetSource(execution, prepared, tracker, true)
+		return source, true, err
+	default:
+		return nil, false, querylogical.NewError(querylogical.ErrorInternal, "execute indexed path", "unsupported indexed path start access", nil)
+	}
+}
+
+func (e *Engine) subtreeSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, checkpoint queryexecution.PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int) (queryexecution.Operator, error) {
+	query := *prepared.Statement.Read
+	if len(query.Steps) != 1 || len(prepared.Physical.Access.Steps) != 1 {
+		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute indexed subtree", "subtree plan requires one traversal step", nil)
+	}
+	if err := e.configureIndexes(ctx, execution.Transaction, prepared); err != nil {
+		return nil, err
+	}
+	reader, err := e.orderedPageReader(execution, prepared, prepared.Physical.Access)
+	if err != nil {
+		return nil, err
+	}
+	// Pull one subtree root at a time so node capacity remains available for
+	// that root's descendants and capacity exhaustion stops at a root boundary.
+	var source queryexecution.Operator = queryexecution.NewPagedNodeSource(query.Start.Alias, reader, checkpoint, resumeCursor, resumeOffset, resuming, 1, tracker).WithStartNodeBudget(true)
+	source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+	step := resolvedTraversalStep(query.Steps[0], prepared.Physical.Access.Steps[0])
+	edgeReader := e.traversalEdgeReader(execution, step)
+	nodeReader := func(ctx context.Context, nodeID string) (graph.Node, error) {
+		return e.ports.Entities.GetNode(ctx, execution.Transaction, nodeID)
+	}
+	return queryexecution.NewSubtreeExpand(
+		source, query.Start.Alias, step, edgeReader, nodeReader, batchSize,
+		prepared.Planning.Parameters, execution.Now, tracker,
+	), nil
+}
+
+func resolvedTraversalStep(step querylogical.Step, access queryphysical.TraversalStep) querylogical.Step {
+	step.Depth = querylogical.DepthBounds{Min: access.MinDepth, Max: access.MaxDepth}
+	return step
+}
+
+func (e *Engine) traversalEdgeReader(execution ExecutionContext, step querylogical.Step) queryexecution.TraversalEdgePageReader {
+	direction := graphquery.AdjacencyDirectionOut
+	if step.Edge.Direction == querylogical.DirectionIncoming {
+		direction = graphquery.AdjacencyDirectionIn
+	}
+	return func(ctx context.Context, nodeID string, limit int, cursor string) (queryexecution.TraversalEdgePage, error) {
+		edges, next, stats, err := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
+			NodeID: nodeID, Label: step.Edge.Labels[0], Direction: direction, Limit: limit, Cursor: cursor,
+		})
+		return queryexecution.TraversalEdgePage{
+			Edges: edges, NextCursor: next, IndexEntries: int64(stats.IndexEntriesScanned), EdgesLoaded: int64(stats.EdgesLoaded),
+		}, err
+	}
 }
 
 func (e *Engine) nodeIDPageReader(execution ExecutionContext, ids []string) queryexecution.NodePageReader {
@@ -124,7 +271,7 @@ func (e *Engine) nodeIDPageReader(execution ExecutionContext, ids []string) quer
 		if end < len(ids) {
 			next = strconv.Itoa(end)
 		}
-		return queryexecution.NodePage{Nodes: nodes, NextCursor: next, NodesLoaded: int64(len(nodes))}, nil
+		return queryexecution.NodePage{Nodes: nodes, NextCursor: next, NodesLoaded: int64(len(nodes)), NodeReadCalls: int64(len(nodes))}, nil
 	}
 }
 
@@ -165,7 +312,7 @@ func executionBound(bound *queryphysical.Bound, parameters map[string]querylogic
 func executionNodePage(nodes []graph.Node, next string, stats graphquery.IndexedReadStats) queryexecution.NodePage {
 	return queryexecution.NodePage{
 		Nodes: nodes, NextCursor: next,
-		IndexEntries: int64(stats.IndexEntriesScanned), NodesLoaded: int64(stats.NodesLoaded),
+		IndexEntries: int64(stats.IndexEntriesScanned), NodesLoaded: int64(stats.NodesLoaded), NodeReadCalls: int64(stats.NodeReadCalls),
 	}
 }
 
@@ -185,8 +332,17 @@ func (e *Engine) configureIndexes(ctx context.Context, tx sessionmodel.GraphTran
 	return nil
 }
 
-func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker) (queryexecution.Operator, error) {
+func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, accountStartNodes bool) (queryexecution.Operator, error) {
+	if accountStartNodes && len(prepared.Physical.Access.TagBranches) == 1 && len(prepared.Physical.Access.TagBranches[0]) == 1 {
+		tag := prepared.Physical.Access.TagBranches[0][0]
+		reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+			nodes, next, stats, err := e.ports.Indexes.ScanTag(ctx, execution.Transaction, graphquery.TagScan{Tag: tag, Limit: limit, Cursor: cursor})
+			return executionNodePage(nodes, next, stats), err
+		}
+		return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker).WithStartNodeBudget(false), nil
+	}
 	branches := make([]queryexecution.Operator, 0, len(prepared.Physical.Access.TagBranches))
+	branchSets := make([]*queryexecution.NodeSetOperator, 0, len(prepared.Physical.Access.TagBranches))
 	for _, tags := range prepared.Physical.Access.TagBranches {
 		children := make([]queryexecution.Operator, 0, len(tags))
 		for _, tag := range tags {
@@ -197,16 +353,32 @@ func (e *Engine) tagSetSource(execution ExecutionContext, prepared PreparedQuery
 			}
 			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker))
 		}
-		branches = append(branches, queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker))
+		branch := queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker)
+		branches = append(branches, branch)
+		branchSets = append(branchSets, branch)
 	}
+	var source *queryexecution.NodeSetOperator
 	if len(branches) == 1 {
-		return branches[0], nil
+		source = branchSets[0]
+	} else {
+		source = queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker)
 	}
-	return queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker), nil
+	if accountStartNodes {
+		source.WithStartNodeBudget()
+	}
+	return source, nil
 }
 
-func (e *Engine) predicateSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker) (queryexecution.Operator, error) {
+func (e *Engine) predicateSetSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, accountStartNodes bool) (queryexecution.Operator, error) {
+	if accountStartNodes && len(prepared.Physical.Access.Branches) == 1 && len(prepared.Physical.Access.Branches[0].Scans) == 1 {
+		reader, err := e.indexScanReader(execution, prepared, prepared.Physical.Access.Branches[0].Scans[0])
+		if err != nil {
+			return nil, err
+		}
+		return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker).WithStartNodeBudget(false), nil
+	}
 	branches := make([]queryexecution.Operator, 0, len(prepared.Physical.Access.Branches))
+	branchSets := make([]*queryexecution.NodeSetOperator, 0, len(prepared.Physical.Access.Branches))
 	for _, branch := range prepared.Physical.Access.Branches {
 		children := make([]queryexecution.Operator, 0, len(branch.Scans))
 		for _, scan := range branch.Scans {
@@ -216,12 +388,20 @@ func (e *Engine) predicateSetSource(execution ExecutionContext, prepared Prepare
 			}
 			children = append(children, queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, nil, "", 0, false, tracker.Limits().BatchSize, tracker))
 		}
-		branches = append(branches, queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker))
+		branchSet := queryexecution.NewNodeSet(children, queryexecution.NodeSetIntersection, tracker.Limits().BatchSize, tracker)
+		branches = append(branches, branchSet)
+		branchSets = append(branchSets, branchSet)
 	}
+	var source *queryexecution.NodeSetOperator
 	if len(branches) == 1 {
-		return branches[0], nil
+		source = branchSets[0]
+	} else {
+		source = queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker)
 	}
-	return queryexecution.NewNodeSet(branches, queryexecution.NodeSetUnion, tracker.Limits().BatchSize, tracker), nil
+	if accountStartNodes {
+		source.WithStartNodeBudget()
+	}
+	return source, nil
 }
 
 func (e *Engine) indexScanReader(execution ExecutionContext, prepared PreparedQuery, scan queryphysical.IndexScan) (queryexecution.NodePageReader, error) {
@@ -315,7 +495,7 @@ func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQue
 		if end < len(candidateIDs) {
 			next = strconv.Itoa(end)
 		}
-		page := queryexecution.NodePage{Nodes: nodes, NextCursor: next, NodesLoaded: int64(len(nodes))}
+		page := queryexecution.NodePage{Nodes: nodes, NextCursor: next, NodesLoaded: int64(len(nodes)), NodeReadCalls: int64(len(nodes))}
 		if !reported {
 			page.SemanticCandidates = candidateCount
 			page.SourceRetainedBytes = candidateMemory

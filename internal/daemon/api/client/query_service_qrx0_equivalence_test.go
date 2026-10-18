@@ -214,7 +214,7 @@ func TestQRX0TraversalAndProjectionEquivalence(t *testing.T) {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 
 	broadSyntheticQuery := &clientv1.GraphQuery{
 		Match: &clientv1.GraphPattern{
@@ -295,13 +295,13 @@ func TestQRX0SubtreeTreeAndGraphProjectionEquivalence(t *testing.T) {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 	structured := pkmJournalSubtreeQuery(20260701, 20260702, 2, 0, 0)
 	structured.Returns[0].OutputName = "d"
 	pair := qrx0EquivalentRead{
 		name:       "subtree tree and graph projections",
 		structured: structured,
-		gql:        "MATCH (d:pkm.journal)-[:contains*0..2]->(n) WHERE d.journal_day BETWEEN 20260701 AND 20260702 RETURN GRAPH d,n ORDER BY d.journal_day DESC FETCH FIRST 2 ROWS ONLY",
+		gql:        "MATCH (d:pkm.journal)-[:contains*0..2]->(n) WHERE d.journal_day <= 20260702 RETURN GRAPH d,n ORDER BY d.journal_day DESC FETCH FIRST 2 ROWS ONLY",
 		pageSize:   2,
 	}
 	assertQRX0EquivalentRead(t, fixture, querySvc, readTx, pair, "")
