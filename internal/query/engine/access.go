@@ -28,6 +28,23 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		if requested := int(prepared.Statement.Read.Page.Limit) + 1; requested < batchSize {
 			batchSize = requested
 		}
+	} else if prepared.Statement.Read.Page.Limit > 0 {
+		remaining := prepared.Statement.Read.Page.Limit - int64(cursor.OutputOffset)
+		canClamp := cursor.Mode == cursorModeOutput
+		if cursor.Mode == cursorModeSource && cursor.Version == 0 && cursor.StartIndex == 0 && cursor.PageCursor == "" && cursor.PageOffset == 0 && cursor.RowsReturned == 0 {
+			// A first request whose complete query limit fits in this response
+			// cannot emit a continuation, so no source-page checkpoint depends
+			// on the smaller access page size.
+			remaining = prepared.Statement.Read.Page.Limit
+			responseSize := prepared.Statement.Read.Page.Size
+			if responseSize <= 0 || responseSize > 500 {
+				responseSize = 500
+			}
+			canClamp = prepared.Statement.Read.Page.Limit <= int64(responseSize)
+		}
+		if canClamp && remaining > 0 && remaining < int64(batchSize) {
+			batchSize = int(remaining)
+		}
 	}
 	checkpoint := sourceCheckpointEncoder(prepared, cursor, nextRowsReturned)
 	resumeCursor, resumeOffset := "", 0
@@ -75,6 +92,8 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		return e.pathSource(ctx, execution, prepared, tracker, batchSize)
 	case queryphysical.FamilyIndexedSubtree:
 		return e.subtreeSource(ctx, execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
+	case queryphysical.FamilyBoundedFullScan:
+		return e.broadScanSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
 	default:
 		return nil, unsupportedPlan(prepared)
 	}
@@ -102,6 +121,8 @@ func nativeSourceCursorSupported(prepared PreparedQuery) bool {
 		queryphysical.FamilyIndexedOrder, queryphysical.FamilyIndexedSubtree,
 		queryphysical.FamilySemantic:
 		return true
+	case queryphysical.FamilyBoundedFullScan:
+		return len(prepared.Statement.Read.Steps) == 0
 	default:
 		return false
 	}
@@ -116,11 +137,69 @@ func sourceCursorSafe(query querylogical.Query, plan queryphysical.Plan) bool {
 
 func nativeTraversalFamily(family queryphysical.Family) bool {
 	switch family {
-	case queryphysical.FamilyIndexedAdjacency, queryphysical.FamilyIndexedPath, queryphysical.FamilyIndexedSubtree:
+	case queryphysical.FamilyIndexedAdjacency, queryphysical.FamilyIndexedPath, queryphysical.FamilyIndexedSubtree, queryphysical.FamilyBoundedFullScan:
 		return true
 	default:
 		return false
 	}
+}
+
+func (e *Engine) broadScanSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, checkpoint queryexecution.PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int) (queryexecution.Operator, error) {
+	query := *prepared.Statement.Read
+	if len(query.Steps) != len(prepared.Physical.Access.Steps) {
+		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute broad scan", "logical and physical traversal steps do not match", nil)
+	}
+	rootBatchSize := batchSize
+	if len(query.Steps) > 0 {
+		// Pull a single root at a time so satisfying a LIMIT closes the scan
+		// before another root page is requested or expanded. Adjacency access
+		// retains the caller's finite batch size.
+		rootBatchSize = 1
+	}
+	reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+		nodes, next, err := e.ports.Entities.ListNodes(ctx, execution.Transaction, limit, cursor)
+		return queryexecution.NodePage{Nodes: nodes, NextCursor: next, NodesLoaded: int64(len(nodes))}, err
+	}
+	var source queryexecution.Operator = queryexecution.NewNodeScan(
+		query.Start.Alias, reader, checkpoint, resumeCursor, resumeOffset, resuming, rootBatchSize, tracker,
+	)
+	source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+	if prepared.Physical.PushedPredicate != nil {
+		source = queryexecution.NewFilter(source, prepared.Physical.PushedPredicate, prepared.Planning.Parameters, execution.Now, tracker)
+	}
+	if len(query.Steps) == 0 {
+		return source, nil
+	}
+	source = queryexecution.NewStartNodeLimit(source, tracker)
+	nodeReader := func(ctx context.Context, nodeID string) (graph.Node, error) {
+		return e.ports.Entities.GetNode(ctx, execution.Transaction, nodeID)
+	}
+	steps := make([]querylogical.Step, 0, len(query.Steps))
+	readers := make([]queryexecution.TraversalEdgePageReader, 0, len(query.Steps))
+	for index, logicalStep := range query.Steps {
+		step := resolvedTraversalStep(logicalStep, prepared.Physical.Access.Steps[index])
+		steps = append(steps, step)
+		readers = append(readers, e.traversalEdgeReader(execution, step))
+	}
+	if broadCollectTraversal(query) {
+		return queryexecution.NewCollectExpand(
+			source, query.Start.Alias, steps, readers, nodeReader, batchSize,
+			prepared.Planning.Parameters, execution.Now, tracker,
+		), nil
+	}
+	currentAlias := query.Start.Alias
+	for index, step := range steps {
+		source = queryexecution.NewPathExpand(
+			source, currentAlias, step, query.PathAlias, readers[index], nodeReader,
+			batchSize, prepared.Planning.Parameters, execution.Now, tracker,
+		)
+		currentAlias = step.Target.Alias
+	}
+	return source, nil
+}
+
+func broadCollectTraversal(query querylogical.Query) bool {
+	return query.Source == querylogical.SourceStructured && strings.TrimSpace(query.PathAlias) == "" && len(query.Steps) > 0
 }
 
 func (e *Engine) adjacencySource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64, batchSize int) (queryexecution.Operator, error) {

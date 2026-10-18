@@ -19,7 +19,7 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx8"
+	PlannerVersion = "qrx9"
 )
 
 // ErrUnsupportedPlan is the temporary bridge signal used while plan families
@@ -69,7 +69,7 @@ const (
 	// PlanLegacyBridge means the API adapter must execute the statement exactly
 	// once through its existing implementation.
 	PlanLegacyBridge PlanKind = "legacy_bridge"
-	// PlanIndexed executes a migrated QRX7 node access family directly.
+	// PlanIndexed executes a migrated native read family directly.
 	PlanIndexed PlanKind = "indexed"
 )
 
@@ -89,9 +89,9 @@ func (p PreparedQuery) RequiresLegacy() bool {
 	return p.Kind == PlanLegacyBridge
 }
 
-// Engine implements the neutral query facade. QRX7 executes indexed node and
-// semantic plans directly; later plan families can still provide an explicit
-// temporary legacy source for neutral QRX6 shaping.
+// Engine implements the neutral query facade. Indexed, traversal, and bounded
+// broad read plans execute directly; later plan families can still provide an
+// explicit temporary legacy source for neutral QRX6 shaping.
 type Engine struct {
 	ports Ports
 }
@@ -169,7 +169,7 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	return diagnostics, nil
 }
 
-// Execute runs migrated QRX7 indexed node plans directly. An explicit legacy
+// Execute runs migrated native read plans directly. An explicit legacy
 // row source remains available for adapter-owned families that only migrated
 // neutral shaping in QRX6.
 func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {

@@ -287,6 +287,68 @@ func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
 	})
 }
 
+func TestQRX9StructuredAndGQLBroadReadsBypassWholeGraphMaterialization(t *testing.T) {
+	fixture, manager, readTx := newQRX0JournalFixture(t)
+
+	for _, test := range []struct {
+		name string
+		run  func(*QueryService) (*clientv1.QueryDiagnostics, error)
+	}{
+		{name: "structured", run: func(service *QueryService) (*clientv1.QueryDiagnostics, error) {
+			response, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+				TransactionId: readTx,
+				Query: &clientv1.GraphQuery{
+					Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+					Where:   &clientv1.Expr{Expr: &clientv1.Expr_Null{Null: &clientv1.NullExpr{Alias: "j", Name: "title", IsNull: false}}},
+					Returns: []*clientv1.ReturnProjection{{Alias: "j", OutputName: "journal", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
+				},
+				PageSize: 1,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if len(response.GetRows()) != 1 || response.GetNextPageToken() == "" {
+				return nil, fmt.Errorf("structured page rows=%d cursor=%q", len(response.GetRows()), response.GetNextPageToken())
+			}
+			return response.GetDiagnostics(), nil
+		}},
+		{name: "GQL", run: func(service *QueryService) (*clientv1.QueryDiagnostics, error) {
+			response, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+				TransactionId: readTx, Query: "MATCH (j:JournalEntry) WHERE j.title IS NOT NULL RETURN j", PageSize: 1,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if len(response.GetResult().GetRows()) != 1 || response.GetResult().GetNextPageToken() == "" {
+				return nil, fmt.Errorf("GQL page rows=%d cursor=%q", len(response.GetResult().GetRows()), response.GetResult().GetNextPageToken())
+			}
+			return response.GetDiagnostics(), nil
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			instrumented, profile := instrumentQRX0Graph(fixture.graphs)
+			service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+				WithSchemaManager(manager).
+				WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
+			diagnostics, err := test.run(service)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if diagnostics.GetPlan() != "StreamingNodeScan" || diagnostics.GetPlannerVersion() != "qrx9" || !diagnostics.GetFullScan() {
+				t.Fatalf("diagnostics = %+v", diagnostics)
+			}
+			if profile.callCount("ListNodes") != 1 || profile.returnedCount("ListNodes") != 2 || profile.callCount("ListEdges") != 0 {
+				t.Fatalf("streaming broad profile = %+v", profile.callsSnapshot())
+			}
+			for _, limit := range profile.requestedLimits("ListNodes") {
+				if limit <= 0 {
+					t.Fatalf("ListNodes used unbounded limit: %v", profile.requestedLimits("ListNodes"))
+				}
+			}
+		})
+	}
+}
+
 func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T) {
 	fixture, manager, readTx := newQRX0JournalFixture(t)
 
@@ -331,7 +393,7 @@ func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T
 			if !reflect.DeepEqual(titles, []string{"oldest", "middle"}) {
 				t.Fatalf("titles = %v", titles)
 			}
-			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx8" || diagnostics.GetFullScan() {
+			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx9" || diagnostics.GetFullScan() {
 				t.Fatalf("diagnostics = %+v", diagnostics)
 			}
 			if profile.callCount("ScanNodePropertyOrdered") == 0 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {

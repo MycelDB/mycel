@@ -77,6 +77,17 @@ func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder P
 	}
 }
 
+// NodeScan is the finite, cursor-driven broad node access operator. It embeds
+// the shared paged source so full scans use the same cursor, budget,
+// cancellation, and retained-memory rules as indexed node sources.
+type NodeScan struct {
+	*PagedNodeSource
+}
+
+func NewNodeScan(alias string, reader NodePageReader, checkpointEncoder PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int, tracker *Tracker) *NodeScan {
+	return &NodeScan{PagedNodeSource: NewPagedNodeSource(alias, reader, checkpointEncoder, resumeCursor, resumeOffset, resuming, batchSize, tracker)}
+}
+
 // WithStartNodeBudget makes this source account returned nodes as traversal
 // roots and clamp every dependency request to the remaining root/node budget.
 // Subtree roots may stop cleanly at a root boundary; path starts fail closed.

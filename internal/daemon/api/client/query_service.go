@@ -151,18 +151,22 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	statement := querylogical.ReadStatement(logicalQuery)
 	if s.queryEngine != nil {
 		prepared, prepareErr := s.queryEngine.Prepare(ctx, planning, statement)
-		if prepareErr == nil && !prepared.RequiresLegacy() {
-			readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
-			result, executeErr := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
-			if executeErr != nil {
-				return nil, mapQueryEngineError(executeErr)
-			}
-			mapped := protoNeutralQueryResult(result)
-			return &clientv1.ExecuteQueryResponse{
-				Rows: mapped.GetRows(), NextPageToken: mapped.GetNextPageToken(), Result: mapped,
-				ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: protoQueryDiagnostics(result.Diagnostics),
-			}, nil
+		if prepareErr != nil {
+			return nil, mapQueryEngineError(prepareErr)
 		}
+		if prepared.RequiresLegacy() {
+			return nil, status.Error(codes.Internal, "query engine returned a legacy plan for a structured read")
+		}
+		readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+		result, executeErr := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
+		if executeErr != nil {
+			return nil, mapQueryEngineError(executeErr)
+		}
+		mapped := protoNeutralQueryResult(result)
+		return &clientv1.ExecuteQueryResponse{
+			Rows: mapped.GetRows(), NextPageToken: mapped.GetNextPageToken(), Result: mapped,
+			ReadMetadata: protoReadMetadata(recorder.Summary()), Diagnostics: protoQueryDiagnostics(result.Diagnostics),
+		}, nil
 	}
 	if !domaingraph.DomainBroadSearchable(domain) && !isSemanticPredicateNodeQuery(req.GetQuery()) && !isIndexedPredicateNodeQuery(req.GetQuery()) && !isIndexedEqualityNodeQuery(req.GetQuery()) {
 		return nil, status.Error(codes.FailedPrecondition, "domain is excluded from broad query execution")
@@ -242,7 +246,13 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 		planning := s.queryEnginePlanningContext(tx, domain, schemaCtx)
 		planning.Parameters = logicalQueryParameters(params)
 		prepared, prepareErr := s.queryEngine.Prepare(ctx, planning, statement)
-		if prepareErr == nil && !prepared.RequiresLegacy() {
+		if prepareErr != nil {
+			return nil, mapQueryEngineError(prepareErr)
+		}
+		if statement.Kind == querylogical.StatementRead {
+			if prepared.RequiresLegacy() {
+				return nil, status.Error(codes.Internal, "query engine returned a legacy plan for a GQL read")
+			}
 			readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
 			result, executeErr := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
 			if executeErr != nil {

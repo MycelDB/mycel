@@ -138,6 +138,9 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 		}
 		resolved, uses, err := p.resolveBranches(query.Start.Labels[0], branches)
 		if err != nil {
+			if p.gqlSchemalessBroad(query) {
+				return Plan{}, false, nil
+			}
 			return Plan{}, true, err
 		}
 		access.Kind = AccessCompoundProperty
@@ -273,6 +276,9 @@ func (p planner) planIndexedEquality(query querylogical.Query) (Plan, bool, erro
 	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 {
 		return Plan{}, false, nil
 	}
+	if p.gqlSchemalessBroad(query) {
+		return Plan{}, false, nil
+	}
 	scan, ok := equalityScan(query.Predicate, query.Start.Alias)
 	if !ok {
 		return Plan{}, false, nil
@@ -325,6 +331,9 @@ func (p planner) planIndexedPredicate(query querylogical.Query) (Plan, bool, err
 	if len(query.OrderBy) != 0 || len(query.Steps) != 0 || len(query.Start.Labels) != 1 {
 		return Plan{}, false, nil
 	}
+	if p.gqlSchemalessBroad(query) {
+		return Plan{}, false, nil
+	}
 	branches, pushed, ok, err := indexedBranches(query.Predicate, query.Start.Alias, query.Source, true)
 	if err != nil {
 		return Plan{}, true, err
@@ -354,7 +363,7 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	if len(query.OrderBy) != 1 || len(query.Start.Labels) != 1 {
 		return Plan{}, true, p.unavailable("ORDER BY requires one ordered single-label node query")
 	}
-	if gqlOrderedNodeRequiresBroadFallback(query) {
+	if gqlOrderedNodeRequiresBroadFallback(query) || p.gqlSchemalessBroad(query) {
 		return Plan{}, false, nil
 	}
 	orderField, ok := valueField(query.OrderBy[0].Value)
@@ -428,26 +437,91 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	return plan, true, nil
 }
 
+func (p planner) gqlSchemalessBroad(query querylogical.Query) bool {
+	return query.Source == querylogical.SourceGQL && !p.catalog.Enabled() && p.environment.Domain.BroadSearchable
+}
+
 func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 	if !p.environment.Domain.BroadSearchable {
 		return Plan{}, p.unavailable("query shape requires broad fallback but domain is not broad-searchable")
 	}
 	if !p.environment.Capabilities.EntityReads {
-		return Plan{}, p.unavailable("bounded full scan requires entity reads")
+		return Plan{}, p.unavailable("bounded node scan requires entity reads")
+	}
+	access := AccessPath{
+		Kind: AccessNodeScan, StartAlias: query.Start.Alias,
+		Labels: append([]string(nil), query.Start.Labels...), NodeIDs: append([]string(nil), query.Start.NodeIDs...),
+	}
+	indexes := []IndexUse{}
+	name := "StreamingNodeScan"
+	for i, step := range query.Steps {
+		if !p.environment.Capabilities.Traversals {
+			return Plan{}, p.unavailable("broad traversal requires adjacency access")
+		}
+		if len(step.Edge.Labels) != 1 || strings.TrimSpace(step.Edge.Labels[0]) == "" {
+			return Plan{}, p.invalid("broad traversal step %d requires exactly one edge label", i)
+		}
+		if step.Edge.Direction != querylogical.DirectionIncoming && step.Edge.Direction != querylogical.DirectionOutgoing {
+			return Plan{}, p.invalid("broad traversal step %d requires directed traversal", i)
+		}
+		maxDepth := p.resolvedMaxDepth(query.Source, step.Depth.Max)
+		if maxDepth < step.Depth.Min || maxDepth <= 0 {
+			return Plan{}, p.invalid("broad traversal step %d has invalid depth bounds", i)
+		}
+		access.Steps = append(access.Steps, TraversalStep{
+			EdgeAlias: step.Edge.Alias, Labels: append([]string(nil), step.Edge.Labels...), Direction: step.Edge.Direction,
+			MinDepth: step.Depth.Min, MaxDepth: maxDepth, TargetAlias: step.Target.Alias,
+			TargetLabels: append([]string(nil), step.Target.Labels...),
+		})
+		indexes = append(indexes, adjacencyIndex(step))
+	}
+	if len(access.Steps) > 0 {
+		name = "StreamingNodeScan+EdgeAdjacencyIndexScan"
+	}
+	cursorKind := "node_key"
+	if !broadSourceCursorSafe(query) {
+		cursorKind = "output_offset_replay"
+	}
+	var pushed *querylogical.Predicate
+	residual := query.Predicate
+	if broadPredicateStartOnly(query.Predicate, query.Start.Alias) {
+		pushed, residual = query.Predicate, nil
+	} else if len(query.Steps) > 0 {
+		if startPredicate, ok, mixed := pathStartPredicate(query.Predicate, query.Start.Alias); ok && !mixed {
+			// Rechecking the complete predicate after expansion preserves mixed
+			// binding semantics while avoiding traversal for roots that fail an
+			// independent start-only conjunct.
+			pushed = startPredicate
+		}
 	}
 	return Plan{
-		Name: "BoundedFullGraphScan", Family: FamilyBoundedFullScan,
-		Access:            AccessPath{Kind: AccessFullGraph, StartAlias: query.Start.Alias, Labels: append([]string(nil), query.Start.Labels...), NodeIDs: append([]string(nil), query.Start.NodeIDs...)},
-		ResidualPredicate: query.Predicate, Cursor: legacyCursor("offset"),
+		Name: name, Family: FamilyBoundedFullScan, Access: access, Indexes: dedupeIndexes(indexes),
+		PushedPredicate: pushed, ResidualPredicate: residual, Cursor: nativeCursor(cursorKind),
 		Limits: p.resourceLimits(query, FamilyBoundedFullScan), FullScan: true, FallbackMode: "broad_graph_fallback",
 	}, nil
+}
+
+func broadSourceCursorSafe(query querylogical.Query) bool {
+	return len(query.Steps) == 0 && len(query.OrderBy) == 0 && len(query.Aggregates) == 0 && !query.Distinct
+}
+
+func broadPredicateStartOnly(predicate *querylogical.Predicate, startAlias string) bool {
+	if predicate == nil {
+		return false
+	}
+	aliases := predicateAliases(*predicate)
+	if len(aliases) == 0 {
+		return true
+	}
+	_, ok := aliases[startAlias]
+	return ok && len(aliases) == 1
 }
 
 func (p planner) finish(plan Plan, bound querybinding.BoundStatement, query querylogical.Query) Plan {
 	plan.SchemaVersion = bound.SchemaVersion
 	plan.Indexes = dedupeIndexes(plan.Indexes)
 	pipeline := operatorPipeline(plan, query)
-	if nativeIndexedFamily(plan.Family) {
+	if nativeReadFamily(plan.Family) {
 		plan.Root = pipeline
 		plan.LegacyBridgeReason = ""
 		return plan
@@ -457,9 +531,9 @@ func (p planner) finish(plan Plan, bound querybinding.BoundStatement, query quer
 	return plan
 }
 
-func nativeIndexedFamily(family Family) bool {
+func nativeReadFamily(family Family) bool {
 	switch family {
-	case FamilyNodeIDLookup, FamilyLabelIndex, FamilyTagIndex, FamilyIndexedPath, FamilyIndexedAdjacency, FamilyIndexedEquality, FamilySemantic, FamilyIndexedPredicate, FamilyIndexedOrder, FamilyIndexedSubtree:
+	case FamilyNodeIDLookup, FamilyLabelIndex, FamilyTagIndex, FamilyIndexedPath, FamilyIndexedAdjacency, FamilyIndexedEquality, FamilySemantic, FamilyIndexedPredicate, FamilyIndexedOrder, FamilyIndexedSubtree, FamilyBoundedFullScan:
 		return true
 	default:
 		return false
@@ -489,13 +563,31 @@ func operatorPipeline(plan Plan, query querylogical.Query) Operator {
 		rootScan := Operator{Kind: OperatorOrderedIndex, Name: "OrderedNodePropertyIndexScan"}
 		access := Operator{Kind: OperatorSubtree, Name: plan.Name, Inputs: []Operator{rootScan}}
 		return shapingPipeline(access, plan, query)
+	case FamilyBoundedFullScan:
+		scan := Operator{Kind: OperatorNodeScan, Name: "NodeScan"}
+		access := Operator{Kind: OperatorFilter, Name: "StartNodePattern", Inputs: []Operator{scan}}
+		if plan.PushedPredicate != nil {
+			access = Operator{Kind: OperatorFilter, Name: "PushedStartPredicate", Inputs: []Operator{access}}
+		}
+		if len(query.Steps) > 0 {
+			kind := OperatorIndexedPath
+			if structuredCollectTraversal(query) {
+				kind = OperatorCollectTraversal
+			}
+			access = Operator{Kind: kind, Name: "EdgeAdjacencyExpansion", Inputs: []Operator{access}}
+		}
+		return shapingPipeline(access, plan, query)
 	}
 	return shapingPipeline(Operator{Kind: accessKind, Name: plan.Name}, plan, query)
 }
 
+func structuredCollectTraversal(query querylogical.Query) bool {
+	return query.Source == querylogical.SourceStructured && strings.TrimSpace(query.PathAlias) == "" && len(query.Steps) > 0
+}
+
 func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operator {
 	current := input
-	if nativeIndexedFamily(plan.Family) {
+	if nativeReadFamily(plan.Family) && plan.Family != FamilyBoundedFullScan {
 		current = Operator{Kind: OperatorFilter, Name: "StartNodePattern", Inputs: []Operator{current}}
 	}
 	if plan.ResidualPredicate != nil {
@@ -686,6 +778,8 @@ func (p planner) resourceLimits(query querylogical.Query, family Family) Resourc
 	case FamilyBoundedFullScan:
 		limits.MaxNodesLoaded, limits.MaxEdgesLoaded = graphLimits(query)
 		if len(query.Steps) > 0 {
+			limits.MaxIndexEntries = defaultMaxIndexEntries
+			limits.MaxStartNodes = defaultPathMaxStartNodes
 			limits.MaxAdjacencyCalls = defaultMaxAdjacencyCalls
 		}
 	}

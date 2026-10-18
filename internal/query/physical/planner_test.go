@@ -59,7 +59,7 @@ func TestBuildSelectsAccessFamiliesInPrecedenceOrder(t *testing.T) {
 		{name: "compound", query: compound, family: queryphysical.FamilyIndexedPredicate, operator: queryphysical.OperatorCompoundIndex, cursorKind: "node_set_offset"},
 		{name: "ordered", query: ordered, family: queryphysical.FamilyIndexedOrder, operator: queryphysical.OperatorOrderedIndex, cursorKind: "index_key"},
 		{name: "subtree", query: subtree, family: queryphysical.FamilyIndexedSubtree, operator: queryphysical.OperatorSubtree, cursorKind: "root_index_key"},
-		{name: "full", query: full, family: queryphysical.FamilyBoundedFullScan, operator: queryphysical.OperatorFullGraph, cursorKind: "offset", legacy: true},
+		{name: "full", query: full, family: queryphysical.FamilyBoundedFullScan, operator: queryphysical.OperatorNodeScan, cursorKind: "node_key"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -201,7 +201,7 @@ func TestBuildIndexedPathSeparatesStartAndTraversalResidualPredicates(t *testing
 	gated.Source = querylogical.SourceGQL
 	gated.Predicate = comparison("n", "name", "!=", stringValue("start"))
 	plan = buildRead(t, gated, plannerSchema(), plannerEnvironment())
-	if plan.Family != queryphysical.FamilyBoundedFullScan || !plan.RequiresLegacy() {
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.RequiresLegacy() || plan.Access.Kind != queryphysical.AccessNodeScan {
 		t.Fatalf("GQL non-equality compatibility gate = %#v", plan)
 	}
 }
@@ -270,6 +270,70 @@ func TestBuildRecordsBoundedPathAndFullScanLimits(t *testing.T) {
 	plan = buildRead(t, full, plannerSchema(), plannerEnvironment())
 	if !plan.FullScan || plan.Limits.MaxNodesLoaded != 123 || plan.Limits.MaxEdgesLoaded != 456 {
 		t.Fatalf("full scan = %#v", plan)
+	}
+}
+
+func TestBuildBroadScanExposesStreamingAndBlockingOperators(t *testing.T) {
+	field := querylogical.FieldRef{Alias: "n", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	streaming := baseQuery()
+	streaming.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafNull, Field: &field, IsNull: false})
+	plan := buildRead(t, streaming, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.RequiresLegacy() || plan.Access.Kind != queryphysical.AccessNodeScan || plan.Cursor.Kind != "node_key" {
+		t.Fatalf("streaming broad plan = %#v", plan)
+	}
+	if plan.PushedPredicate == nil || plan.ResidualPredicate != nil || !operatorTreeContains(plan.Root, queryphysical.OperatorNodeScan) {
+		t.Fatalf("streaming predicate placement/operators = %#v", plan)
+	}
+
+	ordered := streaming
+	ordered.Source = querylogical.SourceGQL
+	ordered.Page.Limit = 2
+	ordered.Predicate = comparison("n", "name", ">", stringValue(""))
+	ordered.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
+	plan = buildRead(t, ordered, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.Cursor.Kind != "output_offset_replay" || !operatorTreeContains(plan.Root, queryphysical.OperatorTopN) {
+		t.Fatalf("blocking broad plan = %#v", plan)
+	}
+}
+
+func TestBuildBroadTraversalRequiresAdjacencyAndUsesFiniteResolvedDepth(t *testing.T) {
+	query := baseQuery()
+	query.Source = querylogical.SourceGQL
+	query.PathAlias = "path"
+	query.Predicate = querylogical.CombinePredicate(querylogical.PredicateAndOp, []querylogical.Predicate{
+		*comparison("n", "name", "!=", stringValue("skip")),
+		*comparison("m", "name", "=", stringValue("target")),
+	})
+	step := traversalStep("")
+	step.Depth = querylogical.DepthBounds{Min: 1, Max: -1}
+	query.Steps = []querylogical.Step{step}
+
+	plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.RequiresLegacy() || len(plan.Access.Steps) != 1 || plan.Access.Steps[0].MaxDepth <= 0 {
+		t.Fatalf("broad traversal plan = %#v", plan)
+	}
+	if !operatorTreeContains(plan.Root, queryphysical.OperatorIndexedPath) || plan.Limits.MaxAdjacencyCalls == 0 || plan.Limits.MaxStartNodes == 0 || plan.PushedPredicate == nil || plan.ResidualPredicate == nil {
+		t.Fatalf("broad traversal operators/limits = %#v", plan)
+	}
+	environment := plannerEnvironment()
+	environment.Capabilities.Traversals = false
+	assertPlanError(t, query, plannerSchema(), environment, querylogical.ErrorUnavailableAccessPath)
+}
+
+func TestBuildSchemalessGQLFiltersAndOrderingUseBoundedBroadFallback(t *testing.T) {
+	query := baseQuery()
+	query.Source = querylogical.SourceGQL
+	query.Predicate = comparison("n", "name", "=", stringValue("Ada"))
+	plan := buildReadWithoutSchema(t, query, plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.PushedPredicate == nil || plan.RequiresLegacy() {
+		t.Fatalf("schemaless equality plan = %#v", plan)
+	}
+
+	query.OrderBy = []querylogical.Order{{Value: querylogical.FieldValue("n", "name"), Direction: querylogical.SortAscending}}
+	query.Page.Limit = 3
+	plan = buildReadWithoutSchema(t, query, plannerEnvironment())
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.Cursor.Kind != "output_offset_replay" || !operatorTreeContains(plan.Root, queryphysical.OperatorTopN) {
+		t.Fatalf("schemaless ordered plan = %#v", plan)
 	}
 }
 
@@ -430,6 +494,20 @@ func TestBuildPlansMutationOnlyForAvailableLegacyMutationAccess(t *testing.T) {
 	environment.Capabilities.Mutations = false
 	_, err = queryphysical.Build(bound, environment)
 	assertQueryErrorCode(t, err, querylogical.ErrorUnavailableAccessPath)
+}
+
+func buildReadWithoutSchema(t *testing.T, query querylogical.Query, environment queryphysical.Environment) queryphysical.Plan {
+	t.Helper()
+	statement := querylogical.ReadStatement(query)
+	bound, err := querybinding.Bind(statement, bindingEnvironment(nil, false))
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	plan, err := queryphysical.Build(bound, environment)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	return plan
 }
 
 func buildRead(t *testing.T, query querylogical.Query, schema schemamodel.DomainSchema, environment queryphysical.Environment) queryphysical.Plan {

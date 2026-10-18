@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,49 @@ import (
 	queryexecution "github.com/myceldb/mycel/internal/query/execution"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 )
+
+func TestCollectExpandAccountsAdjacencyPageAndReleasesMemoryOnFailure(t *testing.T) {
+	root := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000091")}
+	child := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000092")}
+	edge := graph.Edge{
+		ID:     uuid.MustParse("00000000-0000-0000-0000-000000000093"),
+		FromID: root.ID, ToID: child.ID, Labels: []string{"contains"},
+		Properties: map[string]any{"payload": strings.Repeat("x", 64<<10)},
+	}
+	tracker, err := queryexecution.NewTracker(queryexecution.ResolveBudget(queryexecution.Budget{MaxMemoryBytes: 4 << 10, BatchSize: 1}, queryexecution.Budget{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"root": root}}}, 1, tracker)
+	endpointReads := 0
+	operator := queryexecution.NewCollectExpand(
+		source,
+		"root",
+		[]querylogical.Step{{Edge: querylogical.EdgePattern{Labels: []string{"contains"}, Direction: querylogical.DirectionOutgoing}, Depth: querylogical.DepthBounds{Min: 1, Max: 1}, Target: querylogical.NodePattern{Alias: "child"}}},
+		[]queryexecution.TraversalEdgePageReader{func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
+			return queryexecution.TraversalEdgePage{Edges: []graph.Edge{edge}, IndexEntries: 1, EdgesLoaded: 1}, nil
+		}},
+		func(context.Context, string) (graph.Node, error) {
+			endpointReads++
+			return child, nil
+		},
+		1,
+		nil,
+		time.Time{},
+		tracker,
+	)
+	if err := operator.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = operator.Next(context.Background())
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+	if endpointReads != 0 {
+		t.Fatalf("endpoint reads = %d, want page memory failure before hydration", endpointReads)
+	}
+	if got := tracker.Snapshot().RetainedMemory; got != 0 {
+		t.Fatalf("retained memory after failure = %d", got)
+	}
+}
 
 func TestPagedNodeSourceResumesInsideFinitePageAndReleasesMemory(t *testing.T) {
 	nodes := []graph.Node{

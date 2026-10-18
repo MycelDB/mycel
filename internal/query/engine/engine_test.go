@@ -100,7 +100,7 @@ func (panicCatalog) GetDomainSchema(context.Context, graph.DomainID) (schemamode
 	panic("binding must not load schema through the catalog")
 }
 
-func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
+func TestEnginePrepareUsesNativeBroadScanWithoutAccess(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities, Catalog: panicCatalog{}})
 	tx := sessionmodel.GraphTransaction{
@@ -119,8 +119,8 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	if !prepared.RequiresLegacy() {
-		t.Fatalf("prepared kind = %q, want legacy bridge", prepared.Kind)
+	if prepared.RequiresLegacy() {
+		t.Fatalf("prepared kind = %q, want native broad scan", prepared.Kind)
 	}
 	if !reflect.DeepEqual(prepared.Planning.Transaction, tx) {
 		t.Fatalf("planning transaction = %#v, want %#v", prepared.Planning.Transaction, tx)
@@ -128,7 +128,7 @@ func TestEnginePrepareUsesExplicitLegacyBridgeWithoutAccess(t *testing.T) {
 	if !reflect.DeepEqual(prepared.Statement, statement) {
 		t.Fatalf("prepared statement = %#v, want %#v", prepared.Statement, statement)
 	}
-	if prepared.Physical.Family != queryphysical.FamilyBoundedFullScan || prepared.Physical.Root.Kind != queryphysical.OperatorLegacyBridge {
+	if prepared.Physical.Family != queryphysical.FamilyBoundedFullScan || prepared.Physical.Access.Kind != queryphysical.AccessNodeScan || !operatorTreeContains(prepared.Physical.Root, queryphysical.OperatorNodeScan) {
 		t.Fatalf("physical plan = %#v", prepared.Physical)
 	}
 	if len(prepared.Binding.Variables) != 1 || prepared.Binding.Variables[0].Name != "n" {
@@ -216,7 +216,7 @@ func TestEngineExplainSemanticPlanDoesNotInvokeCandidates(t *testing.T) {
 	}
 }
 
-func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
+func TestEngineExplainDescribesNativeBroadScanWithoutExecuting(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities})
 
@@ -224,10 +224,10 @@ func TestEngineExplainDescribesLegacyBridgeWithoutExecuting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
-	if diagnostics.Plan != "BoundedFullGraphScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
+	if diagnostics.Plan != "StreamingNodeScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx8" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || !diagnostics.LegacyBridge {
+	if diagnostics.PlannerVersion != "qrx9" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || diagnostics.LegacyBridge || diagnostics.AccessPath != string(queryphysical.AccessNodeScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if len(diagnostics.Operators) == 0 || diagnostics.ResourceLimits.MaxNodesLoaded == 0 || diagnostics.RowsScanned != 0 || diagnostics.NodesLoaded != 0 {
@@ -273,7 +273,7 @@ func TestEngineExecuteShapesExplicitLegacyBindingsWithoutAccess(t *testing.T) {
 	if len(result.Rows) != 1 || result.Rows[0].Fields["node"].Node == nil || result.Rows[0].Fields["node"].Node.ID != node.ID.String() {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Diagnostics.PlannerVersion != "qrx8" || result.Diagnostics.ExplainOnly || !result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
+	if result.Diagnostics.PlannerVersion != "qrx9" || result.Diagnostics.ExplainOnly || result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
 		t.Fatalf("diagnostics = %#v", result.Diagnostics)
 	}
 	if entities.calls != 0 {
@@ -298,27 +298,21 @@ func TestEngineExecuteLegacyBindingsEnforcesWorkBudget(t *testing.T) {
 	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 }
 
-func TestEngineExecuteReturnsTypedUnsupportedPlanBeforeAccess(t *testing.T) {
+func TestEngineExecuteRunsNativeBroadScanThroughEntityPort(t *testing.T) {
 	entities := &recordingEntityReader{}
 	engine := queryengine.New(queryengine.Ports{Entities: entities})
-	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(sessionmodel.GraphTransaction{}), validReadStatement())
+	tx := sessionmodel.GraphTransaction{ID: "tx-broad", BaseRevision: 17}
+	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), validReadStatement())
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
 
-	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{}, prepared)
-	if !queryengine.IsUnsupportedPlan(err) {
-		t.Fatalf("execute error = %v, want unsupported plan", err)
+	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
+	if err != nil {
+		t.Fatalf("execute broad scan: %v", err)
 	}
-	if !errors.Is(err, queryengine.ErrUnsupportedPlan) {
-		t.Fatalf("execute error does not wrap ErrUnsupportedPlan: %v", err)
-	}
-	var queryErr *querylogical.QueryError
-	if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorUnsupportedPlan {
-		t.Fatalf("execute error = %#v, want typed unsupported-plan query error", err)
-	}
-	if entities.calls != 0 {
-		t.Fatalf("entity reads during unsupported execute = %d, want 0", entities.calls)
+	if len(result.Rows) != 0 || entities.calls != 1 || entities.tx != tx {
+		t.Fatalf("result=%#v calls=%d tx=%#v", result, entities.calls, entities.tx)
 	}
 }
 
@@ -345,6 +339,18 @@ func validReadStatement() querylogical.Statement {
 		AccessMode: querylogical.AccessModeReadOnly,
 		Start:      querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}},
 	})
+}
+
+func operatorTreeContains(operator queryphysical.Operator, kind queryphysical.OperatorKind) bool {
+	if operator.Kind == kind {
+		return true
+	}
+	for _, input := range operator.Inputs {
+		if operatorTreeContains(input, kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func assertQueryErrorCode(t *testing.T, err error, code querylogical.ErrorCode) {
