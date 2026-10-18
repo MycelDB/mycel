@@ -23,7 +23,7 @@ Mutation plans require the consumer-owned `engine.MutationWriter` capability. Th
 
 Matched mutations prepare native read subplans and reuse finite node/index/adjacency sources, residual predicate evaluation, transaction snapshot/overlay propagation, cancellation checks, and shared resource budgets. Node deletes perform bounded incoming and outgoing adjacency validation before staging any selected edge deletion, preserving the existing incident-edge rule without leaving a partially changed overlay on validation failure.
 
-All graph calls carry the complete `sessionmodel.GraphTransaction`. Before a statement writes, the engine captures an opaque graph-owned overlay savepoint. Any writer, cancellation, shaping, or resource-budget failure restores that complete savepoint before returning, so a failed statement cannot leave a partial overlay. Successful statements retain their staged writes; the engine never commits or rolls back the enclosing transaction.
+All graph calls carry the complete `sessionmodel.GraphTransaction`. Before a statement writes, the engine enters an opaque graph-owned mutation scope. A per-transaction lease serializes the statement with primitive writes, compound writes, commit, and discard. The graph records a bounded undo journal only for pre-existing node and edge entries first touched by the statement; it does not clone the accumulated transaction overlay. Any writer, cancellation, shaping, or resource-budget failure restores that journal before releasing the lease, so a failed statement cannot leave a partial overlay or erase a concurrent acknowledged write. Successful statements retain their staged writes; the engine never commits or rolls back the enclosing transaction.
 
 ## Result compatibility
 
@@ -67,6 +67,8 @@ Coverage includes:
 - incident-edge validation before mutation writes;
 - mutation continuation round trips across multiple result pages;
 - overlay restoration after shaping-budget exhaustion, post-write cancellation, and a later writer failure;
+- per-transaction write serialization across rollback and concurrent primitive writes;
+- undo-journal growth based on statement-touched entries rather than accumulated overlay size;
 - sequential script aggregation and graph compatibility;
 - stop-on-error and continue-on-error exact-once application tests;
 - read-only script rejection before engine work;

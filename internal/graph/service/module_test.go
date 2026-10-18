@@ -489,20 +489,20 @@ func TestMutationStateRestoresCompleteTransactionOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNode(original) error = %v", err)
 	}
-	savepoint, err := m.CaptureMutationState(ctx, tx)
+	mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
 	if err != nil {
-		t.Fatalf("CaptureMutationState() error = %v", err)
+		t.Fatalf("BeginMutationStatement() error = %v", err)
 	}
 	updatedContent := "updated"
-	if _, err := m.UpdateNode(ctx, tx, domaingraph.UpdateNodeInput{NodeID: original.ID.String(), Content: &updatedContent, UpdateMask: []string{"content"}}); err != nil {
+	if _, err := m.UpdateNode(mutationCtx, tx, domaingraph.UpdateNodeInput{NodeID: original.ID.String(), Content: &updatedContent, UpdateMask: []string{"content"}}); err != nil {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
-	created, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "created-after-savepoint"})
+	created, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "created-after-savepoint"})
 	if err != nil {
 		t.Fatalf("CreateNode(after savepoint) error = %v", err)
 	}
-	if err := m.RestoreMutationState(ctx, tx, savepoint); err != nil {
-		t.Fatalf("RestoreMutationState() error = %v", err)
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement() error = %v", err)
 	}
 	got, err := m.GetNode(ctx, tx, original.ID.String())
 	if err != nil {
@@ -517,6 +517,85 @@ func TestMutationStateRestoresCompleteTransactionOverlay(t *testing.T) {
 	identity, err := m.ReadViewIdentity(ctx, tx)
 	if err != nil || identity != "1" {
 		t.Fatalf("restored identity = %q, %v; want 1", identity, err)
+	}
+}
+
+func TestMutationStatementJournalTracksTouchedEntriesNotWholeOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	m.mu.Lock()
+	o := m.overlay(tx.ID)
+	ids := make([]domaingraph.NodeID, 256)
+	for index := range ids {
+		ids[index] = uuid.New()
+		o.putNodes[ids[index]] = domaingraph.Node{ID: ids[index], DomainID: mustDomainID(tx.DomainID), Content: fmt.Sprintf("node-%d", index)}
+		o.opCount++
+	}
+	m.mu.Unlock()
+
+	mutationCtx, captured, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	scope := captured.(*mutationScope)
+	if len(scope.nodes) != 0 || len(scope.edges) != 0 {
+		t.Fatalf("journal eagerly copied overlay: nodes=%d edges=%d", len(scope.nodes), len(scope.edges))
+	}
+	updated := "updated"
+	if _, err := m.UpdateNode(mutationCtx, tx, domaingraph.UpdateNodeInput{NodeID: ids[0].String(), Content: &updated, UpdateMask: []string{"content"}}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	if len(scope.nodes) != 1 || len(scope.edges) != 0 {
+		t.Fatalf("journal nodes=%d edges=%d, want one touched node", len(scope.nodes), len(scope.edges))
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement() error = %v", err)
+	}
+}
+
+func TestMutationStatementSerializesConcurrentTransactionWriteBeforeRollback(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "failed-statement"}); err != nil {
+		t.Fatalf("CreateNode(scoped) error = %v", err)
+	}
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	var concurrent domaingraph.Node
+	go func() {
+		close(started)
+		var createErr error
+		concurrent, createErr = m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "concurrent-success"})
+		done <- createErr
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("concurrent write completed inside active mutation scope: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement(rollback) error = %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("concurrent CreateNode() error = %v", err)
+	}
+	if _, err := m.GetNode(ctx, tx, concurrent.ID.String()); err != nil {
+		t.Fatalf("GetNode(concurrent success) error = %v", err)
+	}
+	nodes, _, err := m.ListNodes(ctx, tx, 10, "")
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != concurrent.ID {
+		t.Fatalf("overlay nodes after interleaving = %+v, want concurrent success only", nodes)
 	}
 }
 

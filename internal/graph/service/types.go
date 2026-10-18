@@ -27,8 +27,8 @@ type Manager interface {
 	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
 	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
 	ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]graph.Node, string, graphquery.IndexedReadStats, error)
-	CaptureMutationState(ctx context.Context, tx sessionmodel.GraphTransaction) (any, error)
-	RestoreMutationState(ctx context.Context, tx sessionmodel.GraphTransaction, state any) error
+	BeginMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, any, error)
+	FinishMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction, scope any, commit bool) error
 	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)
 	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error)
 	UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)

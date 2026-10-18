@@ -38,31 +38,34 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	if err != nil {
 		return querylogical.Result{}, err
 	}
-	savepoint, err := e.ports.Mutations.CaptureMutationState(ctx, execution.Transaction)
-	if err := mutationDependencyError(ctx, "capture mutation savepoint", err); err != nil {
+	mutationCtx, scope, err := e.ports.Mutations.BeginMutationStatement(ctx, execution.Transaction)
+	if err := mutationDependencyError(ctx, "begin mutation statement", err); err != nil {
 		return querylogical.Result{}, err
 	}
-	rollback := func(statementErr error) (querylogical.Result, error) {
-		restoreErr := e.ports.Mutations.RestoreMutationState(context.WithoutCancel(ctx), execution.Transaction, savepoint)
-		if restoreErr != nil {
+	finish := func(commit bool, statementErr error) (querylogical.Result, error) {
+		finishErr := e.ports.Mutations.FinishMutationStatement(context.WithoutCancel(ctx), execution.Transaction, scope, commit)
+		if finishErr != nil {
 			return querylogical.Result{}, querylogical.NewError(
 				querylogical.ErrorDependencyFailure,
-				"restore failed mutation statement",
-				fmt.Sprintf("statement failed: %v; restore failed: %v", statementErr, restoreErr),
-				restoreErr,
+				"finish mutation statement",
+				fmt.Sprintf("statement error: %v; finish error: %v", statementErr, finishErr),
+				finishErr,
 			)
 		}
 		return querylogical.Result{}, statementErr
 	}
 
 	mutation := *prepared.Statement.Mutation
-	rows, counters, err := e.runMutation(ctx, execution, prepared, mutation, tracker)
+	rows, counters, err := e.runMutation(mutationCtx, execution, prepared, mutation, tracker)
 	if err != nil {
-		return rollback(err)
+		return finish(false, err)
 	}
-	result, err := shapeMutationResult(ctx, rows, mutation, prepared, execution, tracker, budget)
+	result, err := shapeMutationResult(mutationCtx, rows, mutation, prepared, execution, tracker, budget)
 	if err != nil {
-		return rollback(err)
+		return finish(false, err)
+	}
+	if _, err := finish(true, nil); err != nil {
+		return querylogical.Result{}, err
 	}
 	result.Counters.NodesInserted = counters.NodesInserted
 	result.Counters.NodesUpdated = counters.NodesUpdated

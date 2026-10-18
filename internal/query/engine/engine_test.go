@@ -70,18 +70,20 @@ type recordingMutationWriter struct {
 	cancel  context.CancelFunc
 }
 
-func (panicMutationWriter) CaptureMutationState(context.Context, sessionmodel.GraphTransaction) (any, error) {
-	return struct{}{}, nil
+func (panicMutationWriter) BeginMutationStatement(ctx context.Context, _ sessionmodel.GraphTransaction) (context.Context, any, error) {
+	return ctx, struct{}{}, nil
 }
-func (panicMutationWriter) RestoreMutationState(context.Context, sessionmodel.GraphTransaction, any) error {
+func (panicMutationWriter) FinishMutationStatement(context.Context, sessionmodel.GraphTransaction, any, bool) error {
 	return nil
 }
 
-func (w *recordingMutationWriter) CaptureMutationState(context.Context, sessionmodel.GraphTransaction) (any, error) {
-	return w.creates, nil
+func (w *recordingMutationWriter) BeginMutationStatement(ctx context.Context, _ sessionmodel.GraphTransaction) (context.Context, any, error) {
+	return ctx, w.creates, nil
 }
-func (w *recordingMutationWriter) RestoreMutationState(_ context.Context, _ sessionmodel.GraphTransaction, state any) error {
-	w.creates = state.(int)
+func (w *recordingMutationWriter) FinishMutationStatement(_ context.Context, _ sessionmodel.GraphTransaction, state any, commit bool) error {
+	if !commit {
+		w.creates = state.(int)
+	}
 	return nil
 }
 func (w *recordingMutationWriter) CreateNode(context.Context, sessionmodel.GraphTransaction, graph.NodeInput) (graph.Node, error) {
