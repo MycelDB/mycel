@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented on `feat/query-refactor-qrx11-adapter-cleanup` for [mycel#213](https://github.com/MycelDB/mycel/issues/213). Independent review, CI, and integration-branch merge remain pending.
+Implemented and independently reviewed on `feat/query-refactor-qrx11-adapter-cleanup` for [mycel#213](https://github.com/MycelDB/mycel/issues/213). CI and integration-branch merge remain pending.
 
 ## Scope
 
