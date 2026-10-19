@@ -29,8 +29,6 @@ const (
 	defaultGQLDepth              = 5
 )
 
-const legacyBridgeReason = "physical plan execution has not migrated from the daemon adapter"
-
 type planner struct {
 	environment Environment
 	catalog     queryschema.Catalog
@@ -535,14 +533,7 @@ func broadPredicateStartOnly(predicate *querylogical.Predicate, startAlias strin
 func (p planner) finish(plan Plan, bound querybinding.BoundStatement, query querylogical.Query) Plan {
 	plan.SchemaVersion = bound.SchemaVersion
 	plan.Indexes = dedupeIndexes(plan.Indexes)
-	pipeline := operatorPipeline(plan, query)
-	if nativeReadFamily(plan.Family) {
-		plan.Root = pipeline
-		plan.LegacyBridgeReason = ""
-		return plan
-	}
-	plan.LegacyBridgeReason = legacyBridgeReason
-	plan.Root = legacyRoot(pipeline)
+	plan.Root = operatorPipeline(plan, query)
 	return plan
 }
 
@@ -673,14 +664,6 @@ func shapingPipeline(input Operator, plan Plan, query querylogical.Query) Operat
 
 func physicalTopNSafe(query querylogical.Query) bool {
 	return query.Page.Limit > 0 && query.Page.Offset >= 0 && query.Page.Offset <= int64(math.MaxInt)-query.Page.Limit && !query.Distinct && len(query.Aggregates) == 0
-}
-
-func legacyRoot(input Operator) Operator {
-	return Operator{Kind: OperatorLegacyBridge, Name: "LegacyBridge", Inputs: []Operator{input}}
-}
-
-func legacyCursor(kind string) CursorStrategy {
-	return CursorStrategy{Kind: kind, LegacyForm: true}
 }
 
 func nativeCursor(kind string) CursorStrategy {

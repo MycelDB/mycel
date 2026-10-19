@@ -204,7 +204,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		SemanticCandidates: clientapi.NewQuerySemanticCandidateReader(cfg.SemanticManager),
 		Mutations:          cfg.GraphManager,
 	})
-	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithQueryEngine(queryEngine).WithClientRequestRouter(clientRouter)
+	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithQueryEngine(queryEngine).WithClientRequestRouter(clientRouter)
 	searchAPI := clientapi.NewSearchService(cfg.LexicalManager, cfg.SpaceManager, cfg.GraphManager).WithHybridRRFRankConstant(cfg.SearchConfig.HybridRRFK).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
 		searchAPI.WithGraphWriteRouteProvider(provider)

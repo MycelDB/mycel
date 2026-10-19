@@ -36,12 +36,25 @@ func TestBindReadValidatesAliasesSchemaExpressionsAndOutputs(t *testing.T) {
 	}
 }
 
-func TestBindAcceptsLegacyBareScalarNodeProjection(t *testing.T) {
+func TestBindAcceptsBareScalarNodeProjection(t *testing.T) {
 	query := validReadQuery(querylogical.SourceStructured)
 	field := querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties}
 	query.Returns = append(query.Returns, querylogical.Projection{Kind: querylogical.ProjectionScalar, Alias: "p", Field: &field, OutputName: "bare"})
 	if _, err := binding.Bind(querylogical.ReadStatement(query), readEnvironment()); err != nil {
 		t.Fatalf("Bind(bare scalar): %v", err)
+	}
+}
+
+func TestBindAcceptsRuntimeIdentityFieldsUnderStrictSchema(t *testing.T) {
+	query := validReadQuery(querylogical.SourceStructured)
+	query.Returns = []querylogical.Projection{
+		{Kind: querylogical.ProjectionScalar, Alias: "p", Field: &querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties, Name: "node_id"}, OutputName: "node_id"},
+		{Kind: querylogical.ProjectionScalar, Alias: "e", Field: &querylogical.FieldRef{Alias: "e", Namespace: querylogical.NamespaceProperties, Name: "edge_id"}, OutputName: "edge_id"},
+		{Kind: querylogical.ProjectionScalar, Alias: "e", Field: &querylogical.FieldRef{Alias: "e", Namespace: querylogical.NamespaceProperties, Name: "from_node_id"}, OutputName: "from_node_id"},
+		{Kind: querylogical.ProjectionScalar, Alias: "e", Field: &querylogical.FieldRef{Alias: "e", Namespace: querylogical.NamespaceProperties, Name: "to_node_id"}, OutputName: "to_node_id"},
+	}
+	if _, err := binding.Bind(querylogical.ReadStatement(query), readEnvironment()); err != nil {
+		t.Fatalf("Bind(runtime identity fields): %v", err)
 	}
 }
 
@@ -118,6 +131,17 @@ func TestBindValidatesParametersAndPredicateCapabilities(t *testing.T) {
 	}
 	_, err = binding.Bind(querylogical.ReadStatement(query), environment)
 	assertQueryError(t, err, querylogical.ErrorInvalidQuery, "resolves recursively")
+
+	textField := querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafText, Field: &textField, Query: "ada"})
+	environment = readEnvironment()
+	environment.Domain.BroadSearchable = false
+	if _, err := binding.Bind(querylogical.ReadStatement(query), environment); err != nil {
+		t.Fatalf("bind text predicate for explicitly searchable domain: %v", err)
+	}
+	environment.Domain.ExplicitSearchable = false
+	_, err = binding.Bind(querylogical.ReadStatement(query), environment)
+	assertQueryError(t, err, querylogical.ErrorUnavailableAccessPath, "domain does not allow text search")
 
 	semanticField := querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties}
 	query.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafSemantic, Field: &semanticField, Query: "graph databases", Limit: 5})

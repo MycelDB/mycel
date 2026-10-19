@@ -124,7 +124,7 @@ func TestQRX0StructuredAndGQLPredicateShapingEquivalence(t *testing.T) {
 		},
 	}
 
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(personQRX0SchemaManager(t, fixture.domainID))
+	querySvc := newQRX8QueryService(fixture, nil).WithSchemaManager(personQRX0SchemaManager(t, fixture.domainID))
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -135,7 +135,7 @@ func TestQRX0StructuredAndGQLPredicateShapingEquivalence(t *testing.T) {
 
 func TestQRX0IndexedPaginationEquivalence(t *testing.T) {
 	fixture, manager, readTx := newQRX0JournalFixture(t)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 	query := journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)
 	query.Returns = []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}}
 	shaped := proto.Clone(query).(*clientv1.GraphQuery)
@@ -149,8 +149,8 @@ func TestQRX0IndexedPaginationEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteGQL(offset) error = %v", err)
 	}
-	if structuredTitles, gqlTitles := qrx0ScalarValues(structuredShaped.GetRows(), "title"), qrx0ScalarValues(gqlShaped.GetResult().GetRows(), "title"); !reflect.DeepEqual(structuredTitles, []string{"middle"}) || !reflect.DeepEqual(gqlTitles, []string{"oldest"}) {
-		t.Fatalf("legacy indexed OFFSET mismatch changed: structured=%v GQL=%v", structuredTitles, gqlTitles)
+	if structuredTitles, gqlTitles := qrx0ScalarValues(structuredShaped.GetRows(), "title"), qrx0ScalarValues(gqlShaped.GetResult().GetRows(), "title"); !reflect.DeepEqual(structuredTitles, []string{"middle"}) || !reflect.DeepEqual(gqlTitles, structuredTitles) {
+		t.Fatalf("indexed OFFSET mismatch: structured=%v GQL=%v", structuredTitles, gqlTitles)
 	}
 
 	pair := qrx0EquivalentRead{name: "indexed page", structured: query, gql: "MATCH (j:JournalEntry) RETURN j.title AS title ORDER BY j.date", pageSize: 1}
@@ -215,7 +215,7 @@ func TestQRX0TraversalAndProjectionEquivalence(t *testing.T) {
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+	querySvc := NewQueryService(fixture.sessions, fixture.spaces).
 		WithSchemaManager(manager).
 		WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
 
@@ -333,7 +333,10 @@ func TestQRX0SemanticPredicateEquivalenceAndSearchProfile(t *testing.T) {
 	indexID := domainsemantic.SemanticIndexID(uuid.MustParse("00000000-0000-0000-0000-000000000051"))
 	delegate := &fakeSemanticQuerySearcher{results: []semanticsearch.SearchResult{{SemanticIndexID: indexID, NodeID: graphmodel.NodeID(uuid.MustParse(nodeID)), Score: 0.9}}}
 	profile := newQRX0AccessProfile()
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSemanticManager(instrumentQRX0Semantic(delegate, profile))
+	searcher := instrumentQRX0Semantic(delegate, profile)
+	querySvc := newQRX8QueryService(fixture, nil).
+		WithSemanticManager(searcher).
+		WithQueryEngine(queryEngineForSemanticTest(fixture.graphs, nil, searcher))
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	pair := qrx0EquivalentRead{
 		name: "semantic",

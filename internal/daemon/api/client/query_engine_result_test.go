@@ -6,9 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
-	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -46,86 +43,6 @@ func TestProtoNeutralQueryResultMapsEveryCellFamilyAndCounters(t *testing.T) {
 	}
 	if mapped.GetNextPageToken() != "cursor-1" || len(mapped.GetGraph().GetNodes()) != 1 || mapped.GetCounters().GetEdgesDeleted() != 6 {
 		t.Fatalf("mapped result = %#v", mapped)
-	}
-}
-
-func TestLegacyStructuredShapingMapsBudgetsAndCancellation(t *testing.T) {
-	node := domaingraph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), DomainID: uuid.MustParse("10000000-0000-0000-0000-000000000001")}
-	rows := make([]*queryRowState, 10_001)
-	for index := range rows {
-		rows[index] = newQueryRowState("n", node)
-	}
-	query := &clientv1.GraphQuery{
-		Match:    &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
-		Returns:  []*clientv1.ReturnProjection{{Alias: "n", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_NODE}},
-		Distinct: true,
-	}
-	exec := newQueryExecution(nil, nil)
-	_, _, err := exec.shapeAndProjectRows(context.Background(), rows, query, 500, "")
-	if status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("budget status = %s, error %v", status.Code(err), err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, _, err = exec.shapeAndProjectRows(ctx, rows[:1], query, 500, "")
-	if status.Code(err) != codes.Canceled {
-		t.Fatalf("cancellation status = %s, error %v", status.Code(err), err)
-	}
-}
-
-func TestLegacyStructuredShapingPreservesSyntheticEdgeFields(t *testing.T) {
-	edgeID := uuid.MustParse("00000000-0000-0000-0000-000000000010")
-	fromID := uuid.MustParse("00000000-0000-0000-0000-000000000011")
-	toID := uuid.MustParse("00000000-0000-0000-0000-000000000012")
-	row := &queryRowState{edgeBindings: map[string][]domaingraph.Edge{"e": {{ID: edgeID, FromID: fromID, ToID: toID}}}}
-	query := &clientv1.GraphQuery{
-		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
-		Returns: []*clientv1.ReturnProjection{
-			{Alias: "e.edge_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-			{Alias: "e.properties.from_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-			{Alias: "e.properties.to_node_id", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR},
-		},
-	}
-	rows, _, err := newQueryExecution(nil, nil).shapeAndProjectRows(context.Background(), []*queryRowState{row}, query, 10, "")
-	if err != nil {
-		t.Fatalf("shape edge fields: %v", err)
-	}
-	fields := rows[0].GetFields()
-	want := map[string]string{"e.edge_id": edgeID.String(), "e.properties.from_node_id": fromID.String(), "e.properties.to_node_id": toID.String()}
-	for name, expected := range want {
-		if got := fields[name].GetScalar().GetStringValue(); got != expected {
-			t.Fatalf("%s = %q, want %q", name, got, expected)
-		}
-	}
-}
-
-func TestLegacyStructuredShapingPreservesAggregateArguments(t *testing.T) {
-	row := &queryRowState{pathBindings: map[string]*clientv1.PathValue{"p": {Nodes: []*clientv1.Node{{NodeId: "node-1"}}}}}
-	exec := newQueryExecution(nil, nil)
-	countQuery := &clientv1.GraphQuery{
-		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}},
-		AggregateReturns: []*clientv1.AggregateProjection{{
-			OutputName: "count",
-			Function:   clientv1.AggregateFunction_AGGREGATE_FUNCTION_COUNT,
-			Argument:   &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Alias{Alias: "p"}},
-		}},
-	}
-	rows, _, err := exec.shapeAndProjectRows(context.Background(), []*queryRowState{row}, countQuery, 10, "")
-	if err != nil {
-		t.Fatalf("COUNT(path): %v", err)
-	}
-	if got := rows[0].GetFields()["count"].GetScalar().GetNumberValue(); got != 1 {
-		t.Fatalf("COUNT(path) = %v, want 1", got)
-	}
-
-	for _, aggregate := range []*clientv1.AggregateProjection{
-		{Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_SUM, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}},
-		{Function: clientv1.AggregateFunction_AGGREGATE_FUNCTION_MIN, Argument: &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Alias{Alias: "n"}}},
-	} {
-		query := &clientv1.GraphQuery{Match: countQuery.Match, AggregateReturns: []*clientv1.AggregateProjection{aggregate}}
-		if _, _, err := exec.shapeAndProjectRows(context.Background(), []*queryRowState{row}, query, 10, ""); status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("%s invalid argument status = %s, error %v", aggregate.GetFunction(), status.Code(err), err)
-		}
 	}
 }
 

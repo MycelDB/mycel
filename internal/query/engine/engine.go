@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -19,12 +18,8 @@ const (
 	// PlannerName and PlannerVersion identify the extracted planner in neutral
 	// and transport diagnostics.
 	PlannerName    = "mycel-query-engine"
-	PlannerVersion = "qrx10"
+	PlannerVersion = "qrx11"
 )
-
-// ErrUnsupportedPlan is the temporary bridge signal used while plan families
-// are still executed by the legacy daemon adapter.
-var ErrUnsupportedPlan = errors.New("query engine plan is not supported")
 
 // Facade is the daemon-independent query engine boundary.
 type Facade interface {
@@ -49,50 +44,27 @@ type PlanningContext struct {
 	Parameters  map[string]querylogical.Value
 }
 
-// ExecutionContext contains state and work limits for one execution. LegacyRows
-// is the temporary QRX6 handoff from legacy access selection into neutral
-// shaping; nil retains the explicit unsupported-plan bridge.
+// ExecutionContext contains state and work limits for one execution.
 type ExecutionContext struct {
 	Transaction sessionmodel.GraphTransaction
 	Budget      WorkBudget
-	LegacyRows  []queryexecution.BindingRow
 	Now         time.Time
 }
 
 // WorkBudget is the shared bounded-runtime resource vocabulary.
 type WorkBudget = queryexecution.Budget
 
-// PlanKind identifies the execution owner selected during preparation.
-type PlanKind string
-
-const (
-	// PlanLegacyBridge means the API adapter must execute the statement exactly
-	// once through its existing implementation.
-	PlanLegacyBridge PlanKind = "legacy_bridge"
-	// PlanIndexed executes a migrated native read or mutation family directly.
-	PlanIndexed PlanKind = "indexed"
-)
-
 // PreparedQuery is the stable handoff between preparation and execution.
 type PreparedQuery struct {
-	Statement         querylogical.Statement
-	Binding           querybinding.BoundStatement
-	Physical          queryphysical.Plan
-	Planning          PlanningContext
-	Kind              PlanKind
-	UnsupportedReason string
-	readViewIdentity  string
+	Statement        querylogical.Statement
+	Binding          querybinding.BoundStatement
+	Physical         queryphysical.Plan
+	Planning         PlanningContext
+	readViewIdentity string
 }
 
-// RequiresLegacy reports whether the existing adapter must remain the sole
-// execution owner for this prepared query.
-func (p PreparedQuery) RequiresLegacy() bool {
-	return p.Kind == PlanLegacyBridge
-}
-
-// Engine implements the neutral query facade. Indexed, traversal, and bounded
-// broad read plans execute directly; later plan families can still provide an
-// explicit temporary legacy source for neutral QRX6 shaping.
+// Engine implements the neutral query facade. Reads and mutations execute
+// through their selected native physical plan.
 type Engine struct {
 	ports Ports
 }
@@ -147,14 +119,7 @@ func (e *Engine) Prepare(ctx context.Context, planning PlanningContext, statemen
 	if err != nil {
 		return PreparedQuery{}, err
 	}
-	kind := PlanIndexed
-	if physicalPlan.RequiresLegacy() {
-		kind = PlanLegacyBridge
-	}
-	return PreparedQuery{
-		Statement: statement, Binding: bound, Physical: physicalPlan, Planning: planning,
-		Kind: kind, UnsupportedReason: physicalPlan.LegacyBridgeReason,
-	}, nil
+	return PreparedQuery{Statement: statement, Binding: bound, Physical: physicalPlan, Planning: planning}, nil
 }
 
 // Explain prepares once and serializes that exact physical plan. Static plan
@@ -170,9 +135,7 @@ func (e *Engine) Explain(ctx context.Context, planning PlanningContext, statemen
 	return diagnostics, nil
 }
 
-// Execute runs migrated native read and mutation plans directly. An explicit
-// legacy row source remains available for adapter-owned read families that only
-// migrated neutral shaping in QRX6.
+// Execute runs the prepared native read or mutation plan.
 func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
 	if err := contextQueryError("execute query", ctx.Err()); err != nil {
 		return querylogical.Result{}, err
@@ -181,7 +144,7 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		return e.executeMutation(ctx, execution, prepared)
 	}
 	if prepared.Statement.Kind != querylogical.StatementRead || prepared.Statement.Read == nil {
-		return querylogical.Result{}, unsupportedPlan(prepared)
+		return querylogical.Result{}, querylogical.NewError(querylogical.ErrorInternal, "execute query", "prepared statement has no executable read plan", nil)
 	}
 	if execution.Transaction != prepared.Planning.Transaction {
 		return querylogical.Result{}, querylogical.NewError(
@@ -201,39 +164,29 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 	}
 
 	query := *prepared.Statement.Read
-	var source queryexecution.Operator
-	var cursor indexedCursor
-	readViewIdentity := ""
-	if execution.LegacyRows != nil {
-		source = queryexecution.NewLegacySource(execution.LegacyRows, budget.BatchSize, tracker)
-		query.Predicate = prepared.Physical.ResidualPredicate
-	} else {
-		if prepared.Kind != PlanIndexed {
-			return querylogical.Result{}, unsupportedPlan(prepared)
-		}
-		readViewIdentity, err = e.readViewIdentity(ctx, execution.Transaction)
-		if err != nil {
-			return querylogical.Result{}, err
-		}
-		prepared.readViewIdentity = readViewIdentity
-		cursor, err = decodeIndexedCursor(prepared)
-		if err != nil {
-			return querylogical.Result{}, err
-		}
-		pageRows := indexedPageRows(query, cursor, prepared.Physical.Family)
-		if pageRows == 0 {
-			source = queryexecution.NewLegacySource([]queryexecution.BindingRow{}, budget.BatchSize, tracker)
-		} else {
-			source, err = e.indexedSource(ctx, execution, prepared, tracker, cursor, cursor.RowsReturned+int64(pageRows))
-			if err != nil {
-				return querylogical.Result{}, err
-			}
-			if !nativeTraversalFamily(prepared.Physical.Family) {
-				source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
-			}
-		}
-		query = executionQuery(query, prepared.Physical, cursor)
+	readViewIdentity, err := e.readViewIdentity(ctx, execution.Transaction)
+	if err != nil {
+		return querylogical.Result{}, err
 	}
+	prepared.readViewIdentity = readViewIdentity
+	cursor, err := decodeIndexedCursor(prepared)
+	if err != nil {
+		return querylogical.Result{}, err
+	}
+	pageRows := indexedPageRows(query, cursor, prepared.Physical.Family)
+	var source queryexecution.Operator
+	if pageRows == 0 {
+		source = queryexecution.NewSliceSource([]queryexecution.BindingRow{}, budget.BatchSize, tracker)
+	} else {
+		source, err = e.indexedSource(ctx, execution, prepared, tracker, cursor, cursor.RowsReturned+int64(pageRows))
+		if err != nil {
+			return querylogical.Result{}, err
+		}
+		if !nativeTraversalFamily(prepared.Physical.Family) {
+			source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
+		}
+	}
+	query = executionQuery(query, prepared.Physical, cursor)
 
 	result, err := queryexecution.Shape(ctx, source, query, tracker, queryexecution.ShapeOptions{
 		Parameters: prepared.Planning.Parameters,
@@ -244,23 +197,21 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		// reaches the normal post-execution check. Prefer a typed stale-cursor
 		// result over surfacing that internal page-token rejection as a generic
 		// dependency error.
-		if execution.LegacyRows == nil && execution.Transaction.Mode == sessionmodel.TransactionModeReadWrite && ctx.Err() == nil {
+		if execution.Transaction.Mode == sessionmodel.TransactionModeReadWrite && ctx.Err() == nil {
 			if currentReadView, viewErr := e.readViewIdentity(ctx, execution.Transaction); viewErr == nil && currentReadView != readViewIdentity {
 				return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
 			}
 		}
 		return querylogical.Result{}, err
 	}
-	if execution.LegacyRows == nil {
-		currentReadView, viewErr := e.readViewIdentity(ctx, execution.Transaction)
-		if viewErr != nil {
-			return querylogical.Result{}, viewErr
-		}
-		if currentReadView != readViewIdentity {
-			return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
-		}
-		result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor)
+	currentReadView, viewErr := e.readViewIdentity(ctx, execution.Transaction)
+	if viewErr != nil {
+		return querylogical.Result{}, viewErr
 	}
+	if currentReadView != readViewIdentity {
+		return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
+	}
+	result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor)
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
 	if prepared.Physical.Family == queryphysical.FamilyIndexedSubtree {
 		result.Diagnostics.RootCount = result.Diagnostics.RowsReturned
@@ -351,14 +302,6 @@ func wrapIndexedNextCursor(prepared PreparedQuery, next string) string {
 	return encodeIndexedCursor(prepared, indexedCursor{Mode: cursorModeOutput, OutputOffset: offset, RowsReturned: int64(offset)})
 }
 
-func unsupportedPlan(prepared PreparedQuery) error {
-	reason := prepared.UnsupportedReason
-	if reason == "" {
-		reason = "prepared query has no supported physical plan"
-	}
-	return querylogical.NewError(querylogical.ErrorUnsupportedPlan, "execute query", reason, ErrUnsupportedPlan)
-}
-
 func mergeRuntimeDiagnostics(plan querylogical.Diagnostics, runtime querylogical.Diagnostics) querylogical.Diagnostics {
 	plan.ExplainOnly = false
 	plan.IndexEntriesScanned = runtime.IndexEntriesScanned
@@ -379,16 +322,6 @@ func mergeRuntimeDiagnostics(plan querylogical.Diagnostics, runtime querylogical
 	plan.TraversalDepth = runtime.TraversalDepth
 	plan.ExecutionMillis = runtime.ExecutionMillis
 	return plan
-}
-
-// IsUnsupportedPlan reports whether an engine error requests the temporary
-// legacy execution bridge.
-func IsUnsupportedPlan(err error) bool {
-	if errors.Is(err, ErrUnsupportedPlan) {
-		return true
-	}
-	var queryErr *querylogical.QueryError
-	return errors.As(err, &queryErr) && queryErr.Code == querylogical.ErrorUnsupportedPlan
 }
 
 func (e *Engine) readViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {

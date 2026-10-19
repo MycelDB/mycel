@@ -22,7 +22,6 @@ func TestDecodeIndexedCursorRejectsChecksummedIncompatibleModeState(t *testing.T
 		Statement: querylogical.ReadStatement(query),
 		Physical:  queryphysical.Plan{Family: queryphysical.FamilyLabelIndex, SchemaVersion: "schema-1"},
 		Planning:  PlanningContext{Transaction: sessionmodel.GraphTransaction{ID: "tx-1", BaseRevision: 7}},
-		Kind:      PlanIndexed,
 	}
 
 	for _, test := range []struct {
@@ -76,7 +75,6 @@ func TestDecodeIndexedCursorRejectsLegacySourceCursorForBlockingShape(t *testing
 			prepared := PreparedQuery{
 				Statement: querylogical.ReadStatement(query),
 				Physical:  queryphysical.Plan{Family: queryphysical.FamilyIndexedEquality},
-				Kind:      PlanIndexed,
 			}
 			_, err := decodeIndexedCursor(prepared)
 			var queryErr *querylogical.QueryError
@@ -96,7 +94,6 @@ func TestDecodeIndexedCursorRejectsSourceModeForMaterializedTagPlan(t *testing.T
 			Access: queryphysical.AccessPath{TagBranches: [][]string{{"featured"}}},
 		},
 		Planning: PlanningContext{Transaction: sessionmodel.GraphTransaction{ID: "tx-1", BaseRevision: 7}},
-		Kind:     PlanIndexed,
 	}
 	token := encodeIndexedCursor(prepared, indexedCursor{Mode: cursorModeSource, PageCursor: "forged", RowsReturned: 1})
 	query.Page.Cursor = token
@@ -119,7 +116,6 @@ func TestIndexedSourceRejectsChecksumValidOffsetOutsideSourceBatch(t *testing.T)
 			Family: queryphysical.FamilyLabelIndex,
 			Access: queryphysical.AccessPath{Kind: queryphysical.AccessLabel, StartAlias: "n", Labels: []string{"Document"}},
 		},
-		Kind: PlanIndexed,
 	}
 	tracker, err := queryexecution.NewTracker(queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 2}, queryexecution.Budget{}))
 	if err != nil {

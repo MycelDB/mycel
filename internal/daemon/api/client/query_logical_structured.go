@@ -12,7 +12,6 @@ import (
 // protobuf messages to the neutral query vocabulary. GraphQuery is a read
 // statement even when it executes inside a read-write transaction; ambient
 // transaction capability belongs to execution context rather than this model.
-// Legacy execution remains authoritative while planner/executor tranches move.
 func logicalQueryFromStructured(query *clientv1.GraphQuery, pageSize int32, pageToken string) querylogical.Query {
 	out := querylogical.Query{
 		Source:     querylogical.SourceStructured,
@@ -26,6 +25,9 @@ func logicalQueryFromStructured(query *clientv1.GraphQuery, pageSize int32, page
 	out.PathAlias = query.GetPathAlias()
 	out.Returns = logicalStructuredReturns(query.GetReturns())
 	out.Aggregates = logicalStructuredAggregates(query.GetAggregateReturns())
+	if len(out.Returns) == 0 && len(out.Aggregates) == 0 && out.Start.Alias != "" {
+		out.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: out.Start.Alias, OutputName: out.Start.Alias}}
+	}
 	out.OrderBy = logicalStructuredOrder(query.GetOrderBy())
 	out.Distinct = query.GetDistinct()
 	out.Page.Offset = int64(query.GetOffset())

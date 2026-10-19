@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX9 are merged into the `improved_querying` integration branch, covering the neutral model, shared binding, physical planning and Explain, bounded execution, native indexed and traversal access, and streaming broad fallback. QRX10 is implemented on its feature branch with [native GQL mutations and transport-neutral script orchestration](query-planner-executor-qrx10-mutations-scripts.md). QRX11 remains planned.
+In progress pending QRX11 CI and integration. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX10 are merged into the `improved_querying` integration branch. QRX11 is implemented and independently reviewed on `feat/query-refactor-qrx11-adapter-cleanup`: all accepted plans have one native execution owner, the daemon-local planner/executor and GQL-to-protobuf execution bridge are removed, and QueryService is a thin transport/context adapter. See the [QRX11 adapter-cleanup notes](query-planner-executor-qrx11-adapter-cleanup.md).
 
 The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
 
@@ -34,7 +34,7 @@ structured protobuf mapping / GQL parsing
 
 The daemon API adapter remains under `internal/daemon/api`. It continues to own authentication, request routing, transaction lookup, public protobuf mapping, gRPC error mapping, and response mapping. It must stop owning query matching, traversal, index selection, aggregation, sorting, and pagination algorithms.
 
-The migration uses a per-plan legacy bridge. The new compiler and physical planner can be introduced before every physical operator has moved. A query executes through the new executor only when the selected physical plan is supported there; otherwise, it follows the existing path until that plan family is migrated.
+The incremental migration used a per-plan bridge through QRX10 so no statement could execute twice while physical families moved independently. QRX11 removes that bridge: an accepted statement now prepares one native physical plan and executes only through the common engine.
 
 ## Motivation
 
@@ -77,7 +77,9 @@ The most important consequences are:
 - planner, executor, result, and cursor types remain coupled to generated protobuf types in several places;
 - adding a new access path requires editing the daemon adapter and reproducing behavior across structured and GQL paths.
 
-## Current architecture inventory
+## Baseline architecture inventory before QRX0
+
+The following inventory records the starting state that motivated the refactor; it is not the current implementation.
 
 ### Transport and orchestration
 
@@ -858,7 +860,7 @@ Replace unconditional whole-domain materialization with explicit, bounded full-s
 
 ## QRX10: GQL mutations and script orchestration
 
-Status: implemented on the feature branch. See the [QRX10 native mutation and script-orchestration notes](query-planner-executor-qrx10-mutations-scripts.md).
+Status: merged into `improved_querying`. See the [QRX10 native mutation and script-orchestration notes](query-planner-executor-qrx10-mutations-scripts.md).
 
 ### Objective
 
@@ -893,6 +895,8 @@ Move remaining GQL execution behavior behind the query application boundary so t
 - Mutating statements are not shadow-executed.
 
 ## QRX11: Adapter cleanup and legacy removal
+
+Status: implemented and independently reviewed on `feat/query-refactor-qrx11-adapter-cleanup`; CI and integration remain pending. See the [QRX11 adapter-cleanup notes](query-planner-executor-qrx11-adapter-cleanup.md).
 
 ### Objective
 
@@ -1079,7 +1083,7 @@ A pull request may cover less than one listed item if review size becomes too la
 | Blocking operators consume unbounded memory | Reserve through the shared tracker and fail closed; disk spill is a separate future feature. |
 | Mutating GQL runs twice during shadowing | Shadow compilation/planning only; never shadow execution. |
 | First extracted planner changes plan precedence | Encode current precedence and golden-test plan selection before optimization. |
-| Temporary legacy bridge becomes permanent | Expose legacy use in diagnostics and require removal in QRX11 acceptance. |
+| Temporary migration bridge becomes permanent | Removed in QRX11; architecture tests prevent daemon-local execution paths from returning. |
 | Query core acquires daemon/protobuf dependencies again | Source-relative architecture tests in CI. |
 | Refactor accidentally expands public API scope | Keep protobuf mapping at the adapter and require separate approval for API source changes. |
 

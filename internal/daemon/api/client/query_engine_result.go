@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
@@ -169,16 +170,6 @@ func nativeNeutralValue(value querylogical.Value) any {
 	}
 }
 
-func preserveQueryShapingError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if _, ok := status.FromError(err); ok {
-		return err
-	}
-	return status.Error(codes.InvalidArgument, err.Error())
-}
-
 func mapQueryEngineError(err error) error {
 	if err == nil {
 		return nil
@@ -188,7 +179,12 @@ func mapQueryEngineError(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 	switch queryErr.Code {
-	case querylogical.ErrorInvalidQuery, querylogical.ErrorStaleCursor:
+	case querylogical.ErrorInvalidQuery:
+		if strings.Contains(queryErr.Message, "traversal step") && (strings.Contains(queryErr.Message, "finite maximum depth") || strings.Contains(queryErr.Message, "maximum depth must not exceed")) {
+			return status.Error(codes.FailedPrecondition, queryErr.Error())
+		}
+		return status.Error(codes.InvalidArgument, queryErr.Error())
+	case querylogical.ErrorStaleCursor:
 		return status.Error(codes.InvalidArgument, queryErr.Error())
 	case querylogical.ErrorResourceExhausted:
 		return status.Error(codes.ResourceExhausted, queryErr.Error())

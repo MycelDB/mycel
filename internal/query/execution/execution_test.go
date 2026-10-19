@@ -28,7 +28,7 @@ func TestCollectExpandAccountsAdjacencyPageAndReleasesMemoryOnFailure(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"root": root}}}, 1, tracker)
+	source := queryexecution.NewSliceSource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"root": root}}}, 1, tracker)
 	endpointReads := 0
 	operator := queryexecution.NewCollectExpand(
 		source,
@@ -228,7 +228,7 @@ func TestTraversalOperatorsCancellationWinsAndReleasesMemory(t *testing.T) {
 	t.Run("path", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		tracked := tracker(t, queryexecution.Budget{BatchSize: 1})
-		input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": start}}}, 1, tracked)
+		input := queryexecution.NewSliceSource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": start}}}, 1, tracked)
 		source := queryexecution.NewPathExpand(input, "n", step, "path", func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
 			cancel()
 			return queryexecution.TraversalEdgePage{}, nil
@@ -246,7 +246,7 @@ func TestTraversalOperatorsCancellationWinsAndReleasesMemory(t *testing.T) {
 	t.Run("subtree", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		tracked := tracker(t, queryexecution.Budget{BatchSize: 1})
-		input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": start}}}, 1, tracked)
+		input := queryexecution.NewSliceSource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": start}}}, 1, tracked)
 		source := queryexecution.NewSubtreeExpand(input, "n", step, func(context.Context, string, int, string) (queryexecution.TraversalEdgePage, error) {
 			cancel()
 			return queryexecution.TraversalEdgePage{}, nil
@@ -378,7 +378,7 @@ func TestSubtreeTreeHierarchyMatchesLegacyContainmentRules(t *testing.T) {
 				return graph.Edge{ID: uuid.New(), FromID: from.ID, ToID: to.ID, Labels: []string{test.label}, Properties: map[string]any{"order": 1}}
 			}
 			edges := map[string]graph.Edge{root.ID.String(): edgeFor(root, child), child.ID.String(): edgeFor(child, grandchild)}
-			input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": root}}}, 1, tracked)
+			input := queryexecution.NewSliceSource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": root}}}, 1, tracked)
 			source := queryexecution.NewSubtreeExpand(input, "n", step, func(_ context.Context, nodeID string, _ int, _ string) (queryexecution.TraversalEdgePage, error) {
 				edge, ok := edges[nodeID]
 				if !ok {
@@ -441,7 +441,7 @@ func TestPathAndSubtreeAccountAdjacencyPageMemory(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tracked := tracker(t, queryexecution.Budget{BatchSize: 1, MaxMemoryBytes: 4 << 10})
-			input := queryexecution.NewLegacySource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": root}}}, 1, tracked)
+			input := queryexecution.NewSliceSource([]queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": root}}}, 1, tracked)
 			source := test.new(input, tracked)
 			if err := source.Open(context.Background()); err != nil {
 				t.Fatal(err)
@@ -469,8 +469,8 @@ func TestNodeSetAccountsFinalDeduplicatedTraversalRootsOnce(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			tracked := tracker(t, queryexecution.Budget{BatchSize: 1, MaxStartNodes: 2})
 			source := queryexecution.NewNodeSet([]queryexecution.Operator{
-				queryexecution.NewLegacySource([]queryexecution.BindingRow{first}, 1, tracked),
-				queryexecution.NewLegacySource([]queryexecution.BindingRow{first, second}, 1, tracked),
+				queryexecution.NewSliceSource([]queryexecution.BindingRow{first}, 1, tracked),
+				queryexecution.NewSliceSource([]queryexecution.BindingRow{first, second}, 1, tracked),
 			}, test.mode, 1, tracked).WithStartNodeBudget()
 			if err := source.Open(context.Background()); err != nil {
 				t.Fatal(err)
@@ -507,12 +507,12 @@ func TestNodeSetOperatorsBoundIntersectionAndUnionMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	intersection := queryexecution.NewNodeSet([]queryexecution.Operator{
-		queryexecution.NewLegacySource(rows[:2], 1, tracker),
-		queryexecution.NewLegacySource(rows[1:], 1, tracker),
+		queryexecution.NewSliceSource(rows[:2], 1, tracker),
+		queryexecution.NewSliceSource(rows[1:], 1, tracker),
 	}, queryexecution.NodeSetIntersection, 1, tracker)
 	union := queryexecution.NewNodeSet([]queryexecution.Operator{
 		intersection,
-		queryexecution.NewLegacySource(rows[2:], 1, tracker),
+		queryexecution.NewSliceSource(rows[2:], 1, tracker),
 	}, queryexecution.NodeSetUnion, 1, tracker)
 	if err := union.Open(context.Background()); err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ func TestCollectMatchesRetainsBindingsWithoutConsumingResponseOutputBudget(t *te
 		bindingRow("00000000-0000-0000-0000-000000000001", "alpha", "x", 1),
 		bindingRow("00000000-0000-0000-0000-000000000002", "beta", "x", 2),
 	}
-	matches, err := queryexecution.CollectMatches(context.Background(), queryexecution.NewLegacySource(rows, 1, tracker), querylogical.Query{}, tracker, queryexecution.ShapeOptions{})
+	matches, err := queryexecution.CollectMatches(context.Background(), queryexecution.NewSliceSource(rows, 1, tracker), querylogical.Query{}, tracker, queryexecution.ShapeOptions{})
 	if err != nil {
 		t.Fatalf("CollectMatches() error = %v", err)
 	}
@@ -641,7 +641,7 @@ func TestShapePreservesAggregateArgumentCompatibility(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = queryexecution.Shape(context.Background(), queryexecution.NewLegacySource(rows, budget.BatchSize, tracker), querylogical.Query{Aggregates: []querylogical.Aggregate{{Function: function, Star: true}}}, tracker, queryexecution.ShapeOptions{})
+		_, err = queryexecution.Shape(context.Background(), queryexecution.NewSliceSource(rows, budget.BatchSize, tracker), querylogical.Query{Aggregates: []querylogical.Aggregate{{Function: function, Star: true}}}, tracker, queryexecution.ShapeOptions{})
 		assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
 	}
 }
@@ -656,7 +656,7 @@ func TestShapeStopsStreamingSourceAfterBoundedPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := queryexecution.Shape(context.Background(), queryexecution.NewLegacySource(rows, budget.BatchSize, tracker), querylogical.Query{Returns: nodeProjection(), Page: querylogical.PageSpec{Size: 2}}, tracker, queryexecution.ShapeOptions{})
+	result, err := queryexecution.Shape(context.Background(), queryexecution.NewSliceSource(rows, budget.BatchSize, tracker), querylogical.Query{Returns: nodeProjection(), Page: querylogical.PageSpec{Size: 2}}, tracker, queryexecution.ShapeOptions{})
 	if err != nil {
 		t.Fatalf("Shape: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestShapeAppliesLegacyOffsetPaginationAfterQueryLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = queryexecution.Shape(context.Background(), queryexecution.NewLegacySource(rows, budget.BatchSize, tracker), query, tracker, queryexecution.ShapeOptions{})
+	_, err = queryexecution.Shape(context.Background(), queryexecution.NewSliceSource(rows, budget.BatchSize, tracker), query, tracker, queryexecution.ShapeOptions{})
 	assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
 }
 
@@ -740,7 +740,7 @@ func TestShapeResidualPredicatesUseTypedFieldsParametersAndDates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := queryexecution.Shape(context.Background(), queryexecution.NewLegacySource([]queryexecution.BindingRow{row}, budget.BatchSize, tracker), querylogical.Query{Predicate: predicate, Returns: nodeProjection()}, tracker, queryexecution.ShapeOptions{
+	result, err := queryexecution.Shape(context.Background(), queryexecution.NewSliceSource([]queryexecution.BindingRow{row}, budget.BatchSize, tracker), querylogical.Query{Predicate: predicate, Returns: nodeProjection()}, tracker, queryexecution.ShapeOptions{
 		Parameters: map[string]querylogical.Value{"low": querylogical.NativeValue(2)},
 		Now:        time.Date(2026, 10, 17, 23, 0, 0, 0, time.UTC),
 	})
@@ -825,7 +825,7 @@ func TestBlockingOperatorsFailClosedOnMemoryBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source := queryexecution.NewLegacySource(rows, budget.BatchSize, tracker)
+			source := queryexecution.NewSliceSource(rows, budget.BatchSize, tracker)
 			_, err = queryexecution.Shape(context.Background(), source, test.query, tracker, queryexecution.ShapeOptions{})
 			assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 			if usage := tracker.Snapshot(); usage.RetainedMemory != 0 {
@@ -869,13 +869,13 @@ func TestShapeCancellationClosesBlockingPipeline(t *testing.T) {
 	}
 }
 
-func TestLegacySourceLifecycleAndBoundedBatches(t *testing.T) {
+func TestSliceSourceLifecycleAndBoundedBatches(t *testing.T) {
 	budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 2}, queryexecution.Budget{})
 	tracker, err := queryexecution.NewTracker(budget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := queryexecution.NewLegacySource(make([]queryexecution.BindingRow, 5), budget.BatchSize, tracker)
+	source := queryexecution.NewSliceSource(make([]queryexecution.BindingRow, 5), budget.BatchSize, tracker)
 	if _, err := source.Next(context.Background()); err == nil {
 		t.Fatal("Next before Open succeeded")
 	}
@@ -925,7 +925,7 @@ func shape(t *testing.T, rows []queryexecution.BindingRow, query querylogical.Qu
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := queryexecution.Shape(context.Background(), queryexecution.NewLegacySource(rows, budget.BatchSize, tracker), query, tracker, queryexecution.ShapeOptions{Now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)})
+	result, err := queryexecution.Shape(context.Background(), queryexecution.NewSliceSource(rows, budget.BatchSize, tracker), query, tracker, queryexecution.ShapeOptions{Now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)})
 	if err != nil {
 		t.Fatalf("Shape: %v", err)
 	}

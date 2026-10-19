@@ -1,7 +1,6 @@
 package client
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -12,9 +11,6 @@ import (
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	sessionmodel "github.com/myceldb/mycel/internal/session/model"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -53,7 +49,7 @@ func TestQRX4StructuredAndGQLEqualitySelectSamePhysicalPlan(t *testing.T) {
 		if plan.Access.Field == nil || plan.Access.Field.Alias != "p" || plan.Access.Field.Name != "firstName" || plan.Access.Index != "person_first_name" {
 			t.Fatalf("%s access = %#v", name, plan.Access)
 		}
-		if len(plan.Indexes) != 1 || plan.Indexes[0].Name != "person_first_name" || plan.Cursor.Kind != "index_key" || plan.RequiresLegacy() || !plan.Cursor.PlanBound {
+		if len(plan.Indexes) != 1 || plan.Indexes[0].Name != "person_first_name" || plan.Cursor.Kind != "index_key" || !plan.Cursor.PlanBound {
 			t.Fatalf("%s metadata = %#v", name, plan)
 		}
 	}
@@ -69,9 +65,6 @@ func TestQRX4GQLRangePreservesBroadFallbackPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile GQL: %v", err)
 	}
-	if !gqlPlanRequiresBroadFallback(gqlPlan) {
-		t.Fatal("legacy GQL recognizer did not classify range predicate as broad fallback")
-	}
 	statement, ok := querylogical.StatementFromGQLPlan(gqlPlan, querylogical.NormalizeOptions{PageSize: 25})
 	if !ok {
 		t.Fatal("normalize GQL statement")
@@ -94,7 +87,7 @@ func TestQRX4GQLRangePreservesBroadFallbackPolicy(t *testing.T) {
 	}
 }
 
-func TestQRX4GQLOrderedRangePreservesLegacyBroadFallbackPolicy(t *testing.T) {
+func TestQRX4GQLOrderedRangePreservesBroadFallbackPolicy(t *testing.T) {
 	schema := qrx3BindingSchema()
 	schema.Indexes = append(schema.Indexes, orderedNodeIndex("person_first_name", "Person", "firstName"))
 	gqlPlan, err := gql.CompileWithSchemaAndParams(
@@ -104,12 +97,6 @@ func TestQRX4GQLOrderedRangePreservesLegacyBroadFallbackPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile GQL: %v", err)
 	}
-	indexed, _, legacyErr := (&QueryService{}).tryExecuteIndexedGQL(
-		context.Background(), sessionmodel.GraphTransaction{}, analysis.SchemaContext{Schema: &schema}, gqlPlan, 25, "", nil,
-	)
-	if !indexed || status.Code(legacyErr) != codes.FailedPrecondition {
-		t.Fatalf("legacy ordered GQL decision = indexed %v, error %#v", indexed, legacyErr)
-	}
 	statement, ok := querylogical.StatementFromGQLPlan(gqlPlan, querylogical.NormalizeOptions{PageSize: 25})
 	if !ok {
 		t.Fatal("normalize GQL statement")
@@ -132,7 +119,7 @@ func TestQRX4GQLOrderedRangePreservesLegacyBroadFallbackPolicy(t *testing.T) {
 	}
 }
 
-func TestQRX4StructuredLegacyShapePrecedenceSelectsPathBeforeAdjacency(t *testing.T) {
+func TestQRX4StructuredShapePrecedenceSelectsPathBeforeAdjacency(t *testing.T) {
 	schema := qrx3BindingSchema()
 	query := &clientv1.GraphQuery{
 		Match: &clientv1.GraphPattern{

@@ -52,27 +52,17 @@ func rejectedPhysicalExplainDiagnostics(reason string, requiredIndex string) *cl
 
 func gqlBindingCompatibilityDiagnostics(err *querylogical.QueryError) querylogical.Diagnostics {
 	return querylogical.Diagnostics{
-		Plan:               "LegacyValidationBridge",
-		PlanKind:           "legacy_bridge",
-		Planner:            queryengine.PlannerName,
-		PlannerVersion:     queryengine.PlannerVersion,
-		ExplainOnly:        true,
-		FallbackMode:       "legacy_validation_bridge",
-		LegacyBridge:       true,
-		LegacyBridgeReason: err.Error(),
+		Plan: "CompatibilityValidation", PlanKind: "validation_compatibility",
+		Planner: queryengine.PlannerName, PlannerVersion: queryengine.PlannerVersion,
+		ExplainOnly: true, FallbackMode: "compatibility_validation", RejectedReason: err.Error(),
 	}
 }
 
 func gqlScriptCompatibilityDiagnostics() *clientv1.QueryDiagnostics {
 	return protoQueryDiagnostics(querylogical.Diagnostics{
-		Plan:               "GQLScriptPlan",
-		PlanKind:           "gql_script",
-		Planner:            queryengine.PlannerName,
-		PlannerVersion:     queryengine.PlannerVersion,
-		ExplainOnly:        true,
-		FallbackMode:       "legacy_script_bridge",
-		LegacyBridge:       true,
-		LegacyBridgeReason: "multi-statement GQL orchestration migrates in QRX10",
+		Plan: "GQLScriptSequence", PlanKind: "gql_script",
+		Planner: queryengine.PlannerName, PlannerVersion: queryengine.PlannerVersion,
+		ExplainOnly: true, FallbackMode: "script_sequence",
 	})
 }
 
@@ -81,8 +71,6 @@ func protoQueryDiagnostics(diagnostics querylogical.Diagnostics) *clientv1.Query
 	switch planKind {
 	case string(queryphysical.FamilyBoundedFullScan):
 		planKind = "fallback"
-	case string(queryphysical.FamilyLegacyMutation):
-		planKind = "gql_mutation"
 	}
 	return &clientv1.QueryDiagnostics{
 		Plan:                diagnostics.Plan,
