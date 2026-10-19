@@ -206,8 +206,9 @@ func (s *LocalStore) MarkIdempotencyDelivered(ctx context.Context, scope, key, d
 }
 
 func (s *LocalStore) IdempotencyStats() (active, capacity int, evictions uint64) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeExpiredIdempotencyRecordsLocked(time.Now().UTC())
 	return len(s.idempotencyRecords), MaxIdempotencyRecordsPerStore, s.idempotencyEvictions
 }
 

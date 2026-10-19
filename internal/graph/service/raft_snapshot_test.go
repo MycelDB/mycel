@@ -85,10 +85,12 @@ func TestGraphRaftStateMachineSnapshotRestorePartition(t *testing.T) {
 	edgeID := uuid.NewString()
 	principalID := uuid.NewString()
 	tx := idempotencyGraphTx(spaceID, domainID, principalID, 0, "snapshot-capture")
+	tx.Origin.OperationID = "snapshot-operation"
 	if _, err := m.UpsertNode(ctx, tx, domaingraph.NodeInput{NodeID: parentID, Labels: []string{"SnapshotParent"}, Properties: map[string]any{"role": "parent"}, Content: "parent"}); err != nil {
 		t.Fatalf("CreateNode(parent) error = %v", err)
 	}
-	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+	original, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
 		t.Fatalf("CommitTransactionGraph() error = %v", err)
 	}
 	graphStateTx := graphTx(spaceID, domainID, 1)
@@ -162,6 +164,9 @@ func TestGraphRaftStateMachineSnapshotRestorePartition(t *testing.T) {
 	}
 	if !replay.IdempotentReplay || replay.CommittedRevision != 1 || sinkCalls != 1 {
 		t.Fatalf("snapshot replay = %#v, sink calls = %d", replay, sinkCalls)
+	}
+	if replay.CommitID != original.CommitID || replay.TransactionID != original.TransactionID || replay.SessionID != original.SessionID || replay.SpaceID != original.SpaceID || replay.DomainID != original.DomainID || replay.BaseRevision != original.BaseRevision || replay.OperationCount != original.OperationCount || replay.OperationID != original.OperationID || replay.IdempotencyKey != original.IdempotencyKey || !replay.CommittedAt.Equal(original.CommittedAt) || !replay.IdempotencyExpiresAt.Equal(original.IdempotencyExpiresAt) {
+		t.Fatalf("snapshot replay metadata = %#v, want original %#v", replay, original)
 	}
 	secondRetry := idempotencyGraphTx(spaceID, domainID, principalID, 2, "snapshot-capture")
 	if _, err := restored.UpsertNode(ctx, secondRetry, domaingraph.NodeInput{NodeID: parentID, Labels: []string{"SnapshotParent"}, Properties: map[string]any{"role": "parent"}, Content: "parent"}); err != nil {

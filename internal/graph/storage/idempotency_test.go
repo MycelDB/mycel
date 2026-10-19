@@ -136,6 +136,29 @@ func TestLocalStoreIdempotencyCapacityFailsBeforeGraphWrites(t *testing.T) {
 	}
 }
 
+func TestLocalStoreIdempotencyStatsExcludeExpiredRecords(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.SetIdempotency(IdempotencyRecord{Scope: "principal", Key: "stats-short", Digest: "digest", Metadata: json.RawMessage(`{}`), CommittedAt: now, ExpiresAt: now.Add(20 * time.Millisecond)})
+	if _, err := tx.CommitWithInfo(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	active, capacity, evictions := store.IdempotencyStats()
+	if active != 0 || capacity != MaxIdempotencyRecordsPerStore || evictions != 1 {
+		t.Fatalf("IdempotencyStats() = (%d, %d, %d)", active, capacity, evictions)
+	}
+}
+
 func TestLocalStoreIdempotencyExpiryIsEvicted(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, t.TempDir())

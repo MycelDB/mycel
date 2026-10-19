@@ -51,6 +51,9 @@ stored result rather than repeating graph effects.
 
 Version 2 Raft snapshots include every live retained idempotency binding,
 original replay result, expiration, delivery intent, and delivery state.
+Snapshot capture holds the Raft apply barrier across the applied-index read,
+state-machine capture, Raft snapshot creation, and optional compaction, so graph
+effects and retained bindings cannot come from different applied indexes.
 Snapshot restore rebuilds the bounded store index before compacted log entries
 are discarded; restored matching retries return the original revision and
 mismatched mutations still fail closed. Version 1 snapshots remain readable and
