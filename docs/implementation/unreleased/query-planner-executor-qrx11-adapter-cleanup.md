@@ -2,7 +2,7 @@
 
 ## Status
 
-Merged into `improved_querying` through PR #228 for [mycel#213](https://github.com/MycelDB/mycel/issues/213). Post-QRX0–QRX11 aggregate-review corrections are implemented on a follow-up branch; exact-head review, CI/SonarCloud, integration-branch merge, and promotion to `develop` remain separately gated.
+Merged into `improved_querying` through PR #228 for [mycel#213](https://github.com/MycelDB/mycel/issues/213). Post-QRX0–QRX11 aggregate-review corrections are implemented and independently accepted on the follow-up branch; CI/SonarCloud, integration-branch merge, and promotion to `develop` remain separately gated.
 
 ## Scope
 
@@ -73,7 +73,7 @@ The merge gate additionally requires focused race tests, `make test`, `make buil
 
 ## Aggregate review resolution
 
-The complete QRX0–QRX11 range received independent architecture, transaction/resource-safety, and compatibility review. Follow-up corrections:
+The complete QRX0–QRX11 range received independent architecture, transaction/resource-safety, and compatibility review. Three exact-head follow-up reviews verified the corrections and their boundedness/accounting seams; the final review found no issues and returned `Merge verdict: OK`. Follow-up corrections:
 
 - distinguish missing values from explicit null during equality while retaining `IS NULL` compatibility;
 - apply `DISTINCT` to projected rows before ordering;
