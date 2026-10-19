@@ -22,6 +22,7 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
@@ -511,6 +512,66 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 }
 
+func TestOrderedPropertyOverlayHonorsExamineBoundAndPaginates(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	index := schemamodel.IndexDefinition{
+		Name: "note_rank", TargetKind: schemamodel.IndexTargetNode, Labels: []string{"Note"},
+		Field: schemamodel.FieldPath{Namespace: "properties", Name: "rank"},
+		Kind:  schemamodel.IndexKindOrdered, Direction: schemamodel.IndexSortDirectionAsc,
+	}
+	if err := m.ConfigureIndexes(ctx, tx, "schema-1", []schemamodel.IndexDefinition{index}); err != nil {
+		t.Fatal(err)
+	}
+	for rank := 1; rank <= 5; rank++ {
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"rank": int64(rank)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, _, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+		IndexName: index.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: 1, ExamineLimit: 4,
+	})
+	if !errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		t.Fatalf("tight overlay scan error = %v, want ErrScanBudgetExceeded", err)
+	}
+
+	cursor := ""
+	var got []int64
+	for page := 0; page < 6; page++ {
+		nodes, next, stats, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+			IndexName: index.Name, Direction: schemamodel.IndexSortDirectionAsc,
+			Limit: 1, Cursor: cursor, ExamineLimit: 16,
+		})
+		if err != nil {
+			t.Fatalf("overlay page %d: %v", page, err)
+		}
+		if stats.IndexEntriesScanned > 16 {
+			t.Fatalf("overlay page %d examined %d", page, stats.IndexEntriesScanned)
+		}
+		for _, node := range nodes {
+			value, _ := domaingraph.Property(node, "rank")
+			got = append(got, value.(int64))
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("overlay cursor did not advance: %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("overlay ranks=%v", got)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, _, err := m.ScanNodePropertyOrdered(canceled, tx, graphquery.OrderedNodePropertyScan{IndexName: index.Name, Limit: 1, ExamineLimit: 16}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled overlay scan error = %v", err)
+	}
+}
+
 func TestSnapshotLabelScanMakesBoundedProgress(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)
@@ -916,7 +977,7 @@ func TestListNodesUsesCursorDrivenPagesBoundToTransactionOverlay(t *testing.T) {
 	}
 }
 
-func TestScanAdjacencyOverlayMakesBoundedEmptyProgressAndPreservesOrder(t *testing.T) {
+func TestScanAdjacencyOverlayMakesBoundedProgressAndPreservesOrder(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)
 	spaceID := uuid.NewString()
@@ -980,8 +1041,38 @@ func TestScanAdjacencyOverlayMakesBoundedEmptyProgressAndPreservesOrder(t *testi
 		}
 		cursor = next
 	}
-	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) || emptyProgress != 1 {
+	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) || emptyProgress != 0 {
 		t.Fatalf("adjacency IDs=%v empty progress=%d", got, emptyProgress)
+	}
+
+	if _, _, _, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{
+		NodeID: parent.ID.String(), Direction: graphquery.AdjacencyDirectionOut, Limit: 1, ExamineLimit: 3,
+	}); !errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		t.Fatalf("tight wildcard overlay scan error = %v", err)
+	}
+	cursor = ""
+	got = nil
+	for {
+		page, next, stats, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{
+			NodeID: parent.ID.String(), Direction: graphquery.AdjacencyDirectionOut,
+			Limit: 1, Cursor: cursor, ExamineLimit: 16,
+		})
+		if err != nil {
+			t.Fatalf("ScanAdjacency(wildcard) error = %v", err)
+		}
+		if stats.IndexEntriesScanned > 16 {
+			t.Fatalf("wildcard examined %d entries", stats.IndexEntriesScanned)
+		}
+		for _, edge := range page {
+			got = append(got, edge.ID)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) {
+		t.Fatalf("wildcard adjacency IDs=%v", got)
 	}
 }
 

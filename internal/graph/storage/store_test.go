@@ -384,6 +384,14 @@ func TestLocalStoreWriteCheckpointWritesPersistentIndexes(t *testing.T) {
 	if err != nil || len(in) != 1 || in[0] != edge.ID {
 		t.Fatalf("ScanAdjacency(in) = %+v, %v; want edge", in, err)
 	}
+	wildcardOut, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Direction: AdjacencyDirectionOut, Limit: 1})
+	if err != nil || !reflect.DeepEqual(wildcardOut, []graph.EdgeID{edge.ID}) {
+		t.Fatalf("ScanAdjacency(wildcard out) = %+v, %v", wildcardOut, err)
+	}
+	wildcardIn, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: to.ID, Direction: AdjacencyDirectionIn, Limit: 1})
+	if err != nil || !reflect.DeepEqual(wildcardIn, []graph.EdgeID{edge.ID}) {
+		t.Fatalf("ScanAdjacency(wildcard in) = %+v, %v", wildcardIn, err)
+	}
 }
 
 func TestLocalStoreCorruptPersistentIndexesFallBackToCheckpointRebuild(t *testing.T) {
@@ -1611,9 +1619,11 @@ func TestLocalStoreAdjacencyScanByLabelOrderAndPagination(t *testing.T) {
 	from := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
 	to1 := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
 	to2 := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID}
-	first := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to1.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"order": int64(1)}}
+	first := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to1.ID, Labels: []string{"REFERENCES", "LINK"}, Properties: map[string]any{"order": int64(1)}}
 	second := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to2.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"order": int64(2)}}
 	other := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: to2.ID, Labels: []string{"MENTIONS"}, Properties: map[string]any{"order": int64(0)}}
+	unrelated := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: to1.ID, ToID: to2.ID, Labels: []string{"REFERENCES"}, Properties: map[string]any{"order": int64(-1)}}
+	self := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: domainID, FromID: from.ID, ToID: from.ID, Labels: []string{"SELF"}, Properties: map[string]any{"order": int64(3)}}
 	tx, err := store.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1623,7 +1633,7 @@ func TestLocalStoreAdjacencyScanByLabelOrderAndPagination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, edge := range []graph.Edge{second, first, other} {
+	for _, edge := range []graph.Edge{second, first, other, unrelated, self} {
 		if err := tx.PutEdge(edge); err != nil {
 			t.Fatal(err)
 		}
@@ -1642,6 +1652,18 @@ func TestLocalStoreAdjacencyScanByLabelOrderAndPagination(t *testing.T) {
 	incoming, _, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: to1.ID, Label: "REFERENCES", Direction: AdjacencyDirectionIn, Limit: 10})
 	if err != nil || !reflect.DeepEqual(incoming, []graph.EdgeID{first.ID}) {
 		t.Fatalf("incoming=%+v err=%v", incoming, err)
+	}
+	wildcard, next, err := store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Direction: AdjacencyDirectionOut, Limit: 2})
+	if err != nil || !reflect.DeepEqual(wildcard, []graph.EdgeID{other.ID, first.ID}) || next == "" {
+		t.Fatalf("wildcard page1=%+v next=%q err=%v", wildcard, next, err)
+	}
+	wildcard, next, err = store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Direction: AdjacencyDirectionOut, Limit: 2, Cursor: next})
+	if err != nil || !reflect.DeepEqual(wildcard, []graph.EdgeID{second.ID, self.ID}) || next != "" {
+		t.Fatalf("wildcard page2=%+v next=%q err=%v", wildcard, next, err)
+	}
+	wildcard, next, err = store.ScanAdjacency(ctx, AdjacencyScan{DomainID: domainID, NodeID: from.ID, Direction: AdjacencyDirectionIn, Limit: 2})
+	if err != nil || len(wildcard) != 0 || next != "" {
+		t.Fatalf("wildcard incoming self-loop page=%+v next=%q err=%v", wildcard, next, err)
 	}
 }
 
@@ -1687,7 +1709,7 @@ func TestLocalStoreSnapshotAdjacencyMakesBoundedProgressAcrossHistoricalKeys(t *
 		}
 	}
 
-	scan := AdjacencyScan{DomainID: domainID, NodeID: from.ID, Label: "REFERENCES", Direction: AdjacencyDirectionOut, Limit: 1}
+	scan := AdjacencyScan{DomainID: domainID, NodeID: from.ID, Direction: AdjacencyDirectionOut, Limit: 1}
 	var got []graph.EdgeID
 	emptyProgress := 0
 	for {

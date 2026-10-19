@@ -2,12 +2,14 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	queryexecution "github.com/myceldb/mycel/internal/query/execution"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
@@ -389,47 +391,72 @@ func (e *Engine) validateNodeDeletes(ctx context.Context, execution ExecutionCon
 	if len(nodes) == 0 {
 		return nil
 	}
-	if e.ports.Entities == nil {
-		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "validate node delete", "bounded edge access is required", nil)
+	if e.ports.Traversals == nil {
+		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "validate node delete", "bounded incident-edge access is required", nil)
 	}
-	limit := tracker.Limits().BatchSize
-	cursor := ""
-	for {
-		edges, next, scanErr := e.ports.Entities.ListEdges(ctx, execution.Transaction, limit, cursor)
-		if err := mutationDependencyError(ctx, "validate node delete", scanErr); err != nil {
-			return err
-		}
-		if len(edges) > limit {
-			return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "edge access returned an oversized page", nil)
-		}
-		if err := tracker.LoadEdges(int64(len(edges))); err != nil {
-			return err
-		}
-		if err := tracker.ExamineCandidates(int64(len(edges))); err != nil {
-			return err
-		}
-		for _, edge := range edges {
-			_, fromDeleted := nodes[edge.FromID.String()]
-			_, toDeleted := nodes[edge.ToID.String()]
-			if !fromDeleted && !toDeleted {
-				continue
-			}
-			if _, ok := deletedEdges[edge.ID.String()]; !ok {
-				nodeID := edge.FromID.String()
-				if !fromDeleted {
-					nodeID = edge.ToID.String()
+	seenEdges := map[string]struct{}{}
+	for nodeID := range nodes {
+		for _, direction := range []graphquery.AdjacencyDirection{graphquery.AdjacencyDirectionOut, graphquery.AdjacencyDirectionIn} {
+			cursor := ""
+			for {
+				remainingEdges := tracker.RemainingEdgesLoaded()
+				remainingCandidates := tracker.RemainingCandidates()
+				remainingIndex := tracker.RemainingIndexEntries()
+				if remainingEdges == 0 {
+					return tracker.LoadEdges(1)
 				}
-				return querylogical.NewError(querylogical.ErrorInvalidQuery, "delete node", fmt.Sprintf("node %q requires deleting incident edge %q first", nodeID, edge.ID.String()), nil)
+				if remainingCandidates == 0 {
+					return tracker.ExamineCandidates(1)
+				}
+				if remainingIndex == 0 {
+					return tracker.ScanIndexEntries(1)
+				}
+				examineAllowance := min(remainingEdges, remainingCandidates, remainingIndex)
+				pageAllowance := max(int64(1), examineAllowance/3)
+				limit := min(int64(tracker.Limits().BatchSize), pageAllowance)
+				if err := tracker.UseAdjacency(1); err != nil {
+					return err
+				}
+				edges, next, stats, scanErr := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
+					NodeID: nodeID, Direction: direction, Limit: int(limit), Cursor: cursor,
+					ExamineLimit: int(min(examineAllowance, int64(^uint(0)>>1))),
+				})
+				if err := mutationDependencyError(ctx, "validate node delete", scanErr); err != nil {
+					return err
+				}
+				if len(edges) > int(limit) {
+					return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "incident-edge access returned an oversized page", nil)
+				}
+				if err := tracker.ScanIndexEntries(int64(stats.IndexEntriesScanned)); err != nil {
+					return err
+				}
+				if err := tracker.LoadEdges(int64(stats.EdgesLoaded)); err != nil {
+					return err
+				}
+				if err := tracker.ExamineCandidates(int64(len(edges))); err != nil {
+					return err
+				}
+				for _, edge := range edges {
+					edgeID := edge.ID.String()
+					if _, duplicate := seenEdges[edgeID]; duplicate {
+						continue
+					}
+					seenEdges[edgeID] = struct{}{}
+					if _, ok := deletedEdges[edgeID]; !ok {
+						return querylogical.NewError(querylogical.ErrorInvalidQuery, "delete node", fmt.Sprintf("node %q requires deleting incident edge %q first", nodeID, edgeID), nil)
+					}
+				}
+				if next == "" {
+					break
+				}
+				if next == cursor {
+					return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "incident-edge cursor did not advance", nil)
+				}
+				cursor = next
 			}
 		}
-		if next == "" {
-			return nil
-		}
-		if next == cursor {
-			return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "edge cursor did not advance", nil)
-		}
-		cursor = next
 	}
+	return nil
 }
 
 func (e *Engine) createRelationship(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker, merge bool) (mutationRunResult, error) {
@@ -825,6 +852,9 @@ func mutationDependencyError(ctx context.Context, operation string, err error) e
 	}
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		return querylogical.NewError(querylogical.ErrorResourceExhausted, operation, err.Error(), err)
 	}
 	return querylogical.NewError(querylogical.ErrorDependencyFailure, operation, err.Error(), err)
 }

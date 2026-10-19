@@ -370,10 +370,11 @@ func (e *Engine) traversalEdgeReader(execution ExecutionContext, step querylogic
 	return func(ctx context.Context, nodeID string, limit int, cursor string) (queryexecution.TraversalEdgePage, error) {
 		edges, next, stats, err := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
 			NodeID: nodeID, Label: step.Edge.Labels[0], Direction: direction, Limit: limit, Cursor: cursor,
+			ExamineLimit: dependencyExamineLimit(limit),
 		})
 		return queryexecution.TraversalEdgePage{
 			Edges: edges, NextCursor: next, IndexEntries: int64(stats.IndexEntriesScanned), EdgesLoaded: int64(stats.EdgesLoaded),
-		}, err
+		}, indexedDependencyError(ctx, "scan adjacency", err)
 	}
 }
 
@@ -392,9 +393,10 @@ func (e *Engine) undirectedTraversalEdgeReader(execution ExecutionContext, step 
 		}
 		edges, next, stats, err := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
 			NodeID: nodeID, Label: step.Edge.Labels[0], Direction: state.Direction, Limit: limit, Cursor: state.Cursor,
+			ExamineLimit: dependencyExamineLimit(limit),
 		})
 		if err != nil {
-			return queryexecution.TraversalEdgePage{}, err
+			return queryexecution.TraversalEdgePage{}, indexedDependencyError(ctx, "scan undirected adjacency", err)
 		}
 		if state.Direction == graphquery.AdjacencyDirectionIn {
 			filtered := edges[:0]
@@ -488,11 +490,11 @@ func (e *Engine) orderedPageReader(execution ExecutionContext, prepared Prepared
 	}
 	return func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
 		nodes, next, stats, err := e.ports.Indexes.ScanNodePropertyOrdered(ctx, execution.Transaction, graphquery.OrderedNodePropertyScan{
-			IndexName: access.Index, Direction: direction, Limit: limit, Cursor: cursor, ExamineLimit: limit,
+			IndexName: access.Index, Direction: direction, Limit: limit, Cursor: cursor, ExamineLimit: dependencyExamineLimit(limit),
 			HasLow: hasLow, Low: low, LowExclusive: lowExclusive,
 			HasHigh: hasHigh, High: high, HighExclusive: highExclusive,
 		})
-		return executionNodePage(nodes, next, stats), err
+		return executionNodePage(nodes, next, stats), indexedDependencyError(ctx, "scan ordered node property", err)
 	}, nil
 }
 
@@ -512,6 +514,29 @@ func executionNodePage(nodes []graph.Node, next string, stats graphquery.Indexed
 		Nodes: nodes, NextCursor: next,
 		IndexEntries: int64(stats.IndexEntriesScanned), NodesLoaded: int64(stats.NodesLoaded), NodeReadCalls: int64(stats.NodeReadCalls),
 	}
+}
+
+func dependencyExamineLimit(limit int) int {
+	if limit <= 0 {
+		return 1
+	}
+	if limit > int(^uint(0)>>1)/16 {
+		return int(^uint(0) >> 1)
+	}
+	return limit * 16
+}
+
+func indexedDependencyError(ctx context.Context, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextQueryError(operation, contextErr)
+	}
+	if errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		return querylogical.NewError(querylogical.ErrorResourceExhausted, operation, err.Error(), err)
+	}
+	return err
 }
 
 func (e *Engine) configureIndexes(ctx context.Context, tx sessionmodel.GraphTransaction, prepared PreparedQuery) error {
@@ -613,11 +638,11 @@ func (e *Engine) indexScanReader(execution ExecutionContext, prepared PreparedQu
 	}
 	return func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
 		nodes, next, stats, err := e.ports.Indexes.ScanNodePropertyOrdered(ctx, execution.Transaction, graphquery.OrderedNodePropertyScan{
-			IndexName: scan.Index, Direction: schemamodel.IndexSortDirectionAsc, Limit: limit, Cursor: cursor, ExamineLimit: limit,
+			IndexName: scan.Index, Direction: schemamodel.IndexSortDirectionAsc, Limit: limit, Cursor: cursor, ExamineLimit: dependencyExamineLimit(limit),
 			HasLow: hasLow, Low: low, LowExclusive: lowExclusive,
 			HasHigh: hasHigh, High: high, HighExclusive: highExclusive,
 		})
-		return executionNodePage(nodes, next, stats), err
+		return executionNodePage(nodes, next, stats), indexedDependencyError(ctx, "scan predicate node property", err)
 	}, nil
 }
 

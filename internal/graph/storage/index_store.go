@@ -419,7 +419,7 @@ func (s *LocalStore) ScanAdjacencyAt(ctx context.Context, scan AdjacencyScan, re
 }
 
 func edgeMatchesAdjacencyScan(edge graph.Edge, scan AdjacencyScan) bool {
-	if edge.DomainID != scan.DomainID || !edgeHasAnyLabel(edge, []string{scan.Label}) {
+	if edge.DomainID != scan.DomainID || scan.Label != "" && !edgeHasAnyLabel(edge, []string{scan.Label}) {
 		return false
 	}
 	if scan.Direction == AdjacencyDirectionIn {
