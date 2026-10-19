@@ -29,7 +29,7 @@ import (
 
 func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 	fixture, manager, readTx := newQRX0JournalFixture(t)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 
 	countStar := &clientv1.AggregateArgument{Argument: &clientv1.AggregateArgument_Star{Star: true}}
 	tests := []struct {
@@ -44,7 +44,7 @@ func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 		wantPlanKind   string
 	}{
 		{
-			name: "broad label scan",
+			name: "label index scan",
 			structured: &clientv1.GraphQuery{
 				Match:   &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
 				Returns: []*clientv1.ReturnProjection{{Alias: "j.title", OutputName: "title", Kind: clientv1.ReturnProjectionKind_RETURN_PROJECTION_KIND_SCALAR}},
@@ -53,9 +53,9 @@ func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 			field:          "title",
 			sortValues:     true,
 			want:           []string{"latest", "middle", "oldest"},
-			structuredPlan: "BroadGraphFallback",
-			gqlPlan:        "BroadGQLFallback",
-			wantPlanKind:   "fallback",
+			structuredPlan: "LabelIndexScan",
+			gqlPlan:        "LabelIndexScan",
+			wantPlanKind:   "label_index",
 		},
 		{
 			name: "indexed equality",
@@ -71,7 +71,7 @@ func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 			want:           []string{"latest"},
 			structuredPlan: "OrderedNodePropertyEqualityIndexScan",
 			gqlPlan:        "OrderedNodePropertyEqualityIndexScan",
-			wantPlanKind:   "indexed",
+			wantPlanKind:   "indexed_equality",
 		},
 		{
 			name: "indexed order",
@@ -85,7 +85,7 @@ func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 			want:           []string{"oldest", "middle", "latest"},
 			structuredPlan: "OrderedNodePropertyIndexScan",
 			gqlPlan:        "OrderedNodePropertyIndexScan",
-			wantPlanKind:   "indexed",
+			wantPlanKind:   "indexed_order",
 		},
 		{
 			name: "aggregate count",
@@ -96,9 +96,9 @@ func TestQRX0StructuredAndGQLReadConformance(t *testing.T) {
 			gql:            "MATCH (j:JournalEntry) RETURN COUNT(*) AS total",
 			field:          "total",
 			want:           []string{"3"},
-			structuredPlan: "BroadGraphFallback",
-			gqlPlan:        "BroadGQLFallback",
-			wantPlanKind:   "fallback",
+			structuredPlan: "LabelIndexScan",
+			gqlPlan:        "LabelIndexScan",
+			wantPlanKind:   "label_index",
 		},
 	}
 
@@ -146,7 +146,7 @@ func TestQRX0StructuredAndGQLPreserveReadOnlySnapshot(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := newQRX8QueryService(fixture, nil)
 
 	seedTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	created, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: seedTx, Node: &clientv1.NodeCreate{Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "revision 1"})}})
@@ -178,7 +178,7 @@ func TestQRX0StructuredAndGQLPreserveReadOnlySnapshot(t *testing.T) {
 func TestQRX0StructuredAndGQLPreserveReadWriteOverlay(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := newQRX8QueryService(fixture, nil)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"title": "staged"})}}); err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
@@ -194,97 +194,6 @@ func TestQRX0StructuredAndGQLPreserveReadWriteOverlay(t *testing.T) {
 	if structured.GetReadMetadata().GetConsistency() != "overlay" || gql.GetReadMetadata().GetConsistency() != "overlay" {
 		t.Fatalf("overlay metadata: structured=%+v GQL=%+v", structured.GetReadMetadata(), gql.GetReadMetadata())
 	}
-}
-
-func TestQRX0LegacyGraphAccessProfiles(t *testing.T) {
-	fixture, manager, readTx := newQRX0JournalFixture(t)
-
-	t.Run("ordered index uses finite property scan", func(t *testing.T) {
-		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
-		res, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1})
-		if err != nil {
-			t.Fatalf("ExecuteQuery() error = %v", err)
-		}
-		profile.recordDiagnostics(res.GetDiagnostics())
-		if res.GetDiagnostics().GetFullScan() || profile.callCount("ScanNodePropertyOrdered") == 0 {
-			t.Fatalf("diagnostics=%+v profile=%+v", res.GetDiagnostics(), profile.callsSnapshot())
-		}
-		if profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
-			t.Fatalf("indexed query used broad reads: calls=%+v", profile.callsSnapshot())
-		}
-		limits := profile.requestedLimits("ScanNodePropertyOrdered")
-		if len(limits) == 0 || limits[0] <= 0 {
-			t.Fatalf("ordered scan limits = %v, want finite positive limit", limits)
-		}
-		work := profile.workSnapshot()
-		if work.IndexEntriesScanned == 0 || work.CandidatesExamined == 0 || work.NodesLoaded == 0 || work.ReturnedRows != 1 {
-			t.Fatalf("ordered scan work = %+v, want index/candidate/node work and one returned row", work)
-		}
-	})
-
-	t.Run("structured broad page materializes nodes and edges", func(t *testing.T) {
-		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
-		query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}}}
-		res, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 1})
-		if err != nil {
-			t.Fatalf("ExecuteQuery() error = %v", err)
-		}
-		profile.recordDiagnostics(res.GetDiagnostics())
-		if !res.GetDiagnostics().GetFullScan() || profile.callCount("ListNodes") == 0 || profile.callCount("ListEdges") == 0 {
-			t.Fatalf("legacy structured fallback baseline changed: diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
-		}
-		if profile.returnedCount("ListNodes") != 3 {
-			t.Fatalf("ListNodes returned %d entities for a one-row page, want baseline 3", profile.returnedCount("ListNodes"))
-		}
-	})
-
-	t.Run("GQL broad node page materializes nodes but not edges", func(t *testing.T) {
-		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager)
-		res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (j:JournalEntry) RETURN j", PageSize: 1})
-		if err != nil {
-			t.Fatalf("ExecuteGQL() error = %v", err)
-		}
-		profile.recordDiagnostics(res.GetDiagnostics())
-		if !res.GetDiagnostics().GetFullScan() || profile.callCount("ListNodes") == 0 || profile.callCount("ListEdges") != 0 {
-			t.Fatalf("legacy GQL fallback baseline changed: diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
-		}
-		if profile.returnedCount("ListNodes") != 3 {
-			t.Fatalf("ListNodes returned %d entities for a one-row page, want baseline 3", profile.returnedCount("ListNodes"))
-		}
-	})
-
-	t.Run("GQL script Explain stays on explicit bridge without graph access", func(t *testing.T) {
-		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
-		res, err := querySvc.ExplainGQL(fixture.ctx, &clientv1.ExplainGQLRequest{
-			TransactionId: readTx,
-			Query:         "MATCH (j:JournalEntry) RETURN j; MATCH (j:JournalEntry) RETURN j",
-		})
-		if err != nil {
-			t.Fatalf("ExplainGQL(script) error = %v", err)
-		}
-		if diagnostics := res.GetDiagnostics(); diagnostics.GetPlan() != "GQLScriptPlan" || diagnostics.GetPlanKind() != "gql_script" || diagnostics.GetFallbackMode() != "legacy_script_bridge" || !diagnostics.GetExplainOnly() {
-			t.Fatalf("script diagnostics = %+v", diagnostics)
-		}
-		if profile.dataReadCalls() != 0 || profile.callCount("ConfigureIndexes") != 0 {
-			t.Fatalf("script Explain calls = %+v", profile.callsSnapshot())
-		}
-	})
-
-	t.Run("Explain performs no graph data reads", func(t *testing.T) {
-		instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-		querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).WithSchemaManager(manager).WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
-		res, err := querySvc.ExplainQuery(fixture.ctx, &clientv1.ExplainQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC)})
-		if err != nil {
-			t.Fatalf("ExplainQuery() error = %v", err)
-		}
-		if !res.GetDiagnostics().GetExplainOnly() || profile.dataReadCalls() != 0 || profile.callCount("ConfigureIndexes") != 0 {
-			t.Fatalf("Explain diagnostics=%+v calls=%+v", res.GetDiagnostics(), profile.callsSnapshot())
-		}
-	})
 }
 
 func TestQRX9StructuredAndGQLBroadReadsBypassWholeGraphMaterialization(t *testing.T) {
@@ -327,14 +236,14 @@ func TestQRX9StructuredAndGQLBroadReadsBypassWholeGraphMaterialization(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-			service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+			service := NewQueryService(fixture.sessions, fixture.spaces).
 				WithSchemaManager(manager).
 				WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
 			diagnostics, err := test.run(service)
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
-			if diagnostics.GetPlan() != "StreamingNodeScan" || diagnostics.GetPlannerVersion() != "qrx10" || !diagnostics.GetFullScan() {
+			if diagnostics.GetPlan() != "StreamingNodeScan" || diagnostics.GetPlannerVersion() != "qrx11" || !diagnostics.GetFullScan() {
 				t.Fatalf("diagnostics = %+v", diagnostics)
 			}
 			if profile.callCount("ListNodes") != 1 || profile.returnedCount("ListNodes") != 2 || profile.callCount("ListEdges") != 0 {
@@ -383,7 +292,7 @@ func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-			service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+			service := NewQueryService(fixture.sessions, fixture.spaces).
 				WithSchemaManager(manager).
 				WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
 			titles, diagnostics, err := test.run(service)
@@ -393,7 +302,7 @@ func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T
 			if !reflect.DeepEqual(titles, []string{"oldest", "middle"}) {
 				t.Fatalf("titles = %v", titles)
 			}
-			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx10" || diagnostics.GetFullScan() {
+			if diagnostics.GetPlanKind() != "indexed_order" || diagnostics.GetPlannerVersion() != "qrx11" || diagnostics.GetFullScan() {
 				t.Fatalf("diagnostics = %+v", diagnostics)
 			}
 			if profile.callCount("ScanNodePropertyOrdered") == 0 || profile.callCount("ListNodes") != 0 || profile.callCount("ListEdges") != 0 {
@@ -411,7 +320,7 @@ func TestQRX7StructuredAndGQLIndexedReadsBypassLegacyQueryExecution(t *testing.T
 func TestQRX7StructuredCursorContinuesThroughEquivalentGQLLabelPlan(t *testing.T) {
 	fixture, manager, readTx := newQRX0JournalFixture(t)
 	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-	service := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+	service := NewQueryService(fixture.sessions, fixture.spaces).
 		WithSchemaManager(manager).
 		WithQueryEngine(queryEngineForExplainTest(instrumented, manager))
 	structured, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
@@ -501,7 +410,7 @@ func TestQRX7CancellationDuringIndexedDependencyCallIsPreserved(t *testing.T) {
 	t.Run("label index", func(t *testing.T) {
 		fixture, manager, readTx := newQRX0JournalFixture(t)
 		blocking := &qrx7BlockingLabelGraph{Manager: fixture.graphs, started: make(chan struct{})}
-		service := NewQueryService(fixture.sessions, blocking, fixture.spaces).
+		service := NewQueryService(fixture.sessions, fixture.spaces).
 			WithSchemaManager(manager).
 			WithQueryEngine(queryEngineForExplainTest(blocking, manager))
 		ctx, cancel := context.WithCancel(fixture.ctx)
@@ -536,7 +445,7 @@ func TestQRX7CancellationDuringIndexedDependencyCallIsPreserved(t *testing.T) {
 			Entities: fixture.graphs, Traversals: fixture.graphs, Indexes: fixture.graphs,
 			Catalog: manager, SemanticCandidates: NewQuerySemanticCandidateReader(blocking), Mutations: fixture.graphs,
 		})
-		service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+		service := newQRX8QueryService(fixture, nil).
 			WithSchemaManager(manager).
 			WithSemanticManager(blocking).
 			WithQueryEngine(engine)
@@ -573,7 +482,7 @@ func TestQRX7StatusCodedDependencyCancellationIsPreserved(t *testing.T) {
 	t.Run("label deadline", func(t *testing.T) {
 		fixture, manager, readTx := newQRX0JournalFixture(t)
 		failing := &qrx7StatusLabelGraph{Manager: fixture.graphs, err: status.Error(codes.DeadlineExceeded, "injected label deadline")}
-		service := NewQueryService(fixture.sessions, failing, fixture.spaces).
+		service := NewQueryService(fixture.sessions, fixture.spaces).
 			WithSchemaManager(manager).
 			WithQueryEngine(queryEngineForExplainTest(failing, manager))
 		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
@@ -588,7 +497,7 @@ func TestQRX7StatusCodedDependencyCancellationIsPreserved(t *testing.T) {
 	t.Run("index configuration canceled", func(t *testing.T) {
 		fixture, manager, readTx := newQRX0JournalFixture(t)
 		failing := &qrx7StatusConfigureGraph{Manager: fixture.graphs, err: status.Error(codes.Canceled, "injected configure cancellation")}
-		service := NewQueryService(fixture.sessions, failing, fixture.spaces).
+		service := NewQueryService(fixture.sessions, fixture.spaces).
 			WithSchemaManager(manager).
 			WithQueryEngine(queryEngineForExplainTest(failing, manager))
 		_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
@@ -606,7 +515,7 @@ func TestQRX7StatusCodedDependencyCancellationIsPreserved(t *testing.T) {
 			Entities: fixture.graphs, Traversals: fixture.graphs, Indexes: fixture.graphs,
 			Catalog: manager, SemanticCandidates: NewQuerySemanticCandidateReader(failing), Mutations: fixture.graphs,
 		})
-		service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+		service := newQRX8QueryService(fixture, nil).
 			WithSchemaManager(manager).
 			WithSemanticManager(failing).
 			WithQueryEngine(engine)
@@ -627,19 +536,23 @@ func TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed(t *testing.T) {
 	t.Run("graph read error", func(t *testing.T) {
 		fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 		failingGraph := &qrx0ListNodesErrorGraph{Manager: fixture.graphs, err: errors.New("injected graph read failure")}
-		querySvc := NewQueryService(fixture.sessions, failingGraph, fixture.spaces)
+		querySvc := NewQueryService(fixture.sessions, fixture.spaces).
+			WithQueryEngine(queryEngineForExplainTest(failingGraph, nil))
 		readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 		structuredQuery := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}}}
 		_, structuredErr := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: structuredQuery})
 		_, gqlErr := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (n:Note) RETURN n"})
-		if status.Code(structuredErr) != codes.Internal || status.Code(gqlErr) != codes.InvalidArgument {
-			t.Fatalf("legacy graph error mismatch changed: structured=%v (%v) GQL=%v (%v)", status.Code(structuredErr), structuredErr, status.Code(gqlErr), gqlErr)
+		if status.Code(structuredErr) != codes.Unavailable || status.Code(gqlErr) != codes.Unavailable {
+			t.Fatalf("graph error codes: structured=%v (%v) GQL=%v (%v)", status.Code(structuredErr), structuredErr, status.Code(gqlErr), gqlErr)
 		}
 	})
 
 	t.Run("semantic search error", func(t *testing.T) {
 		fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
-		querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSemanticManager(&qrx0SemanticErrorSearcher{err: errors.New("injected semantic failure")})
+		searcher := &qrx0SemanticErrorSearcher{err: errors.New("injected semantic failure")}
+		querySvc := newQRX8QueryService(fixture, nil).
+			WithSemanticManager(searcher).
+			WithQueryEngine(queryEngineForSemanticTest(fixture.graphs, nil, searcher))
 		readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 		structuredQuery := &clientv1.GraphQuery{
 			Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
@@ -656,7 +569,8 @@ func TestQRX0StructuredAndGQLGraphAndSearchErrorsFailClosed(t *testing.T) {
 func TestQRX0CanceledRequestsStopBeforeGraphAccess(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces)
+	querySvc := NewQueryService(fixture.sessions, fixture.spaces).
+		WithQueryEngine(queryEngineForExplainTest(instrumented, nil))
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	ctx, cancel := context.WithCancel(fixture.ctx)
 	cancel()
@@ -686,7 +600,7 @@ func TestQRX0AdjacencyAccessProfile(t *testing.T) {
 	}
 
 	instrumented, profile := instrumentQRX0Graph(fixture.graphs)
-	querySvc := NewQueryService(fixture.sessions, instrumented, fixture.spaces).
+	querySvc := NewQueryService(fixture.sessions, fixture.spaces).
 		WithQueryEngine(queryEngineForExplainTest(instrumented, nil))
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := referenceQuery(source, clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, "")

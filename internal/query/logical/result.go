@@ -159,8 +159,6 @@ type Diagnostics struct {
 	RejectedReason      string                   `json:"rejected_reason,omitempty"`
 	RequiredIndex       string                   `json:"required_index,omitempty"`
 	FallbackMode        string                   `json:"fallback_mode,omitempty"`
-	LegacyBridge        bool                     `json:"legacy_bridge,omitempty"`
-	LegacyBridgeReason  string                   `json:"legacy_bridge_reason,omitempty"`
 	CursorPlanBound     bool                     `json:"cursor_plan_bound,omitempty"`
 	CursorSnapshotBound bool                     `json:"cursor_snapshot_bound,omitempty"`
 	CursorSchemaBound   bool                     `json:"cursor_schema_bound,omitempty"`

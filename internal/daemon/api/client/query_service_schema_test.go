@@ -16,7 +16,7 @@ import (
 func TestQueryServiceExecuteQueryUsesStrictDomainSchema(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModeStrict)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
 	cases := []struct {
@@ -43,12 +43,12 @@ func TestQueryServiceExecuteQueryAllowsUnknownsWithoutSchemaOrInPermissiveMode(t
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Missing"}}}}
 
-	if _, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: query}); err != nil {
+	if _, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: query}); err != nil {
 		t.Fatalf("schema-free ExecuteQuery() error = %v", err)
 	}
 
 	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModePermissive)
-	if _, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: query}); err != nil {
+	if _, err := newQRX8QueryService(fixture, manager).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: tx, Query: query}); err != nil {
 		t.Fatalf("permissive ExecuteQuery() error = %v", err)
 	}
 }
@@ -56,7 +56,7 @@ func TestQueryServiceExecuteQueryAllowsUnknownsWithoutSchemaOrInPermissiveMode(t
 func TestQueryServiceExecuteGQLUsesStrictDomainSchema(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModeStrict)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
 	cases := []struct {
@@ -81,7 +81,7 @@ func TestQueryServiceExecuteGQLUsesStrictDomainSchema(t *testing.T) {
 func TestQueryServiceExecuteGQLScriptUsesStrictDomainSchema(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModeStrict)
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager)
+	querySvc := newQRX8QueryService(fixture, manager)
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
 	_, err := querySvc.ExecuteGQLScript(fixture.ctx, &clientv1.ExecuteGQLScriptRequest{TransactionId: tx, Script: "MATCH (n:Missing) RETURN n"})
@@ -95,12 +95,12 @@ func TestQueryServiceExecuteGQLAllowsUnknownsWithoutSchemaOrInPermissiveMode(t *
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 	query := "MATCH (n:Missing) RETURN n.missing"
 
-	if _, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: tx, Query: query}); err != nil {
+	if _, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: tx, Query: query}); err != nil {
 		t.Fatalf("schema-free ExecuteGQL() error = %v", err)
 	}
 
 	manager := schemaManagerForQueryTest(t, fixture.domainID, schemamodel.SchemaModePermissive)
-	if _, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithSchemaManager(manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: tx, Query: query}); err != nil {
+	if _, err := newQRX8QueryService(fixture, manager).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: tx, Query: query}); err != nil {
 		t.Fatalf("permissive ExecuteGQL() error = %v", err)
 	}
 }

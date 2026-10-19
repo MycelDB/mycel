@@ -185,7 +185,7 @@ func TestEngineBroadNodeScanUsesFinitePagesAndPlanBoundContinuation(t *testing.T
 	statement := broadNodeStatement(1)
 
 	prepared := prepareBroad(t, engine, tx, statement)
-	if prepared.Physical.Family != queryphysical.FamilyBoundedFullScan || prepared.RequiresLegacy() {
+	if prepared.Physical.Family != queryphysical.FamilyBoundedFullScan {
 		t.Fatalf("prepared plan = %#v", prepared.Physical)
 	}
 	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx}, prepared)
@@ -201,7 +201,7 @@ func TestEngineBroadNodeScanUsesFinitePagesAndPlanBoundContinuation(t *testing.T
 	if access.listNodeCalls != 1 || access.listEdgeCalls != 0 || len(access.limits) != 1 || access.limits[0] != 2 {
 		t.Fatalf("first-page access: node calls=%d edge calls=%d limits=%v", access.listNodeCalls, access.listEdgeCalls, access.limits)
 	}
-	if first.Diagnostics.FullScan != true || first.Diagnostics.LegacyBridge || first.Diagnostics.NodesLoaded != 2 || first.Diagnostics.RowsReturned != 1 || first.Diagnostics.Plan != "StreamingNodeScan" {
+	if first.Diagnostics.FullScan != true || first.Diagnostics.NodesLoaded != 2 || first.Diagnostics.RowsReturned != 1 || first.Diagnostics.Plan != "StreamingNodeScan" {
 		t.Fatalf("first-page diagnostics = %#v", first.Diagnostics)
 	}
 

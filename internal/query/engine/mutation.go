@@ -15,8 +15,8 @@ import (
 )
 
 func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext, prepared PreparedQuery) (querylogical.Result, error) {
-	if prepared.Statement.Mutation == nil || prepared.Physical.Family != queryphysical.FamilyMutation || prepared.Kind != PlanIndexed {
-		return querylogical.Result{}, unsupportedPlan(prepared)
+	if prepared.Statement.Mutation == nil || prepared.Physical.Family != queryphysical.FamilyMutation {
+		return querylogical.Result{}, querylogical.NewError(querylogical.ErrorInternal, "execute mutation", "prepared statement has no executable mutation plan", nil)
 	}
 	if execution.Transaction != prepared.Planning.Transaction {
 		return querylogical.Result{}, querylogical.NewError(querylogical.ErrorInvalidQuery, "execute mutation", "execution transaction does not match the prepared transaction", nil)
@@ -556,9 +556,6 @@ func (e *Engine) collectMutationMatches(ctx context.Context, execution Execution
 	if err != nil {
 		return queryexecution.Matches{}, err
 	}
-	if prepared.RequiresLegacy() {
-		return queryexecution.Matches{}, unsupportedPlan(prepared)
-	}
 	view, err := e.readViewIdentity(ctx, execution.Transaction)
 	if err != nil {
 		return queryexecution.Matches{}, err
@@ -595,7 +592,7 @@ func shapeMutationResult(ctx context.Context, rows []queryexecution.BindingRow, 
 	}
 	sourceRows := rows
 	for index := range sourceRows {
-		// Mutation continuations preserve the legacy output-offset contract. A
+		// Mutation continuations preserve the established output-offset contract. A
 		// native read-source checkpoint would be rejected by mutation pagination
 		// and must never escape as the response cursor.
 		sourceRows[index].Cursor = ""
@@ -603,7 +600,7 @@ func shapeMutationResult(ctx context.Context, rows []queryexecution.BindingRow, 
 	if mutation.Kind == querylogical.MutationInsertNode || mutation.Kind == querylogical.MutationCreateRelationship {
 		sourceRows = nil
 	}
-	return queryexecution.Shape(ctx, queryexecution.NewLegacySource(sourceRows, budget.BatchSize, tracker), query, tracker, queryexecution.ShapeOptions{Parameters: prepared.Planning.Parameters, Now: execution.Now})
+	return queryexecution.Shape(ctx, queryexecution.NewSliceSource(sourceRows, budget.BatchSize, tracker), query, tracker, queryexecution.ShapeOptions{Parameters: prepared.Planning.Parameters, Now: execution.Now})
 }
 
 func resolveMutationValues(values map[string]querylogical.Value, parameters map[string]querylogical.Value, now time.Time) (map[string]any, error) {

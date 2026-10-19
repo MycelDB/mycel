@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented on `feat/query-refactor-qrx10-mutations-scripts` for [mycel#213](https://github.com/MycelDB/mycel/issues/213).
+Merged into `improved_querying` through PR #227 for [mycel#213](https://github.com/MycelDB/mycel/issues/213).
 
 ## Scope
 
@@ -58,7 +58,7 @@ The daemon converts neutral statement outcomes to protobuf responses and maps qu
 
 ## Compatibility and cleanup boundary
 
-`internal/query/gql/execution` and daemon-local read helpers remain in the tree for still-referenced compatibility code. Supported GQL mutation requests and scripts no longer invoke them. Removing unreachable bridges and duplicate helpers is QRX11 work.
+QRX11 removed the daemon-local read helpers, GQL-to-structured execution bridge, and temporary physical/engine ownership bridge. `internal/query/gql/execution` remains only for non-QueryService consumers that evaluate existing GQL execution-model contexts; supported QueryService reads, mutations, and scripts do not invoke it.
 
 ## Validation
 

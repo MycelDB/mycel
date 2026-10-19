@@ -27,8 +27,6 @@ func Explain(plan Plan) querylogical.Diagnostics {
 		NextCursorKind:      plan.Cursor.Kind,
 		ExplainOnly:         true,
 		FallbackMode:        plan.FallbackMode,
-		LegacyBridge:        plan.RequiresLegacy(),
-		LegacyBridgeReason:  plan.LegacyBridgeReason,
 		CursorPlanBound:     plan.Cursor.PlanBound,
 		CursorSnapshotBound: plan.Cursor.Snapshot,
 		CursorSchemaBound:   plan.Cursor.Schema,

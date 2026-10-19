@@ -163,7 +163,7 @@ func TestGraphServiceApplyOperationsReplacesReferencesWithNodeUpdate(t *testing.
 }
 
 func nativeGQLQueryService(fixture domainPolicyClientAPIFixture) *QueryService {
-	return NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).
+	return newQRX8QueryService(fixture, nil).
 		WithQueryEngine(queryEngineForExplainTest(fixture.graphs, nil))
 }
 
@@ -288,7 +288,7 @@ func TestQueryServiceExecuteGQLMutationRestoresOverlayAfterLaterWriteFailure(t *
 	}
 	failing := &failSecondUpdateGraph{Manager: fixture.graphs}
 	engine := queryengine.New(queryengine.Ports{Entities: failing, Traversals: failing, Indexes: failing, Mutations: failing})
-	failingService := NewQueryService(fixture.sessions, failing, fixture.spaces).WithQueryEngine(engine)
+	failingService := NewQueryService(fixture.sessions, fixture.spaces).WithQueryEngine(engine)
 	if _, err := failingService.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) SET p.status = 'changed' RETURN p"}); err == nil {
 		t.Fatal("set with injected second failure error = nil, want error")
 	}
@@ -689,7 +689,7 @@ func TestQueryServiceExecuteGQLReturnsRelationshipPatternRows(t *testing.T) {
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note)-[r:REFERENCES {confidence: 0.9}]->(b:Note) RETURN a, r, r.confidence, b.title"})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note)-[r:REFERENCES {confidence: 0.9}]->(b:Note) RETURN a, r, r.confidence, b.title"})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -739,7 +739,7 @@ func TestQueryServiceExecuteGQLReturnsMultiHopPathRows(t *testing.T) {
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note)-[:REFERENCES]->(b:Note)-[:MENTIONS]->(c:Concept) RETURN a.title, b.title, c.name"})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note)-[:REFERENCES]->(b:Note)-[:MENTIONS]->(c:Concept) RETURN a.title, b.title, c.name"})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -774,7 +774,7 @@ func TestQueryServiceExecuteGQLVariableLengthTraversal(t *testing.T) {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note {title: 'A'})-[:REFERENCES*1..2]->(b:Note) RETURN b.title"})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH (a:Note {title: 'A'})-[:REFERENCES*1..2]->(b:Note) RETURN b.title"})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -805,7 +805,7 @@ func TestQueryServiceExecuteGQLPathBindingReturnsPathAndGraph(t *testing.T) {
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (a:Note {title: 'A'})-[:REFERENCES*1..2]->(b:Note {title: 'C'}) RETURN GRAPH path"})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (a:Note {title: 'A'})-[:REFERENCES*1..2]->(b:Note {title: 'C'}) RETURN GRAPH path"})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -844,7 +844,7 @@ func TestQueryServiceExecuteGQLPathGraphFollowsPageRows(t *testing.T) {
 	}
 
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	res, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (a:Note {title: 'A'})-[:REFERENCES]->(b:Note) RETURN GRAPH path", PageSize: 1})
+	res, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: "MATCH path = (a:Note {title: 'A'})-[:REFERENCES]->(b:Note) RETURN GRAPH path", PageSize: 1})
 	if err != nil {
 		t.Fatalf("ExecuteGQL() error = %v", err)
 	}
@@ -856,7 +856,7 @@ func TestQueryServiceExecuteGQLPathGraphFollowsPageRows(t *testing.T) {
 	}
 }
 
-func TestQueryServiceExecuteGQLTextAndSemanticPredicates(t *testing.T) {
+func TestQueryServiceExecuteGQLTextPredicate(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
@@ -868,19 +868,15 @@ func TestQueryServiceExecuteGQLTextAndSemanticPredicates(t *testing.T) {
 	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
 		t.Fatalf("CommitTransaction() error = %v", err)
 	}
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
-	for _, query := range []string{
-		"MATCH (n:Note) WHERE TEXT_CONTAINS(n.payload.text, 'family') RETURN n.payload.text",
-		"MATCH (n:Note) WHERE SEMANTIC_SIMILAR(n, 'family', TOP 10) RETURN n.payload.text",
-	} {
-		readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-		res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: query})
-		if err != nil {
-			t.Fatalf("ExecuteGQL(%q) error = %v", query, err)
-		}
-		if len(res.GetResult().GetRows()) != 1 {
-			t.Fatalf("ExecuteGQL(%q) rows=%+v", query, res.GetResult().GetRows())
-		}
+	querySvc := newQRX8QueryService(fixture, nil)
+	query := "MATCH (n:Note) WHERE TEXT_CONTAINS(n.payload.text, 'family') RETURN n.payload.text"
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	res, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: readTx, Query: query})
+	if err != nil {
+		t.Fatalf("ExecuteGQL(%q) error = %v", query, err)
+	}
+	if len(res.GetResult().GetRows()) != 1 {
+		t.Fatalf("ExecuteGQL(%q) rows=%+v", query, res.GetResult().GetRows())
 	}
 }
 

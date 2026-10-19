@@ -131,7 +131,7 @@ func (b *binder) validateFieldAgainstNodeTypes(field querylogical.FieldRef, type
 	if !validNamespace(field.Namespace) {
 		return b.invalid("unsupported field namespace %q", field.Namespace)
 	}
-	if b.catalog.NodeFieldKnown(types, string(field.Namespace), field.Name) {
+	if nodeRuntimeField(field) || b.catalog.NodeFieldKnown(types, string(field.Namespace), field.Name) {
 		return nil
 	}
 	return b.invalid("unknown %s field %q", field.Namespace, field.Name)
@@ -144,10 +144,26 @@ func (b *binder) validateFieldAgainstEdgeTypes(field querylogical.FieldRef, type
 	if !validNamespace(field.Namespace) {
 		return b.invalid("unsupported field namespace %q", field.Namespace)
 	}
-	if b.catalog.EdgeFieldKnown(types, string(field.Namespace), field.Name) {
+	if edgeRuntimeField(field) || b.catalog.EdgeFieldKnown(types, string(field.Namespace), field.Name) {
 		return nil
 	}
 	return b.invalid("unknown edge %s field %q", field.Namespace, field.Name)
+}
+
+func nodeRuntimeField(field querylogical.FieldRef) bool {
+	return field.Namespace == querylogical.NamespaceProperties && (field.Name == "node_id" || field.Name == "content")
+}
+
+func edgeRuntimeField(field querylogical.FieldRef) bool {
+	if field.Namespace != querylogical.NamespaceProperties {
+		return false
+	}
+	switch field.Name {
+	case "edge_id", "from_node_id", "to_node_id":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *binder) validateEndpoints(edgeTypes []schemamodel.EdgeType, fromTypes []schemamodel.NodeType, toTypes []schemamodel.NodeType, direction querylogical.Direction, fromAlias string, toAlias string) error {

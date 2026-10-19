@@ -43,10 +43,9 @@ type Operator interface {
 	Close() error
 }
 
-// LegacySource adapts already-materialized bindings from the temporary legacy
-// access path. It permits neutral shaping to migrate independently of storage
-// access selection.
-type LegacySource struct {
+// SliceSource exposes an already-materialized bounded row slice through the
+// common pull-operator lifecycle.
+type SliceSource struct {
 	rows      []BindingRow
 	batchSize int
 	tracker   *Tracker
@@ -55,19 +54,19 @@ type LegacySource struct {
 	closed    bool
 }
 
-func NewLegacySource(rows []BindingRow, batchSize int, tracker *Tracker) *LegacySource {
+func NewSliceSource(rows []BindingRow, batchSize int, tracker *Tracker) *SliceSource {
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
-	return &LegacySource{rows: rows, batchSize: batchSize, tracker: tracker}
+	return &SliceSource{rows: rows, batchSize: batchSize, tracker: tracker}
 }
 
-func (s *LegacySource) Open(ctx context.Context) error {
-	if err := canceled(ctx, "open legacy source"); err != nil {
+func (s *SliceSource) Open(ctx context.Context) error {
+	if err := canceled(ctx, "open slice source"); err != nil {
 		return err
 	}
 	if s.opened && !s.closed {
-		return invalidState("open legacy source", "operator is already open")
+		return invalidState("open slice source", "operator is already open")
 	}
 	s.offset = 0
 	s.opened = true
@@ -75,8 +74,8 @@ func (s *LegacySource) Open(ctx context.Context) error {
 	return nil
 }
 
-func (s *LegacySource) Next(ctx context.Context) (Batch, error) {
-	if err := s.ready(ctx, "read legacy source"); err != nil {
+func (s *SliceSource) Next(ctx context.Context) (Batch, error) {
+	if err := s.ready(ctx, "read slice source"); err != nil {
 		return Batch{}, err
 	}
 	if s.offset >= len(s.rows) {
@@ -101,7 +100,7 @@ func (s *LegacySource) Next(ctx context.Context) (Batch, error) {
 	return Batch{Rows: rows}, nil
 }
 
-func (s *LegacySource) Close() error {
+func (s *SliceSource) Close() error {
 	if s.closed {
 		return nil
 	}
@@ -109,7 +108,7 @@ func (s *LegacySource) Close() error {
 	return nil
 }
 
-func (s *LegacySource) ready(ctx context.Context, operation string) error {
+func (s *SliceSource) ready(ctx context.Context, operation string) error {
 	if err := canceled(ctx, operation); err != nil {
 		_ = s.Close()
 		return err

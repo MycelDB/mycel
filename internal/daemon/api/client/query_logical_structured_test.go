@@ -12,6 +12,15 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
+func TestStructuredQueryWithoutProjectionDefaultsToStartNode(t *testing.T) {
+	query := logicalQueryFromStructured(&clientv1.GraphQuery{
+		Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n", Labels: []string{"Note"}}},
+	}, 10, "")
+	if len(query.Returns) != 1 || query.Returns[0].Kind != querylogical.ProjectionNode || query.Returns[0].Alias != "n" || query.Returns[0].OutputName != "n" {
+		t.Fatalf("default returns = %#v", query.Returns)
+	}
+}
+
 func TestQRX1EquivalentStructuredAndGQLNodeQueriesNormalizeEqually(t *testing.T) {
 	gqlQuery := normalizeQRX1GQL(t, "MATCH (n:Note) WHERE n.title = 'Alpha' AND n.status IS NOT NULL RETURN DISTINCT n.title AS title, COUNT(*) AS total, SUM(n.score) AS sum, AVG(n.score) AS avg, MIN(n.score) AS min, MAX(n.score) AS max OFFSET 1 FETCH FIRST 5 ROWS ONLY")
 

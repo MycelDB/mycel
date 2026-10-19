@@ -118,9 +118,6 @@ func (b *binder) validateLeaf(leaf querylogical.Leaf) error {
 		if leaf.Field == nil || strings.TrimSpace(leaf.Query) == "" {
 			return b.invalid("text predicate requires a field and query")
 		}
-		if !b.environment.Domain.ExplicitSearchable {
-			return b.unavailable("domain does not allow text search")
-		}
 		return b.validateField(*leaf.Field)
 
 	case querylogical.LeafSemantic:

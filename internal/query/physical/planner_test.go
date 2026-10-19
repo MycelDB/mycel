@@ -51,7 +51,6 @@ func TestBuildSelectsAccessFamiliesInPrecedenceOrder(t *testing.T) {
 		family     queryphysical.Family
 		operator   queryphysical.OperatorKind
 		cursorKind string
-		legacy     bool
 	}{
 		{name: "path before adjacency", query: path, family: queryphysical.FamilyIndexedPath, operator: queryphysical.OperatorIndexedPath, cursorKind: "traversal_offset"},
 		{name: "adjacency", query: adjacency, family: queryphysical.FamilyIndexedAdjacency, operator: queryphysical.OperatorAdjacency, cursorKind: "adjacency_key"},
@@ -68,13 +67,7 @@ func TestBuildSelectsAccessFamiliesInPrecedenceOrder(t *testing.T) {
 			if plan.Family != test.family || plan.Cursor.Kind != test.cursorKind {
 				t.Fatalf("plan = %#v, want family %q cursor %q", plan, test.family, test.cursorKind)
 			}
-			if plan.RequiresLegacy() != test.legacy {
-				t.Fatalf("RequiresLegacy() = %v, want %v; root=%#v", plan.RequiresLegacy(), test.legacy, plan.Root)
-			}
-			if test.legacy && plan.Root.Kind != queryphysical.OperatorLegacyBridge {
-				t.Fatalf("root = %#v, want legacy bridge", plan.Root)
-			}
-			if !test.legacy && (!plan.Cursor.PlanBound || !plan.Cursor.Snapshot || !plan.Cursor.Schema) {
+			if !plan.Cursor.PlanBound || !plan.Cursor.Snapshot || !plan.Cursor.Schema {
 				t.Fatalf("native cursor strategy = %#v", plan.Cursor)
 			}
 			if !operatorTreeContains(plan.Root, test.operator) {
@@ -110,7 +103,7 @@ func TestBuildSelectsMigratedDirectNodeAccess(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan := buildRead(t, test.query, plannerSchema(), plannerEnvironment())
-			if plan.Family != test.family || plan.Access.Kind != test.access || plan.RequiresLegacy() || !operatorTreeContains(plan.Root, test.operator) {
+			if plan.Family != test.family || plan.Access.Kind != test.access || !operatorTreeContains(plan.Root, test.operator) {
 				t.Fatalf("plan = %#v", plan)
 			}
 		})
@@ -202,7 +195,7 @@ func TestBuildIndexedPathSeparatesStartAndTraversalResidualPredicates(t *testing
 	gated.Source = querylogical.SourceGQL
 	gated.Predicate = comparison("n", "name", "!=", stringValue("start"))
 	plan = buildRead(t, gated, plannerSchema(), plannerEnvironment())
-	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.RequiresLegacy() || plan.Access.Kind != queryphysical.AccessNodeScan {
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.Access.Kind != queryphysical.AccessNodeScan {
 		t.Fatalf("GQL non-equality compatibility gate = %#v", plan)
 	}
 }
@@ -279,7 +272,7 @@ func TestBuildBroadScanExposesStreamingAndBlockingOperators(t *testing.T) {
 	streaming := baseQuery()
 	streaming.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafNull, Field: &field, IsNull: false})
 	plan := buildRead(t, streaming, plannerSchema(), plannerEnvironment())
-	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.RequiresLegacy() || plan.Access.Kind != queryphysical.AccessNodeScan || plan.Cursor.Kind != "node_key" {
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.Access.Kind != queryphysical.AccessNodeScan || plan.Cursor.Kind != "node_key" {
 		t.Fatalf("streaming broad plan = %#v", plan)
 	}
 	if plan.PushedPredicate == nil || plan.ResidualPredicate != nil || !operatorTreeContains(plan.Root, queryphysical.OperatorNodeScan) {
@@ -310,7 +303,7 @@ func TestBuildBroadTraversalRequiresAdjacencyAndUsesFiniteResolvedDepth(t *testi
 	query.Steps = []querylogical.Step{step}
 
 	plan := buildRead(t, query, plannerSchema(), plannerEnvironment())
-	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.RequiresLegacy() || len(plan.Access.Steps) != 1 || plan.Access.Steps[0].MaxDepth <= 0 {
+	if plan.Family != queryphysical.FamilyBoundedFullScan || len(plan.Access.Steps) != 1 || plan.Access.Steps[0].MaxDepth <= 0 {
 		t.Fatalf("broad traversal plan = %#v", plan)
 	}
 	if !operatorTreeContains(plan.Root, queryphysical.OperatorIndexedPath) || plan.Limits.MaxAdjacencyCalls == 0 || plan.Limits.MaxStartNodes == 0 || plan.PushedPredicate == nil || plan.ResidualPredicate == nil {
@@ -346,7 +339,7 @@ func TestBuildSchemalessGQLFiltersAndOrderingUseBoundedBroadFallback(t *testing.
 	query.Source = querylogical.SourceGQL
 	query.Predicate = comparison("n", "name", "=", stringValue("Ada"))
 	plan := buildReadWithoutSchema(t, query, plannerEnvironment())
-	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.PushedPredicate == nil || plan.RequiresLegacy() {
+	if plan.Family != queryphysical.FamilyBoundedFullScan || plan.PushedPredicate == nil {
 		t.Fatalf("schemaless equality plan = %#v", plan)
 	}
 
@@ -526,7 +519,7 @@ func TestBuildPlansEveryNativeMutationFamily(t *testing.T) {
 			if err != nil {
 				t.Fatalf("plan: %v", err)
 			}
-			if plan.Family != queryphysical.FamilyMutation || plan.RequiresLegacy() || plan.Access.Kind != queryphysical.AccessMutation || plan.Root.Kind != test.operator {
+			if plan.Family != queryphysical.FamilyMutation || plan.Access.Kind != queryphysical.AccessMutation || plan.Root.Kind != test.operator {
 				t.Fatalf("mutation plan = %#v", plan)
 			}
 		})
@@ -547,7 +540,7 @@ func TestBuildPlansNativeMutationOnlyWithMutationAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
-	if plan.Family != queryphysical.FamilyMutation || plan.RequiresLegacy() || plan.Root.Kind != queryphysical.OperatorInsertNode {
+	if plan.Family != queryphysical.FamilyMutation || plan.Root.Kind != queryphysical.OperatorInsertNode {
 		t.Fatalf("mutation plan = %#v", plan)
 	}
 	environment := plannerEnvironment()

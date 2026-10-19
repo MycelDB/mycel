@@ -14,42 +14,6 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
-func TestQRX3StructuredLegacyAndCommonSchemaValidationParity(t *testing.T) {
-	schema := qrx3BindingSchema()
-	schemaCtx := analysis.SchemaContext{Schema: &schema}
-	tests := []struct {
-		name  string
-		query *clientv1.GraphQuery
-		want  string
-	}{
-		{name: "valid", query: qrx3StructuredPersonQuery()},
-		{name: "node label", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "p", Labels: []string{"Missing"}}}}, want: "unknown node label"},
-		{name: "edge label", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "p", Labels: []string{"Person"}}, Steps: []*clientv1.TraversalStep{{Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, EdgeKind: "MISSING", Target: &clientv1.NodePattern{Alias: "c", Labels: []string{"Company"}}}}}}, want: "unknown edge label"},
-		{name: "property", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "p", Labels: []string{"Person"}}}, Where: &clientv1.Expr{Expr: &clientv1.Expr_PropertyExists{PropertyExists: &clientv1.PropertyExistsExpr{Alias: "p", Name: "missing"}}}}, want: "unknown properties field"},
-		{name: "endpoint", query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "c", Labels: []string{"Company"}}, Steps: []*clientv1.TraversalStep{{Direction: clientv1.TraversalDirection_TRAVERSAL_DIRECTION_OUT, EdgeKind: "WORKS_AT", Target: &clientv1.NodePattern{Alias: "p", Labels: []string{"Person"}}}}}}, want: "endpoint constraints"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			legacyErr := validateStructuredGraphQueryWithSchema(test.query, schemaCtx)
-			statement := querylogical.ReadStatement(logicalQueryFromStructured(test.query, 0, ""))
-			_, bindErr := querybinding.Bind(statement, qrx3BindingEnvironment(&schema))
-			if test.want == "" {
-				if legacyErr != nil || bindErr != nil {
-					t.Fatalf("legacy error = %v, binder error = %v", legacyErr, bindErr)
-				}
-				return
-			}
-			if legacyErr == nil || !strings.Contains(legacyErr.Error(), test.want) {
-				t.Fatalf("legacy error = %v, want %q", legacyErr, test.want)
-			}
-			var queryErr *querylogical.QueryError
-			if !errors.As(bindErr, &queryErr) || queryErr.Code != querylogical.ErrorInvalidQuery || !strings.Contains(bindErr.Error(), test.want) {
-				t.Fatalf("binder error = %#v, want invalid_query containing %q", bindErr, test.want)
-			}
-		})
-	}
-}
-
 func TestQRX3KnownGQLStrictSchemaFieldDeltasRemainObservational(t *testing.T) {
 	schema := qrx3BindingSchema()
 	schemaCtx := analysis.SchemaContext{Schema: &schema}

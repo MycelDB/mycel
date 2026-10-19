@@ -217,9 +217,6 @@ func TestEnginePrepareUsesNativeBroadScanWithoutAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	if prepared.RequiresLegacy() {
-		t.Fatalf("prepared kind = %q, want native broad scan", prepared.Kind)
-	}
 	if !reflect.DeepEqual(prepared.Planning.Transaction, tx) {
 		t.Fatalf("planning transaction = %#v, want %#v", prepared.Planning.Transaction, tx)
 	}
@@ -287,7 +284,7 @@ func TestEngineExplainMutationPlanDoesNotInvokeWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("explain mutation plan: %v", err)
 	}
-	if diagnostics.PlanKind != string(queryphysical.FamilyMutation) || diagnostics.LegacyBridge || diagnostics.AccessPath != string(queryphysical.AccessMutation) {
+	if diagnostics.PlanKind != string(queryphysical.FamilyMutation) || diagnostics.AccessPath != string(queryphysical.AccessMutation) {
 		t.Fatalf("mutation diagnostics = %#v", diagnostics)
 	}
 }
@@ -529,7 +526,7 @@ func TestEngineExplainDescribesNativeBroadScanWithoutExecuting(t *testing.T) {
 	if diagnostics.Plan != "StreamingNodeScan" || diagnostics.PlanKind != string(queryphysical.FamilyBoundedFullScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
-	if diagnostics.PlannerVersion != "qrx10" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || diagnostics.LegacyBridge || diagnostics.AccessPath != string(queryphysical.AccessNodeScan) {
+	if diagnostics.PlannerVersion != "qrx11" || diagnostics.FallbackMode != "broad_graph_fallback" || !diagnostics.ExplainOnly || diagnostics.AccessPath != string(queryphysical.AccessNodeScan) {
 		t.Fatalf("diagnostics = %#v", diagnostics)
 	}
 	if len(diagnostics.Operators) == 0 || diagnostics.ResourceLimits.MaxNodesLoaded == 0 || diagnostics.RowsScanned != 0 || diagnostics.NodesLoaded != 0 {
@@ -551,53 +548,6 @@ func TestEnginePrepareReturnsTypedBindingErrorsBeforeAccess(t *testing.T) {
 	if entities.calls != 0 {
 		t.Fatalf("entity reads during rejected prepare = %d, want 0", entities.calls)
 	}
-}
-
-func TestEngineExecuteShapesExplicitLegacyBindingsWithoutAccess(t *testing.T) {
-	entities := &recordingEntityReader{}
-	engine := queryengine.New(queryengine.Ports{Entities: entities})
-	tx := sessionmodel.GraphTransaction{ID: "tx-6", SessionID: "session-6", PrincipalID: "principal-6", SpaceID: "space-6", DomainID: "domain-6", Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: 61}
-	statement := validReadStatement()
-	statement.Read.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n", OutputName: "node"}}
-	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	node := graph.Node{ID: uuid.MustParse("00000000-0000-0000-0000-000000000006"), DomainID: uuid.MustParse("10000000-0000-0000-0000-000000000006"), Labels: []string{"Document"}}
-	result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{
-		Transaction: tx,
-		LegacyRows:  []queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": node}}},
-		Budget:      queryengine.WorkBudget{BatchSize: 1},
-	}, prepared)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if len(result.Rows) != 1 || result.Rows[0].Fields["node"].Node == nil || result.Rows[0].Fields["node"].Node.ID != node.ID.String() {
-		t.Fatalf("result = %#v", result)
-	}
-	if result.Diagnostics.PlannerVersion != "qrx10" || result.Diagnostics.ExplainOnly || result.Diagnostics.LegacyBridge || result.Diagnostics.RowsReturned != 1 {
-		t.Fatalf("diagnostics = %#v", result.Diagnostics)
-	}
-	if entities.calls != 0 {
-		t.Fatalf("entity reads during neutral shaping = %d, want 0", entities.calls)
-	}
-
-	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: sessionmodel.GraphTransaction{ID: "different"}, LegacyRows: []queryexecution.BindingRow{}}, prepared)
-	assertQueryErrorCode(t, err, querylogical.ErrorInvalidQuery)
-}
-
-func TestEngineExecuteLegacyBindingsEnforcesWorkBudget(t *testing.T) {
-	engine := queryengine.New(queryengine.Ports{Entities: &recordingEntityReader{}})
-	tx := sessionmodel.GraphTransaction{ID: "tx-budget", Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive}
-	statement := validReadStatement()
-	statement.Read.Returns = []querylogical.Projection{{Kind: querylogical.ProjectionNode, Alias: "n"}}
-	prepared, err := engine.Prepare(context.Background(), broadPlanningContext(tx), statement)
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	rows := []queryexecution.BindingRow{{Nodes: map[string]graph.Node{"n": {}}}, {Nodes: map[string]graph.Node{"n": {}}}}
-	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, LegacyRows: rows, Budget: queryengine.WorkBudget{MaxCandidates: 1}}, prepared)
-	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
 }
 
 func TestEngineExecuteRunsNativeBroadScanThroughEntityPort(t *testing.T) {

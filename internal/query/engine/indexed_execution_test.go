@@ -198,7 +198,7 @@ func TestEngineExecutesNodeIDLookupWithPlanBoundContinuation(t *testing.T) {
 	query.Page.Limit = 3
 
 	firstPrepared := prepareIndexed(t, engine, tx, query)
-	if firstPrepared.Physical.Family != queryphysical.FamilyNodeIDLookup || firstPrepared.RequiresLegacy() {
+	if firstPrepared.Physical.Family != queryphysical.FamilyNodeIDLookup {
 		t.Fatalf("prepared = %#v", firstPrepared)
 	}
 	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, firstPrepared)
@@ -503,7 +503,7 @@ func TestEngineExecutesEqualityAndRangeBoundsThroughOrderedIndex(t *testing.T) {
 			query.Predicate = test.predicate
 			query.Page.Size = 10
 			prepared := prepareIndexed(t, engine, tx, query)
-			if prepared.Physical.Family != test.family || prepared.RequiresLegacy() {
+			if prepared.Physical.Family != test.family {
 				t.Fatalf("plan = %#v", prepared.Physical)
 			}
 			result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
@@ -611,7 +611,7 @@ func TestEngineExecutesAdjacencyWithSecureSourceContinuation(t *testing.T) {
 		Page:    querylogical.PageSpec{Size: 1},
 	}
 	prepared := prepareIndexed(t, engine, tx, query)
-	if prepared.Physical.Family != queryphysical.FamilyIndexedAdjacency || prepared.RequiresLegacy() {
+	if prepared.Physical.Family != queryphysical.FamilyIndexedAdjacency {
 		t.Fatalf("prepared = %#v", prepared)
 	}
 	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, prepared)
@@ -659,7 +659,7 @@ func TestEngineExecutesBoundedPathsWithOutputContinuation(t *testing.T) {
 		Page:    querylogical.PageSpec{Size: 2},
 	}
 	prepared := prepareIndexed(t, engine, tx, query)
-	if prepared.Physical.Family != queryphysical.FamilyIndexedPath || prepared.RequiresLegacy() {
+	if prepared.Physical.Family != queryphysical.FamilyIndexedPath {
 		t.Fatalf("prepared = %#v", prepared)
 	}
 	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)
@@ -849,7 +849,7 @@ func TestEngineExecutesOrderedSubtreesWithTreeAndGraphProjection(t *testing.T) {
 		Page:    querylogical.PageSpec{Size: 1},
 	}
 	prepared := prepareIndexed(t, engine, tx, query)
-	if prepared.Physical.Family != queryphysical.FamilyIndexedSubtree || prepared.RequiresLegacy() {
+	if prepared.Physical.Family != queryphysical.FamilyIndexedSubtree {
 		t.Fatalf("prepared = %#v", prepared)
 	}
 	first, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepared)

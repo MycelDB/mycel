@@ -24,10 +24,18 @@ import (
 )
 
 func queryEngineForExplainTest(graphs daegraph.Manager, catalog queryengine.CatalogReader) queryengine.Facade {
-	return queryengine.New(queryengine.Ports{
+	return queryEngineForSemanticTest(graphs, catalog, nil)
+}
+
+func queryEngineForSemanticTest(graphs daegraph.Manager, catalog queryengine.CatalogReader, searcher semanticQuerySearcher) queryengine.Facade {
+	ports := queryengine.Ports{
 		Entities: graphs, Traversals: graphs, Indexes: graphs,
 		Catalog: catalog, Mutations: graphs,
-	})
+	}
+	if searcher != nil {
+		ports.SemanticCandidates = NewQuerySemanticCandidateReader(searcher)
+	}
+	return queryengine.New(ports)
 }
 
 type recordingQueryEngineFacade struct {
@@ -44,13 +52,13 @@ func (r *recordingQueryEngineFacade) Prepare(_ context.Context, planning queryen
 	r.prepareCalls++
 	r.planning = planning
 	r.statement = statement
-	if r.prepareResult.Kind != "" {
+	if r.prepareResult.Physical.Family != "" {
 		result := r.prepareResult
 		result.Statement = statement
 		result.Planning = planning
 		return result, nil
 	}
-	return queryengine.PreparedQuery{Statement: statement, Planning: planning, Kind: queryengine.PlanLegacyBridge}, nil
+	return queryengine.PreparedQuery{Statement: statement, Planning: planning}, nil
 }
 
 func (r *recordingQueryEngineFacade) Explain(_ context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) (querylogical.Diagnostics, error) {
@@ -68,10 +76,10 @@ func (r *recordingQueryEngineFacade) Execute(context.Context, queryengine.Execut
 func TestQueryServiceExecutesGQLMutationThroughEngineOnce(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	facade := &recordingQueryEngineFacade{
-		prepareResult: queryengine.PreparedQuery{Kind: queryengine.PlanIndexed, Physical: queryphysical.Plan{Family: queryphysical.FamilyMutation}},
+		prepareResult: queryengine.PreparedQuery{Physical: queryphysical.Plan{Family: queryphysical.FamilyMutation}},
 		executeResult: querylogical.Result{Counters: querylogical.Counters{NodesInserted: 1}},
 	}
-	service := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).WithQueryEngine(facade)
+	service := newQRX8QueryService(fixture, nil).WithQueryEngine(facade)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	response, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Person {name: 'Ada'})"})
 	if err != nil {
@@ -132,14 +140,14 @@ func TestQueryServiceExplainFailsClosedWithoutEngineComposition(t *testing.T) {
 	}
 }
 
-func TestQueryServiceExplainKeepsKnownGQLBindingDeltaOnExplicitBridge(t *testing.T) {
+func TestQueryServiceExplainKeepsKnownGQLBindingDeltaExplicit(t *testing.T) {
 	schema := qrx3BindingSchema()
 	plan, err := gql.CompileWithSchemaAndParams(
 		"MATCH (p:Person)-[e:WORKS_AT]->(c:Company) RETURN e.missing",
 		analysis.SchemaContext{Schema: &schema}, nil,
 	)
 	if err != nil {
-		t.Fatalf("legacy compile: %v", err)
+		t.Fatalf("compile: %v", err)
 	}
 	statement, ok := querylogical.StatementFromGQLPlan(plan)
 	if !ok {
@@ -152,9 +160,9 @@ func TestQueryServiceExplainKeepsKnownGQLBindingDeltaOnExplicitBridge(t *testing
 		Domain:      queryengine.DomainPolicy{BroadSearchable: true, ExplicitSearchable: true},
 	}, statement, true)
 	if err != nil {
-		t.Fatalf("Explain compatibility bridge: %v", err)
+		t.Fatalf("Explain compatibility validation: %v", err)
 	}
-	if diagnostics.GetPlan() != "LegacyValidationBridge" || diagnostics.GetPlanKind() != "legacy_bridge" || diagnostics.GetFallbackMode() != "legacy_validation_bridge" || !diagnostics.GetExplainOnly() {
+	if diagnostics.GetPlan() != "CompatibilityValidation" || diagnostics.GetPlanKind() != "validation_compatibility" || diagnostics.GetFallbackMode() != "compatibility_validation" || diagnostics.GetRejectedReason() == "" || !diagnostics.GetExplainOnly() {
 		t.Fatalf("compatibility diagnostics = %#v", diagnostics)
 	}
 }

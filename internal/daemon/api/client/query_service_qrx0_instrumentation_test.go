@@ -238,6 +238,10 @@ func (g *qrx0ListNodesErrorGraph) ScanNodes(context.Context, sessionmodel.GraphT
 	return nil, "", graphquery.IndexedReadStats{}, g.err
 }
 
+func (g *qrx0ListNodesErrorGraph) ScanLabel(context.Context, sessionmodel.GraphTransaction, graphquery.LabelScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	return nil, "", graphquery.IndexedReadStats{}, g.err
+}
+
 type qrx0InstrumentedSemantic struct {
 	delegate semanticQuerySearcher
 	profile  *qrx0AccessProfile

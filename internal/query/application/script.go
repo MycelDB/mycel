@@ -63,8 +63,6 @@ func ExecuteScript(ctx context.Context, facade queryengine.Facade, request Scrip
 			outcome.Err = querylogical.NewError(querylogical.ErrorUnsupportedPlan, "execute gql script", fmt.Sprintf("statement %d is not supported by the query engine", compiled.Index), nil)
 		} else if prepared, prepareErr := facade.Prepare(ctx, planning, statement); prepareErr != nil {
 			outcome.Err = prepareErr
-		} else if prepared.RequiresLegacy() {
-			outcome.Err = querylogical.NewError(querylogical.ErrorUnsupportedPlan, "execute gql script", "script statement requires a legacy execution bridge", nil)
 		} else if statementResult, executeErr := facade.Execute(ctx, request.Execution, prepared); executeErr != nil {
 			outcome.Err = executeErr
 		} else {

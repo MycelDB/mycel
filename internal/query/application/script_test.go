@@ -19,7 +19,7 @@ type scriptFacade struct {
 
 func (f *scriptFacade) Prepare(_ context.Context, planning queryengine.PlanningContext, statement querylogical.Statement) (queryengine.PreparedQuery, error) {
 	f.prepareCalls = append(f.prepareCalls, statement)
-	return queryengine.PreparedQuery{Statement: statement, Planning: planning, Kind: queryengine.PlanIndexed}, nil
+	return queryengine.PreparedQuery{Statement: statement, Planning: planning}, nil
 }
 
 func (f *scriptFacade) Explain(context.Context, queryengine.PlanningContext, querylogical.Statement) (querylogical.Diagnostics, error) {

@@ -55,7 +55,7 @@ func (s Statement) Comparable() Statement {
 	return s
 }
 
-// MutationKind identifies the legacy GQL mutation family represented by a
+// MutationKind identifies the GQL mutation family represented by a
 // neutral statement while execution remains on the existing path.
 type MutationKind string
 

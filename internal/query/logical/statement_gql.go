@@ -109,7 +109,7 @@ func mutationMatchQuery(plan planmodel.Plan, input mutationMatchInput) (Query, m
 	predicates := []*Predicate{
 		propertiesPredicate(input.Start.Variable, input.Start.Properties),
 		fromGQLPredicate(input.Predicate),
-		legacyGQLPredicate(input.Predicate, input.Comparisons, input.Nulls, input.Strings, input.Texts, input.Semantics),
+		supplementalGQLPredicate(input.Predicate, input.Comparisons, input.Nulls, input.Strings, input.Texts, input.Semantics),
 	}
 	kinds := map[string]ProjectionKind{input.Start.Variable: ProjectionNode}
 	for _, segment := range input.Segments {

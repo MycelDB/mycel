@@ -40,7 +40,7 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 		q.Predicate = combineGQLPredicates(
 			propertiesPredicate(op.Variable, gqlPatternProperties(op.Variable, op.Properties, op.SourceComparisons, op.SourcePatternProperties)),
 			fromGQLPredicate(op.Predicate),
-			legacyGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
+			supplementalGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
 		)
 		q.Returns = fromGQLReturns(op.Returns, map[string]ProjectionKind{op.Variable: ProjectionNode})
 		q.Aggregates = fromGQLAggregates(op.Aggregates)
@@ -58,7 +58,7 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 		predicates := []*Predicate{
 			propertiesPredicate(op.Start.Variable, gqlPatternProperties(op.Start.Variable, op.Start.Properties, op.SourceComparisons, op.SourcePatternProperties)),
 			fromGQLPredicate(op.Predicate),
-			legacyGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
+			supplementalGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
 		}
 		projectionKinds := map[string]ProjectionKind{op.Start.Variable: ProjectionNode}
 		if op.PathVariable != "" {
@@ -92,7 +92,7 @@ func FromGQLPlan(plan planmodel.Plan, options ...NormalizeOptions) (Query, bool)
 		q.Predicate = combineGQLPredicates(append([]*Predicate{
 			propertiesPredicate(op.Start.Variable, gqlPatternProperties(op.Start.Variable, op.Start.Properties, op.SourceComparisons, op.SourcePatternProperties)),
 			fromGQLPredicate(op.Predicate),
-			legacyGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
+			supplementalGQLPredicate(op.Predicate, gqlSourceComparisons(op.SourceComparisons, op.ComparisonPredicates), op.NullPredicates, op.StringPredicates, op.TextPredicates, op.SemanticPredicates),
 		}, patternPredicates...)...)
 		q.Steps = []Step{step}
 		q.Returns = fromGQLReturns(op.Returns, map[string]ProjectionKind{
@@ -137,13 +137,13 @@ func gqlEdgePattern(pattern planmodel.RelationshipPattern) EdgePattern {
 	}
 }
 
-func gqlSourceComparisons(source []planmodel.ComparisonPredicate, legacy []planmodel.ComparisonPredicate) []planmodel.ComparisonPredicate {
+func gqlSourceComparisons(source []planmodel.ComparisonPredicate, supplemental []planmodel.ComparisonPredicate) []planmodel.ComparisonPredicate {
 	if len(source) == 0 {
-		return legacy
+		return supplemental
 	}
-	comparisons := make([]planmodel.ComparisonPredicate, 0, len(source)+len(legacy))
+	comparisons := make([]planmodel.ComparisonPredicate, 0, len(source)+len(supplemental))
 	comparisons = append(comparisons, source...)
-	comparisons = append(comparisons, legacy...)
+	comparisons = append(comparisons, supplemental...)
 	return comparisons
 }
 
@@ -288,7 +288,7 @@ func fromGQLOrder(order []planmodel.OrderItem) []Order {
 	return out
 }
 
-func legacyGQLPredicate(tree *planmodel.PredicateExpr, comparisons []planmodel.ComparisonPredicate, nulls []planmodel.NullPredicate, stringsPred []planmodel.StringPredicate, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) *Predicate {
+func supplementalGQLPredicate(tree *planmodel.PredicateExpr, comparisons []planmodel.ComparisonPredicate, nulls []planmodel.NullPredicate, stringsPred []planmodel.StringPredicate, texts []planmodel.TextContainsPredicate, semantics []planmodel.SemanticSimilarPredicate) *Predicate {
 	if tree != nil {
 		return nil
 	}

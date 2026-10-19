@@ -11,7 +11,6 @@ import (
 type Family string
 
 const (
-	FamilyLegacyMutation   Family = "legacy_mutation"
 	FamilyMutation         Family = "mutation"
 	FamilyNodeIDLookup     Family = "node_id_lookup"
 	FamilyLabelIndex       Family = "label_index"
@@ -30,7 +29,6 @@ const (
 type OperatorKind string
 
 const (
-	OperatorLegacyBridge       OperatorKind = "legacy_bridge"
 	OperatorNodeLookup         OperatorKind = "node_id_lookup"
 	OperatorLabelIndex         OperatorKind = "label_index_scan"
 	OperatorTagIndex           OperatorKind = "tag_index_scan"
@@ -60,7 +58,7 @@ const (
 )
 
 // Operator is one immutable physical-plan node. Inputs flow from access toward
-// shaping and finally into the temporary legacy bridge.
+// result shaping.
 type Operator struct {
 	Kind   OperatorKind `json:"kind"`
 	Name   string       `json:"name,omitempty"`
@@ -183,26 +181,19 @@ type ResourceLimits struct {
 
 // Plan is the stable side-effect-free output of QRX4 planning.
 type Plan struct {
-	Name               string                  `json:"name"`
-	Family             Family                  `json:"family"`
-	Root               Operator                `json:"root"`
-	Access             AccessPath              `json:"access"`
-	Indexes            []IndexUse              `json:"indexes,omitempty"`
-	PushedPredicate    *querylogical.Predicate `json:"pushed_predicate,omitempty"`
-	ResidualPredicate  *querylogical.Predicate `json:"residual_predicate,omitempty"`
-	Ordering           OrderingGuarantee       `json:"ordering,omitempty"`
-	Cursor             CursorStrategy          `json:"cursor"`
-	Limits             ResourceLimits          `json:"limits"`
-	FullScan           bool                    `json:"full_scan"`
-	FallbackMode       string                  `json:"fallback_mode,omitempty"`
-	LegacyBridgeReason string                  `json:"legacy_bridge_reason"`
-	SchemaVersion      string                  `json:"schema_version,omitempty"`
-}
-
-// RequiresLegacy reports that the selected physical family has not migrated
-// from the adapter yet.
-func (p Plan) RequiresLegacy() bool {
-	return p.Root.Kind == OperatorLegacyBridge
+	Name              string                  `json:"name"`
+	Family            Family                  `json:"family"`
+	Root              Operator                `json:"root"`
+	Access            AccessPath              `json:"access"`
+	Indexes           []IndexUse              `json:"indexes,omitempty"`
+	PushedPredicate   *querylogical.Predicate `json:"pushed_predicate,omitempty"`
+	ResidualPredicate *querylogical.Predicate `json:"residual_predicate,omitempty"`
+	Ordering          OrderingGuarantee       `json:"ordering,omitempty"`
+	Cursor            CursorStrategy          `json:"cursor"`
+	Limits            ResourceLimits          `json:"limits"`
+	FullScan          bool                    `json:"full_scan"`
+	FallbackMode      string                  `json:"fallback_mode,omitempty"`
+	SchemaVersion     string                  `json:"schema_version,omitempty"`
 }
 
 // Capabilities are planning-time availability facts, not service handles.

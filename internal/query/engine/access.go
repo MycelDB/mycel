@@ -95,7 +95,7 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 	case queryphysical.FamilyBoundedFullScan:
 		return e.broadScanSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
 	default:
-		return nil, unsupportedPlan(prepared)
+		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute query", fmt.Sprintf("physical family %q has no access operator", prepared.Physical.Family), nil)
 	}
 }
 

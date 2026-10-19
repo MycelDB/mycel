@@ -81,7 +81,7 @@ func TestSearchDisabledExecuteQueryReturnsFailedPrecondition(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+	_, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
 		TransactionId: tx,
 		Query:         &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}},
 	})
@@ -94,7 +94,7 @@ func TestSearchDisabledExecuteGQLFallbackReturnsFailedPrecondition(t *testing.T)
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+	_, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
 		TransactionId: tx,
 		Query:         "MATCH (n) RETURN n",
 	})
@@ -107,7 +107,7 @@ func TestExecuteQueryRejectsUnboundedStructuredTraversal(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+	_, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
 		TransactionId: tx,
 		Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{
 			Start: &clientv1.NodePattern{Alias: "a", NodeIds: []string{uuid.NewString()}},

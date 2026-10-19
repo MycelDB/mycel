@@ -27,7 +27,7 @@ func TestPhaseFStaleReadOptInRejectedByDefault(t *testing.T) {
 		t.Fatalf("GetParent(stale opt-in) code=%v err=%v; want FailedPrecondition", status.Code(err), err)
 	}
 
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := newQRX8QueryService(fixture, nil)
 	query := &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}}
 	if _, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, ReadOptions: options}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ExecuteQuery(stale opt-in) code=%v err=%v; want FailedPrecondition", status.Code(err), err)
