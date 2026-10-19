@@ -63,19 +63,20 @@ type GraphSession struct {
 }
 
 type GraphTransaction struct {
-	ID           string
-	SessionID    string
-	PrincipalID  string
-	SpaceID      string
-	DomainID     string
-	HomeNodeID   consensus.NodeID
-	Mode         TransactionMode
-	State        TransactionState
-	BaseRevision int64
-	Origin       graphchange.OriginMetadata
-	CreatedAt    time.Time
-	LastSeen     time.Time
-	ExpiresAt    time.Time
+	ID             string
+	SessionID      string
+	PrincipalID    string
+	SpaceID        string
+	DomainID       string
+	HomeNodeID     consensus.NodeID
+	Mode           TransactionMode
+	State          TransactionState
+	BaseRevision   int64
+	Origin         graphchange.OriginMetadata
+	IdempotencyKey string
+	CreatedAt      time.Time
+	LastSeen       time.Time
+	ExpiresAt      time.Time
 }
 
 type SessionRouteRecord struct {
@@ -118,15 +119,17 @@ type RouteDiagnostics struct {
 }
 
 type TransactionCommit struct {
-	ID                string
-	TransactionID     string
-	SessionID         string
-	PrincipalID       string
-	SpaceID           string
-	DomainID          string
-	BaseRevision      int64
-	CommittedRevision int64
-	OperationCount    int32
-	Origin            graphchange.OriginMetadata
-	CommittedAt       time.Time
+	ID                   string
+	TransactionID        string
+	SessionID            string
+	PrincipalID          string
+	SpaceID              string
+	DomainID             string
+	BaseRevision         int64
+	CommittedRevision    int64
+	OperationCount       int32
+	Origin               graphchange.OriginMetadata
+	CommittedAt          time.Time
+	IdempotencyKey       string
+	IdempotencyExpiresAt time.Time
 }

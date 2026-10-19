@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -57,6 +58,8 @@ type raftGraphReadRequest struct {
 		BaseRevision                                               int64
 	} `json:"tx"`
 	ID                      string                             `json:"id,omitempty"`
+	PrincipalID             string                             `json:"principal_id,omitempty"`
+	IdempotencyKey          string                             `json:"idempotency_key,omitempty"`
 	PageSize                int                                `json:"page_size,omitempty"`
 	PageToken               string                             `json:"page_token,omitempty"`
 	NodeScan                graphquery.NodeScan                `json:"node_scan,omitempty"`
@@ -141,6 +144,12 @@ type raftGraphSubtreeResponse struct {
 type raftGraphOKResponse struct {
 	OK   bool               `json:"ok"`
 	Read *StrongReadContext `json:"read,omitempty"`
+}
+
+type raftGraphIdempotencyResponse struct {
+	Commit graphchange.CommitResult `json:"commit"`
+	Found  bool                     `json:"found"`
+	Read   *StrongReadContext       `json:"read,omitempty"`
 }
 
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
@@ -345,6 +354,8 @@ func recordForwardedRaftGraphRead(ctx context.Context, out any) {
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphOKResponse:
 		RecordStrongReadContext(ctx, res.Read)
+	case *raftGraphIdempotencyResponse:
+		RecordStrongReadContext(ctx, res.Read)
 	}
 }
 
@@ -475,6 +486,12 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 			return nil, err
 		}
 		return json.Marshal(raftGraphOptionalEdgeResponse{Edge: e, Read: read})
+	case "get_idempotent_commit":
+		commit, found, err := m.lookupIdempotentCommitLocal(ctx, req.PrincipalID, req.SpaceID, req.DomainID, req.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphIdempotencyResponse{Commit: commit, Found: found, Read: read})
 	case "current_revision":
 		var revision int64
 		if strings.TrimSpace(req.DomainID) != "" {

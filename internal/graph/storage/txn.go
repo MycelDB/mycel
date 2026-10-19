@@ -1,6 +1,7 @@
 package graphstorage
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ type localTxn struct {
 	edgeDeletes      []graph.EdgeID
 	expectedRevision *uint64
 	commitHook       CommitHook
+	idempotency      *IdempotencyRecord
 	closed           bool
 }
 
@@ -31,6 +33,14 @@ func (t *localTxn) SetCommitHook(hook CommitHook) {
 		return
 	}
 	t.commitHook = hook
+}
+
+func (t *localTxn) SetIdempotency(record IdempotencyRecord) {
+	if t.closed {
+		return
+	}
+	cloned := cloneIdempotencyRecord(record)
+	t.idempotency = &cloned
 }
 
 func (t *localTxn) PutNode(node graph.Node) error {
@@ -153,6 +163,32 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 		return CommitInfo{}, err
 	}
 	timing.EnsureReady = time.Since(stepStart)
+	var idempotency *IdempotencyRecord
+	if t.idempotency != nil {
+		record := cloneIdempotencyRecord(*t.idempotency)
+		if err := validateIdempotencyRecord(record); err != nil {
+			return CommitInfo{}, err
+		}
+		// CommittedAt is part of the replicated/WAL record, so it is the
+		// deterministic expiry cutoff for every node applying this commit.
+		t.store.purgeExpiredIdempotencyRecordsLocked(record.CommittedAt)
+		identity := idempotencyRecordIdentity(record.Scope, record.Key)
+		if existing, ok := t.store.idempotencyRecords[identity]; ok {
+			if existing.Digest != record.Digest {
+				return CommitInfo{}, ErrIdempotencyConflict
+			}
+			t.closed = true
+			existing = cloneIdempotencyRecord(existing)
+			timing.Total = time.Since(totalStart)
+			return CommitInfo{TxnID: existing.StorageTxnID, NextRevision: existing.CommittedRevision, Timing: timing, Idempotency: &existing, IdempotentReplay: true}, nil
+		}
+		if len(t.store.idempotencyRecords) >= MaxIdempotencyRecordsPerStore {
+			return CommitInfo{}, ErrIdempotencyCapacity
+		}
+		record.StorageTxnID = t.id
+		record.CommittedRevision = t.store.revision + 1
+		idempotency = &record
+	}
 	stepStart = time.Now()
 	if t.expectedRevision != nil && *t.expectedRevision > t.store.revision {
 		return CommitInfo{}, ErrConflict
@@ -236,7 +272,15 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 		}
 	}
 	stepStart = time.Now()
-	if _, err := t.store.txns.appendRecord(RecordKindTxnCommit, t.id, zero, nil); err != nil {
+	var commitPayload []byte
+	if idempotency != nil {
+		var err error
+		commitPayload, err = json.Marshal(txnCommitMetadata{Idempotency: idempotency})
+		if err != nil {
+			return CommitInfo{}, err
+		}
+	}
+	if _, err := t.store.txns.appendRecord(RecordKindTxnCommit, t.id, zero, commitPayload); err != nil {
 		return CommitInfo{}, err
 	}
 	timing.TxnCommitAppend = time.Since(stepStart)
@@ -260,6 +304,11 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	}
 	t.store.revision++
 	newRev := t.store.revision
+	if idempotency != nil {
+		stored := cloneIdempotencyRecord(*idempotency)
+		t.store.idempotencyRecords[idempotencyRecordIdentity(stored.Scope, stored.Key)] = stored
+		info.Idempotency = &stored
+	}
 	for _, n := range t.nodePuts {
 		t.store.appendNodeVersion(n, false, newRev)
 		t.store.nodeModRev[n.ID] = newRev

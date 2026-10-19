@@ -14,12 +14,14 @@ import (
 const ModuleName = "graph"
 
 var (
-	ErrInvalidInput = errors.New("invalid graph input")
-	ErrNotFound     = errors.New("graph entity not found")
-	ErrUnauthorized = errors.New("graph unauthorized")
-	ErrReadOnly     = errors.New("graph transaction is read-only")
-	ErrInvalidState = errors.New("invalid graph transaction state")
-	ErrConflict     = graphchange.ErrConflict
+	ErrInvalidInput        = errors.New("invalid graph input")
+	ErrNotFound            = errors.New("graph entity not found")
+	ErrUnauthorized        = errors.New("graph unauthorized")
+	ErrReadOnly            = errors.New("graph transaction is read-only")
+	ErrInvalidState        = errors.New("invalid graph transaction state")
+	ErrConflict            = graphchange.ErrConflict
+	ErrIdempotencyConflict = errors.New("graph idempotency key is already bound to a different mutation")
+	ErrIdempotencyCapacity = errors.New("graph idempotency retention capacity exhausted")
 )
 
 type Manager interface {

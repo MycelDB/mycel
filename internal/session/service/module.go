@@ -296,6 +296,42 @@ func (m *Module) CommitTransactionAtRevision(ctx context.Context, principalID st
 	return m.commitTransaction(ctx, principalID, transactionID, operationCount, committedRevision)
 }
 
+// CommitTransactionReplay finalizes a new daemon-local transaction after the
+// graph subsystem returns a durable result for an earlier idempotent commit. It
+// does not advance the session revision view and returns the original commit.
+func (m *Module) CommitTransactionReplay(ctx context.Context, principalID string, transactionID string, original sessionmodel.TransactionCommit) (sessionmodel.TransactionCommit, error) {
+	if err := m.requireLocalTransactionHome(transactionID); err != nil {
+		return sessionmodel.TransactionCommit{}, err
+	}
+	release, err := m.enterWrite(ctx)
+	if err != nil {
+		return sessionmodel.TransactionCommit{}, err
+	}
+	defer release()
+	if err := ctx.Err(); err != nil {
+		return sessionmodel.TransactionCommit{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tx, err := m.getTransactionLocked(principalID, transactionID)
+	if err != nil {
+		return sessionmodel.TransactionCommit{}, err
+	}
+	if tx.State != sessionmodel.TransactionStateActive || tx.Mode != sessionmodel.TransactionModeReadWrite {
+		return sessionmodel.TransactionCommit{}, ErrInvalidState
+	}
+	if original.ID == "" || original.PrincipalID != tx.PrincipalID || original.SpaceID != tx.SpaceID || original.DomainID != tx.DomainID {
+		return sessionmodel.TransactionCommit{}, fmt.Errorf("%w: idempotent replay commit scope mismatch", ErrInvalidInput)
+	}
+	now := time.Now().UTC()
+	tx.State = sessionmodel.TransactionStateCommitted
+	tx.LastSeen = now
+	m.transactions[tx.ID] = tx
+	m.transactionRoutes[tx.ID] = transactionRouteFromTransaction(tx, now)
+	m.commits[original.ID] = original
+	return original, nil
+}
+
 func (m *Module) commitTransaction(ctx context.Context, principalID string, transactionID string, operationCount int32, committedRevision int64) (sessionmodel.TransactionCommit, error) {
 	if err := m.requireLocalTransactionHome(transactionID); err != nil {
 		return sessionmodel.TransactionCommit{}, err

@@ -2,6 +2,7 @@ package graphstorage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -11,12 +12,14 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("graph storage: not found")
-	ErrClosed        = errors.New("graph storage: closed")
-	ErrInvalidRecord = errors.New("graph storage: invalid record")
-	ErrUnsupported   = errors.New("graph storage: unsupported value")
-	ErrTxnClosed     = errors.New("graph storage: transaction closed")
-	ErrConflict      = errors.New("graph storage: revision conflict")
+	ErrNotFound            = errors.New("graph storage: not found")
+	ErrClosed              = errors.New("graph storage: closed")
+	ErrInvalidRecord       = errors.New("graph storage: invalid record")
+	ErrUnsupported         = errors.New("graph storage: unsupported value")
+	ErrTxnClosed           = errors.New("graph storage: transaction closed")
+	ErrConflict            = errors.New("graph storage: revision conflict")
+	ErrIdempotencyConflict = errors.New("graph storage: idempotency key conflict")
+	ErrIdempotencyCapacity = errors.New("graph storage: idempotency capacity exhausted")
 )
 
 type StoreState string
@@ -116,10 +119,26 @@ type Store interface {
 	BlobRefCount(ctx context.Context, id graph.BlobID) (int, error)
 }
 
+// IdempotencyRecord is transaction metadata persisted atomically with a graph
+// commit marker. Scope is owned by the caller; graph service uses the
+// authenticated principal while each LocalStore already scopes space/domain.
+type IdempotencyRecord struct {
+	Scope             string          `json:"scope"`
+	Key               string          `json:"key"`
+	Digest            string          `json:"digest"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	StorageTxnID      uuid.UUID       `json:"storage_txn_id"`
+	CommittedRevision uint64          `json:"committed_revision"`
+	CommittedAt       time.Time       `json:"committed_at"`
+	ExpiresAt         time.Time       `json:"expires_at"`
+}
+
 type CommitInfo struct {
-	TxnID        uuid.UUID
-	NextRevision uint64
-	Timing       CommitTiming
+	TxnID            uuid.UUID
+	NextRevision     uint64
+	Timing           CommitTiming
+	Idempotency      *IdempotencyRecord
+	IdempotentReplay bool
 }
 
 // CommitTiming captures internal local graph storage transaction timings. All
@@ -150,6 +169,7 @@ type CommitHook func(CommitInfo) error
 type Txn interface {
 	ExpectRevision(revision uint64)
 	SetCommitHook(hook CommitHook)
+	SetIdempotency(record IdempotencyRecord)
 	PutNode(node graph.Node) error
 	DeleteNode(id graph.NodeID) error
 	PutEdge(edge graph.Edge) error

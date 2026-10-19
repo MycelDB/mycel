@@ -26,6 +26,7 @@ type graphCommitRecord struct {
 	AutomationFenceNodeIDs []domaingraph.NodeID       `json:"automation_fence_node_ids,omitempty"`
 	AutomationFenceEdgeIDs []domaingraph.EdgeID       `json:"automation_fence_edge_ids,omitempty"`
 	OperationCount         int32                      `json:"operation_count"`
+	Idempotency            *graphCommitIdempotency    `json:"idempotency,omitempty"`
 }
 
 func graphCommitRecordFromSnapshot(tx sessionmodel.GraphTransaction, snapshot *overlay) graphCommitRecord {
@@ -59,6 +60,14 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 	storageTx, err := store.Begin(ctx)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
+	}
+	if payload.Idempotency != nil {
+		record, err := payload.Idempotency.storageRecord()
+		if err != nil {
+			_ = storageTx.Rollback()
+			return 0, payload, graphstorage.CommitInfo{}, err
+		}
+		storageTx.SetIdempotency(record)
 	}
 	timing.StorageBegin = time.Since(stepStart)
 	stepStart = time.Now()

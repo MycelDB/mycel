@@ -785,5 +785,11 @@ func mapGraphError(err error, action string) error {
 	if errors.Is(err, daegraph.ErrConflict) {
 		return status.Error(codes.Aborted, "graph transaction conflict")
 	}
+	if errors.Is(err, daegraph.ErrIdempotencyConflict) {
+		return status.Error(codes.AlreadyExists, "idempotency key is already bound to a different graph mutation")
+	}
+	if errors.Is(err, daegraph.ErrIdempotencyCapacity) {
+		return status.Error(codes.ResourceExhausted, "graph idempotency retention capacity is exhausted")
+	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
 }
