@@ -3,11 +3,14 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
+	daemongraph "github.com/myceldb/mycel/internal/graph/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -143,6 +146,14 @@ type TransactionGraphCommitter interface {
 	AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error
 }
 
+type TransactionGraphIdempotencyReader interface {
+	LookupIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) (graphchange.CommitResult, bool, error)
+}
+
+type TransactionReplayCommitter interface {
+	CommitTransactionReplay(ctx context.Context, principalID string, transactionID string, original sessionmodel.TransactionCommit) (sessionmodel.TransactionCommit, error)
+}
+
 type TransactionGraphDomainRevisioner interface {
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
 }
@@ -258,6 +269,13 @@ func (s *TransactionService) GetTransaction(ctx context.Context, req *clientv1.G
 }
 
 func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv1.CommitTransactionRequest) (*clientv1.CommitTransactionResponse, error) {
+	if err := validateCommitIdempotencyRequest(req); err != nil {
+		return nil, err
+	}
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if s.router != nil {
 		res := &clientv1.CommitTransactionResponse{}
 		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_CommitTransaction_FullMethodName, "", req.GetTransactionId(), req, res)
@@ -265,13 +283,27 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 			return res, err
 		}
 	}
-	principal, err := spaceUserPrincipalFromContext(ctx)
-	if err != nil {
-		return nil, err
+	if req.GetIdempotencyKey() != "" && s.graphs != nil {
+		if reader, ok := s.graphs.(TransactionGraphIdempotencyReader); ok {
+			commit, found, lookupErr := reader.LookupIdempotentCommit(ctx, principal.PrincipalID, req.GetSpaceId(), req.GetDomainId(), req.GetIdempotencyKey())
+			if lookupErr != nil {
+				return nil, mapGraphError(lookupErr, "lookup idempotent graph commit")
+			}
+			if found && commit.TransactionID == req.GetTransactionId() {
+				s.finalizeIdempotentLookup(context.WithoutCancel(ctx), principal.PrincipalID, req.GetTransactionId(), commit)
+				return mapIdempotentCommitResponse(commit), nil
+			}
+		}
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
+	}
+	if req.GetIdempotencyKey() != "" {
+		if tx.SpaceID != req.GetSpaceId() || tx.DomainID != req.GetDomainId() {
+			return nil, status.Error(codes.InvalidArgument, "commit transaction idempotency scope does not match transaction")
+		}
+		tx.IdempotencyKey = req.GetIdempotencyKey()
 	}
 	if tx.State != sessionmodel.TransactionStateActive {
 		if s.graphs != nil {
@@ -291,7 +323,13 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	}
 	commitCtx := context.WithoutCancel(ctx)
 	var commit sessionmodel.TransactionCommit
-	if graphCommit.CommittedRevision > 0 {
+	if graphCommit.IdempotentReplay {
+		replayer, ok := s.sessions.(TransactionReplayCommitter)
+		if !ok {
+			return nil, status.Error(codes.Internal, "session manager does not support idempotent replay finalization")
+		}
+		commit, err = replayer.CommitTransactionReplay(commitCtx, principal.PrincipalID, req.GetTransactionId(), transactionCommitFromGraphResult(graphCommit, principal.PrincipalID))
+	} else if graphCommit.CommittedRevision > 0 {
 		commit, err = s.sessions.CommitTransactionAtRevision(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount, graphCommit.CommittedRevision)
 	} else {
 		commit, err = s.sessions.CommitTransaction(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount)
@@ -299,12 +337,79 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
+	if graphCommit.IdempotencyKey != "" {
+		commit = transactionCommitFromGraphResult(graphCommit, principal.PrincipalID)
+	}
 	if s.graphs != nil {
 		if err := s.graphs.AcknowledgeTransactionFinalization(commitCtx, tx); err != nil {
 			return nil, mapGraphError(err, "acknowledge committed graph transaction")
 		}
 	}
-	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit)}, nil
+	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit), IdempotentReplay: graphCommit.IdempotentReplay}, nil
+}
+
+func validateCommitIdempotencyRequest(req *clientv1.CommitTransactionRequest) error {
+	if req == nil {
+		return status.Error(codes.InvalidArgument, "commit transaction request is required")
+	}
+	key := req.GetIdempotencyKey()
+	if key == "" {
+		if req.GetSpaceId() != "" || req.GetDomainId() != "" {
+			return status.Error(codes.InvalidArgument, "space_id and domain_id require idempotency_key")
+		}
+		return nil
+	}
+	if key != strings.TrimSpace(key) || !utf8.ValidString(key) || len(key) > daemongraph.MaxGraphCommitIdempotencyKeyBytes {
+		return status.Errorf(codes.InvalidArgument, "idempotency_key must be valid UTF-8 without surrounding whitespace and at most %d bytes", daemongraph.MaxGraphCommitIdempotencyKeyBytes)
+	}
+	if strings.TrimSpace(req.GetSpaceId()) == "" || strings.TrimSpace(req.GetDomainId()) == "" {
+		return status.Error(codes.InvalidArgument, "space_id and domain_id are required with idempotency_key")
+	}
+	return nil
+}
+
+func transactionCommitFromGraphResult(result graphchange.CommitResult, principalID string) sessionmodel.TransactionCommit {
+	return sessionmodel.TransactionCommit{
+		ID:                   result.CommitID,
+		TransactionID:        result.TransactionID,
+		SessionID:            result.SessionID,
+		PrincipalID:          principalID,
+		SpaceID:              result.SpaceID,
+		DomainID:             result.DomainID,
+		BaseRevision:         result.BaseRevision,
+		CommittedRevision:    result.CommittedRevision,
+		OperationCount:       result.OperationCount,
+		Origin:               graphchange.OriginMetadata{OperationID: result.OperationID, PrincipalID: principalID, SessionID: result.SessionID, TransactionID: result.TransactionID},
+		CommittedAt:          result.CommittedAt,
+		IdempotencyKey:       result.IdempotencyKey,
+		IdempotencyExpiresAt: result.IdempotencyExpiresAt,
+	}
+}
+
+func mapIdempotentCommitResponse(result graphchange.CommitResult) *clientv1.CommitTransactionResponse {
+	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(transactionCommitFromGraphResult(result, "")), IdempotentReplay: true}
+}
+
+func (s *TransactionService) finalizeIdempotentLookup(ctx context.Context, principalID, transactionID string, result graphchange.CommitResult) {
+	if s.sessions == nil {
+		return
+	}
+	tx, err := s.sessions.GetTransaction(ctx, principalID, transactionID)
+	if err != nil {
+		return
+	}
+	if tx.State == sessionmodel.TransactionStateActive {
+		replayer, ok := s.sessions.(TransactionReplayCommitter)
+		if !ok {
+			return
+		}
+		if _, err := replayer.CommitTransactionReplay(ctx, principalID, transactionID, transactionCommitFromGraphResult(result, principalID)); err != nil {
+			return
+		}
+	}
+	if s.graphs != nil {
+		_ = s.graphs.AcknowledgeTransactionFinalization(ctx, tx)
+	}
 }
 
 func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clientv1.RollbackTransactionRequest) (*clientv1.RollbackTransactionResponse, error) {
@@ -390,7 +495,11 @@ func mapGraphTransaction(tx sessionmodel.GraphTransaction) *clientv1.GraphTransa
 }
 
 func mapTransactionCommit(commit sessionmodel.TransactionCommit) *clientv1.TransactionCommit {
-	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID}
+	mapped := &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID, IdempotencyKey: commit.IdempotencyKey}
+	if !commit.IdempotencyExpiresAt.IsZero() {
+		mapped.IdempotencyExpireTime = timestamppb.New(commit.IdempotencyExpiresAt)
+	}
+	return mapped
 }
 
 func sessionStateToProto(state sessionmodel.SessionState) clientv1.SessionState {

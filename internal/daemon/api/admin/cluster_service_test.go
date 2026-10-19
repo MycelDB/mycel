@@ -35,6 +35,14 @@ type fakeLocalGraphForensicExportProvider struct {
 	err    error
 }
 
+type fakeGraphIdempotencyProvider struct {
+	metrics graphservice.IdempotencyMetrics
+}
+
+func (f fakeGraphIdempotencyProvider) IdempotencyMetrics() graphservice.IdempotencyMetrics {
+	return f.metrics
+}
+
 type fakeGraphCheckpointProvider struct {
 	status graphservice.GraphCheckpointStatus
 	err    error
@@ -426,6 +434,19 @@ func TestAdminClusterServiceGraphCheckpointMapsStatus(t *testing.T) {
 	}
 	if statusRes.GetStatus().GetCheckpointRevision() != 10 {
 		t.Fatalf("unexpected status response: %#v", statusRes.GetStatus())
+	}
+}
+
+func TestAdminClusterServiceRuntimeStatusIncludesGraphIdempotencyDiagnostics(t *testing.T) {
+	metrics := graphservice.IdempotencyMetrics{ReplayHits: 4, ReplayMisses: 5, Mismatches: 2, CapacityRejections: 1, Evictions: 3, ActiveRecords: 7, CapacityRecords: 100000}
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithGraphIdempotencyDiagnostics(fakeGraphIdempotencyProvider{metrics: metrics})
+	res, err := svc.GetClusterRuntimeStatus(authenticatedClusterContext(), &adminv1.GetClusterRuntimeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.GetGraphIdempotency()
+	if got.GetReplayHits() != 4 || got.GetReplayMisses() != 5 || got.GetMismatches() != 2 || got.GetCapacityRejections() != 1 || got.GetEvictions() != 3 || got.GetActiveRecords() != 7 || got.GetCapacityRecords() != 100000 {
+		t.Fatalf("graph idempotency diagnostics = %#v", got)
 	}
 }
 

@@ -52,6 +52,123 @@ func (s *countingSnapshotStateMachine) Count() int {
 	return s.count
 }
 
+type blockingSnapshotStateMachine struct {
+	countingSnapshotStateMachine
+	snapshotStarted chan struct{}
+	snapshotRelease chan struct{}
+	startedOnce     sync.Once
+	applied         chan string
+}
+
+func (s *blockingSnapshotStateMachine) ApplyCommand(ctx context.Context, apply ApplyContext, cmd RaftCommand) error {
+	if err := s.countingSnapshotStateMachine.ApplyCommand(ctx, apply, cmd); err != nil {
+		return err
+	}
+	s.applied <- cmd.CommandID
+	return nil
+}
+
+func (s *blockingSnapshotStateMachine) Snapshot() ([]byte, error) {
+	s.startedOnce.Do(func() { close(s.snapshotStarted) })
+	<-s.snapshotRelease
+	return s.countingSnapshotStateMachine.Snapshot()
+}
+
+func TestCreateSnapshotSerializesStateMachineApplyAndTailReplay(t *testing.T) {
+	transport := newMemoryTransport()
+	store, err := NewPersistentStorage(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := &blockingSnapshotStateMachine{snapshotStarted: make(chan struct{}), snapshotRelease: make(chan struct{}), applied: make(chan string, 2)}
+	g, err := StartGroup(context.Background(), GroupOptions{ID: "snapshot-apply-barrier", NodeID: 1, Peers: []NodeID{1}, PartitionCount: 1, StateMachine: sm, Transport: transport, Storage: store, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.register(g)
+	var releaseOnce sync.Once
+	defer func() {
+		releaseOnce.Do(func() { close(sm.snapshotRelease) })
+		g.Stop()
+	}()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := g.Campaign(waitCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := WaitUntil(waitCtx, 10*time.Millisecond, func() bool { g.Tick(); return g.Leader() == 1 }); err != nil {
+		t.Fatal(err)
+	}
+	firstData, err := EncodeCommand(NewCommand(CommandScopeSystem, wal.RecordType("test.count"), []byte(`{}`), "barrier-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.node.Propose(waitCtx, firstData); err != nil {
+		t.Fatal(err)
+	}
+	if applied := <-sm.applied; applied != "barrier-1" {
+		t.Fatalf("first applied command = %q", applied)
+	}
+
+	snapshotResult := make(chan error, 1)
+	go func() {
+		_, err := g.CreateSnapshot(0, false)
+		snapshotResult <- err
+	}()
+	select {
+	case <-sm.snapshotStarted:
+	case <-waitCtx.Done():
+		t.Fatal(waitCtx.Err())
+	}
+	secondData, err := EncodeCommand(NewCommand(CommandScopeSystem, wal.RecordType("test.count"), []byte(`{}`), "barrier-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.node.Propose(waitCtx, secondData); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case commandID := <-sm.applied:
+		t.Fatalf("command %q applied while state-machine snapshot was in progress", commandID)
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(sm.snapshotRelease) })
+	if err := <-snapshotResult; err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	if applied := <-sm.applied; applied != "barrier-2" {
+		t.Fatalf("second applied command = %q", applied)
+	}
+	snap, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(snap.Data, &captured); err != nil {
+		t.Fatal(err)
+	}
+	if captured.Count != 1 || sm.Count() != 2 {
+		t.Fatalf("snapshot count = %d, live count = %d; want 1 and 2", captured.Count, sm.Count())
+	}
+	g.Stop()
+
+	reopened, err := NewPersistentStorage(store.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := &countingSnapshotStateMachine{}
+	g2, err := StartGroup(context.Background(), GroupOptions{ID: "snapshot-apply-barrier", NodeID: 1, Peers: []NodeID{1}, PartitionCount: 1, StateMachine: restored, Transport: transport, Storage: reopened, ReplayCommittedEntries: true, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g2.Stop()
+	if restored.Count() != 2 {
+		t.Fatalf("restored count = %d, want snapshotted state plus one tail command", restored.Count())
+	}
+}
+
 func TestStartGroupRestoresSnapshotWithoutReplayingSnapshottedEntries(t *testing.T) {
 	transport := newMemoryTransport()
 	store, err := NewPersistentStorage(t.TempDir())

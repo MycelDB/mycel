@@ -77,8 +77,10 @@ type LocalStore struct {
 	// nodeModRev/edgeModRev record the store revision at which each entity was
 	// last written, enabling write-set (fine-grained) conflict detection so that
 	// concurrent transactions touching disjoint entities do not conflict.
-	nodeModRev map[graph.NodeID]uint64
-	edgeModRev map[graph.EdgeID]uint64
+	nodeModRev           map[graph.NodeID]uint64
+	edgeModRev           map[graph.EdgeID]uint64
+	idempotencyRecords   map[string]IdempotencyRecord
+	idempotencyEvictions uint64
 }
 
 type entityVersion[T any] struct {
@@ -139,6 +141,9 @@ func (s *LocalStore) open(ctx context.Context) error {
 		if err := s.rebuildIndexes(ctx); err != nil {
 			return err
 		}
+	}
+	if err := s.loadIdempotencyRecords(ctx); err != nil {
+		return err
 	}
 	s.rebuildNodePropertyOrdersLocked()
 	s.state = StoreStateReady
@@ -237,6 +242,7 @@ func (s *LocalStore) resetIndexes() {
 	s.edgeHistory = map[graph.EdgeID][]edgeVersion{}
 	s.nodeModRev = map[graph.NodeID]uint64{}
 	s.edgeModRev = map[graph.EdgeID]uint64{}
+	s.idempotencyRecords = map[string]IdempotencyRecord{}
 }
 func (s *LocalStore) Close() error {
 	s.mu.Lock()

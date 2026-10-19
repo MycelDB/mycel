@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/myceldb/mycel/internal/fsperm"
@@ -66,6 +67,7 @@ type Module struct {
 	stores                         map[domainStoreKey]*graphstorage.LocalStore
 	overlays                       map[string]*overlay
 	transactionMutationLocks       map[string]*transactionMutationLock
+	idempotencyScopeLocks          [64]sync.Mutex
 	activeMutationScopes           map[string]*mutationScope
 	finalizedTransactions          map[string]transactionFinalization
 	transactionValidator           TransactionValidator
@@ -94,6 +96,10 @@ type Module struct {
 	raftAppliedCommandsPersistMu   sync.Mutex
 	logger                         *slog.Logger
 	writeTrace                     writetrace.Config
+	idempotencyReplayHits          atomic.Uint64
+	idempotencyReplayMisses        atomic.Uint64
+	idempotencyMismatches          atomic.Uint64
+	idempotencyCapacityRejections  atomic.Uint64
 }
 
 type domainStoreKey struct {
@@ -1592,6 +1598,10 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
 	if o == nil || o.opCount == 0 {
+		if tx.IdempotencyKey != "" {
+			m.mu.Unlock()
+			return graphchange.CommitResult{}, fmt.Errorf("%w: idempotent commit requires at least one graph mutation", ErrInvalidInput)
+		}
 		delete(m.overlays, tx.ID)
 		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
 		m.mu.Unlock()
@@ -1619,6 +1629,47 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	}
 	timing.StoreOpen = time.Since(stepStart)
 	stepStart = time.Now()
+	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	idempotency, err := newGraphCommitIdempotency(tx, record)
+	if err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	record.Idempotency = idempotency
+	timing.RecordBuild = time.Since(stepStart)
+	releaseIdempotency := m.lockGraphCommitIdempotencyScope(tx)
+	idempotencyLocked := true
+	defer func() {
+		if idempotencyLocked {
+			releaseIdempotency()
+		}
+	}()
+	if idempotency != nil {
+		candidate, err := idempotency.storageRecord()
+		if err != nil {
+			return graphchange.CommitResult{}, err
+		}
+		existing, ok, err := store.CheckIdempotencyRecord(ctx, candidate)
+		if err != nil {
+			mappedErr := mapStorageError(err)
+			return graphchange.CommitResult{}, m.observeIdempotencyError(idempotency, mappedErr)
+		}
+		if !ok {
+			m.idempotencyReplayMisses.Add(1)
+		} else {
+			m.idempotencyReplayHits.Add(1)
+			_ = m.deliverIdempotencyEvent(ctx, store, existing)
+			commitResult, err := graphCommitResultFromIdempotency(existing, true)
+			if err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			restoreOverlay = false
+			if err := m.finalizeCommittedTransactionGraph(tx.ID, commitResult); err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			return commitResult, nil
+		}
+	}
+	stepStart = time.Now()
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
 		return graphchange.CommitResult{}, err
@@ -1629,10 +1680,10 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	if err != nil {
 		return graphchange.CommitResult{}, err
 	}
+	if err := attachIdempotencyEvent(record.Idempotency, graphEvent, changes); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	timing.GraphEvent = time.Since(stepStart)
-	stepStart = time.Now()
-	record := graphCommitRecordFromSnapshot(tx, snapshot)
-	timing.RecordBuild = time.Since(stepStart)
 	stepStart = time.Now()
 	if err := m.validateBlobReferences(ctx, tx.SpaceID, record.PutNodes); err != nil {
 		return graphchange.CommitResult{}, err
@@ -1643,7 +1694,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	if m.raftGroups != nil {
 		timing.StorageMode = "raft"
 		stepStart = time.Now()
-		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, graphRaftCommandID(ctx, tx.ID))
+		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, graphRaftCommandIDForRecord(ctx, tx.ID, record))
 		if err != nil {
 			return graphchange.CommitResult{}, err
 		}
@@ -1651,7 +1702,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		stepStart = time.Now()
 		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
 		if err != nil {
-			return graphchange.CommitResult{}, err
+			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, err)
 		}
 		timing.RaftPropose = time.Since(stepStart)
 		timing.RaftProposal = proposal.Timing
@@ -1662,12 +1713,39 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		// applied locally.
 		committedRevision = int64(store.Revision())
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
+		if record.Idempotency != nil {
+			idempotencyRecord, ok, err := store.GetIdempotencyRecord(ctx, record.Idempotency.Scope, record.Idempotency.Key)
+			if err != nil {
+				return graphchange.CommitResult{}, mapStorageError(err)
+			}
+			if !ok {
+				return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, ErrIdempotencyCapacity)
+			}
+			if idempotencyRecord.Digest != record.Idempotency.Digest {
+				return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, ErrIdempotencyConflict)
+			}
+			storedResult, err := graphCommitResultFromIdempotency(idempotencyRecord, false)
+			if err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			info.Idempotency = &idempotencyRecord
+			info.IdempotentReplay = storedResult.CommitID != record.Idempotency.Metadata.CommitID
+			committedRevision = int64(idempotencyRecord.CommittedRevision)
+		}
 	} else if m.wal == nil {
 		timing.StorageMode = "direct"
 		stepStart = time.Now()
 		storageTx, err := store.Begin(ctx)
 		if err != nil {
 			return graphchange.CommitResult{}, mapStorageError(err)
+		}
+		if record.Idempotency != nil {
+			idempotencyRecord, err := record.Idempotency.storageRecord()
+			if err != nil {
+				_ = storageTx.Rollback()
+				return graphchange.CommitResult{}, err
+			}
+			storageTx.SetIdempotency(idempotencyRecord)
 		}
 		storageTx.ExpectRevision(uint64(tx.BaseRevision))
 		for _, node := range record.PutNodes {
@@ -1696,7 +1774,8 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		}
 		info, err = storageTx.CommitWithInfo()
 		if err != nil {
-			return graphchange.CommitResult{}, mapStorageError(err)
+			mappedErr := mapStorageError(err)
+			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, mappedErr)
 		}
 		committedRevision = int64(store.Revision())
 		timing.DirectStorage = time.Since(stepStart)
@@ -1723,7 +1802,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		stepStart = time.Now()
 		committedRevision, _, info, err = m.applyGraphCommitRecord(ctx, record)
 		if err != nil {
-			return graphchange.CommitResult{}, err
+			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, err)
 		}
 		timing.WALApply = time.Since(stepStart)
 		timing.StorageCommit = info.Timing
@@ -1737,22 +1816,48 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	}
 	restoreOverlay = false
 	commitResult := graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}
-	cachedCommit := graphchange.CommitResult{OperationCount: commitResult.OperationCount, CommittedRevision: commitResult.CommittedRevision}
-	m.mu.Lock()
-	if err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted, commit: cachedCommit}); err != nil {
-		m.mu.Unlock()
+	if info.Idempotency != nil {
+		if info.IdempotentReplay {
+			m.idempotencyReplayHits.Add(1)
+		}
+		commitResult, err = graphCommitResultFromIdempotency(*info.Idempotency, info.IdempotentReplay)
+		if err != nil {
+			return graphchange.CommitResult{}, err
+		}
+		if !info.IdempotentReplay {
+			commitResult.Changes = changes
+		}
+	}
+	if err := m.finalizeCommittedTransactionGraph(tx.ID, commitResult); err != nil {
 		return graphchange.CommitResult{}, err
 	}
-	m.mu.Unlock()
-	graphEvent.Changes = changes
-	stepStart = time.Now()
-	recorder := &graphSinkTimingRecorder{}
-	m.notifyGraphChangeSink(withGraphSinkTimingRecorder(ctx, recorder), info, graphEvent)
-	timing.ChangeSink = time.Since(stepStart)
-	timing.SinkTimings = recorder.timings
+	if info.Idempotency != nil {
+		stepStart = time.Now()
+		recorder := &graphSinkTimingRecorder{}
+		_ = m.deliverIdempotencyEvent(withGraphSinkTimingRecorder(ctx, recorder), store, *info.Idempotency)
+		timing.ChangeSink = time.Since(stepStart)
+		timing.SinkTimings = recorder.timings
+	} else if !info.IdempotentReplay {
+		graphEvent.Changes = changes
+		stepStart = time.Now()
+		recorder := &graphSinkTimingRecorder{}
+		m.notifyGraphChangeSink(withGraphSinkTimingRecorder(ctx, recorder), info, graphEvent)
+		timing.ChangeSink = time.Since(stepStart)
+		timing.SinkTimings = recorder.timings
+	}
+	releaseIdempotency()
+	idempotencyLocked = false
 	timing.Total = time.Since(traceStart)
 	m.logGraphCommitTiming(tx, map[string]int{"operation_count": int(snapshot.opCount), "put_nodes": len(record.PutNodes), "put_edges": len(record.PutEdges), "delete_nodes": len(record.DeleteNodeIDs), "delete_edges": len(record.DeleteEdgeIDs), "changes": len(changes)}, committedRevision, timing)
 	return commitResult, nil
+}
+
+func (m *Module) finalizeCommittedTransactionGraph(transactionID string, commit graphchange.CommitResult) error {
+	cached := commit
+	cached.Changes = nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.finalizeTransactionLocked(transactionID, transactionFinalization{kind: transactionCommitted, commit: cached})
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
@@ -1778,38 +1883,50 @@ func (m *Module) requireLocalWriteAllowed() error {
 	return m.writeAllowed()
 }
 
-func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
 	m.mu.Lock()
 	sink := m.changeSink
 	m.mu.Unlock()
-	m.notifyChangeSink(ctx, sink, info, event)
+	return m.notifyChangeSink(ctx, sink, info, event)
 }
 
-func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
 	m.mu.Lock()
 	sink := m.raftApplyChangeSink
 	m.mu.Unlock()
-	m.notifyChangeSink(ctx, sink, info, event)
+	return m.notifyChangeSink(ctx, sink, info, event)
 }
 
-func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
-	if sink == nil || event.Empty() {
-		return
+func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
+	if event.Empty() {
+		return true, nil
 	}
-	event.TxnID = info.TxnID
-	event.TransactionID = info.TxnID
-	event.GraphRevision = info.NextRevision
-	event.Revision = info.NextRevision
+	if sink == nil {
+		return false, nil
+	}
+	if event.TxnID == uuid.Nil {
+		event.TxnID = info.TxnID
+	}
+	if event.TransactionID == uuid.Nil {
+		event.TransactionID = event.TxnID
+	}
+	if event.GraphRevision == 0 {
+		event.GraphRevision = info.NextRevision
+	}
+	if event.Revision == 0 {
+		event.Revision = info.NextRevision
+	}
 	event.Normalize()
 	if err := sink.OnGraphCommitted(ctx, event); err != nil {
 		m.mu.Lock()
 		m.lastGraphChangeSinkErr = err
 		m.mu.Unlock()
-		return
+		return false, err
 	}
 	m.mu.Lock()
 	m.lastGraphChangeSinkErr = nil
 	m.mu.Unlock()
+	return true, nil
 }
 
 func (m *Module) graphChangeEvent(ctx context.Context, tx sessionmodel.GraphTransaction, store *graphstorage.LocalStore, snapshot *overlay) (graphchange.CommittedEvent, error) {
@@ -2864,6 +2981,12 @@ func mapStorageError(err error) error {
 	}
 	if errors.Is(err, graphstorage.ErrConflict) {
 		return ErrConflict
+	}
+	if errors.Is(err, graphstorage.ErrIdempotencyConflict) {
+		return ErrIdempotencyConflict
+	}
+	if errors.Is(err, graphstorage.ErrIdempotencyCapacity) {
+		return ErrIdempotencyCapacity
 	}
 	if errors.Is(err, graphstorage.ErrTxnClosed) || errors.Is(err, graphstorage.ErrClosed) || errors.Is(err, graphstorage.ErrIndexUnavailable) {
 		return ErrInvalidState

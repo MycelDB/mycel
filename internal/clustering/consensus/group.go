@@ -491,6 +491,11 @@ func (g *Group) CreateSnapshot(index uint64, compact bool) (uint64, error) {
 	if g == nil || g.storage == nil || g.sm == nil {
 		return 0, fmt.Errorf("raft group, storage, and state machine are required")
 	}
+	// Keep the selected applied index, state-machine bytes, Raft snapshot, and
+	// optional compaction on one apply-free boundary. processReady holds the read
+	// side while applying entries and installed snapshots.
+	g.backupMu.Lock()
+	defer g.backupMu.Unlock()
 	snapshotter, ok := g.sm.(StateMachineSnapshotter)
 	if !ok {
 		return 0, fmt.Errorf("state machine cannot create raft snapshots")

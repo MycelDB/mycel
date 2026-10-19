@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -712,13 +714,22 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { r, ok := routers[nodeID]; return r, ok })}
 	modules := map[consensus.NodeID]*Module{}
 	groupsByNode := map[consensus.NodeID]*consensus.MultiGroup{}
+	var raftSinkMu sync.Mutex
+	raftSinkCalls := map[consensus.NodeID]int{}
 	partitionCount := uint32(4)
 	for _, nodeID := range peers {
+		nodeID := nodeID
 		m := NewModule()
 		if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 			t.Fatalf("init node %d failed: %v", nodeID, result.Error)
 		}
 		modules[nodeID] = m
+		m.SetRaftApplyChangeSink(graphchange.SinkFunc(func(context.Context, graphchange.CommittedEvent) error {
+			raftSinkMu.Lock()
+			raftSinkCalls[nodeID]++
+			raftSinkMu.Unlock()
+			return nil
+		}))
 		mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: nodeID, PeerNodeIDs: peers, PartitionCount: partitionCount, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine {
 			return RaftStateMachine{Module: m, PartitionCount: partitionCount}
 		}}, ElectionTick: 5, HeartbeatTick: 1})
@@ -786,6 +797,43 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		t.Fatalf("initial leader not elected: %v", err)
 	}
 	oldLeader := leaderForPartition()
+	idempotencyDomainID := uuid.NewString()
+	principalID := uuid.NewString()
+	idempotencyNodeID := uuid.NewString()
+	firstTx := idempotencyGraphTx(spaceID, idempotencyDomainID, principalID, 0, "failover-capture")
+	if _, err := modules[oldLeader].UpsertNode(ctx, firstTx, domaingraph.NodeInput{NodeID: idempotencyNodeID, Content: "before failover"}); err != nil {
+		t.Fatalf("UpsertNode() before failover error = %v", err)
+	}
+	firstCommit, err := modules[oldLeader].CommitTransactionGraph(ctx, firstTx)
+	if err != nil {
+		t.Fatalf("idempotent commit before failover error = %v", err)
+	}
+	for id, m := range modules {
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			_, found, err := m.lookupIdempotentCommitLocal(ctx, principalID, spaceID, idempotencyDomainID, "failover-capture")
+			return err == nil && found
+		}); err != nil {
+			t.Fatalf("node %d did not apply idempotency record before failover: %v", id, err)
+		}
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		raftSinkMu.Lock()
+		defer raftSinkMu.Unlock()
+		for _, id := range peers {
+			if raftSinkCalls[id] != 1 {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("raft change sinks did not observe exactly one first commit: %v", err)
+	}
+	raftSinkMu.Lock()
+	sinkCallsAfterFirstCommit := make(map[consensus.NodeID]int, len(raftSinkCalls))
+	for _, id := range peers {
+		sinkCallsAfterFirstCommit[id] = raftSinkCalls[id]
+	}
+	raftSinkMu.Unlock()
 	active[oldLeader] = false
 	groupsByNode[oldLeader].Stop()
 	for _, router := range routers {
@@ -798,6 +846,35 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	if writer == 0 {
 		t.Fatal("new partition leader not found")
 	}
+	retryTx := idempotencyGraphTx(spaceID, idempotencyDomainID, principalID, 1, "failover-capture")
+	if _, err := modules[writer].UpsertNode(ctx, retryTx, domaingraph.NodeInput{NodeID: idempotencyNodeID, Content: "before failover"}); err != nil {
+		t.Fatalf("UpsertNode() retry after failover error = %v", err)
+	}
+	replay, err := modules[writer].CommitTransactionGraph(ctx, retryTx)
+	if err != nil {
+		t.Fatalf("idempotent retry after failover error = %v", err)
+	}
+	if !replay.IdempotentReplay || replay.CommitID != firstCommit.CommitID || replay.CommittedRevision != firstCommit.CommittedRevision {
+		t.Fatalf("failover replay = %#v, first = %#v", replay, firstCommit)
+	}
+	if revision, err := modules[writer].CurrentDomainRevision(ctx, spaceID, idempotencyDomainID); err != nil || revision != 1 {
+		t.Fatalf("idempotency domain revision after failover replay = %d, %v; want 1", revision, err)
+	}
+	mismatchTx := idempotencyGraphTx(spaceID, idempotencyDomainID, principalID, 1, "failover-capture")
+	if _, err := modules[writer].UpsertNode(ctx, mismatchTx, domaingraph.NodeInput{NodeID: idempotencyNodeID, Content: "different after failover"}); err != nil {
+		t.Fatalf("UpsertNode() mismatch after failover error = %v", err)
+	}
+	if _, err := modules[writer].CommitTransactionGraph(ctx, mismatchTx); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("idempotency mismatch after failover error = %v, want ErrIdempotencyConflict", err)
+	}
+	raftSinkMu.Lock()
+	for id, calls := range raftSinkCalls {
+		if calls != sinkCallsAfterFirstCommit[id] {
+			raftSinkMu.Unlock()
+			t.Fatalf("node %d raft sink calls after replay/mismatch = %d, want %d", id, calls, sinkCallsAfterFirstCommit[id])
+		}
+	}
+	raftSinkMu.Unlock()
 	domainID := uuid.NewString()
 	tx := graphTx(spaceID, domainID, 0)
 	node, err := modules[writer].CreateNode(ctx, tx, domaingraph.NodeInput{Content: "after failover", Props: map[string]any{}})
@@ -818,6 +895,54 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("node %d did not apply post-failover commit: %v", id, err)
 		}
+	}
+}
+
+func TestGraphRaftStateMachineTreatsIdempotencyMismatchAsDurableNoop(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphRaftModule(t, ctx, t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	principalID := uuid.NewString()
+	nodeID := domaingraph.NodeID(uuid.New())
+	firstTx := idempotencyGraphTx(spaceID, domainID, principalID, 0, "raft-mismatch")
+	firstRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Content: "first"}}, OperationCount: 1}
+	firstIdempotency, err := newGraphCommitIdempotency(firstTx, firstRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRecord.Idempotency = firstIdempotency
+	firstCommand, err := m.buildGraphCommitRaftCommand(firstRecord, 64, graphRaftCommandIDForRecord(ctx, firstTx.ID, firstRecord))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, firstCommand); err != nil {
+		t.Fatal(err)
+	}
+
+	secondTx := idempotencyGraphTx(spaceID, domainID, principalID, 0, "raft-mismatch")
+	secondRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Content: "different"}}, OperationCount: 1}
+	secondIdempotency, err := newGraphCommitIdempotency(secondTx, secondRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRecord.Idempotency = secondIdempotency
+	secondCommand, err := m.buildGraphCommitRaftCommand(secondRecord, 64, graphRaftCommandIDForRecord(ctx, secondTx.ID, secondRecord))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (RaftStateMachine{Module: m, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, secondCommand); err != nil {
+		t.Fatalf("idempotency mismatch apply error = %v, want durable no-op", err)
+	}
+	if _, ok := m.raftAppliedCommands[secondCommand.CommandID]; !ok {
+		t.Fatal("idempotency mismatch command was not durably marked applied")
+	}
+	if revision, err := m.CurrentDomainRevision(ctx, spaceID, domainID); err != nil || revision != 1 {
+		t.Fatalf("revision after mismatch = %d, %v; want 1", revision, err)
+	}
+	stored, err := m.GetNode(ctx, graphTx(spaceID, domainID, 1), nodeID.String())
+	if err != nil || stored.Content != "first" {
+		t.Fatalf("stored node after mismatch = %#v, %v", stored, err)
 	}
 }
 
