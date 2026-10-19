@@ -426,11 +426,13 @@ func edgeInputFromExportEdge(edge *clientv1.Edge, preserveIDs bool) domaingraph.
 	return input
 }
 
+const importExportPageSize = 500
+
 func allExportNodes(ctx context.Context, graphs daegraph.Manager, tx sessionmodel.GraphTransaction) ([]domaingraph.Node, error) {
 	all := []domaingraph.Node{}
 	token := ""
 	for {
-		nodes, next, err := graphs.ListNodes(ctx, tx, queryMaxPageSize, token)
+		nodes, next, err := graphs.ListNodes(ctx, tx, importExportPageSize, token)
 		if err != nil {
 			return nil, err
 		}
@@ -450,7 +452,7 @@ func allExportEdges(ctx context.Context, graphs daegraph.Manager, tx sessionmode
 	all := []domaingraph.Edge{}
 	token := ""
 	for {
-		edges, next, err := graphs.ListEdges(ctx, tx, queryMaxPageSize, token)
+		edges, next, err := graphs.ListEdges(ctx, tx, importExportPageSize, token)
 		if err != nil {
 			return nil, err
 		}

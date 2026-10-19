@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -20,11 +21,67 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func TestFinalizedTransactionsRejectStalePrimitiveWrites(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		finalize func(*TransactionService, context.Context, string) error
+	}{
+		{name: "commit", finalize: func(service *TransactionService, ctx context.Context, transactionID string) error {
+			_, err := service.CommitTransaction(ctx, &clientv1.CommitTransactionRequest{TransactionId: transactionID})
+			return err
+		}},
+		{name: "rollback", finalize: func(service *TransactionService, ctx context.Context, transactionID string) error {
+			_, err := service.RollbackTransaction(ctx, &clientv1.RollbackTransactionRequest{TransactionId: transactionID})
+			return err
+		}},
+		{name: "close", finalize: func(service *TransactionService, ctx context.Context, transactionID string) error {
+			_, err := service.CloseTransaction(ctx, &clientv1.CloseTransactionRequest{TransactionId: transactionID})
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+			transactionID := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+			principal, principalErr := spaceUserPrincipalFromContext(fixture.ctx)
+			if principalErr != nil {
+				t.Fatalf("spaceUserPrincipalFromContext() error = %v", principalErr)
+			}
+			stale, err := fixture.sessions.GetTransaction(fixture.ctx, principal.PrincipalID, transactionID)
+			if err != nil {
+				t.Fatalf("GetTransaction() error = %v", err)
+			}
+			service := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+			if err := test.finalize(service, fixture.ctx, transactionID); err != nil {
+				t.Fatalf("finalize transaction error = %v", err)
+			}
+			if _, err := fixture.graphs.CreateNode(fixture.ctx, stale, graphmodel.NodeInput{Content: "orphan"}); !errors.Is(err, daegraph.ErrInvalidState) {
+				t.Fatalf("CreateNode(stale transaction) error = %v, want ErrInvalidState", err)
+			}
+		})
+	}
+}
+
+func TestReadOnlyCommitRejectionDoesNotBlockClose(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	transactionID := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	service := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
+	if _, err := service.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: transactionID}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CommitTransaction(read-only) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	closed, err := service.CloseTransaction(fixture.ctx, &clientv1.CloseTransactionRequest{TransactionId: transactionID})
+	if err != nil {
+		t.Fatalf("CloseTransaction() error = %v", err)
+	}
+	if closed.GetTransaction().GetState() != clientv1.TransactionState_TRANSACTION_STATE_CLOSED {
+		t.Fatalf("closed transaction state = %v", closed.GetTransaction().GetState())
+	}
+}
+
 func TestSearchDisabledExecuteQueryReturnsFailedPrecondition(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+	_, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
 		TransactionId: tx,
 		Query:         &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}},
 	})
@@ -37,7 +94,7 @@ func TestSearchDisabledExecuteGQLFallbackReturnsFailedPrecondition(t *testing.T)
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+	_, err := newQRX8QueryService(fixture, nil).ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
 		TransactionId: tx,
 		Query:         "MATCH (n) RETURN n",
 	})
@@ -50,7 +107,7 @@ func TestExecuteQueryRejectsUnboundedStructuredTraversal(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	tx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
 
-	_, err := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+	_, err := newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
 		TransactionId: tx,
 		Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{
 			Start: &clientv1.NodePattern{Alias: "a", NodeIds: []string{uuid.NewString()}},
@@ -147,6 +204,7 @@ func initDomainPolicyClientAPITest(t *testing.T, opts domainPolicyFixtureOptions
 		t.Fatalf("init session module: %v", result.Error)
 	}
 	graphModule := daegraph.NewModule()
+	graphModule.SetTransactionValidator(sessionModule)
 	if result := graphModule.Init(ctx, rt); !result.OK {
 		t.Fatalf("init graph module: %v", result.Error)
 	}

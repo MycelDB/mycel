@@ -229,8 +229,12 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			}
 			return false, err
 		}
-		commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
+		finalizeCtx := context.WithoutCancel(ctx)
+		commit, err := m.sessions.CommitTransactionAtRevision(finalizeCtx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
 		if err != nil {
+			return false, err
+		}
+		if err := m.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx); err != nil {
 			return false, err
 		}
 		run.MutationID = commit.ID
@@ -287,11 +291,19 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 }
 
 func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Context, principalID string, transactionID string) {
+	finalizeCtx := context.WithoutCancel(ctx)
 	if m.graphs != nil {
-		m.graphs.DiscardTransactionGraph(ctx, transactionID)
+		_ = m.graphs.DiscardTransactionGraph(finalizeCtx, transactionID)
 	}
-	if m.sessions != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, principalID, transactionID)
+	if m.sessions == nil {
+		return
+	}
+	tx, err := m.sessions.RollbackTransaction(finalizeCtx, principalID, transactionID)
+	if err != nil {
+		return
+	}
+	if m.graphs != nil {
+		_ = m.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx)
 	}
 }
 

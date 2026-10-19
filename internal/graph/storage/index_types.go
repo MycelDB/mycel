@@ -41,6 +41,7 @@ type OrderedNodePropertyScan struct {
 	Direction     schema.IndexSortDirection
 	Limit         int
 	Cursor        string
+	ExamineLimit  int
 	HasLow        bool
 	Low           any
 	LowExclusive  bool

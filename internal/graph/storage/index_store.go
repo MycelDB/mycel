@@ -3,6 +3,7 @@ package graphstorage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,68 +57,169 @@ func (s *LocalStore) ConfigureIndexes(ctx context.Context, domainID graph.Domain
 }
 
 func (s *LocalStore) ScanNodePropertyOrdered(ctx context.Context, scan OrderedNodePropertyScan) ([]NodeIndexEntry, string, error) {
+	entries, next, _, err := s.ScanNodePropertyOrderedBounded(ctx, scan)
+	return entries, next, err
+}
+
+// ScanNodePropertyOrderedBounded walks the derived ordered index directly and
+// reports every examined index entry. It never materializes or sorts the full
+// index for a page request.
+func (s *LocalStore) ScanNodePropertyOrderedBounded(ctx context.Context, scan OrderedNodePropertyScan) ([]NodeIndexEntry, string, int, error) {
+	return s.scanNodePropertyOrdered(ctx, scan, nil)
+}
+
+// ScanNodePropertyOrderedAt walks every historical property key in index order
+// and resolves the node version visible at revision. Obsolete historical keys
+// consume ExamineLimit and advance the cursor without forcing whole-domain
+// materialization.
+func (s *LocalStore) ScanNodePropertyOrderedAt(ctx context.Context, scan OrderedNodePropertyScan, revision uint64) ([]NodeIndexEntry, string, int, error) {
+	return s.scanNodePropertyOrdered(ctx, scan, &revision)
+}
+
+func (s *LocalStore) scanNodePropertyOrdered(ctx context.Context, scan OrderedNodePropertyScan, revision *uint64) ([]NodeIndexEntry, string, int, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, "", err
+		return nil, "", 0, err
+	}
+	if err := normalizeOrderedNodePropertyScan(&scan); err != nil {
+		return nil, "", 0, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if err := s.ensureReady(); err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	meta, ok := s.indexMetadata[indexIdentity(scan.DomainID, scan.IndexName)]
+	identity := indexIdentity(scan.DomainID, scan.IndexName)
+	meta, ok := s.indexMetadata[identity]
 	if !ok || meta.BuildState != IndexBuildStateReady {
-		return nil, "", ErrIndexUnavailable
+		return nil, "", 0, ErrIndexUnavailable
 	}
-	entries := s.nodePropertyIndex[indexIdentity(scan.DomainID, scan.IndexName)]
-	if entries == nil {
-		return nil, "", nil
-	}
-	cursor, err := decodeIndexCursor(scan.Cursor)
+	cursor, low, high, err := orderedNodeScanKeys(scan)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	low, high, err := encodedBounds(scan.HasLow, scan.Low, scan.HasHigh, scan.High)
-	if err != nil {
-		return nil, "", err
+	if revision == nil {
+		order := s.nodePropertyOrder[identity]
+		if order == nil {
+			return []NodeIndexEntry{}, "", 0, nil
+		}
+		return scanOrderedNodePropertyTree(ctx, order, scan, cursor, low, high, func(key string, entry nodePropertyIndexEntry) (NodeIndexEntry, bool) {
+			return NodeIndexEntry{NodeID: entry.NodeID, Value: s.nodePropertyIndexEntryValue(entry, meta), Cursor: encodeIndexCursor(key)}, true
+		})
 	}
-	keys := make([]string, 0, len(entries))
-	for key := range entries {
-		valueKey := orderedValueKey(key)
-		if low != "" && (valueKey < low || scan.LowExclusive && valueKey == low) {
-			continue
+	order := s.historyNodePropertyOrder[identity]
+	if order == nil {
+		return []NodeIndexEntry{}, "", 0, nil
+	}
+	return scanOrderedNodePropertyTree(ctx, order, scan, cursor, low, high, func(key string, nodeID graph.NodeID) (NodeIndexEntry, bool) {
+		node, visible := nodeAtRevision(s.nodeHistory[nodeID], *revision)
+		if !visible || node.DomainID != scan.DomainID || !nodeHasAnyLabel(node, meta.Labels) {
+			return NodeIndexEntry{}, false
 		}
-		if high != "" && (valueKey > high || scan.HighExclusive && valueKey == high) {
-			continue
+		value, exists := graph.Property(node, meta.Field.Name)
+		if !exists || value == nil {
+			return NodeIndexEntry{}, false
 		}
-		if cursor != "" {
-			if scan.Direction == schema.IndexSortDirectionDesc {
-				if key >= cursor {
-					continue
-				}
-			} else if key <= cursor {
-				continue
+		visibleKey, encodeErr := encodeOrderedNodeKey(value, node.ID)
+		if encodeErr != nil || visibleKey != key {
+			return NodeIndexEntry{}, false
+		}
+		return NodeIndexEntry{NodeID: node.ID, Value: value, Cursor: encodeIndexCursor(key)}, true
+	})
+}
+
+func scanOrderedNodePropertyTree[V any](ctx context.Context, order *orderedTree[string, V], scan OrderedNodePropertyScan, cursor, low, high string, resolve func(string, V) (NodeIndexEntry, bool)) ([]NodeIndexEntry, string, int, error) {
+	iterator := orderedNodeIterator(order, scan, cursor, low, high)
+	out := make([]NodeIndexEntry, 0, scan.Limit)
+	examined := 0
+	lastExamined := ""
+	exhausted := false
+	for iterator.HasNext() && examined < scan.ExamineLimit && len(out) < scan.Limit {
+		if err := ctx.Err(); err != nil {
+			return nil, "", examined, err
+		}
+		key, value, _ := iterator.Next()
+		if !orderedNodeKeyInBounds(key, low, high, scan) {
+			if orderedNodeKeyPastBounds(key, low, high, scan) {
+				exhausted = true
+				break
 			}
+			continue
 		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	if scan.Direction == schema.IndexSortDirectionDesc {
-		reverseStrings(keys)
-	}
-	limit := scan.Limit
-	if limit <= 0 || limit > len(keys) {
-		limit = len(keys)
-	}
-	out := make([]NodeIndexEntry, 0, limit)
-	for _, key := range keys[:limit] {
-		entry := entries[key]
-		out = append(out, NodeIndexEntry{NodeID: entry.NodeID, Value: s.nodePropertyIndexEntryValue(entry, meta), Cursor: encodeIndexCursor(key)})
+		examined++
+		lastExamined = key
+		if entry, ok := resolve(key, value); ok {
+			out = append(out, entry)
+		}
 	}
 	next := ""
-	if limit < len(keys) && limit > 0 {
-		next = encodeIndexCursor(keys[limit-1])
+	if !exhausted && iterator.HasNext() && lastExamined != "" {
+		next = encodeIndexCursor(lastExamined)
 	}
-	return out, next, nil
+	return out, next, examined, nil
+}
+
+func normalizeOrderedNodePropertyScan(scan *OrderedNodePropertyScan) error {
+	if scan.Limit <= 0 {
+		return fmt.Errorf("%w: ordered node property scan limit must be positive", ErrInvalidRecord)
+	}
+	if scan.Limit > 500 {
+		scan.Limit = 500
+	}
+	if scan.ExamineLimit <= 0 {
+		scan.ExamineLimit = scan.Limit
+	} else if scan.ExamineLimit > 500 {
+		scan.ExamineLimit = 500
+	}
+	return nil
+}
+
+func orderedNodeScanKeys(scan OrderedNodePropertyScan) (string, string, string, error) {
+	cursor, err := decodeIndexCursor(scan.Cursor)
+	if err != nil {
+		return "", "", "", err
+	}
+	low, high, err := encodedBounds(scan.HasLow, scan.Low, scan.HasHigh, scan.High)
+	return cursor, low, high, err
+}
+
+func orderedNodeIterator[V any](order *orderedTree[string, V], scan OrderedNodePropertyScan, cursor, low, high string) orderedTreeIterator[string, V] {
+	if scan.Direction == schema.IndexSortDirectionDesc {
+		start := cursor
+		if start == "" && high != "" {
+			start = high
+			if !scan.HighExclusive {
+				start += "\x01"
+			}
+		}
+		return order.IteratorBefore(start, start != "")
+	}
+	start := cursor
+	if start == "" && low != "" {
+		start = low
+		if scan.LowExclusive {
+			start += "\x01"
+		}
+	}
+	return order.IteratorAfter(start, start != "")
+}
+
+func orderedNodeKeyInBounds(key, low, high string, scan OrderedNodePropertyScan) bool {
+	valueKey := orderedValueKey(key)
+	if low != "" && (valueKey < low || scan.LowExclusive && valueKey == low) {
+		return false
+	}
+	if high != "" && (valueKey > high || scan.HighExclusive && valueKey == high) {
+		return false
+	}
+	return true
+}
+
+func orderedNodeKeyPastBounds(key, low, high string, scan OrderedNodePropertyScan) bool {
+	valueKey := orderedValueKey(key)
+	if scan.Direction == schema.IndexSortDirectionDesc {
+		return low != "" && (valueKey < low || scan.LowExclusive && valueKey == low)
+	}
+	return high != "" && (valueKey > high || scan.HighExclusive && valueKey == high)
 }
 
 func (s *LocalStore) nodePropertyIndexEntryValue(entry nodePropertyIndexEntry, meta IndexMetadata) any {
@@ -202,43 +304,100 @@ func (s *LocalStore) ScanAdjacency(ctx context.Context, scan AdjacencyScan) ([]g
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
+	cursor, err := decodeIndexCursor(scan.Cursor)
+	if err != nil {
+		return nil, "", err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if err := s.ensureReady(); err != nil {
 		return nil, "", err
 	}
-	var byDomain map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
-	if scan.Direction == AdjacencyDirectionIn {
-		byDomain = s.edgeAdjacencyIn
-	} else {
-		byDomain = s.edgeAdjacencyOut
+	identity := adjacencyOrderIdentity{DomainID: scan.DomainID, NodeID: scan.NodeID, Label: scan.Label, Direction: scan.Direction}
+	order := s.currentAdjacencyOrder[identity]
+	if order == nil {
+		return []graph.EdgeID{}, "", nil
 	}
-	entries := byDomain[scan.DomainID][scan.NodeID][scan.Label]
+	iterator := order.IteratorAfter(cursor, cursor != "")
+	limit := scan.Limit
+	if limit <= 0 {
+		limit = int(^uint(0) >> 1)
+	}
+	out := make([]graph.EdgeID, 0, min(limit, 500))
+	last := ""
+	for iterator.HasNext() && len(out) < limit {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		key, id, _ := iterator.Next()
+		last = key
+		out = append(out, id)
+	}
+	if iterator.HasNext() {
+		return out, encodeIndexCursor(last), nil
+	}
+	return out, "", nil
+}
+
+// ScanAdjacencyAt makes bounded progress through the retained multiversion
+// adjacency order and returns only entries visible at revision. The examined
+// count includes historical keys skipped because a different edge version is
+// visible, allowing query budgets to charge the actual index work.
+func (s *LocalStore) ScanAdjacencyAt(ctx context.Context, scan AdjacencyScan, revision uint64, examineLimit int) ([]graph.EdgeID, string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", 0, err
+	}
+	if scan.Limit <= 0 {
+		return nil, "", 0, fmt.Errorf("%w: adjacency scan limit must be positive", ErrInvalidRecord)
+	}
+	if examineLimit <= 0 {
+		examineLimit = scan.Limit
+	}
 	cursor, err := decodeIndexCursor(scan.Cursor)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	keys := make([]string, 0, len(entries))
-	for key := range entries {
-		if cursor != "" && key <= cursor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := s.ensureReady(); err != nil {
+		return nil, "", 0, err
+	}
+	identity := adjacencyOrderIdentity{DomainID: scan.DomainID, NodeID: scan.NodeID, Label: scan.Label, Direction: scan.Direction}
+	order := s.historyAdjacencyOrder[identity]
+	if order == nil {
+		return []graph.EdgeID{}, "", 0, nil
+	}
+	iterator := order.IteratorAfter(cursor, cursor != "")
+	out := make([]graph.EdgeID, 0, scan.Limit)
+	examined := 0
+	last := ""
+	for iterator.HasNext() && examined < examineLimit && len(out) < scan.Limit {
+		if err := ctx.Err(); err != nil {
+			return nil, "", examined, err
+		}
+		key, id, _ := iterator.Next()
+		examined++
+		last = key
+		edge, ok := entityAtRevision(s.edgeHistory[id], revision, func(edge graph.Edge) graph.Edge { return edge })
+		if !ok || encodeAdjacencyKey(edge) != key || !edgeMatchesAdjacencyScan(edge, scan) {
 			continue
 		}
-		keys = append(keys, key)
+		out = append(out, id)
 	}
-	sort.Strings(keys)
-	limit := scan.Limit
-	if limit <= 0 || limit > len(keys) {
-		limit = len(keys)
+	if iterator.HasNext() {
+		return out, encodeIndexCursor(last), examined, nil
 	}
-	out := make([]graph.EdgeID, 0, limit)
-	for _, key := range keys[:limit] {
-		out = append(out, entries[key])
+	return out, "", examined, nil
+}
+
+func edgeMatchesAdjacencyScan(edge graph.Edge, scan AdjacencyScan) bool {
+	if edge.DomainID != scan.DomainID || scan.Label != "" && !edgeHasAnyLabel(edge, []string{scan.Label}) {
+		return false
 	}
-	next := ""
-	if limit < len(keys) && limit > 0 {
-		next = encodeIndexCursor(keys[limit-1])
+	if scan.Direction == AdjacencyDirectionIn {
+		return edge.ToID == scan.NodeID
 	}
-	return out, next, nil
+	return edge.FromID == scan.NodeID
 }
 
 func (s *LocalStore) ScanLabel(ctx context.Context, scan LabelScan) ([]graph.NodeID, string, error) {
@@ -325,6 +484,12 @@ func (s *LocalStore) configureIndexesLocked(domainID graph.DomainID, schemaHash 
 	if s.nodePropertyIndex == nil {
 		s.nodePropertyIndex = map[string]map[string]nodePropertyIndexEntry{}
 	}
+	if s.nodePropertyOrder == nil {
+		s.nodePropertyOrder = map[string]*orderedTree[string, nodePropertyIndexEntry]{}
+	}
+	if s.historyNodePropertyOrder == nil {
+		s.historyNodePropertyOrder = map[string]*orderedTree[string, graph.NodeID]{}
+	}
 	if s.edgePropertyIndex == nil {
 		s.edgePropertyIndex = map[string]map[string]edgePropertyIndexEntry{}
 	}
@@ -335,6 +500,8 @@ func (s *LocalStore) configureIndexesLocked(domainID graph.DomainID, schemaHash 
 	for _, idx := range old {
 		delete(s.indexMetadata, indexIdentity(domainID, idx.Name))
 		delete(s.nodePropertyIndex, indexIdentity(domainID, idx.Name))
+		delete(s.nodePropertyOrder, indexIdentity(domainID, idx.Name))
+		delete(s.historyNodePropertyOrder, indexIdentity(domainID, idx.Name))
 		delete(s.edgePropertyIndex, indexIdentity(domainID, idx.Name))
 	}
 	s.configuredIndexes[domainID] = cloneIndexDefinitions(indexes)
@@ -382,6 +549,7 @@ func (s *LocalStore) configureIndexesLocked(domainID graph.DomainID, schemaHash 
 			}
 		}
 	}
+	s.rebuildNodePropertyOrdersLocked()
 	for _, idx := range indexes {
 		identity := indexIdentity(domainID, idx.Name)
 		meta := s.indexMetadata[identity]

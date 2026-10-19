@@ -49,24 +49,33 @@ func PayloadText(node Node) string {
 	return node.Content
 }
 
-// Property returns a user/domain property, falling back to legacy Props while
-// the node refactor is in flight.
+// Property returns a normalized user/domain property. It accepts canonical
+// direct properties and the legacy nested properties bucket in Properties or
+// Props while the node refactor is in flight.
 func Property(node Node, name string) (any, bool) {
-	if node.Properties != nil {
-		if value, ok := node.Properties[name]; ok {
-			return value, true
-		}
+	want := name
+	if normalized, err := NormalizePropertyName(name); err == nil {
+		want = normalized
 	}
-	if node.Props != nil {
-		if value, ok := node.Props[name]; ok {
+	lookup := func(values map[string]any) (any, bool) {
+		if value, ok := values[name]; ok {
 			return value, true
 		}
-		if nested, ok := node.Props["properties"].(map[string]any); ok {
-			value, ok := nested[name]
+		if want != name {
+			if value, ok := values[want]; ok {
+				return value, true
+			}
+		}
+		if nested, err := NormalizeCustomPropertiesValue(values[NodePropCustomProperties]); err == nil {
+			value, ok := nested[want]
 			return value, ok
 		}
+		return nil, false
 	}
-	return nil, false
+	if value, ok := lookup(node.Properties); ok {
+		return value, true
+	}
+	return lookup(node.Props)
 }
 
 // HasLabels reports whether node contains every required label.

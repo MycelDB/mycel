@@ -169,7 +169,7 @@ func TestPhaseFQueryThroughNonHomeIngressRoutesToLeaderStrongRead(t *testing.T) 
 		t.Fatalf("ExecuteQuery(non-home ingress) error = %v", err)
 	}
 	if len(res.GetRows()) != 1 || res.GetRows()[0].GetFields()["n"].GetNode().GetNodeId() != created.GetNode().GetNodeId() {
-		t.Fatalf("ExecuteQuery rows=%#v want committed node %s", res.GetRows(), created.GetNode().GetNodeId())
+		t.Fatalf("ExecuteQuery rows=%+v fields=%+v want committed node %s", res.GetRows(), res.GetRows()[0].GetFields(), created.GetNode().GetNodeId())
 	}
 	assertStrongReadMetadata(t, res.GetReadMetadata())
 	if diag := ingress.router.Diagnostics(); diag.ForwardSuccesses == 0 || diag.ForwardFailures != 0 {
@@ -200,7 +200,7 @@ func TestPhaseFQueryThroughNonHomeIngressRoutesToLeaderStrongRead(t *testing.T) 
 
 func TestPhaseFGQLReadWriteTransactionReadsStagedOverlay(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
-	querySvc := NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces)
+	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
 	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "INSERT (:Note {title: 'draft'})"}); err != nil {
 		t.Fatalf("ExecuteGQL(insert) error = %v", err)
@@ -233,7 +233,7 @@ func TestPhaseFCommittedQueryFailsClosedWithoutLeader(t *testing.T) {
 	defer groups.Stop()
 	fixture.graphs.EnableExperimentalRaft(groups, 4)
 
-	_, err = NewQueryService(fixture.sessions, fixture.graphs, fixture.spaces).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}}})
+	_, err = newQRX8QueryService(fixture, nil).ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: &clientv1.GraphQuery{Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "n"}}}})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("ExecuteQuery(no leader) code=%v err=%v; want Unavailable", status.Code(err), err)
 	}
@@ -299,7 +299,8 @@ func newPhaseFQueryCluster(t *testing.T) *phaseFQueryCluster {
 		n.sessionsAPI = NewSessionService(sessions, spaces).WithGraphWriteRouteProvider(graphs)
 		n.transactionsAPI = NewTransactionService(sessions, graphs, spaces)
 		n.graphsAPI = NewGraphService(sessions, graphs)
-		n.queryAPI = NewQueryService(sessions, graphs, spaces)
+		n.queryAPI = NewQueryService(sessions, spaces).
+			WithQueryEngine(queryEngineForExplainTest(graphs, nil))
 		n.metadataAPI = NewMetadataCatalogService(sessions, graphs)
 		// Keep the election timeout comfortably above the synthetic tick cadence so
 		// loaded CI runs do not spuriously churn leaders between route discovery and

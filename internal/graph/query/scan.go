@@ -1,9 +1,22 @@
 package query
 
 import (
+	"errors"
+
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
 )
+
+// ErrScanBudgetExceeded reports that a dependency cannot produce a correct
+// page without exceeding the caller-supplied examine bound.
+var ErrScanBudgetExceeded = errors.New("graph scan examine budget exceeded")
+
+// NodeScan describes a finite ID-ordered domain node scan.
+type NodeScan struct {
+	Limit        int
+	Cursor       string
+	ExamineLimit int
+}
 
 // LabelScan describes a paginated label-index scan.
 type LabelScan struct {
@@ -25,6 +38,7 @@ type OrderedNodePropertyScan struct {
 	Direction     schema.IndexSortDirection
 	Limit         int
 	Cursor        string
+	ExamineLimit  int
 	HasLow        bool
 	Low           any
 	LowExclusive  bool
@@ -43,11 +57,12 @@ const (
 
 // AdjacencyScan describes a paginated edge adjacency-index scan.
 type AdjacencyScan struct {
-	NodeID    string
-	Label     string
-	Direction AdjacencyDirection
-	Limit     int
-	Cursor    string
+	NodeID       string
+	Label        string
+	Direction    AdjacencyDirection
+	Limit        int
+	Cursor       string
+	ExamineLimit int
 }
 
 // SubtreeScan describes an indexed hierarchy traversal.

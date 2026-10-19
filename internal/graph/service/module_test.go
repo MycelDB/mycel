@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,11 +22,41 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type testTransactionValidator struct {
+	mu     sync.Mutex
+	active bool
+}
+
+func (v *testTransactionValidator) ValidateTransactionActive(context.Context, sessionmodel.GraphTransaction) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if !v.active {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+func (v *testTransactionValidator) ValidateTransactionFinalized(context.Context, sessionmodel.GraphTransaction) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.active {
+		return ErrInvalidState
+	}
+	return nil
+}
+
+func (v *testTransactionValidator) setActive(active bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.active = active
+}
 
 func TestModuleWALGraphCommitAppendsAndApplies(t *testing.T) {
 	ctx := context.Background()
@@ -477,6 +509,637 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	current.Mode = sessionmodel.TransactionModeReadOnly
 	if _, err := m.GetNode(ctx, current, newNode.ID.String()); err != nil {
 		t.Fatalf("current read-only GetNode(new): %v", err)
+	}
+}
+
+func TestOrderedPropertyOverlayHonorsExamineBoundAndPaginates(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	index := schemamodel.IndexDefinition{
+		Name: "note_rank", TargetKind: schemamodel.IndexTargetNode, Labels: []string{"Note"},
+		Field: schemamodel.FieldPath{Namespace: "properties", Name: "rank"},
+		Kind:  schemamodel.IndexKindOrdered, Direction: schemamodel.IndexSortDirectionAsc,
+	}
+	if err := m.ConfigureIndexes(ctx, tx, "schema-1", []schemamodel.IndexDefinition{index}); err != nil {
+		t.Fatal(err)
+	}
+	for rank := 1; rank <= 5; rank++ {
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"rank": int64(rank)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, _, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+		IndexName: index.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: 1, ExamineLimit: 4,
+	})
+	if !errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		t.Fatalf("tight overlay scan error = %v, want ErrScanBudgetExceeded", err)
+	}
+
+	cursor := ""
+	var got []int64
+	for page := 0; page < 6; page++ {
+		nodes, next, stats, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+			IndexName: index.Name, Direction: schemamodel.IndexSortDirectionAsc,
+			Limit: 1, Cursor: cursor, ExamineLimit: 16,
+		})
+		if err != nil {
+			t.Fatalf("overlay page %d: %v", page, err)
+		}
+		if stats.IndexEntriesScanned > 16 {
+			t.Fatalf("overlay page %d examined %d", page, stats.IndexEntriesScanned)
+		}
+		for _, node := range nodes {
+			value, _ := domaingraph.Property(node, "rank")
+			got = append(got, value.(int64))
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("overlay cursor did not advance: %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("overlay ranks=%v", got)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, _, _, err := m.ScanNodePropertyOrdered(canceled, tx, graphquery.OrderedNodePropertyScan{IndexName: index.Name, Limit: 1, ExamineLimit: 16}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled overlay scan error = %v", err)
+	}
+}
+
+func TestOrderedPropertyOverlayReportsActualLoadsAndPaginatesDescending(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID, domainID := uuid.NewString(), uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	index := schemamodel.IndexDefinition{
+		Name: "note_rank", TargetKind: schemamodel.IndexTargetNode, Labels: []string{"Note"},
+		Field: schemamodel.FieldPath{Namespace: "properties", Name: "rank"},
+		Kind:  schemamodel.IndexKindOrdered, Direction: schemamodel.IndexSortDirectionAsc,
+	}
+	if err := m.ConfigureIndexes(ctx, seed, "schema-1", []schemamodel.IndexDefinition{index}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rank := range []int64{2, 3} {
+		if _, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"rank": rank}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	for _, rank := range []int64{1, 4} {
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"rank": rank}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	nodes, _, stats, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+		IndexName: index.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: 1, ExamineLimit: 16,
+	})
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("ascending mixed overlay nodes=%+v stats=%+v err=%v", nodes, stats, err)
+	}
+	value, _ := domaingraph.Property(nodes[0], "rank")
+	if value != int64(1) || stats.NodesLoaded != 4 {
+		t.Fatalf("ascending rank=%v nodes loaded=%d, want rank 1 and 4 actual loads", value, stats.NodesLoaded)
+	}
+
+	cursor := ""
+	var got []int64
+	for page := 0; page < 5; page++ {
+		nodes, next, pageStats, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+			IndexName: index.Name, Direction: schemamodel.IndexSortDirectionDesc,
+			Limit: 1, Cursor: cursor, ExamineLimit: 16,
+		})
+		if err != nil || pageStats.NodesLoaded > 4 {
+			t.Fatalf("descending page %d nodes=%+v stats=%+v err=%v", page, nodes, pageStats, err)
+		}
+		for _, node := range nodes {
+			value, _ := domaingraph.Property(node, "rank")
+			got = append(got, value.(int64))
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("descending cursor did not advance: %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []int64{4, 3, 2, 1}) {
+		t.Fatalf("descending ranks=%v", got)
+	}
+}
+
+func TestSnapshotLabelScanMakesBoundedProgress(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID, domainID := uuid.NewString(), uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	var want domaingraph.NodeID
+	for i := 1; i <= 5; i++ {
+		label := "Other"
+		if i == 5 {
+			label = "Note"
+		}
+		id := fmt.Sprintf("00000000-0000-0000-0000-%012d", i)
+		node, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{NodeID: id, Labels: []string{label}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if label == "Note" {
+			want = node.ID
+		}
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly := graphTx(spaceID, domainID, commit.CommittedRevision)
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
+
+	cursor := ""
+	emptyProgress := 0
+	var got []domaingraph.NodeID
+	for page := 0; page < 6; page++ {
+		nodes, next, stats, err := m.ScanLabel(ctx, readOnly, graphquery.LabelScan{Label: "Note", Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("snapshot label page %d: %v", page, err)
+		}
+		if stats.IndexEntriesScanned > 1 {
+			t.Fatalf("snapshot label page %d examined %d entries", page, stats.IndexEntriesScanned)
+		}
+		if len(nodes) == 0 && next != "" {
+			emptyProgress++
+		}
+		for _, node := range nodes {
+			got = append(got, node.ID)
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("snapshot label cursor did not advance: %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.NodeID{want}) || emptyProgress != 4 {
+		t.Fatalf("snapshot label IDs=%v empty progress=%d", got, emptyProgress)
+	}
+}
+
+func TestMutationStateRestoresCompleteTransactionOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	original, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "original"})
+	if err != nil {
+		t.Fatalf("CreateNode(original) error = %v", err)
+	}
+	mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	updatedContent := "updated"
+	if _, err := m.UpdateNode(mutationCtx, tx, domaingraph.UpdateNodeInput{NodeID: original.ID.String(), Content: &updatedContent, UpdateMask: []string{"content"}}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	created, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "created-after-savepoint"})
+	if err != nil {
+		t.Fatalf("CreateNode(after savepoint) error = %v", err)
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement() error = %v", err)
+	}
+	got, err := m.GetNode(ctx, tx, original.ID.String())
+	if err != nil {
+		t.Fatalf("GetNode(original) error = %v", err)
+	}
+	if got.Content != "original" {
+		t.Fatalf("restored original content = %q", got.Content)
+	}
+	if _, err := m.GetNode(ctx, tx, created.ID.String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetNode(created after savepoint) error = %v, want ErrNotFound", err)
+	}
+	identity, err := m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "1" {
+		t.Fatalf("restored identity = %q, %v; want 1", identity, err)
+	}
+}
+
+func TestMutationStatementJournalTracksTouchedEntriesNotWholeOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	m.mu.Lock()
+	o := m.overlay(tx.ID)
+	ids := make([]domaingraph.NodeID, 256)
+	for index := range ids {
+		ids[index] = uuid.New()
+		o.putNodes[ids[index]] = domaingraph.Node{ID: ids[index], DomainID: mustDomainID(tx.DomainID), Content: fmt.Sprintf("node-%d", index)}
+		o.opCount++
+	}
+	m.mu.Unlock()
+
+	mutationCtx, captured, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	scope := captured.(*mutationScope)
+	if len(scope.nodes) != 0 || len(scope.edges) != 0 {
+		t.Fatalf("journal eagerly copied overlay: nodes=%d edges=%d", len(scope.nodes), len(scope.edges))
+	}
+	updated := "updated"
+	if _, err := m.UpdateNode(mutationCtx, tx, domaingraph.UpdateNodeInput{NodeID: ids[0].String(), Content: &updated, UpdateMask: []string{"content"}}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	if len(scope.nodes) != 1 || len(scope.edges) != 0 {
+		t.Fatalf("journal nodes=%d edges=%d, want one touched node", len(scope.nodes), len(scope.edges))
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement() error = %v", err)
+	}
+}
+
+func TestMutationStatementSerializesConcurrentTransactionWriteBeforeRollback(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+	if err != nil {
+		t.Fatalf("BeginMutationStatement() error = %v", err)
+	}
+	if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "failed-statement"}); err != nil {
+		t.Fatalf("CreateNode(scoped) error = %v", err)
+	}
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	var concurrent domaingraph.Node
+	go func() {
+		close(started)
+		var createErr error
+		concurrent, createErr = m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "concurrent-success"})
+		done <- createErr
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("concurrent write completed inside active mutation scope: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := m.FinishMutationStatement(ctx, tx, scope, false); err != nil {
+		t.Fatalf("FinishMutationStatement(rollback) error = %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("concurrent CreateNode() error = %v", err)
+	}
+	if _, err := m.GetNode(ctx, tx, concurrent.ID.String()); err != nil {
+		t.Fatalf("GetNode(concurrent success) error = %v", err)
+	}
+	nodes, _, err := m.ListNodes(ctx, tx, 10, "")
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != concurrent.ID {
+		t.Fatalf("overlay nodes after interleaving = %+v, want concurrent success only", nodes)
+	}
+}
+
+func TestTransactionFinalizationSerializesWithMutationScopes(t *testing.T) {
+	ctx := context.Background()
+	t.Run("mutation before commit", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+		if err != nil {
+			t.Fatalf("BeginMutationStatement() error = %v", err)
+		}
+		if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "before-commit"}); err != nil {
+			t.Fatalf("CreateNode() error = %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, commitErr := m.CommitTransactionGraph(ctx, tx)
+			done <- commitErr
+		}()
+		select {
+		case err := <-done:
+			t.Fatalf("commit completed inside active mutation scope: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if err := m.FinishMutationStatement(ctx, tx, scope, true); err != nil {
+			t.Fatalf("FinishMutationStatement() error = %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("CommitTransactionGraph() error = %v", err)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "after-commit"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(after commit) error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("commit before mutation", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+			t.Fatalf("CommitTransactionGraph() error = %v", err)
+		}
+		if _, _, err := m.BeginMutationStatement(ctx, tx); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("BeginMutationStatement(after commit) error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("mutation before discard", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		mutationCtx, scope, err := m.BeginMutationStatement(ctx, tx)
+		if err != nil {
+			t.Fatalf("BeginMutationStatement() error = %v", err)
+		}
+		if _, err := m.CreateNode(mutationCtx, tx, domaingraph.NodeInput{Content: "before-discard"}); err != nil {
+			t.Fatalf("CreateNode() error = %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- m.DiscardTransactionGraph(ctx, tx.ID) }()
+		select {
+		case err := <-done:
+			t.Fatalf("discard completed inside active mutation scope: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if err := m.FinishMutationStatement(ctx, tx, scope, true); err != nil {
+			t.Fatalf("FinishMutationStatement() error = %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("DiscardTransactionGraph() error = %v", err)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "after-discard"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(after discard) error = %v, want ErrInvalidState", err)
+		}
+	})
+
+	t.Run("discard before mutation", func(t *testing.T) {
+		m := newTestGraphModule(t, ctx)
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		if err := m.DiscardTransactionGraph(ctx, tx.ID); err != nil {
+			t.Fatalf("DiscardTransactionGraph() error = %v", err)
+		}
+		if _, _, err := m.BeginMutationStatement(ctx, tx); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("BeginMutationStatement(after discard) error = %v, want ErrInvalidState", err)
+		}
+	})
+}
+
+func TestCommitTransactionGraphRetriesReturnCachedFinalization(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "cached-commit"}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	first, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("first CommitTransactionGraph() error = %v", err)
+	}
+	second, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("retry CommitTransactionGraph() error = %v", err)
+	}
+	if second.OperationCount != first.OperationCount || second.CommittedRevision != first.CommittedRevision {
+		t.Fatalf("retry result = %+v, want operation count/revision from %+v", second, first)
+	}
+}
+
+func TestAcknowledgedTransactionFinalizationsAreReclaimed(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	validator := &testTransactionValidator{active: true}
+	m.SetTransactionValidator(validator)
+	for index := 0; index < 256; index++ {
+		tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+		validator.setActive(true)
+		if index%2 == 0 {
+			if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+				t.Fatalf("CommitTransactionGraph(%d) error = %v", index, err)
+			}
+		} else if err := m.DiscardTransactionGraph(ctx, tx.ID); err != nil {
+			t.Fatalf("DiscardTransactionGraph(%d) error = %v", index, err)
+		}
+		if index == 0 {
+			if err := m.AcknowledgeTransactionFinalization(ctx, tx); !errors.Is(err, ErrInvalidState) {
+				t.Fatalf("AcknowledgeTransactionFinalization(active) error = %v, want ErrInvalidState", err)
+			}
+			m.mu.Lock()
+			finalized := len(m.finalizedTransactions)
+			m.mu.Unlock()
+			if finalized != 1 {
+				t.Fatalf("terminal graph records after premature acknowledgement = %d, want 1", finalized)
+			}
+		}
+		validator.setActive(false)
+		if err := m.AcknowledgeTransactionFinalization(ctx, tx); err != nil {
+			t.Fatalf("AcknowledgeTransactionFinalization(%d) error = %v", index, err)
+		}
+		m.mu.Lock()
+		finalized := len(m.finalizedTransactions)
+		m.mu.Unlock()
+		if finalized != 0 {
+			t.Fatalf("terminal graph records after acknowledgement = %d, want 0", finalized)
+		}
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "stale"}); !errors.Is(err, ErrInvalidState) {
+			t.Fatalf("CreateNode(stale transaction %d) error = %v, want ErrInvalidState", index, err)
+		}
+	}
+}
+
+func TestMutationStatementRevalidatesTransactionAfterWaitingForLease(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	tx := graphTx(uuid.NewString(), uuid.NewString(), 0)
+	validator := &testTransactionValidator{active: true}
+	m.SetTransactionValidator(validator)
+	_, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		t.Fatalf("lockTransactionMutation() error = %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _, beginErr := m.BeginMutationStatement(ctx, tx)
+		done <- beginErr
+	}()
+	validator.setActive(false)
+	release()
+	if err := <-done; !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("BeginMutationStatement() error = %v, want ErrInvalidState", err)
+	}
+}
+
+func TestListNodesUsesCursorDrivenPagesBoundToTransactionOverlay(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	for i := 0; i < 3; i++ {
+		if _, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: fmt.Sprintf("node-%d", i)}); err != nil {
+			t.Fatalf("CreateNode(seed %d) error = %v", i, err)
+		}
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph(seed) error = %v", err)
+	}
+
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	identity, err := m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "0" {
+		t.Fatalf("ReadViewIdentity(initial) = %q, %v", identity, err)
+	}
+	first, next, err := m.ListNodes(ctx, tx, 1, "")
+	if err != nil {
+		t.Fatalf("ListNodes(first) error = %v", err)
+	}
+	if len(first) != 1 || !strings.HasPrefix(next, nodePageTokenPrefix) {
+		t.Fatalf("ListNodes(first) nodes=%+v next=%q", first, next)
+	}
+	staleAfterMutation := next
+	ids := []string{first[0].ID.String()}
+	for next != "" {
+		page, continuation, err := m.ListNodes(ctx, tx, 1, next)
+		if err != nil {
+			t.Fatalf("ListNodes(continuation) error = %v", err)
+		}
+		if len(page) != 1 {
+			t.Fatalf("ListNodes(continuation) nodes=%+v next=%q", page, continuation)
+		}
+		ids = append(ids, page[0].ID.String())
+		next = continuation
+	}
+	if len(ids) != 3 || !(ids[0] < ids[1] && ids[1] < ids[2]) {
+		t.Fatalf("cursor-driven node IDs = %v", ids)
+	}
+	if legacy, _, err := m.ListNodes(ctx, tx, 1, "1"); err != nil || len(legacy) != 1 {
+		t.Fatalf("ListNodes(legacy token) nodes=%+v error=%v", legacy, err)
+	}
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "overlay"}); err != nil {
+		t.Fatalf("CreateNode(overlay) error = %v", err)
+	}
+	identity, err = m.ReadViewIdentity(ctx, tx)
+	if err != nil || identity != "1" {
+		t.Fatalf("ReadViewIdentity(mutated) = %q, %v", identity, err)
+	}
+	if _, _, err := m.ListNodes(ctx, tx, 1, staleAfterMutation); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListNodes(stale overlay cursor) error = %v, want ErrInvalidInput", err)
+	}
+	if _, _, err := m.ListNodes(ctx, tx, 1, "1"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListNodes(legacy overlay cursor) error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestScanAdjacencyOverlayMakesBoundedProgressAndPreservesOrder(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	parent, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := make([]domaingraph.Node, 3)
+	for i := range children {
+		children[i], err = m.CreateNode(ctx, seed, domaingraph.NodeInput{Content: fmt.Sprintf("child-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[0].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(2)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := m.CreateEdge(ctx, seed, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[2].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(4)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	if _, err := m.DeleteEdge(ctx, tx, deleted.ID.String()); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: children[1].ID.String(), Labels: []string{"contains"}, Properties: map[string]any{"order": int64(3)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cursor := ""
+	emptyProgress := 0
+	var got []domaingraph.EdgeID
+	for {
+		page, next, stats, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{NodeID: parent.ID.String(), Label: "contains", Direction: graphquery.AdjacencyDirectionOut, Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("ScanAdjacency() error = %v", err)
+		}
+		if stats.IndexEntriesScanned <= 0 {
+			t.Fatalf("ScanAdjacency() stats = %+v", stats)
+		}
+		if len(page) == 0 && next != "" {
+			emptyProgress++
+		}
+		for _, edge := range page {
+			got = append(got, edge.ID)
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("non-progressing cursor %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) || emptyProgress != 0 {
+		t.Fatalf("adjacency IDs=%v empty progress=%d", got, emptyProgress)
+	}
+
+	if _, _, _, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{
+		NodeID: parent.ID.String(), Direction: graphquery.AdjacencyDirectionOut, Limit: 1, ExamineLimit: 3,
+	}); !errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		t.Fatalf("tight wildcard overlay scan error = %v", err)
+	}
+	cursor = ""
+	got = nil
+	for {
+		page, next, stats, err := m.ScanAdjacency(ctx, tx, graphquery.AdjacencyScan{
+			NodeID: parent.ID.String(), Direction: graphquery.AdjacencyDirectionOut,
+			Limit: 1, Cursor: cursor, ExamineLimit: 16,
+		})
+		if err != nil {
+			t.Fatalf("ScanAdjacency(wildcard) error = %v", err)
+		}
+		if stats.IndexEntriesScanned > 16 {
+			t.Fatalf("wildcard examined %d entries", stats.IndexEntriesScanned)
+		}
+		for _, edge := range page {
+			got = append(got, edge.ID)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.EdgeID{staged.ID, retained.ID}) {
+		t.Fatalf("wildcard adjacency IDs=%v", got)
 	}
 }
 
