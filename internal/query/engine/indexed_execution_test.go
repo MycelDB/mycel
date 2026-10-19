@@ -153,7 +153,16 @@ func (a *traversalTestAccess) ScanAdjacency(_ context.Context, tx sessionmodel.G
 	if scan.Limit <= 0 {
 		return nil, "", graphquery.IndexedReadStats{}, fmt.Errorf("unbounded adjacency limit %d", scan.Limit)
 	}
-	edges := a.edges[scan.NodeID]
+	edges := make([]graph.Edge, 0, len(a.edges[scan.NodeID]))
+	for _, edge := range a.edges[scan.NodeID] {
+		if scan.Direction == graphquery.AdjacencyDirectionOut && edge.FromID.String() != scan.NodeID {
+			continue
+		}
+		if scan.Direction == graphquery.AdjacencyDirectionIn && edge.ToID.String() != scan.NodeID {
+			continue
+		}
+		edges = append(edges, edge)
+	}
 	start := 0
 	if scan.Cursor != "" {
 		parsed, err := strconv.Atoi(scan.Cursor)
@@ -578,12 +587,23 @@ func TestEngineSemanticCandidatesPreserveRankAndFailClosedHydration(t *testing.T
 	if got := resultNames(result); fmt.Sprint(got) != "[second]" || result.NextCursor == "" || semantic.calls != 1 || access.getCalls != 2 {
 		t.Fatalf("result=%#v names=%v semantic calls=%d hydration calls=%d", result, got, semantic.calls, access.getCalls)
 	}
-	query.Page.Cursor = result.NextCursor
+	firstCursor := result.NextCursor
+	query.Page.Cursor = firstCursor
 	preparedNext := prepareIndexed(t, engine, tx, query)
 	next, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 8}}, preparedNext)
 	if err != nil || fmt.Sprint(resultNames(next)) != "[first]" {
 		t.Fatalf("continuation=%#v error=%v", next, err)
 	}
+
+	semantic.batch.Candidates = []queryengine.SemanticCandidate{
+		{NodeID: nodes[2].ID.String(), Score: 1},
+		{NodeID: nodes[1].ID.String(), Score: .9},
+		{NodeID: nodes[0].ID.String(), Score: .8},
+		{NodeID: nodes[1].ID.String(), Score: .7},
+	}
+	query.Page.Cursor = firstCursor
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 8}}, prepareIndexed(t, engine, tx, query))
+	assertEngineQueryCode(t, err, querylogical.ErrorStaleCursor)
 
 	query.Page.Cursor = ""
 	prepared = prepareIndexed(t, engine, tx, query)
@@ -637,6 +657,65 @@ func TestEngineExecutesAdjacencyWithSecureSourceContinuation(t *testing.T) {
 		if got != tx {
 			t.Fatalf("transaction = %#v, want %#v", got, tx)
 		}
+	}
+}
+
+func TestEngineExecutesUndirectedAdjacencyAcrossDirectionsWithSecurePagination(t *testing.T) {
+	nodes := indexedNodes("incoming", "start", "outgoing")
+	base := newIndexedTestAccess(nodes)
+	access := &traversalTestAccess{indexedTestAccess: base, edges: map[string][]graph.Edge{}}
+	access.edges[nodes[1].ID.String()] = []graph.Edge{
+		indexedEdge(1, nodes[1], nodes[2], "LINKS"),
+		indexedEdge(2, nodes[1], nodes[1], "LINKS"),
+		indexedEdge(3, nodes[0], nodes[1], "LINKS"),
+		indexedEdge(4, nodes[0], nodes[1], "LINKS"),
+	}
+	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access, Traversals: access})
+	tx := indexedTransaction()
+	field := querylogical.FieldRef{Alias: "m", Namespace: querylogical.NamespaceProperties, Name: "name"}
+	query := querylogical.Query{
+		Source: querylogical.SourceGQL, AccessMode: querylogical.AccessModeReadOnly,
+		Start: querylogical.NodePattern{Alias: "n", NodeIDs: []string{nodes[1].ID.String()}, Labels: []string{"Document"}},
+		Steps: []querylogical.Step{{
+			Edge:   querylogical.EdgePattern{Alias: "e", Labels: []string{"LINKS"}, Direction: querylogical.DirectionUndirected},
+			Depth:  querylogical.DepthBounds{Min: 1, Max: 1},
+			Target: querylogical.NodePattern{Alias: "m", Labels: []string{"Document"}},
+		}},
+		Returns: []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "m", Field: &field, OutputName: "name"}},
+		Page:    querylogical.PageSpec{Size: 1},
+	}
+
+	got := []string{}
+	for page := 0; page < 8; page++ {
+		prepared := prepareIndexed(t, engine, tx, query)
+		if prepared.Physical.Family != queryphysical.FamilyIndexedAdjacency {
+			t.Fatalf("plan family = %q", prepared.Physical.Family)
+		}
+		result, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 1}}, prepared)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		got = append(got, resultNames(result)...)
+		if result.NextCursor == "" {
+			break
+		}
+		if !strings.HasPrefix(result.NextCursor, "qrx7:") {
+			t.Fatalf("page %d cursor = %q", page, result.NextCursor)
+		}
+		query.Page.Cursor = result.NextCursor
+	}
+	if fmt.Sprint(got) != "[outgoing start incoming incoming]" {
+		t.Fatalf("undirected names = %v", got)
+	}
+	seenDirections := map[graphquery.AdjacencyDirection]bool{}
+	for _, scan := range access.adjacencyScans {
+		seenDirections[scan.Direction] = true
+		if scan.Limit <= 0 {
+			t.Fatalf("unbounded undirected adjacency scan: %#v", scan)
+		}
+	}
+	if !seenDirections[graphquery.AdjacencyDirectionOut] || !seenDirections[graphquery.AdjacencyDirectionIn] {
+		t.Fatalf("undirected scans = %#v", access.adjacencyScans)
 	}
 }
 

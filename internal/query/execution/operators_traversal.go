@@ -211,7 +211,7 @@ func (s *AdjacencySource) nextRow(ctx context.Context) (BindingRow, error) {
 		if !edgeMatched {
 			continue
 		}
-		endpointID := traversalEndpoint(edge, s.step.Edge.Direction)
+		endpointID := traversalEndpoint(edge, s.step.Edge.Direction, s.startNode.ID.String())
 		endpoint, err := s.readNode(ctx, endpointID)
 		if err != nil {
 			return BindingRow{}, err
@@ -649,7 +649,7 @@ func (o *PathExpand) visit(ctx context.Context, base BindingRow, node graph.Node
 				if !edgeMatched {
 					continue
 				}
-				endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
+				endpointID := traversalEndpoint(edge, o.step.Edge.Direction, node.ID.String())
 				if _, cycle := seen[endpointID]; cycle && !o.allowNodeRevisit {
 					continue
 				}
@@ -1000,7 +1000,7 @@ func (o *SubtreeExpand) expandRow(ctx context.Context, row BindingRow) (truncate
 					if !edgeMatched {
 						continue
 					}
-					endpointID := traversalEndpoint(edge, o.step.Edge.Direction)
+					endpointID := traversalEndpoint(edge, o.step.Edge.Direction, current.node.ID.String())
 					if _, seen := visited[endpointID]; seen {
 						addGraphEdge(edge)
 						if err = o.resizeSubtreeReservation(&reserved, out, matchedNodes, parentByChild, orderByChild, frontier, visited, graphEdgeSeen); err != nil {
@@ -1182,8 +1182,14 @@ func matchesEdgePattern(edge graph.Edge, pattern querylogical.EdgePattern, row B
 	return true, nil
 }
 
-func traversalEndpoint(edge graph.Edge, direction querylogical.Direction) string {
+func traversalEndpoint(edge graph.Edge, direction querylogical.Direction, currentNodeID string) string {
 	if direction == querylogical.DirectionIncoming {
+		return edge.FromID.String()
+	}
+	if direction == querylogical.DirectionUndirected {
+		if edge.FromID.String() == currentNodeID {
+			return edge.ToID.String()
+		}
 		return edge.FromID.String()
 	}
 	return edge.ToID.String()

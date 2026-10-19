@@ -35,7 +35,7 @@ Mutation execution preserves:
 - returned rows and graph projection;
 - parameter resolution;
 - mutation `LIMIT` behavior;
-- response page size and legacy output-offset continuation behavior (native read-source checkpoints are cleared before mutation result shaping);
+- response page size as a statement-scope safety bound: mutations do not accept or emit continuations, and an oversized returned result rolls the statement scope back with `ResourceExhausted`;
 - node/relationship merge identity rules;
 - read-write access enforcement.
 
@@ -67,7 +67,7 @@ Coverage includes:
 - native physical mutation plan and Explain assertions;
 - existing daemon GQL insert, set, delete, node merge, relationship create/merge, parameters, counters, rows, graph, and overlay tests;
 - incident-edge validation before mutation writes;
-- mutation continuation round trips across multiple result pages;
+- mutation continuation rejection plus rollback of oversized `SET` and `DELETE` result statements;
 - overlay restoration after shaping-budget exhaustion, post-write cancellation, and a later writer failure;
 - per-transaction write serialization across rollback and concurrent primitive writes;
 - both mutation-before-finalization and finalization-before-mutation orderings for commit and discard, stale primitive-write rejection after commit, rollback, and close, and reclamation of acknowledged terminal records across repeated lifecycle operations;

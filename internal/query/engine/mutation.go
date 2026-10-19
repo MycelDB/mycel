@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	queryexecution "github.com/myceldb/mycel/internal/query/execution"
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
@@ -29,6 +29,14 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	}
 	if err := queryexecution.ValidatePage(prepared.Statement.Mutation.Page); err != nil {
 		return querylogical.Result{}, err
+	}
+	if strings.TrimSpace(prepared.Statement.Mutation.Page.Cursor) != "" {
+		return querylogical.Result{}, querylogical.NewError(
+			querylogical.ErrorInvalidQuery,
+			"paginate mutation result",
+			"mutation continuations are not supported; execute each mutation exactly once",
+			nil,
+		)
 	}
 	if execution.Now.IsZero() {
 		execution.Now = time.Now()
@@ -69,6 +77,14 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	result, err := shapeMutationResult(mutationCtx, run.rows, mutation, prepared, execution, tracker, budget)
 	if err != nil {
 		return finish(false, err)
+	}
+	if result.NextCursor != "" {
+		return finish(false, querylogical.NewError(
+			querylogical.ErrorResourceExhausted,
+			"paginate mutation result",
+			"mutation result exceeds one response page; increase the page size or narrow the mutation match",
+			nil,
+		))
 	}
 	releaseRows()
 	result.Diagnostics.RetainedMemoryBytes = tracker.Snapshot().RetainedMemory
@@ -373,45 +389,47 @@ func (e *Engine) validateNodeDeletes(ctx context.Context, execution ExecutionCon
 	if len(nodes) == 0 {
 		return nil
 	}
-	if e.ports.Traversals == nil {
-		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "validate node delete", "adjacency access is required", nil)
+	if e.ports.Entities == nil {
+		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "validate node delete", "bounded edge access is required", nil)
 	}
 	limit := tracker.Limits().BatchSize
-	for nodeID := range nodes {
-		for _, direction := range []graphquery.AdjacencyDirection{graphquery.AdjacencyDirectionOut, graphquery.AdjacencyDirectionIn} {
-			cursor := ""
-			for {
-				if err := tracker.UseAdjacency(1); err != nil {
-					return err
+	cursor := ""
+	for {
+		edges, next, scanErr := e.ports.Entities.ListEdges(ctx, execution.Transaction, limit, cursor)
+		if err := mutationDependencyError(ctx, "validate node delete", scanErr); err != nil {
+			return err
+		}
+		if len(edges) > limit {
+			return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "edge access returned an oversized page", nil)
+		}
+		if err := tracker.LoadEdges(int64(len(edges))); err != nil {
+			return err
+		}
+		if err := tracker.ExamineCandidates(int64(len(edges))); err != nil {
+			return err
+		}
+		for _, edge := range edges {
+			_, fromDeleted := nodes[edge.FromID.String()]
+			_, toDeleted := nodes[edge.ToID.String()]
+			if !fromDeleted && !toDeleted {
+				continue
+			}
+			if _, ok := deletedEdges[edge.ID.String()]; !ok {
+				nodeID := edge.FromID.String()
+				if !fromDeleted {
+					nodeID = edge.ToID.String()
 				}
-				edges, next, stats, scanErr := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
-					NodeID: nodeID, Direction: direction, Limit: limit, Cursor: cursor,
-				})
-				if err := mutationDependencyError(ctx, "validate node delete", scanErr); err != nil {
-					return err
-				}
-				if err := tracker.ScanIndexEntries(int64(stats.IndexEntriesScanned)); err != nil {
-					return err
-				}
-				if err := tracker.LoadEdges(int64(stats.EdgesLoaded)); err != nil {
-					return err
-				}
-				for _, edge := range edges {
-					if _, ok := deletedEdges[edge.ID.String()]; !ok {
-						return querylogical.NewError(querylogical.ErrorInvalidQuery, "delete node", fmt.Sprintf("node %q requires deleting incident edge %q first", nodeID, edge.ID.String()), nil)
-					}
-				}
-				if next == "" {
-					break
-				}
-				if next == cursor {
-					return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "adjacency cursor did not advance", nil)
-				}
-				cursor = next
+				return querylogical.NewError(querylogical.ErrorInvalidQuery, "delete node", fmt.Sprintf("node %q requires deleting incident edge %q first", nodeID, edge.ID.String()), nil)
 			}
 		}
+		if next == "" {
+			return nil
+		}
+		if next == cursor {
+			return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "edge cursor did not advance", nil)
+		}
+		cursor = next
 	}
-	return nil
 }
 
 func (e *Engine) createRelationship(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, mutation querylogical.Mutation, tracker *queryexecution.Tracker, merge bool) (mutationRunResult, error) {
@@ -561,7 +579,7 @@ func (e *Engine) collectMutationMatches(ctx context.Context, execution Execution
 		return queryexecution.Matches{}, err
 	}
 	prepared.readViewIdentity = view
-	source, err := e.indexedSource(ctx, execution, prepared, tracker, indexedCursor{}, 0)
+	source, err := e.indexedSource(ctx, execution, prepared, tracker, indexedCursor{}, 0, &executionContinuation{})
 	if err != nil {
 		return queryexecution.Matches{}, err
 	}
@@ -592,9 +610,10 @@ func shapeMutationResult(ctx context.Context, rows []queryexecution.BindingRow, 
 	}
 	sourceRows := rows
 	for index := range sourceRows {
-		// Mutation continuations preserve the established output-offset contract. A
-		// native read-source checkpoint would be rejected by mutation pagination
-		// and must never escape as the response cursor.
+		// Mutation results must fit one response page. Clear read-source
+		// checkpoints so shaping can only signal an output overflow, which causes
+		// the statement scope to roll back rather than issue a continuation that
+		// would execute the mutation again.
 		sourceRows[index].Cursor = ""
 	}
 	if mutation.Kind == querylogical.MutationInsertNode || mutation.Kind == querylogical.MutationCreateRelationship {

@@ -511,6 +511,63 @@ func TestReadOnlyTransactionUsesBaseRevisionSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotLabelScanMakesBoundedProgress(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID, domainID := uuid.NewString(), uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	var want domaingraph.NodeID
+	for i := 1; i <= 5; i++ {
+		label := "Other"
+		if i == 5 {
+			label = "Note"
+		}
+		id := fmt.Sprintf("00000000-0000-0000-0000-%012d", i)
+		node, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{NodeID: id, Labels: []string{label}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if label == "Note" {
+			want = node.ID
+		}
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly := graphTx(spaceID, domainID, commit.CommittedRevision)
+	readOnly.Mode = sessionmodel.TransactionModeReadOnly
+
+	cursor := ""
+	emptyProgress := 0
+	var got []domaingraph.NodeID
+	for page := 0; page < 6; page++ {
+		nodes, next, stats, err := m.ScanLabel(ctx, readOnly, graphquery.LabelScan{Label: "Note", Limit: 1, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("snapshot label page %d: %v", page, err)
+		}
+		if stats.IndexEntriesScanned > 1 {
+			t.Fatalf("snapshot label page %d examined %d entries", page, stats.IndexEntriesScanned)
+		}
+		if len(nodes) == 0 && next != "" {
+			emptyProgress++
+		}
+		for _, node := range nodes {
+			got = append(got, node.ID)
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("snapshot label cursor did not advance: %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []domaingraph.NodeID{want}) || emptyProgress != 4 {
+		t.Fatalf("snapshot label IDs=%v empty progress=%d", got, emptyProgress)
+	}
+}
+
 func TestMutationStateRestoresCompleteTransactionOverlay(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)

@@ -3301,15 +3301,16 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.Gr
 	if overlaySnapshot != nil {
 		extra = len(overlaySnapshot.putNodes)
 	}
-	storageLimit := scan.Limit
-	if storageLimit > 0 {
-		storageLimit += extra
-	}
-	entries, next, err := store.ScanNodePropertyOrdered(ctx, graphstorage.OrderedNodePropertyScan{DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction, Limit: storageLimit, Cursor: scan.Cursor, HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive, HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive})
+	entries, next, scanned, err := store.ScanNodePropertyOrderedBounded(ctx, graphstorage.OrderedNodePropertyScan{
+		DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction,
+		Limit: scan.Limit, Cursor: scan.Cursor, ExamineLimit: scan.ExamineLimit,
+		HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive,
+		HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive,
+	})
 	if err != nil {
 		return nil, "", stats, mapStorageError(err)
 	}
-	stats.IndexEntriesScanned = len(entries)
+	stats.IndexEntriesScanned = scanned
 	items := make([]indexedNodeResult, 0, len(entries)+extra)
 	for _, entry := range entries {
 		if overlaySnapshot != nil {
@@ -3334,6 +3335,7 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.Gr
 			return nil, "", stats, mapStorageError(err)
 		}
 		for _, node := range overlaySnapshot.putNodes {
+			stats.IndexEntriesScanned++
 			if node.DomainID != mustDomainID(tx.DomainID) || !nodeMatchesConfiguredIndex(node, scan.IndexName, store) {
 				continue
 			}
@@ -3838,79 +3840,48 @@ func (m *Module) scanSnapshotTag(ctx context.Context, store *graphstorage.LocalS
 }
 
 func scanSnapshotNodes(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, cursor string, limit int, revision uint64, include func(domaingraph.Node) bool) ([]domaingraph.Node, string, int, error) {
-	nodes, err := store.ListNodesByDomainAt(ctx, domainID, revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
+	if limit <= 0 || limit > 500 {
+		limit = 500
 	}
 	cursorKey, err := graphstorage.DecodeIndexCursor(cursor)
 	if err != nil {
 		return nil, "", 0, mapStorageError(err)
 	}
-	items := make([]domaingraph.Node, 0, len(nodes))
-	for _, node := range nodes {
-		if !include(node) || cursorKey != "" && node.ID.String() <= cursorKey {
-			continue
-		}
-		items = append(items, cloneNode(node))
+	nodes, next, examined, err := store.ScanNodesByDomain(ctx, graphstorage.DomainNodeScan{
+		DomainID: domainID, Limit: limit, Cursor: cursorKey,
+		Snapshot: true, Revision: revision, ExamineLimit: limit,
+	})
+	if err != nil {
+		return nil, "", examined, mapStorageError(err)
 	}
-	return limitSnapshotNodes(items, limit), snapshotNodeNext(items, limit), len(nodes), nil
+	out := make([]domaingraph.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if include(node) {
+			out = append(out, cloneNode(node))
+		}
+	}
+	return out, graphstorage.EncodeIndexCursor(next), examined, nil
 }
 
 func (m *Module) scanSnapshotNodePropertyOrdered(ctx context.Context, store *graphstorage.LocalStore, tx sessionmodel.GraphTransaction, scan graphquery.OrderedNodePropertyScan, revision uint64) ([]domaingraph.Node, string, int, error) {
-	status, ok, err := readyNodeIndexStatus(ctx, store, mustDomainID(tx.DomainID), scan.IndexName)
+	entries, next, examined, err := store.ScanNodePropertyOrderedAt(ctx, graphstorage.OrderedNodePropertyScan{
+		DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction,
+		Limit: scan.Limit, Cursor: scan.Cursor, ExamineLimit: scan.ExamineLimit,
+		HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive,
+		HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive,
+	}, revision)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", examined, mapStorageError(err)
 	}
-	if !ok {
-		return nil, "", 0, mapStorageError(graphstorage.ErrIndexUnavailable)
-	}
-	nodes, err := store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	items := make([]indexedNodeResult, 0, len(nodes))
-	for _, node := range nodes {
-		if !nodeHasAnyLabelForIndexedRead(node, status.Labels) {
-			continue
+	out := make([]domaingraph.Node, 0, len(entries))
+	for _, entry := range entries {
+		node, readErr := store.GetNodeAt(ctx, entry.NodeID, revision)
+		if readErr != nil {
+			return nil, "", examined, mapStorageError(readErr)
 		}
-		value, ok := domaingraph.Property(node, status.Field.Name)
-		if !ok {
-			continue
-		}
-		key, err := graphstorage.EncodeOrderedNodeKey(value, node.ID)
-		if err != nil || !indexedValueInBounds(key, scan) {
-			continue
-		}
-		if cursorKey != "" {
-			if scan.Direction == schemamodel.IndexSortDirectionDesc {
-				if key >= cursorKey {
-					continue
-				}
-			} else if key <= cursorKey {
-				continue
-			}
-		}
-		items = append(items, indexedNodeResult{node: cloneNode(node), key: key})
+		out = append(out, cloneNode(node))
 	}
-	out, next := finishIndexedNodeResults(items, scan.Limit, scan.Direction, "")
-	return out, next, len(nodes), nil
-}
-
-func readyNodeIndexStatus(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, indexName string) (graphstorage.IndexMetadata, bool, error) {
-	statuses, err := store.IndexStatuses(ctx)
-	if err != nil {
-		return graphstorage.IndexMetadata{}, false, mapStorageError(err)
-	}
-	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == domainID && status.TargetKind == schemamodel.IndexTargetNode && status.BuildState == graphstorage.IndexBuildStateReady {
-			return status, true, nil
-		}
-	}
-	return graphstorage.IndexMetadata{}, false, nil
+	return out, next, examined, nil
 }
 
 func limitSnapshotNodes(items []domaingraph.Node, limit int) []domaingraph.Node {

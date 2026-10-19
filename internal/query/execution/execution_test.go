@@ -752,6 +752,57 @@ func TestShapeResidualPredicatesUseTypedFieldsParametersAndDates(t *testing.T) {
 	}
 }
 
+func TestShapeEqualityDistinguishesMissingFromExplicitNull(t *testing.T) {
+	missing := bindingRow("00000000-0000-0000-0000-000000000001", "missing", "x", 1)
+	explicitNull := bindingRow("00000000-0000-0000-0000-000000000002", "null", "x", 2)
+	node := explicitNull.Nodes["n"]
+	node.Properties["optional"] = nil
+	explicitNull.Nodes["n"] = node
+	nonNull := bindingRow("00000000-0000-0000-0000-000000000003", "value", "x", 3)
+	node = nonNull.Nodes["n"]
+	node.Properties["optional"] = "set"
+	nonNull.Nodes["n"] = node
+	rows := []queryexecution.BindingRow{missing, explicitNull, nonNull}
+	field := fieldValue("n", "optional")
+	null := querylogical.Value{Kind: querylogical.ValueNull}
+
+	equality := querylogical.Query{
+		Predicate: querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafComparison, Operator: "=", Left: &field, Right: &null}),
+		Returns:   nodeProjection(),
+	}
+	result := shape(t, rows, equality, queryexecution.Budget{})
+	if len(result.Rows) != 1 || result.Rows[0].Fields["n"].Node.ID != explicitNull.Nodes["n"].ID.String() {
+		t.Fatalf("equality rows = %#v, want only explicit null", result.Rows)
+	}
+
+	optionalField := fieldRef("n", "optional")
+	isNull := querylogical.Query{
+		Predicate: querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafNull, Field: optionalField, IsNull: true}),
+		Returns:   nodeProjection(),
+	}
+	result = shape(t, rows, isNull, queryexecution.Budget{})
+	if len(result.Rows) != 2 || result.Rows[0].Fields["n"].Node.ID != missing.Nodes["n"].ID.String() || result.Rows[1].Fields["n"].Node.ID != explicitNull.Nodes["n"].ID.String() {
+		t.Fatalf("IS NULL rows = %#v, want missing and explicit null", result.Rows)
+	}
+}
+
+func TestShapeDistinctOrdersAfterProjection(t *testing.T) {
+	rows := []queryexecution.BindingRow{
+		bindingRow("00000000-0000-0000-0000-000000000001", "x-high", "x", 100),
+		bindingRow("00000000-0000-0000-0000-000000000002", "y", "y", 50),
+		bindingRow("00000000-0000-0000-0000-000000000003", "x-low", "x", 1),
+	}
+	query := querylogical.Query{
+		Returns:  []querylogical.Projection{{Kind: querylogical.ProjectionScalar, Alias: "n", Field: fieldRef("n", "category"), OutputName: "category"}},
+		Distinct: true,
+		OrderBy:  []querylogical.Order{{Value: fieldValue("n", "score"), Direction: querylogical.SortAscending}},
+	}
+	result := shape(t, rows, query, queryexecution.Budget{})
+	if len(result.Rows) != 2 || scalarString(result.Rows[0], "category") != "y" || scalarString(result.Rows[1], "category") != "x" {
+		t.Fatalf("distinct ordered rows = %#v, want y then x", result.Rows)
+	}
+}
+
 func TestShapeDistinctPreservesFirstOccurrence(t *testing.T) {
 	rows := []queryexecution.BindingRow{
 		bindingRow("00000000-0000-0000-0000-000000000001", "same", "x", 1),

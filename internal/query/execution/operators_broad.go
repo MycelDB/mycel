@@ -222,7 +222,7 @@ func (o *CollectExpand) collectStep(ctx context.Context, row *BindingRow, starts
 						if !edgeMatched {
 							continue
 						}
-						endpointID := traversalEndpoint(edge, step.Edge.Direction)
+						endpointID := traversalEndpoint(edge, step.Edge.Direction, current.node.ID.String())
 						if _, seen := visited[endpointID]; seen {
 							continue
 						}

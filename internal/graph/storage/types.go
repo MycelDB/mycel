@@ -108,6 +108,8 @@ type Store interface {
 	ScanLabel(ctx context.Context, scan LabelScan) ([]graph.NodeID, string, error)
 	ScanTag(ctx context.Context, scan TagScan) ([]graph.NodeID, string, error)
 	ScanNodePropertyOrdered(ctx context.Context, scan OrderedNodePropertyScan) ([]NodeIndexEntry, string, error)
+	ScanNodePropertyOrderedBounded(ctx context.Context, scan OrderedNodePropertyScan) ([]NodeIndexEntry, string, int, error)
+	ScanNodePropertyOrderedAt(ctx context.Context, scan OrderedNodePropertyScan, revision uint64) ([]NodeIndexEntry, string, int, error)
 	ScanEdgePropertyOrdered(ctx context.Context, scan OrderedEdgePropertyScan) ([]EdgeIndexEntry, string, error)
 	ScanAdjacency(ctx context.Context, scan AdjacencyScan) ([]graph.EdgeID, string, error)
 	IndexStatuses(ctx context.Context) ([]IndexMetadata, error)

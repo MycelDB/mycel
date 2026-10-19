@@ -1298,6 +1298,87 @@ func TestLocalStoreSchemaNodePropertyIndexBackfillsAndMaintains(t *testing.T) {
 	}
 }
 
+func TestLocalStoreOrderedPropertyScansBoundCurrentAndHistoricalWork(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	domainID := graph.DomainID(uuid.New())
+	idx := journalDateIndex()
+	if err := store.ConfigureIndexes(ctx, domainID, "schema-1", []schema.IndexDefinition{idx}); err != nil {
+		t.Fatal(err)
+	}
+	first := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-18"}}
+	second := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"JournalEntry"}, Properties: map[string]any{"date": "2026-07-19"}}
+	seed, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.PutNode(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	snapshotRevision := store.Revision()
+	first.Properties["date"] = "2026-07-20"
+	update, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := update.PutNode(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	scan := OrderedNodePropertyScan{DomainID: domainID, IndexName: idx.Name, Direction: schema.IndexSortDirectionAsc, Limit: 1, ExamineLimit: 1}
+	current, next, examined, err := store.ScanNodePropertyOrderedBounded(ctx, scan)
+	if err != nil || len(current) != 1 || current[0].NodeID != second.ID || examined != 1 || next == "" {
+		t.Fatalf("current page entries=%+v next=%q examined=%d err=%v", current, next, examined, err)
+	}
+	scan.Cursor = next
+	current, next, examined, err = store.ScanNodePropertyOrderedBounded(ctx, scan)
+	if err != nil || len(current) != 1 || current[0].NodeID != first.ID || examined != 1 || next != "" {
+		t.Fatalf("current continuation entries=%+v next=%q examined=%d err=%v", current, next, examined, err)
+	}
+
+	scan.Cursor = ""
+	var historical []graph.NodeID
+	emptyProgress := 0
+	for page := 0; page < 4; page++ {
+		entries, continuation, examined, err := store.ScanNodePropertyOrderedAt(ctx, scan, snapshotRevision)
+		if err != nil || examined > 1 {
+			t.Fatalf("historical page %d entries=%+v next=%q examined=%d err=%v", page, entries, continuation, examined, err)
+		}
+		for _, entry := range entries {
+			historical = append(historical, entry.NodeID)
+		}
+		if len(entries) == 0 && continuation != "" {
+			emptyProgress++
+		}
+		if continuation == "" {
+			break
+		}
+		if continuation == scan.Cursor {
+			t.Fatalf("historical cursor did not advance: %q", continuation)
+		}
+		scan.Cursor = continuation
+	}
+	if !reflect.DeepEqual(historical, []graph.NodeID{first.ID, second.ID}) {
+		t.Fatalf("historical IDs=%v", historical)
+	}
+	if emptyProgress > 1 {
+		t.Fatalf("historical empty progress pages=%d", emptyProgress)
+	}
+}
+
 func TestLocalStoreSchemaNodePropertyIndexSurvivesReopenByRebuild(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

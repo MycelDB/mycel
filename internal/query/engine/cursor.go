@@ -35,6 +35,7 @@ type indexedCursor struct {
 	PageOffset       int    `json:"page_offset,omitempty"`
 	OutputOffset     int    `json:"output_offset,omitempty"`
 	RowsReturned     int64  `json:"rows_returned,omitempty"`
+	SemanticIdentity string `json:"semantic_identity,omitempty"`
 	Checksum         string `json:"checksum"`
 }
 
@@ -146,6 +147,9 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if cursor.Mode == cursorModeOutput && (cursor.StartIndex != 0 || cursor.PageCursor != "" || cursor.PageOffset != 0 || cursor.RowsReturned != int64(cursor.OutputOffset)) {
 		return staleCursor("output cursor contains incompatible source continuation state", nil)
 	}
+	if prepared.Physical.Family != queryphysical.FamilySemantic && cursor.SemanticIdentity != "" {
+		return staleCursor("cursor contains incompatible semantic continuation state", nil)
+	}
 	if cursor.TransactionID != prepared.Planning.Transaction.ID || cursor.BaseRevision != prepared.Planning.Transaction.BaseRevision {
 		return staleCursor("cursor transaction snapshot does not match the prepared query", nil)
 	}
@@ -178,6 +182,12 @@ func encodeIndexedCursor(prepared PreparedQuery, cursor indexedCursor) string {
 func indexedCursorChecksum(cursor indexedCursor) string {
 	cursor.Checksum = ""
 	payload, _ := json.Marshal(cursor)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func semanticCandidateIdentity(ids []string) string {
+	payload, _ := json.Marshal(ids)
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }

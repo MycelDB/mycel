@@ -41,4 +41,23 @@ func TestOrderedTreeInsertUpdateDeleteAndCursorIteration(t *testing.T) {
 	if !reflect.DeepEqual(keys, []string{"d", "e", "g"}) {
 		t.Fatalf("cursor iteration keys=%v", keys)
 	}
+
+	collectReverse := func(cursor string, hasCursor bool) []string {
+		iterator := tree.IteratorBefore(cursor, hasCursor)
+		var keys []string
+		for iterator.HasNext() {
+			key, _, ok := iterator.Next()
+			if !ok {
+				t.Fatal("reverse iterator reported an item but returned none")
+			}
+			keys = append(keys, key)
+		}
+		return keys
+	}
+	if keys := collectReverse("", false); !reflect.DeepEqual(keys, []string{"g", "e", "d", "c", "b"}) {
+		t.Fatalf("reverse iteration keys=%v", keys)
+	}
+	if keys := collectReverse("e", true); !reflect.DeepEqual(keys, []string{"d", "c", "b"}) {
+		t.Fatalf("reverse cursor iteration keys=%v", keys)
+	}
 }

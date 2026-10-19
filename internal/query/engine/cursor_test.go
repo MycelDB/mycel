@@ -121,7 +121,7 @@ func TestIndexedSourceRejectsChecksumValidOffsetOutsideSourceBatch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = (&Engine{}).indexedSource(t.Context(), ExecutionContext{}, prepared, tracker, indexedCursor{Mode: cursorModeSource, PageOffset: 2}, 0)
+	_, err = (&Engine{}).indexedSource(t.Context(), ExecutionContext{}, prepared, tracker, indexedCursor{Mode: cursorModeSource, PageOffset: 2}, 0, &executionContinuation{})
 	var queryErr *querylogical.QueryError
 	if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorStaleCursor {
 		t.Fatalf("error = %#v, want stale cursor", err)

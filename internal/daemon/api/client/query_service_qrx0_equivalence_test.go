@@ -19,12 +19,11 @@ import (
 )
 
 type qrx0EquivalentRead struct {
-	name                          string
-	structured                    *clientv1.GraphQuery
-	gql                           string
-	pageSize                      int32
-	unordered                     bool
-	knownTemporalMetadataMismatch bool
+	name       string
+	structured *clientv1.GraphQuery
+	gql        string
+	pageSize   int32
+	unordered  bool
 }
 
 func TestQRX0StructuredAndGQLPredicateShapingEquivalence(t *testing.T) {
@@ -369,34 +368,24 @@ func assertQRX0EquivalentRead(t *testing.T, fixture domainPolicyClientAPIFixture
 	if err != nil {
 		t.Fatalf("ExecuteGQL(%s) error = %v", pair.name, err)
 	}
-	assertQRX0TypedResultParity(t, structured.GetResult(), gql.GetResult(), pair.unordered, pair.knownTemporalMetadataMismatch)
+	assertQRX0TypedResultParity(t, structured.GetResult(), gql.GetResult(), pair.unordered)
 	if !proto.Equal(structured.GetReadMetadata(), gql.GetReadMetadata()) {
 		t.Fatalf("%s read metadata differs: structured=%+v GQL=%+v", pair.name, structured.GetReadMetadata(), gql.GetReadMetadata())
 	}
 	return structured, gql
 }
 
-func assertQRX0TypedResultParity(t *testing.T, structured *clientv1.QueryResult, gql *clientv1.QueryResult, unorderedRows bool, knownTemporalMetadataMismatch bool) {
+func assertQRX0TypedResultParity(t *testing.T, structured *clientv1.QueryResult, gql *clientv1.QueryResult, unorderedRows bool) {
 	t.Helper()
-	left := canonicalQRX0Result(structured, unorderedRows, false)
-	right := canonicalQRX0Result(gql, unorderedRows, false)
-	if knownTemporalMetadataMismatch {
-		if proto.Equal(left, right) {
-			t.Fatal("known structured/GQL temporal metadata mismatch was fixed; remove the compatibility normalization")
-		}
-		left = canonicalQRX0Result(structured, unorderedRows, true)
-		right = canonicalQRX0Result(gql, unorderedRows, true)
-	}
+	left := canonicalQRX0Result(structured, unorderedRows)
+	right := canonicalQRX0Result(gql, unorderedRows)
 	if !proto.Equal(left, right) {
 		t.Fatalf("typed query results differ:\nstructured: %s\nGQL: %s", left, right)
 	}
 }
 
-func canonicalQRX0Result(in *clientv1.QueryResult, unorderedRows bool, clearTemporalMetadata bool) *clientv1.QueryResult {
+func canonicalQRX0Result(in *clientv1.QueryResult, unorderedRows bool) *clientv1.QueryResult {
 	out := proto.Clone(in).(*clientv1.QueryResult)
-	if clearTemporalMetadata {
-		clearQRX0TemporalMetadata(out)
-	}
 	if unorderedRows {
 		sort.Slice(out.Rows, func(i, j int) bool {
 			return bytes.Compare(deterministicQRX0Proto(out.Rows[i]), deterministicQRX0Proto(out.Rows[j])) < 0
@@ -407,56 +396,6 @@ func canonicalQRX0Result(in *clientv1.QueryResult, unorderedRows bool, clearTemp
 		sort.Slice(out.Graph.Edges, func(i, j int) bool { return out.Graph.Edges[i].GetEdgeId() < out.Graph.Edges[j].GetEdgeId() })
 	}
 	return out
-}
-
-func clearQRX0TemporalMetadata(result *clientv1.QueryResult) {
-	clearNode := func(node *clientv1.Node) {
-		if node != nil {
-			node.CreateTime = nil
-			node.UpdateTime = nil
-		}
-	}
-	clearEdge := func(edge *clientv1.Edge) {
-		if edge != nil {
-			edge.CreateTime = nil
-			edge.UpdateTime = nil
-		}
-	}
-	var clearTreeNode func(*clientv1.TreeNode)
-	clearTreeNode = func(treeNode *clientv1.TreeNode) {
-		if treeNode == nil {
-			return
-		}
-		clearNode(treeNode.Node)
-		for _, child := range treeNode.Children {
-			clearTreeNode(child)
-		}
-	}
-	for _, row := range result.GetRows() {
-		for _, value := range row.GetFields() {
-			clearNode(value.GetNode())
-			clearEdge(value.GetEdge())
-			if path := value.GetPath(); path != nil {
-				for _, node := range path.GetNodes() {
-					clearNode(node)
-				}
-				for _, edge := range path.GetEdges() {
-					clearEdge(edge)
-				}
-			}
-			if tree := value.GetTree(); tree != nil {
-				for _, root := range tree.GetRoots() {
-					clearTreeNode(root)
-				}
-			}
-		}
-	}
-	for _, node := range result.GetGraph().GetNodes() {
-		clearNode(node)
-	}
-	for _, edge := range result.GetGraph().GetEdges() {
-		clearEdge(edge)
-	}
 }
 
 func deterministicQRX0Proto(message proto.Message) []byte {
