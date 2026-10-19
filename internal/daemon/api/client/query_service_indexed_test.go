@@ -1080,7 +1080,7 @@ func TestQueryServiceExecuteQueryIndexedStringContainsBoundedByPropertyIndex(t *
 }
 
 func TestQueryServiceExecuteGQLIndexedTextContainsProperty(t *testing.T) {
-	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeExplicitOnly})
 	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
 	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
 	txSvc := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces)
@@ -1103,6 +1103,51 @@ func TestQueryServiceExecuteGQLIndexedTextContainsProperty(t *testing.T) {
 	}
 	if diag := res.GetDiagnostics(); diag.GetPlan() != "OrderedNodePropertyPredicateIndexScan" || diag.GetFullScan() || !containsString(diag.GetIndexes(), "journal_entries_by_title") {
 		t.Fatalf("unexpected diagnostics: %+v", diag)
+	}
+}
+
+func TestQueryServiceIndexedTextContainsRejectsSearchDisabledDomain(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{SearchMode: graphmodel.DomainSearchModeDisabled})
+	manager := journalSchemaManagerForQueryTest(t, fixture.domainID, true)
+	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	service := newQRX8QueryService(fixture, manager)
+
+	tests := []struct {
+		name    string
+		execute func() error
+	}{
+		{
+			name: "structured",
+			execute: func() error {
+				_, err := service.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{
+					TransactionId: readTx,
+					Query: &clientv1.GraphQuery{
+						Match: &clientv1.GraphPattern{Start: &clientv1.NodePattern{Alias: "j", Labels: []string{"JournalEntry"}}},
+						Where: &clientv1.Expr{Expr: &clientv1.Expr_Text{Text: &clientv1.TextSearchExpr{
+							Alias: "j", Field: "title", Query: "memory",
+						}}},
+					},
+				})
+				return err
+			},
+		},
+		{
+			name: "gql",
+			execute: func() error {
+				_, err := service.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{
+					TransactionId: readTx,
+					Query:         "MATCH (j:JournalEntry) WHERE TEXT_CONTAINS(j.title, 'memory') RETURN j",
+				})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.execute(); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("status = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+			}
+		})
 	}
 }
 

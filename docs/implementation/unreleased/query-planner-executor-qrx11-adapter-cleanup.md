@@ -46,7 +46,7 @@ Compatibility retained at the boundary includes:
 - finite structured traversal safety and the established gRPC failure category for open or over-cap depth;
 - default structured start-node projection when no return or aggregate projection is supplied;
 - runtime node/edge identity fields (`node_id`, `edge_id`, `from_node_id`, and `to_node_id`) under strict schemas;
-- ordered-property-bounded `TEXT_CONTAINS` execution without requiring a standalone text-search capability;
+- ordered-property-bounded `TEXT_CONTAINS` execution in explicitly searchable domains without requiring a standalone full-text-index capability; disabled-domain text predicates fail closed during binding;
 - compatible historical indexed cursors only for source-safe plan families and unchanged transaction views;
 - the documented QRX0/QRX4 GQL non-equality and `BETWEEN` broad-plan compatibility gates.
 

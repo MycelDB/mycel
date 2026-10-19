@@ -135,10 +135,13 @@ func TestBindValidatesParametersAndPredicateCapabilities(t *testing.T) {
 	textField := querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties, Name: "name"}
 	query.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafText, Field: &textField, Query: "ada"})
 	environment = readEnvironment()
-	environment.Domain.ExplicitSearchable = false
+	environment.Domain.BroadSearchable = false
 	if _, err := binding.Bind(querylogical.ReadStatement(query), environment); err != nil {
-		t.Fatalf("bind text predicate before physical access-path selection: %v", err)
+		t.Fatalf("bind text predicate for explicitly searchable domain: %v", err)
 	}
+	environment.Domain.ExplicitSearchable = false
+	_, err = binding.Bind(querylogical.ReadStatement(query), environment)
+	assertQueryError(t, err, querylogical.ErrorUnavailableAccessPath, "domain does not allow text search")
 
 	semanticField := querylogical.FieldRef{Alias: "p", Namespace: querylogical.NamespaceProperties}
 	query.Predicate = querylogical.LeafPredicate(querylogical.Leaf{Kind: querylogical.LeafSemantic, Field: &semanticField, Query: "graph databases", Limit: 5})
