@@ -19,6 +19,22 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
+func TestGraphMutationDigestCanonicalizesSetOrderAndEmptyCollections(t *testing.T) {
+	domainID := domaingraph.DomainID(uuid.New())
+	nodeID := domaingraph.NodeID(uuid.New())
+	first, err := graphMutationDigest(graphCommitRecord{OperationCount: 1, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Labels: []string{" B ", "A", "A"}, Properties: nil, Payload: map[string]any{}, Meta: map[string]any{"nested": map[string]any{}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := graphMutationDigest(graphCommitRecord{OperationCount: 1, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Labels: []string{"A", "B"}, Properties: map[string]any{}, Payload: nil, Meta: map[string]any{"nested": map[string]any(nil)}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("logically equivalent mutation digests differ: %s != %s", first, second)
+	}
+}
+
 func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	ctx := context.Background()
 	m, dataDir := newTestGraphModuleWithDataDir(t, ctx)
@@ -92,6 +108,39 @@ func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	}
 	if !loaded.IdempotentReplay || loaded.CommitID != first.CommitID || loaded.CommittedRevision != 1 {
 		t.Fatalf("restarted replay = %#v, first = %#v", loaded, first)
+	}
+	closeGraphModuleStores(t, restarted)
+}
+
+func TestGraphCommitIdempotencyLookupRepairsPendingDeliveryOnce(t *testing.T) {
+	ctx := context.Background()
+	m, dataDir := newTestGraphModuleWithDataDir(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	principalID := uuid.NewString()
+	tx := idempotencyGraphTx(spaceID, domainID, principalID, 0, "pending-delivery")
+	if _, err := m.UpsertNode(ctx, tx, domaingraph.NodeInput{NodeID: uuid.NewString(), Content: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	closeGraphModuleStores(t, m)
+
+	restarted := NewModule()
+	initTestGraphModuleAtDataDir(t, ctx, restarted, dataDir)
+	sinkCalls := 0
+	restarted.SetChangeSink(graphchange.SinkFunc(func(context.Context, graphchange.CommittedEvent) error {
+		sinkCalls++
+		return nil
+	}))
+	for i := 0; i < 2; i++ {
+		if _, found, err := restarted.LookupIdempotentCommit(ctx, principalID, spaceID, domainID, "pending-delivery"); err != nil || !found {
+			t.Fatalf("LookupIdempotentCommit(%d) found=%v err=%v", i, found, err)
+		}
+	}
+	if sinkCalls != 1 {
+		t.Fatalf("repaired sink calls = %d, want 1", sinkCalls)
 	}
 	closeGraphModuleStores(t, restarted)
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,6 +30,8 @@ type IdempotencyMetrics struct {
 	Mismatches         uint64
 	CapacityRejections uint64
 	Evictions          uint64
+	ActiveRecords      uint64
+	CapacityRecords    uint64
 }
 
 type graphCommitIdempotency struct {
@@ -41,14 +44,15 @@ type graphCommitIdempotency struct {
 }
 
 type graphCommitIdempotencyMetadata struct {
-	CommitID       string `json:"commit_id"`
-	TransactionID  string `json:"transaction_id"`
-	SessionID      string `json:"session_id"`
-	SpaceID        string `json:"space_id"`
-	DomainID       string `json:"domain_id"`
-	BaseRevision   int64  `json:"base_revision"`
-	OperationCount int32  `json:"operation_count"`
-	OperationID    string `json:"operation_id,omitempty"`
+	CommitID       string                      `json:"commit_id"`
+	TransactionID  string                      `json:"transaction_id"`
+	SessionID      string                      `json:"session_id"`
+	SpaceID        string                      `json:"space_id"`
+	DomainID       string                      `json:"domain_id"`
+	BaseRevision   int64                       `json:"base_revision"`
+	OperationCount int32                       `json:"operation_count"`
+	OperationID    string                      `json:"operation_id,omitempty"`
+	Event          *graphchange.CommittedEvent `json:"event,omitempty"`
 }
 
 type canonicalGraphMutation struct {
@@ -62,10 +66,14 @@ type canonicalGraphMutation struct {
 }
 
 func (m *Module) lockGraphCommitIdempotencyScope(tx sessionmodel.GraphTransaction) func() {
-	if tx.IdempotencyKey == "" {
+	return m.lockGraphCommitIdempotencyIdentity(tx.PrincipalID, tx.SpaceID, tx.DomainID, tx.IdempotencyKey)
+}
+
+func (m *Module) lockGraphCommitIdempotencyIdentity(principalID, spaceID, domainID, key string) func() {
+	if key == "" {
 		return func() {}
 	}
-	sum := sha256.Sum256([]byte(tx.SpaceID + "\x00" + tx.DomainID))
+	sum := sha256.Sum256([]byte(principalID + "\x00" + spaceID + "\x00" + domainID + "\x00" + key))
 	lock := &m.idempotencyScopeLocks[int(sum[0])%len(m.idempotencyScopeLocks)]
 	lock.Lock()
 	return lock.Unlock
@@ -130,11 +138,20 @@ func graphMutationDigest(record graphCommitRecord) (string, error) {
 	for i := range nodes {
 		nodes[i].CreatedAt = time.Time{}
 		nodes[i].UpdatedAt = time.Time{}
+		nodes[i].Labels = canonicalStringSet(nodes[i].Labels)
+		nodes[i].Properties = idempotencyCanonicalMap(nodes[i].Properties)
+		nodes[i].Payload = idempotencyCanonicalMap(nodes[i].Payload)
+		nodes[i].Meta = idempotencyCanonicalMap(nodes[i].Meta)
+		nodes[i].Props = idempotencyCanonicalMap(nodes[i].Props)
 	}
 	edges := append([]domaingraph.Edge(nil), record.PutEdges...)
 	for i := range edges {
 		edges[i].CreatedAt = time.Time{}
 		edges[i].UpdatedAt = time.Time{}
+		edges[i].Labels = canonicalStringSet(edges[i].Labels)
+		edges[i].Properties = idempotencyCanonicalMap(edges[i].Properties)
+		edges[i].Payload = idempotencyCanonicalMap(edges[i].Payload)
+		edges[i].Meta = idempotencyCanonicalMap(edges[i].Meta)
 	}
 	payload, err := json.Marshal(canonicalGraphMutation{
 		OperationCount:         record.OperationCount,
@@ -150,6 +167,124 @@ func graphMutationDigest(record graphCommitRecord) (string, error) {
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func canonicalStringSet(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func idempotencyCanonicalMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = idempotencyCanonicalValue(value)
+	}
+	return out
+}
+
+func idempotencyCanonicalValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return idempotencyCanonicalMap(typed)
+	case []any:
+		if len(typed) == 0 {
+			return nil
+		}
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = idempotencyCanonicalValue(item)
+		}
+		return out
+	case []string:
+		if len(typed) == 0 {
+			return nil
+		}
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
+}
+
+func attachIdempotencyEvent(record *graphCommitIdempotency, event graphchange.CommittedEvent, changes []graphchange.Change) error {
+	if record == nil {
+		return nil
+	}
+	commitID, err := uuid.Parse(record.Metadata.CommitID)
+	if err != nil {
+		return fmt.Errorf("invalid idempotency commit ID: %w", err)
+	}
+	event.ID = commitID
+	event.CommitID = commitID
+	event.TxnID = commitID
+	event.TransactionID = commitID
+	event.CommittedAt = record.CommittedAt
+	event.Changes = changes
+	event.Normalize()
+	record.Metadata.Event = &event
+	return nil
+}
+
+func idempotencyEvent(record graphstorage.IdempotencyRecord) (graphchange.CommittedEvent, bool, error) {
+	var metadata graphCommitIdempotencyMetadata
+	if err := json.Unmarshal(record.Metadata, &metadata); err != nil {
+		return graphchange.CommittedEvent{}, false, fmt.Errorf("decode graph idempotency metadata: %w", err)
+	}
+	if metadata.Event == nil || metadata.Event.Empty() {
+		return graphchange.CommittedEvent{}, false, nil
+	}
+	event := *metadata.Event
+	event.GraphRevision = record.CommittedRevision
+	event.Revision = record.CommittedRevision
+	event.CommittedAt = record.CommittedAt
+	event.Normalize()
+	return event, true, nil
+}
+
+func (m *Module) deliverIdempotencyEvent(ctx context.Context, store *graphstorage.LocalStore, record graphstorage.IdempotencyRecord) error {
+	if record.Delivered {
+		return nil
+	}
+	event, ok, err := idempotencyEvent(record)
+	if err != nil || !ok {
+		return err
+	}
+	m.mu.Lock()
+	sink := m.changeSink
+	if m.raftGroups != nil {
+		sink = m.raftApplyChangeSink
+	}
+	m.mu.Unlock()
+	delivered, err := m.notifyChangeSink(ctx, sink, graphstorage.CommitInfo{TxnID: event.TxnID, NextRevision: record.CommittedRevision}, event)
+	if err != nil || !delivered {
+		return err
+	}
+	if err := store.MarkIdempotencyDelivered(context.WithoutCancel(ctx), record.Scope, record.Key, record.Digest); err != nil {
+		m.mu.Lock()
+		m.lastGraphChangeSinkErr = err
+		m.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (record graphCommitIdempotency) storageRecord() (graphstorage.IdempotencyRecord, error) {
@@ -228,7 +363,7 @@ func (m *Module) LookupIdempotentCommit(ctx context.Context, principalID, spaceI
 	if _, err := m.strongGraphRead(ctx, spaceID); err != nil {
 		return graphchange.CommitResult{}, false, err
 	}
-	return m.lookupIdempotentCommitLocal(ctx, principalID, spaceID, domainID, key)
+	return m.lookupIdempotentCommitWithDelivery(ctx, principalID, spaceID, domainID, key)
 }
 
 func (m *Module) IdempotencyMetrics() IdempotencyMetrics {
@@ -240,7 +375,10 @@ func (m *Module) IdempotencyMetrics() IdempotencyMetrics {
 	}
 	m.mu.Lock()
 	for _, store := range m.stores {
-		metrics.Evictions += store.IdempotencyEvictions()
+		active, capacity, evictions := store.IdempotencyStats()
+		metrics.ActiveRecords += uint64(active)
+		metrics.CapacityRecords += uint64(capacity)
+		metrics.Evictions += evictions
 	}
 	m.mu.Unlock()
 	return metrics
@@ -262,4 +400,25 @@ func (m *Module) lookupIdempotentCommitLocal(ctx context.Context, principalID, s
 	m.idempotencyReplayHits.Add(1)
 	result, err := graphCommitResultFromIdempotency(record, true)
 	return result, true, err
+}
+
+func (m *Module) lookupIdempotentCommitWithDelivery(ctx context.Context, principalID, spaceID, domainID, key string) (graphchange.CommitResult, bool, error) {
+	release := m.lockGraphCommitIdempotencyIdentity(principalID, spaceID, domainID, key)
+	defer release()
+	result, found, err := m.lookupIdempotentCommitLocal(ctx, principalID, spaceID, domainID, key)
+	if err != nil || !found {
+		return result, found, err
+	}
+	store, err := m.store(ctx, spaceID, domainID)
+	if err != nil {
+		return graphchange.CommitResult{}, false, err
+	}
+	record, found, err := store.GetIdempotencyRecord(ctx, principalID, key)
+	if err != nil {
+		return graphchange.CommitResult{}, false, mapStorageError(err)
+	}
+	if found {
+		_ = m.deliverIdempotencyEvent(ctx, store, record)
+	}
+	return result, true, nil
 }

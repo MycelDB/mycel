@@ -365,6 +365,7 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		return err
 	}
 	registrations := make([]*registration, 0, len(m.registrations))
+	insertedAny := false
 	for _, domainID := range domainIDs {
 		key := scopeKey(spaceID, domainID.String())
 		if err := m.loadHistoryLocked(key, spaceID, domainID.String()); err != nil {
@@ -372,7 +373,12 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 			m.mu.Unlock()
 			return err
 		}
-		m.history[key] = insertHistoryEvent(m.history[key], event)
+		var inserted bool
+		m.history[key], inserted = insertHistoryEvent(m.history[key], event)
+		if !inserted {
+			continue
+		}
+		insertedAny = true
 		if revision := eventRevision(event); revision > m.current[key] {
 			m.current[key] = revision
 		}
@@ -382,6 +388,10 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 			m.mu.Unlock()
 			return err
 		}
+	}
+	if !insertedAny {
+		m.mu.Unlock()
+		return nil
 	}
 	m.diagnostics.EventsPublished++
 	if leaderGate != nil {
@@ -1018,16 +1028,16 @@ func eventRevision(event graphchange.CommittedEvent) uint64 {
 	return event.GraphRevision
 }
 
-func insertHistoryEvent(events []graphchange.CommittedEvent, event graphchange.CommittedEvent) []graphchange.CommittedEvent {
+func insertHistoryEvent(events []graphchange.CommittedEvent, event graphchange.CommittedEvent) ([]graphchange.CommittedEvent, bool) {
 	revision := eventRevision(event)
 	index := sort.Search(len(events), func(i int) bool { return eventRevision(events[i]) >= revision })
 	if index < len(events) && eventRevision(events[index]) == revision {
-		return events
+		return events, false
 	}
 	events = append(events, graphchange.CommittedEvent{})
 	copy(events[index+1:], events[index:])
 	events[index] = event
-	return events
+	return events, true
 }
 
 func normalizeHistoryEvents(events []graphchange.CommittedEvent) []graphchange.CommittedEvent {

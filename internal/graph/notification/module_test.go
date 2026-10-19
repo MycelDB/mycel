@@ -146,6 +146,31 @@ func TestRegisterConsumerReceivesMatchingProjectedEvent(t *testing.T) {
 	}
 }
 
+func TestOnGraphCommittedDoesNotRedeliverPersistedRevision(t *testing.T) {
+	ctx := context.Background()
+	m := initTestModule(t)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	consumer := newRecordingConsumer()
+	reg, err := m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "dedupe", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}}, consumer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	event := committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})
+	if err := m.OnGraphCommitted(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	consumer.wait(t)
+	if err := m.OnGraphCommitted(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	events, gaps := consumer.snapshot()
+	if len(events) != 1 || len(gaps) != 0 || m.Diagnostics().EventsPublished != 1 {
+		t.Fatalf("duplicate delivery events=%d gaps=%d diagnostics=%+v", len(events), len(gaps), m.Diagnostics())
+	}
+}
+
 func TestReplayOrdersOutOfOrderPublishedRevisions(t *testing.T) {
 	ctx := context.Background()
 	m := initTestModule(t)

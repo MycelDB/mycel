@@ -487,7 +487,7 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		}
 		return json.Marshal(raftGraphOptionalEdgeResponse{Edge: e, Read: read})
 	case "get_idempotent_commit":
-		commit, found, err := m.lookupIdempotentCommitLocal(ctx, req.PrincipalID, req.SpaceID, req.DomainID, req.IdempotencyKey)
+		commit, found, err := m.lookupIdempotentCommitWithDelivery(ctx, req.PrincipalID, req.SpaceID, req.DomainID, req.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}

@@ -16,7 +16,7 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-const graphRaftSnapshotVersion = 1
+const graphRaftSnapshotVersion = 2
 
 type graphRaftSnapshot struct {
 	Version         int                   `json:"version"`
@@ -27,11 +27,12 @@ type graphRaftSnapshot struct {
 }
 
 type graphRaftSpaceState struct {
-	SpaceID  string            `json:"space_id"`
-	DomainID string            `json:"domain_id"`
-	Revision uint64            `json:"revision"`
-	Nodes    []graphmodel.Node `json:"nodes"`
-	Edges    []graphmodel.Edge `json:"edges"`
+	SpaceID            string                           `json:"space_id"`
+	DomainID           string                           `json:"domain_id"`
+	Revision           uint64                           `json:"revision"`
+	Nodes              []graphmodel.Node                `json:"nodes"`
+	Edges              []graphmodel.Edge                `json:"edges"`
+	IdempotencyRecords []graphstorage.IdempotencyRecord `json:"idempotency_records,omitempty"`
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
@@ -70,7 +71,11 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 		if err != nil {
 			return nil, err
 		}
-		snap.Spaces = append(snap.Spaces, graphRaftSpaceState{SpaceID: key.SpaceID, DomainID: key.DomainID, Revision: store.Revision(), Nodes: nodes, Edges: edges})
+		idempotencyRecords, err := store.ListIdempotencyRecords(ctx)
+		if err != nil {
+			return nil, err
+		}
+		snap.Spaces = append(snap.Spaces, graphRaftSpaceState{SpaceID: key.SpaceID, DomainID: key.DomainID, Revision: store.Revision(), Nodes: nodes, Edges: edges, IdempotencyRecords: idempotencyRecords})
 	}
 	m.mu.Lock()
 	for id := range m.raftAppliedCommands {
@@ -99,7 +104,7 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
-	if snap.Version != graphRaftSnapshotVersion {
+	if snap.Version != 1 && snap.Version != graphRaftSnapshotVersion {
 		return fmt.Errorf("unsupported graph raft snapshot version %d", snap.Version)
 	}
 	if snap.PartitionID != partitionID || snap.PartitionCount != partitionCount {
@@ -214,6 +219,10 @@ func (m *Module) restoreGraphSpace(ctx context.Context, state graphRaftSpaceStat
 			_ = store.Close()
 			return fmt.Errorf("graph snapshot for space %s restored revision %d, want %d", state.SpaceID, store.Revision(), state.Revision)
 		}
+	}
+	if err := store.RestoreIdempotencyRecords(ctx, state.IdempotencyRecords); err != nil {
+		_ = store.Close()
+		return err
 	}
 	m.mu.Lock()
 	m.stores[key] = store

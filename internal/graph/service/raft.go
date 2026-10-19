@@ -49,6 +49,11 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err
 	}
+	if record.Idempotency != nil && record.Idempotency.Metadata.Event != nil {
+		event := *record.Idempotency.Metadata.Event
+		event.Normalize()
+		return event, append([]graphchange.Change(nil), event.Changes...), nil
+	}
 	snapshot := &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}, opCount: record.OperationCount}
 	for _, node := range record.PutNodes {
 		snapshot.putNodes[node.ID] = node
@@ -268,6 +273,14 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	}
 	if err := m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID); err != nil {
 		return err
+	}
+	if info.Idempotency != nil {
+		store, err := m.store(ctx, record.SpaceID, record.DomainID)
+		if err != nil {
+			return err
+		}
+		_ = m.deliverIdempotencyEvent(ctx, store, *info.Idempotency)
+		return nil
 	}
 	if info.IdempotentReplay {
 		return nil

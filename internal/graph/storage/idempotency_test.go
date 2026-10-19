@@ -81,6 +81,9 @@ func TestLocalStoreIdempotencyReplaysAtomicallyAndSurvivesRestart(t *testing.T) 
 	if _, err := conflict.CommitWithInfo(); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("conflicting commit error = %v, want ErrIdempotencyConflict", err)
 	}
+	if err := store.MarkIdempotencyDelivered(ctx, record.Scope, record.Key, record.Digest); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -94,7 +97,7 @@ func TestLocalStoreIdempotencyReplaysAtomicallyAndSurvivesRestart(t *testing.T) 
 	if err != nil || !ok {
 		t.Fatalf("GetIdempotencyRecord() = %#v, %v, %v", loaded, ok, err)
 	}
-	if loaded.Digest != record.Digest || loaded.CommittedRevision != 1 || string(loaded.Metadata) != string(record.Metadata) {
+	if loaded.Digest != record.Digest || loaded.CommittedRevision != 1 || string(loaded.Metadata) != string(record.Metadata) || !loaded.Delivered {
 		t.Fatalf("loaded idempotency record = %#v", loaded)
 	}
 }

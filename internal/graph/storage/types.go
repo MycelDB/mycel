@@ -35,12 +35,14 @@ const (
 type RecordKind uint8
 
 const (
-	RecordKindTxnBegin      RecordKind = 1
-	RecordKindTxnCommit     RecordKind = 2
-	RecordKindNodePut       RecordKind = 10
-	RecordKindNodeTombstone RecordKind = 11
-	RecordKindEdgePut       RecordKind = 20
-	RecordKindEdgeTombstone RecordKind = 21
+	RecordKindTxnBegin             RecordKind = 1
+	RecordKindTxnCommit            RecordKind = 2
+	RecordKindIdempotencyRestore   RecordKind = 3
+	RecordKindIdempotencyDelivered RecordKind = 4
+	RecordKindNodePut              RecordKind = 10
+	RecordKindNodeTombstone        RecordKind = 11
+	RecordKindEdgePut              RecordKind = 20
+	RecordKindEdgeTombstone        RecordKind = 21
 )
 
 type SegmentKind uint8
@@ -131,6 +133,7 @@ type IdempotencyRecord struct {
 	CommittedRevision uint64          `json:"committed_revision"`
 	CommittedAt       time.Time       `json:"committed_at"`
 	ExpiresAt         time.Time       `json:"expires_at"`
+	Delivered         bool            `json:"delivered,omitempty"`
 }
 
 type CommitInfo struct {

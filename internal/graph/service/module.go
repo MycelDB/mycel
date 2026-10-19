@@ -1657,6 +1657,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			m.idempotencyReplayMisses.Add(1)
 		} else {
 			m.idempotencyReplayHits.Add(1)
+			_ = m.deliverIdempotencyEvent(ctx, store, existing)
 			commitResult, err := graphCommitResultFromIdempotency(existing, true)
 			if err != nil {
 				return graphchange.CommitResult{}, err
@@ -1677,6 +1678,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	stepStart = time.Now()
 	graphEvent, err := m.graphChangeEvent(ctx, tx, store, snapshot)
 	if err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	if err := attachIdempotencyEvent(record.Idempotency, graphEvent, changes); err != nil {
 		return graphchange.CommitResult{}, err
 	}
 	timing.GraphEvent = time.Since(stepStart)
@@ -1810,8 +1814,6 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		info.TxnID = uuid.New()
 		info.NextRevision = uint64(committedRevision)
 	}
-	releaseIdempotency()
-	idempotencyLocked = false
 	restoreOverlay = false
 	commitResult := graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}
 	if info.Idempotency != nil {
@@ -1829,7 +1831,13 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	if err := m.finalizeCommittedTransactionGraph(tx.ID, commitResult); err != nil {
 		return graphchange.CommitResult{}, err
 	}
-	if !info.IdempotentReplay {
+	if info.Idempotency != nil {
+		stepStart = time.Now()
+		recorder := &graphSinkTimingRecorder{}
+		_ = m.deliverIdempotencyEvent(withGraphSinkTimingRecorder(ctx, recorder), store, *info.Idempotency)
+		timing.ChangeSink = time.Since(stepStart)
+		timing.SinkTimings = recorder.timings
+	} else if !info.IdempotentReplay {
 		graphEvent.Changes = changes
 		stepStart = time.Now()
 		recorder := &graphSinkTimingRecorder{}
@@ -1837,6 +1845,8 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		timing.ChangeSink = time.Since(stepStart)
 		timing.SinkTimings = recorder.timings
 	}
+	releaseIdempotency()
+	idempotencyLocked = false
 	timing.Total = time.Since(traceStart)
 	m.logGraphCommitTiming(tx, map[string]int{"operation_count": int(snapshot.opCount), "put_nodes": len(record.PutNodes), "put_edges": len(record.PutEdges), "delete_nodes": len(record.DeleteNodeIDs), "delete_edges": len(record.DeleteEdgeIDs), "changes": len(changes)}, committedRevision, timing)
 	return commitResult, nil
@@ -1873,38 +1883,50 @@ func (m *Module) requireLocalWriteAllowed() error {
 	return m.writeAllowed()
 }
 
-func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
 	m.mu.Lock()
 	sink := m.changeSink
 	m.mu.Unlock()
-	m.notifyChangeSink(ctx, sink, info, event)
+	return m.notifyChangeSink(ctx, sink, info, event)
 }
 
-func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
 	m.mu.Lock()
 	sink := m.raftApplyChangeSink
 	m.mu.Unlock()
-	m.notifyChangeSink(ctx, sink, info, event)
+	return m.notifyChangeSink(ctx, sink, info, event)
 }
 
-func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
-	if sink == nil || event.Empty() {
-		return
+func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
+	if event.Empty() {
+		return true, nil
 	}
-	event.TxnID = info.TxnID
-	event.TransactionID = info.TxnID
-	event.GraphRevision = info.NextRevision
-	event.Revision = info.NextRevision
+	if sink == nil {
+		return false, nil
+	}
+	if event.TxnID == uuid.Nil {
+		event.TxnID = info.TxnID
+	}
+	if event.TransactionID == uuid.Nil {
+		event.TransactionID = event.TxnID
+	}
+	if event.GraphRevision == 0 {
+		event.GraphRevision = info.NextRevision
+	}
+	if event.Revision == 0 {
+		event.Revision = info.NextRevision
+	}
 	event.Normalize()
 	if err := sink.OnGraphCommitted(ctx, event); err != nil {
 		m.mu.Lock()
 		m.lastGraphChangeSinkErr = err
 		m.mu.Unlock()
-		return
+		return false, err
 	}
 	m.mu.Lock()
 	m.lastGraphChangeSinkErr = nil
 	m.mu.Unlock()
+	return true, nil
 }
 
 func (m *Module) graphChangeEvent(ctx context.Context, tx sessionmodel.GraphTransaction, store *graphstorage.LocalStore, snapshot *overlay) (graphchange.CommittedEvent, error) {

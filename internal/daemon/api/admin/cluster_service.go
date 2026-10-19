@@ -43,6 +43,10 @@ type GraphCheckpointProvider interface {
 	GraphCheckpointStatus(ctx context.Context, spaceID string, domainID string) (graphservice.GraphCheckpointStatus, error)
 }
 
+type GraphIdempotencyDiagnosticsProvider interface {
+	IdempotencyMetrics() graphservice.IdempotencyMetrics
+}
+
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
 	cluster                  *clustering.Manager
@@ -55,6 +59,7 @@ type AdminClusterService struct {
 	graphConsistency         LocalGraphConsistencyProvider
 	graphForensicExport      LocalGraphForensicExportProvider
 	graphCheckpoint          GraphCheckpointProvider
+	graphIdempotency         GraphIdempotencyDiagnosticsProvider
 	graphPeerCollector       GraphConsistencyPeerCollector
 }
 
@@ -92,6 +97,11 @@ func (s *AdminClusterService) WithGraphCheckpoint(provider GraphCheckpointProvid
 	return s
 }
 
+func (s *AdminClusterService) WithGraphIdempotencyDiagnostics(provider GraphIdempotencyDiagnosticsProvider) *AdminClusterService {
+	s.graphIdempotency = provider
+	return s
+}
+
 func (s *AdminClusterService) WithGraphConsistencyPeerCollector(collector GraphConsistencyPeerCollector) *AdminClusterService {
 	s.graphPeerCollector = collector
 	return s
@@ -102,6 +112,14 @@ func (s *AdminClusterService) GetClusterRuntimeStatus(ctx context.Context, req *
 		return nil, err
 	}
 	out := &adminv1.GetClusterRuntimeStatusResponse{Engine: adminv1.ClusterEngine_CLUSTER_ENGINE_UNSPECIFIED, ClusterName: s.clusterConfig.Name}
+	if s.graphIdempotency != nil {
+		metrics := s.graphIdempotency.IdempotencyMetrics()
+		out.GraphIdempotency = &adminv1.GraphIdempotencyDiagnostics{
+			ReplayHits: metrics.ReplayHits, ReplayMisses: metrics.ReplayMisses,
+			Mismatches: metrics.Mismatches, CapacityRejections: metrics.CapacityRejections,
+			Evictions: metrics.Evictions, ActiveRecords: metrics.ActiveRecords, CapacityRecords: metrics.CapacityRecords,
+		}
+	}
 	if s.raftGroups != nil {
 		out.Engine = adminv1.ClusterEngine_CLUSTER_ENGINE_RAFT
 		out.RaftNodeCount = uint32(s.clusterConfig.RaftNodeCount)
