@@ -227,6 +227,7 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 	eval := evaluator{s: s}
 	matches := eval.eval(expr)
 	positiveTerms := uniqueTerms(collectPositiveTerms(expr, false))
+	documentFrequencies := s.liveDocumentFrequencies(positiveTerms)
 	phraseCountByDoc := eval.phraseCounts(expr)
 	rows := make([]Result, 0, len(matches))
 	for key, match := range matches {
@@ -234,7 +235,7 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 		if entry.deleted || !s.isLatestLive(key) {
 			continue
 		}
-		score, components := s.score(key, positiveTerms, phraseCountByDoc[key], opts)
+		score, components := s.score(key, positiveTerms, documentFrequencies, phraseCountByDoc[key], opts)
 		if score == 0 {
 			continue
 		}
@@ -275,7 +276,7 @@ func (s *Searcher) Search(expr *query.Node, opts SearchOptions) (SearchResponse,
 	return resp, nil
 }
 
-func (s *Searcher) score(key docKey, terms []string, phraseCount int, opts SearchOptions) (float64, []ScoreComponent) {
+func (s *Searcher) score(key docKey, terms []string, documentFrequencies map[string]int, phraseCount int, opts SearchOptions) (float64, []ScoreComponent) {
 	entry := s.docs[key]
 	if s.docCount == 0 || entry.length == 0 {
 		return 0, nil
@@ -287,7 +288,7 @@ func (s *Searcher) score(key docKey, terms []string, phraseCount int, opts Searc
 		if !ok || posting.tf == 0 {
 			continue
 		}
-		df := s.liveDocumentFrequency(term)
+		df := documentFrequencies[term]
 		if df == 0 {
 			continue
 		}
@@ -307,14 +308,20 @@ func (s *Searcher) score(key docKey, terms []string, phraseCount int, opts Searc
 	return score, components
 }
 
-func (s *Searcher) liveDocumentFrequency(term string) int {
-	var count int
-	for key := range s.postings[term] {
-		if s.isLatestLive(key) {
-			count++
+func (s *Searcher) liveDocumentFrequencies(terms []string) map[string]int {
+	frequencies := make(map[string]int, len(terms))
+	for _, term := range terms {
+		if _, computed := frequencies[term]; computed {
+			continue
+		}
+		frequencies[term] = 0
+		for key := range s.postings[term] {
+			if s.isLatestLive(key) {
+				frequencies[term]++
+			}
 		}
 	}
-	return count
+	return frequencies
 }
 
 func (s *Searcher) allLiveDocs() map[docKey]matchData {
