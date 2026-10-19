@@ -167,8 +167,8 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 		if len(step.Edge.Labels) != 1 || strings.TrimSpace(step.Edge.Labels[0]) == "" {
 			return Plan{}, true, p.invalid("indexed path step %d requires exactly one edge label", i)
 		}
-		if step.Edge.Direction != querylogical.DirectionIncoming && step.Edge.Direction != querylogical.DirectionOutgoing {
-			return Plan{}, true, p.invalid("indexed path step %d requires directed traversal", i)
+		if !supportedAdjacencyDirection(step.Edge.Direction) {
+			return Plan{}, true, p.invalid("indexed path step %d has unsupported traversal direction", i)
 		}
 		maxDepth := p.resolvedMaxDepth(query.Source, step.Depth.Max)
 		if maxDepth < step.Depth.Min || maxDepth <= 0 {
@@ -179,7 +179,7 @@ func (p planner) planIndexedPath(query querylogical.Query) (Plan, bool, error) {
 			MinDepth: step.Depth.Min, MaxDepth: maxDepth, TargetAlias: step.Target.Alias,
 			TargetLabels: append([]string(nil), step.Target.Labels...),
 		})
-		indexes = append(indexes, adjacencyIndex(step))
+		indexes = append(indexes, adjacencyIndexes(step)...)
 	}
 	return Plan{
 		Name: "IndexedMultiHopAdjacencyPathScan", Family: FamilyIndexedPath,
@@ -199,8 +199,8 @@ func (p planner) planIndexedAdjacency(query querylogical.Query) (Plan, bool, err
 	if len(step.Edge.Labels) != 1 || strings.TrimSpace(step.Edge.Labels[0]) == "" {
 		return Plan{}, true, p.invalid("indexed adjacency requires exactly one edge label")
 	}
-	if step.Edge.Direction != querylogical.DirectionIncoming && step.Edge.Direction != querylogical.DirectionOutgoing {
-		return Plan{}, true, p.invalid("indexed adjacency requires directed traversal")
+	if !supportedAdjacencyDirection(step.Edge.Direction) {
+		return Plan{}, true, p.invalid("indexed adjacency has unsupported traversal direction")
 	}
 	if !p.environment.Capabilities.Traversals || !p.environment.Capabilities.EntityReads {
 		return Plan{}, true, p.unavailable("indexed adjacency requires traversal and entity access")
@@ -215,7 +215,7 @@ func (p planner) planIndexedAdjacency(query querylogical.Query) (Plan, bool, err
 	}
 	return Plan{
 		Name: "EdgeAdjacencyIndexScan", Family: FamilyIndexedAdjacency,
-		Access: access, Indexes: []IndexUse{adjacencyIndex(step)}, ResidualPredicate: query.Predicate,
+		Access: access, Indexes: adjacencyIndexes(step), ResidualPredicate: query.Predicate,
 		Cursor: nativeCursor("adjacency_key"), Limits: p.resourceLimits(query, FamilyIndexedAdjacency),
 	}, true, nil
 }
@@ -440,7 +440,7 @@ func (p planner) planOrdered(query querylogical.Query) (Plan, bool, error) {
 	plan.Name = "OrderedNodePropertyIndexScan+EdgeAdjacencyIndexScan"
 	plan.Family = FamilyIndexedSubtree
 	plan.Access = access
-	plan.Indexes = append(plan.Indexes, adjacencyIndex(step))
+	plan.Indexes = append(plan.Indexes, adjacencyIndexes(step)...)
 	plan.Cursor = nativeCursor("root_index_key")
 	plan.Limits = p.resourceLimits(query, FamilyIndexedSubtree)
 	return plan, true, nil
@@ -471,8 +471,8 @@ func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 		if len(step.Edge.Labels) != 1 || strings.TrimSpace(step.Edge.Labels[0]) == "" {
 			return Plan{}, p.invalid("broad traversal step %d requires exactly one edge label", i)
 		}
-		if step.Edge.Direction != querylogical.DirectionIncoming && step.Edge.Direction != querylogical.DirectionOutgoing {
-			return Plan{}, p.invalid("broad traversal step %d requires directed traversal", i)
+		if !supportedAdjacencyDirection(step.Edge.Direction) {
+			return Plan{}, p.invalid("broad traversal step %d has unsupported traversal direction", i)
 		}
 		maxDepth := p.resolvedMaxDepth(query.Source, step.Depth.Max)
 		if maxDepth < step.Depth.Min || maxDepth <= 0 {
@@ -486,7 +486,7 @@ func (p planner) planFullScan(query querylogical.Query) (Plan, error) {
 			MinDepth: step.Depth.Min, MaxDepth: maxDepth, TargetAlias: step.Target.Alias,
 			TargetLabels: append([]string(nil), step.Target.Labels...),
 		})
-		indexes = append(indexes, adjacencyIndex(step))
+		indexes = append(indexes, adjacencyIndexes(step)...)
 	}
 	if len(access.Steps) > 0 {
 		name = "StreamingNodeScan+EdgeAdjacencyIndexScan"
@@ -607,7 +607,7 @@ func operatorPipeline(plan Plan, query querylogical.Query) Operator {
 }
 
 func structuredEdgeRowTraversal(query querylogical.Query) bool {
-	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" {
+	if strings.TrimSpace(query.PathAlias) != "" {
 		return false
 	}
 	for _, step := range query.Steps {
@@ -1303,16 +1303,31 @@ func staticValue(value querylogical.Value) bool {
 	}
 }
 
-func adjacencyIndex(step querylogical.Step) IndexUse {
-	direction := "out"
-	if step.Edge.Direction == querylogical.DirectionIncoming {
-		direction = "in"
+func supportedAdjacencyDirection(direction querylogical.Direction) bool {
+	switch direction {
+	case querylogical.DirectionIncoming, querylogical.DirectionOutgoing, querylogical.DirectionUndirected:
+		return true
+	default:
+		return false
 	}
+}
+
+func adjacencyIndexes(step querylogical.Step) []IndexUse {
 	label := ""
 	if len(step.Edge.Labels) > 0 {
 		label = step.Edge.Labels[0]
 	}
-	return IndexUse{Name: direction + ":" + label, Target: schemamodel.IndexTargetEdge, Label: label}
+	index := func(direction string) IndexUse {
+		return IndexUse{Name: direction + ":" + label, Target: schemamodel.IndexTargetEdge, Label: label}
+	}
+	switch step.Edge.Direction {
+	case querylogical.DirectionIncoming:
+		return []IndexUse{index("in")}
+	case querylogical.DirectionUndirected:
+		return []IndexUse{index("out"), index("in")}
+	default:
+		return []IndexUse{index("out")}
+	}
 }
 
 func builtInIndex(name string, label string) IndexUse {

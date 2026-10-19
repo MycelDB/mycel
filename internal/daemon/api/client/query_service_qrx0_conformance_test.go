@@ -682,7 +682,7 @@ func executeQRX0NoteTitlePair(t *testing.T, fixture domainPolicyClientAPIFixture
 func assertQRX0ResponseMetadataParity(t *testing.T, structured *clientv1.ExecuteQueryResponse, gql *clientv1.ExecuteGQLResponse, unorderedRows bool) {
 	t.Helper()
 	structuredResult, gqlResult := structured.GetResult(), gql.GetResult()
-	assertQRX0TypedResultParity(t, structuredResult, gqlResult, unorderedRows, false)
+	assertQRX0TypedResultParity(t, structuredResult, gqlResult, unorderedRows)
 	if !proto.Equal(structured.GetReadMetadata(), gql.GetReadMetadata()) {
 		t.Fatalf("read metadata differs: structured=%+v GQL=%+v", structured.GetReadMetadata(), gql.GetReadMetadata())
 	}

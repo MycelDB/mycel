@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -18,7 +20,11 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
-func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64) (queryexecution.Operator, error) {
+type executionContinuation struct {
+	semanticIdentity string
+}
+
+func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64, continuation *executionContinuation) (queryexecution.Operator, error) {
 	access := prepared.Physical.Access
 	batchSize := tracker.Limits().BatchSize
 	if requested := int(prepared.Statement.Read.Page.Size) + 1; prepared.Statement.Read.Page.Size > 0 && requested < batchSize {
@@ -85,7 +91,7 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		}
 		return e.predicateSetSource(execution, prepared, tracker, false)
 	case queryphysical.FamilySemantic:
-		return e.semanticSource(execution, prepared, tracker, checkpoint, resumeCursor, resumeOffset, resuming, batchSize)
+		return e.semanticSource(execution, prepared, tracker, cursor, nextRowsReturned, resumeCursor, resumeOffset, resuming, batchSize, continuation)
 	case queryphysical.FamilyIndexedAdjacency:
 		return e.adjacencySource(execution, prepared, tracker, cursor, nextRowsReturned, batchSize)
 	case queryphysical.FamilyIndexedPath:
@@ -219,7 +225,7 @@ func queryProjectsTree(query querylogical.Query, alias string) bool {
 }
 
 func structuredEdgeRowTraversal(query querylogical.Query) bool {
-	if query.Source != querylogical.SourceStructured || strings.TrimSpace(query.PathAlias) != "" {
+	if strings.TrimSpace(query.PathAlias) != "" {
 		return false
 	}
 	for _, step := range query.Steps {
@@ -354,6 +360,9 @@ func resolvedTraversalStep(step querylogical.Step, access queryphysical.Traversa
 }
 
 func (e *Engine) traversalEdgeReader(execution ExecutionContext, step querylogical.Step) queryexecution.TraversalEdgePageReader {
+	if step.Edge.Direction == querylogical.DirectionUndirected {
+		return e.undirectedTraversalEdgeReader(execution, step)
+	}
 	direction := graphquery.AdjacencyDirectionOut
 	if step.Edge.Direction == querylogical.DirectionIncoming {
 		direction = graphquery.AdjacencyDirectionIn
@@ -361,11 +370,83 @@ func (e *Engine) traversalEdgeReader(execution ExecutionContext, step querylogic
 	return func(ctx context.Context, nodeID string, limit int, cursor string) (queryexecution.TraversalEdgePage, error) {
 		edges, next, stats, err := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
 			NodeID: nodeID, Label: step.Edge.Labels[0], Direction: direction, Limit: limit, Cursor: cursor,
+			ExamineLimit: dependencyExamineLimit(limit),
 		})
 		return queryexecution.TraversalEdgePage{
 			Edges: edges, NextCursor: next, IndexEntries: int64(stats.IndexEntriesScanned), EdgesLoaded: int64(stats.EdgesLoaded),
-		}, err
+		}, indexedDependencyError(ctx, "scan adjacency", err)
 	}
+}
+
+const undirectedAdjacencyCursorPrefix = "undirected1:"
+
+type undirectedAdjacencyCursor struct {
+	Direction graphquery.AdjacencyDirection `json:"direction"`
+	Cursor    string                        `json:"cursor,omitempty"`
+}
+
+func (e *Engine) undirectedTraversalEdgeReader(execution ExecutionContext, step querylogical.Step) queryexecution.TraversalEdgePageReader {
+	return func(ctx context.Context, nodeID string, limit int, cursor string) (queryexecution.TraversalEdgePage, error) {
+		state, err := decodeUndirectedAdjacencyCursor(cursor)
+		if err != nil {
+			return queryexecution.TraversalEdgePage{}, err
+		}
+		edges, next, stats, err := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
+			NodeID: nodeID, Label: step.Edge.Labels[0], Direction: state.Direction, Limit: limit, Cursor: state.Cursor,
+			ExamineLimit: dependencyExamineLimit(limit),
+		})
+		if err != nil {
+			return queryexecution.TraversalEdgePage{}, indexedDependencyError(ctx, "scan undirected adjacency", err)
+		}
+		if state.Direction == graphquery.AdjacencyDirectionIn {
+			filtered := edges[:0]
+			for _, edge := range edges {
+				// A self-loop is present in both directional indexes. Emit it from
+				// the outgoing phase only while preserving distinct parallel edges.
+				if edge.FromID == edge.ToID && edge.FromID.String() == nodeID {
+					continue
+				}
+				filtered = append(filtered, edge)
+			}
+			edges = filtered
+		}
+		nextState := ""
+		if next != "" {
+			nextState = encodeUndirectedAdjacencyCursor(undirectedAdjacencyCursor{Direction: state.Direction, Cursor: next})
+		} else if state.Direction == graphquery.AdjacencyDirectionOut {
+			nextState = encodeUndirectedAdjacencyCursor(undirectedAdjacencyCursor{Direction: graphquery.AdjacencyDirectionIn})
+		}
+		return queryexecution.TraversalEdgePage{
+			Edges: edges, NextCursor: nextState,
+			IndexEntries: int64(stats.IndexEntriesScanned), EdgesLoaded: int64(stats.EdgesLoaded),
+		}, nil
+	}
+}
+
+func decodeUndirectedAdjacencyCursor(cursor string) (undirectedAdjacencyCursor, error) {
+	if cursor == "" {
+		return undirectedAdjacencyCursor{Direction: graphquery.AdjacencyDirectionOut}, nil
+	}
+	if !strings.HasPrefix(cursor, undirectedAdjacencyCursorPrefix) {
+		return undirectedAdjacencyCursor{}, staleCursor("undirected adjacency cursor is malformed", nil)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cursor, undirectedAdjacencyCursorPrefix))
+	if err != nil {
+		return undirectedAdjacencyCursor{}, staleCursor("undirected adjacency cursor is malformed", err)
+	}
+	var state undirectedAdjacencyCursor
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return undirectedAdjacencyCursor{}, staleCursor("undirected adjacency cursor is malformed", err)
+	}
+	if state.Direction != graphquery.AdjacencyDirectionOut && state.Direction != graphquery.AdjacencyDirectionIn {
+		return undirectedAdjacencyCursor{}, staleCursor("undirected adjacency cursor direction is invalid", nil)
+	}
+	return state, nil
+}
+
+func encodeUndirectedAdjacencyCursor(cursor undirectedAdjacencyCursor) string {
+	payload, _ := json.Marshal(cursor)
+	return undirectedAdjacencyCursorPrefix + base64.RawURLEncoding.EncodeToString(payload)
 }
 
 func (e *Engine) nodeIDPageReader(execution ExecutionContext, ids []string) queryexecution.NodePageReader {
@@ -409,11 +490,11 @@ func (e *Engine) orderedPageReader(execution ExecutionContext, prepared Prepared
 	}
 	return func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
 		nodes, next, stats, err := e.ports.Indexes.ScanNodePropertyOrdered(ctx, execution.Transaction, graphquery.OrderedNodePropertyScan{
-			IndexName: access.Index, Direction: direction, Limit: limit, Cursor: cursor,
+			IndexName: access.Index, Direction: direction, Limit: limit, Cursor: cursor, ExamineLimit: dependencyExamineLimit(limit),
 			HasLow: hasLow, Low: low, LowExclusive: lowExclusive,
 			HasHigh: hasHigh, High: high, HighExclusive: highExclusive,
 		})
-		return executionNodePage(nodes, next, stats), err
+		return executionNodePage(nodes, next, stats), indexedDependencyError(ctx, "scan ordered node property", err)
 	}, nil
 }
 
@@ -433,6 +514,29 @@ func executionNodePage(nodes []graph.Node, next string, stats graphquery.Indexed
 		Nodes: nodes, NextCursor: next,
 		IndexEntries: int64(stats.IndexEntriesScanned), NodesLoaded: int64(stats.NodesLoaded), NodeReadCalls: int64(stats.NodeReadCalls),
 	}
+}
+
+func dependencyExamineLimit(limit int) int {
+	if limit <= 0 {
+		return 1
+	}
+	if limit > int(^uint(0)>>1)/16 {
+		return int(^uint(0) >> 1)
+	}
+	return limit * 16
+}
+
+func indexedDependencyError(ctx context.Context, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextQueryError(operation, contextErr)
+	}
+	if errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		return querylogical.NewError(querylogical.ErrorResourceExhausted, operation, err.Error(), err)
+	}
+	return err
 }
 
 func (e *Engine) configureIndexes(ctx context.Context, tx sessionmodel.GraphTransaction, prepared PreparedQuery) error {
@@ -534,25 +638,31 @@ func (e *Engine) indexScanReader(execution ExecutionContext, prepared PreparedQu
 	}
 	return func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
 		nodes, next, stats, err := e.ports.Indexes.ScanNodePropertyOrdered(ctx, execution.Transaction, graphquery.OrderedNodePropertyScan{
-			IndexName: scan.Index, Direction: schemamodel.IndexSortDirectionAsc, Limit: limit, Cursor: cursor,
+			IndexName: scan.Index, Direction: schemamodel.IndexSortDirectionAsc, Limit: limit, Cursor: cursor, ExamineLimit: dependencyExamineLimit(limit),
 			HasLow: hasLow, Low: low, LowExclusive: lowExclusive,
 			HasHigh: hasHigh, High: high, HighExclusive: highExclusive,
 		})
-		return executionNodePage(nodes, next, stats), err
+		return executionNodePage(nodes, next, stats), indexedDependencyError(ctx, "scan predicate node property", err)
 	}, nil
 }
 
-func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, checkpoint queryexecution.PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int) (queryexecution.Operator, error) {
+func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQuery, tracker *queryexecution.Tracker, cursor indexedCursor, nextRowsReturned int64, resumeCursor string, resumeOffset int, resuming bool, batchSize int, continuation *executionContinuation) (queryexecution.Operator, error) {
 	semantic := prepared.Physical.Access.Semantic
 	if semantic == nil {
 		return nil, querylogical.NewError(querylogical.ErrorInternal, "execute semantic query", "semantic access specification is missing", nil)
+	}
+	if continuation == nil {
+		continuation = &executionContinuation{}
+	}
+	if strings.TrimSpace(prepared.Statement.Read.Page.Cursor) != "" && strings.TrimSpace(cursor.SemanticIdentity) == "" {
+		return nil, staleCursor("semantic continuation is not bound to a candidate ranking", nil)
 	}
 	loaded := false
 	reported := false
 	candidateIDs := []string{}
 	candidateCount := int64(0)
 	candidateMemory := int64(0)
-	reader := func(ctx context.Context, limit int, cursor string) (queryexecution.NodePage, error) {
+	reader := func(ctx context.Context, limit int, pageCursor string) (queryexecution.NodePage, error) {
 		if !loaded {
 			ruleIDs := []string{}
 			if strings.TrimSpace(semantic.RuleRef) != "" {
@@ -592,9 +702,13 @@ func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQue
 				candidateIDs = append(candidateIDs, id)
 				candidateMemory += int64(len(id) + 16)
 			}
+			continuation.semanticIdentity = semanticCandidateIdentity(candidateIDs)
+			if cursor.SemanticIdentity != "" && cursor.SemanticIdentity != continuation.semanticIdentity {
+				return queryexecution.NodePage{}, staleCursor("semantic candidate ranking changed between pages", nil)
+			}
 			loaded = true
 		}
-		start, err := boundedPosition(cursor, len(candidateIDs))
+		start, err := boundedPosition(pageCursor, len(candidateIDs))
 		if err != nil {
 			return queryexecution.NodePage{}, err
 		}
@@ -621,6 +735,15 @@ func (e *Engine) semanticSource(execution ExecutionContext, prepared PreparedQue
 			reported = true
 		}
 		return page, nil
+	}
+	var checkpoint queryexecution.PageCheckpointEncoder
+	if cursor.Mode != cursorModeOutput && nativeSourceCursorSupported(prepared) {
+		checkpoint = func(pageCursor string, offset int) string {
+			return encodeIndexedCursor(prepared, indexedCursor{
+				Mode: cursorModeSource, PageCursor: pageCursor, PageOffset: offset,
+				RowsReturned: nextRowsReturned, SemanticIdentity: continuation.semanticIdentity,
+			})
+		}
 	}
 	return queryexecution.NewPagedNodeSource(prepared.Physical.Access.StartAlias, reader, checkpoint, resumeCursor, resumeOffset, resuming, batchSize, tracker), nil
 }

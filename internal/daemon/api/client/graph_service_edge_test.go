@@ -12,6 +12,8 @@ import (
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -485,7 +487,7 @@ func TestQueryServiceExecuteGQLMergeNodeAndRelationship(t *testing.T) {
 	}
 }
 
-func TestQueryServiceExecuteGQLMutationContinuationUsesOutputOffset(t *testing.T) {
+func TestQueryServiceExecuteGQLMutationResultOverflowRollsBackWithoutContinuation(t *testing.T) {
 	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
 	querySvc := nativeGQLQueryService(fixture)
 	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
@@ -495,27 +497,108 @@ func TestQueryServiceExecuteGQLMutationContinuationUsesOutputOffset(t *testing.T
 			t.Fatalf("insert %s: %v", name, err)
 		}
 	}
-	query := "MERGE (p:Person {role: 'member'}) RETURN p"
-	first, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query, PageSize: 1})
+
+	setQuery := "MATCH (p:Person) SET p.role = 'updated' RETURN p"
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: setQuery, PageSize: 1}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("overflowing SET status=%v err=%v, want ResourceExhausted", status.Code(err), err)
+	}
+	roles, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) RETURN p.role AS role"})
 	if err != nil {
-		t.Fatalf("first mutation page: %v", err)
+		t.Fatalf("query roles after failed SET: %v", err)
 	}
-	token := first.GetResult().GetNextPageToken()
-	if token != "1" || len(first.GetResult().GetRows()) != 1 {
-		t.Fatalf("first mutation page token=%q rows=%+v", token, first.GetResult().GetRows())
+	if len(roles.GetResult().GetRows()) != 2 {
+		t.Fatalf("role rows=%d, want 2", len(roles.GetResult().GetRows()))
 	}
-	second, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: query, PageSize: 1, PageToken: token})
+	for _, row := range roles.GetResult().GetRows() {
+		if got := row.GetFields()["role"].GetScalar().GetStringValue(); got != "member" {
+			t.Fatalf("role after failed SET=%q, want member", got)
+		}
+	}
+
+	deleteQuery := "MATCH (p:Person) DELETE p RETURN p"
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: deleteQuery, PageSize: 1}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("overflowing DELETE status=%v err=%v, want ResourceExhausted", status.Code(err), err)
+	}
+	remaining, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: "MATCH (p:Person) RETURN p"})
 	if err != nil {
-		t.Fatalf("second mutation page: %v", err)
+		t.Fatalf("query nodes after failed DELETE: %v", err)
 	}
-	if len(second.GetResult().GetRows()) != 1 || second.GetResult().GetNextPageToken() != "" {
-		t.Fatalf("second mutation page token=%q rows=%+v", second.GetResult().GetNextPageToken(), second.GetResult().GetRows())
+	if got := len(remaining.GetResult().GetRows()); got != 2 {
+		t.Fatalf("nodes after failed DELETE=%d, want 2", got)
 	}
-	firstID := first.GetResult().GetRows()[0].GetFields()["p"].GetNode().GetNodeId()
-	secondID := second.GetResult().GetRows()[0].GetFields()["p"].GetNode().GetNodeId()
-	if firstID == "" || secondID == "" || firstID == secondID {
-		t.Fatalf("mutation continuation IDs first=%q second=%q", firstID, secondID)
+
+	if _, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: writeTx, Query: setQuery, PageSize: 1, PageToken: "1"}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("mutation continuation status=%v err=%v, want InvalidArgument", status.Code(err), err)
 	}
+}
+
+func TestQueryServiceExecuteGQLUndirectedTraversalPreservesOrientationsSelfLoopsAndPages(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	querySvc := nativeGQLQueryService(fixture)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+	writeTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	aID, bID := uuid.NewString(), uuid.NewString()
+	for _, node := range []*clientv1.NodeCreate{
+		{NodeId: &aID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"name": "A"})},
+		{NodeId: &bID, Labels: []string{"Note"}, Properties: mustStruct(t, map[string]any{"name": "B"})},
+	} {
+		if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: node}); err != nil {
+			t.Fatalf("seed undirected node: %v", err)
+		}
+	}
+	for _, endpoints := range [][2]string{{aID, bID}, {aID, bID}, {bID, bID}} {
+		if _, err := graphSvc.CreateEdge(fixture.ctx, &clientv1.CreateEdgeRequest{TransactionId: writeTx, Edge: &clientv1.EdgeCreate{
+			FromNodeId: endpoints[0], ToNodeId: endpoints[1], Labels: []string{"RELATED_TO"},
+		}}); err != nil {
+			t.Fatalf("seed undirected edge: %v", err)
+		}
+	}
+	query := "MATCH (a:Note {name: 'B'})-[r:RELATED_TO]-(b:Note) RETURN a.name AS start, b.name AS target, r"
+	assertPages := func(transactionID string) {
+		t.Helper()
+		targets := []string{}
+		edgeIDs := map[string]struct{}{}
+		token := ""
+		for page := 0; page < 6; page++ {
+			response, err := querySvc.ExecuteGQL(fixture.ctx, &clientv1.ExecuteGQLRequest{TransactionId: transactionID, Query: query, PageSize: 1, PageToken: token})
+			if err != nil {
+				t.Fatalf("undirected page %d: %v", page, err)
+			}
+			if len(response.GetResult().GetRows()) != 1 {
+				t.Fatalf("undirected page %d rows=%d, want 1", page, len(response.GetResult().GetRows()))
+			}
+			row := response.GetResult().GetRows()[0]
+			targets = append(targets, row.GetFields()["target"].GetScalar().GetStringValue())
+			edgeID := row.GetFields()["r"].GetEdge().GetEdgeId()
+			if _, duplicate := edgeIDs[edgeID]; duplicate {
+				t.Fatalf("undirected page %d duplicated edge %q", page, edgeID)
+			}
+			edgeIDs[edgeID] = struct{}{}
+			next := response.GetResult().GetNextPageToken()
+			if next == "" {
+				break
+			}
+			if next == token {
+				t.Fatalf("undirected page %d cursor did not advance", page)
+			}
+			token = next
+		}
+		counts := map[string]int{}
+		for _, target := range targets {
+			counts[target]++
+		}
+		if len(edgeIDs) != 3 || counts["A"] != 2 || counts["B"] != 1 {
+			t.Fatalf("undirected targets=%v edges=%v", targets, edgeIDs)
+		}
+	}
+
+	// The write transaction exercises overlay adjacency merging.
+	assertPages(writeTx)
+	if _, err := NewTransactionService(fixture.sessions, fixture.graphs, fixture.spaces).CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatalf("commit undirected graph: %v", err)
+	}
+	// A read-only transaction exercises revision-pinned adjacency scans.
+	assertPages(fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY))
 }
 
 func TestQueryServiceExecuteGQLMergeRelationshipReusesSelfLoop(t *testing.T) {

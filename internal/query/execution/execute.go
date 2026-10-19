@@ -184,6 +184,18 @@ func buildPipeline(source Operator, query querylogical.Query, tracker *Tracker, 
 	}
 	if len(query.Aggregates) > 0 {
 		root = NewAggregate(root, query.Returns, query.Aggregates, options.Parameters, options.Now, tracker)
+		if query.Distinct {
+			root = NewDistinct(root, tracker)
+		}
+		if len(query.OrderBy) > 0 {
+			root = NewSort(root, query.OrderBy, options.Parameters, options.Now, tracker)
+		}
+	} else if query.Distinct {
+		// DISTINCT is defined over projected rows. Preserve the complete binding
+		// alongside the projection so ORDER BY can still resolve non-projected
+		// fields after duplicate projected rows have been removed.
+		root = NewProjection(root, query.Returns, options.Parameters, options.Now, tracker)
+		root = NewDistinct(root, tracker)
 		if len(query.OrderBy) > 0 {
 			root = NewSort(root, query.OrderBy, options.Parameters, options.Now, tracker)
 		}
@@ -196,9 +208,6 @@ func buildPipeline(source Operator, query querylogical.Query, tracker *Tracker, 
 			}
 		}
 		root = NewProjection(root, query.Returns, options.Parameters, options.Now, tracker)
-	}
-	if query.Distinct {
-		root = NewDistinct(root, tracker)
 	}
 	if query.Page.Offset > 0 {
 		root = NewOffset(root, query.Page.Offset)

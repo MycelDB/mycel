@@ -18,7 +18,8 @@ type orderedTreeNode[K comparable, V any] struct {
 }
 
 type orderedTreeIterator[K comparable, V any] struct {
-	stack []*orderedTreeNode[K, V]
+	stack   []*orderedTreeNode[K, V]
+	reverse bool
 }
 
 func newOrderedTree[K comparable, V any](less func(K, K) bool, priority func(K) uint64) *orderedTree[K, V] {
@@ -128,6 +129,21 @@ func (t *orderedTree[K, V]) IteratorAfter(cursor K, hasCursor bool) orderedTreeI
 	return iterator
 }
 
+// IteratorBefore returns a reverse iterator positioned strictly before cursor
+// when hasCursor is true, or at the last key otherwise.
+func (t *orderedTree[K, V]) IteratorBefore(cursor K, hasCursor bool) orderedTreeIterator[K, V] {
+	iterator := orderedTreeIterator[K, V]{reverse: true}
+	for node := t.root; node != nil; {
+		if !hasCursor || t.less(node.key, cursor) {
+			iterator.stack = append(iterator.stack, node)
+			node = node.right
+		} else {
+			node = node.left
+		}
+	}
+	return iterator
+}
+
 func (i *orderedTreeIterator[K, V]) HasNext() bool {
 	return i != nil && len(i.stack) > 0
 }
@@ -141,6 +157,12 @@ func (i *orderedTreeIterator[K, V]) Next() (K, V, bool) {
 	last := len(i.stack) - 1
 	node := i.stack[last]
 	i.stack = i.stack[:last]
+	if i.reverse {
+		for child := node.left; child != nil; child = child.right {
+			i.stack = append(i.stack, child)
+		}
+		return node.key, node.value, true
+	}
 	for child := node.right; child != nil; child = child.left {
 		i.stack = append(i.stack, child)
 	}

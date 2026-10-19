@@ -62,13 +62,16 @@ func (e evaluator) predicate(row BindingRow, predicate *querylogical.Predicate) 
 func (e evaluator) leaf(row BindingRow, leaf querylogical.Leaf) (bool, error) {
 	switch leaf.Kind {
 	case querylogical.LeafComparison:
-		left, err := e.value(row, dereferenceValue(leaf.Left))
+		left, leftExists, err := e.valueWithExistence(row, dereferenceValue(leaf.Left))
 		if err != nil {
 			return false, err
 		}
-		right, err := e.value(row, dereferenceValue(leaf.Right))
+		right, rightExists, err := e.valueWithExistence(row, dereferenceValue(leaf.Right))
 		if err != nil {
 			return false, err
+		}
+		if !leftExists || !rightExists {
+			return false, nil
 		}
 		comparison := compareValues(left, right)
 		switch leaf.Operator {
@@ -88,16 +91,16 @@ func (e evaluator) leaf(row BindingRow, leaf querylogical.Leaf) (bool, error) {
 			return false, executionInvalid("evaluate predicate", fmt.Sprintf("unsupported comparison operator %q", leaf.Operator))
 		}
 	case querylogical.LeafBetween:
-		value, err := e.value(row, dereferenceValue(leaf.Left))
-		if err != nil {
+		value, valueExists, err := e.valueWithExistence(row, dereferenceValue(leaf.Left))
+		if err != nil || !valueExists {
 			return false, err
 		}
-		low, err := e.value(row, dereferenceValue(leaf.Low))
-		if err != nil {
+		low, lowExists, err := e.valueWithExistence(row, dereferenceValue(leaf.Low))
+		if err != nil || !lowExists {
 			return false, err
 		}
-		high, err := e.value(row, dereferenceValue(leaf.High))
-		if err != nil {
+		high, highExists, err := e.valueWithExistence(row, dereferenceValue(leaf.High))
+		if err != nil || !highExists {
 			return false, err
 		}
 		return compareValues(value, low) >= 0 && compareValues(value, high) <= 0, nil
@@ -138,6 +141,22 @@ func (e evaluator) leaf(row BindingRow, leaf querylogical.Leaf) (bool, error) {
 		return hasTag(row, dereferenceField(leaf.Field).Alias, leaf.Tag)
 	default:
 		return false, executionInvalid("evaluate predicate", fmt.Sprintf("unsupported predicate kind %q", leaf.Kind))
+	}
+}
+
+func (e evaluator) valueWithExistence(row BindingRow, value querylogical.Value) (querylogical.Value, bool, error) {
+	switch value.Kind {
+	case querylogical.ValueField:
+		return e.field(row, dereferenceField(value.Field))
+	case querylogical.ValueParameter:
+		resolved, ok := e.parameters[value.Parameter]
+		if !ok {
+			return querylogical.Value{}, false, executionInvalid("evaluate value", fmt.Sprintf("missing parameter %q", value.Parameter))
+		}
+		return e.valueWithExistence(row, resolved)
+	default:
+		resolved, err := e.value(row, value)
+		return resolved, true, err
 	}
 }
 

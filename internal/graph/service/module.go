@@ -2729,6 +2729,84 @@ func newOverlay() *overlay {
 	return &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}, automationFenceNodes: map[domaingraph.NodeID]struct{}{}, automationFenceEdges: map[domaingraph.EdgeID]struct{}{}}
 }
 
+func (m *Module) boundedOrderedNodeOverlay(ctx context.Context, txID string, requestedLimit int, requestedExamine int) (*overlay, int, error) {
+	pageLimit, examineLimit := boundedOverlayLimits(requestedLimit, requestedExamine)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	source := m.overlays[txID]
+	if source == nil || len(source.putNodes)+len(source.deleteNodes) == 0 {
+		return nil, pageLimit, nil
+	}
+	affected := len(source.putNodes) + len(source.deleteNodes)
+	storageLimit := pageLimit + affected
+	requiredExamine := storageLimit + affected
+	if storageLimit > 500 || requiredExamine > examineLimit {
+		return nil, 0, fmt.Errorf("%w: ordered node overlay requires examining %d entries (limit %d)", graphquery.ErrScanBudgetExceeded, requiredExamine, examineLimit)
+	}
+	out := newOverlay()
+	for id, node := range source.putNodes {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		// Staged values are immutable snapshots replaced atomically under m.mu;
+		// copy the struct here and clone only rows selected for output.
+		out.putNodes[id] = node
+	}
+	for id := range source.deleteNodes {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		out.deleteNodes[id] = struct{}{}
+	}
+	return out, storageLimit, nil
+}
+
+func (m *Module) boundedAdjacencyOverlay(ctx context.Context, txID string, requestedLimit int, requestedExamine int) (*overlay, int, error) {
+	pageLimit, examineLimit := boundedOverlayLimits(requestedLimit, requestedExamine)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	source := m.overlays[txID]
+	if source == nil || len(source.putEdges)+len(source.deleteEdges) == 0 {
+		return nil, pageLimit, nil
+	}
+	affected := len(source.putEdges) + len(source.deleteEdges)
+	storageLimit := pageLimit + affected
+	requiredExamine := storageLimit + affected
+	if storageLimit > 500 || requiredExamine > examineLimit {
+		return nil, 0, fmt.Errorf("%w: adjacency overlay requires examining %d entries (limit %d)", graphquery.ErrScanBudgetExceeded, requiredExamine, examineLimit)
+	}
+	out := newOverlay()
+	for id, edge := range source.putEdges {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		// Staged values are immutable snapshots replaced atomically under m.mu;
+		// copy the struct here and clone only rows selected for output.
+		out.putEdges[id] = edge
+	}
+	for id := range source.deleteEdges {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		out.deleteEdges[id] = struct{}{}
+	}
+	return out, storageLimit, nil
+}
+
+func boundedOverlayLimits(requestedLimit int, requestedExamine int) (int, int) {
+	pageLimit := requestedLimit
+	if pageLimit <= 0 || pageLimit > 500 {
+		pageLimit = 500
+	}
+	if requestedExamine <= 0 {
+		requestedExamine = pageLimit * 16
+	}
+	if pageLimit > requestedExamine {
+		pageLimit = requestedExamine
+	}
+	return pageLimit, requestedExamine
+}
+
 func (o *overlay) clone() *overlay {
 	out := newOverlay()
 	out.opCount = o.opCount
@@ -3290,26 +3368,32 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.Gr
 		stats.NodesLoaded = len(out)
 		return out, next, stats, nil
 	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	var overlaySnapshot *overlay
-	if o != nil {
-		overlaySnapshot = o.clone()
+	overlaySnapshot, storageLimit, err := m.boundedOrderedNodeOverlay(ctx, tx.ID, scan.Limit, scan.ExamineLimit)
+	if err != nil {
+		return nil, "", stats, err
 	}
-	m.mu.Unlock()
-	extra := 0
+	var indexStatus graphstorage.IndexMetadata
 	if overlaySnapshot != nil {
-		extra = len(overlaySnapshot.putNodes)
+		indexStatus, err = readyNodeIndexMetadata(ctx, store, mustDomainID(tx.DomainID), scan.IndexName)
+		if err != nil {
+			return nil, "", stats, err
+		}
 	}
-	storageLimit := scan.Limit
-	if storageLimit > 0 {
-		storageLimit += extra
-	}
-	entries, next, err := store.ScanNodePropertyOrdered(ctx, graphstorage.OrderedNodePropertyScan{DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction, Limit: storageLimit, Cursor: scan.Cursor, HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive, HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive})
+	entries, next, scanned, err := store.ScanNodePropertyOrderedBounded(ctx, graphstorage.OrderedNodePropertyScan{
+		DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction,
+		Limit: storageLimit, Cursor: scan.Cursor, ExamineLimit: storageLimit,
+		HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive,
+		HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive,
+	})
 	if err != nil {
 		return nil, "", stats, mapStorageError(err)
 	}
-	stats.IndexEntriesScanned = len(entries)
+	stats.IndexEntriesScanned = scanned
+	extra := 0
+	if overlaySnapshot != nil {
+		extra = len(overlaySnapshot.putNodes)
+		stats.IndexEntriesScanned += len(overlaySnapshot.deleteNodes)
+	}
 	items := make([]indexedNodeResult, 0, len(entries)+extra)
 	for _, entry := range entries {
 		if overlaySnapshot != nil {
@@ -3333,35 +3417,41 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.Gr
 		if err != nil {
 			return nil, "", stats, mapStorageError(err)
 		}
+		storageBoundary := ""
+		if next != "" {
+			storageBoundary, err = graphstorage.DecodeIndexCursor(next)
+			if err != nil {
+				return nil, "", stats, mapStorageError(err)
+			}
+		}
 		for _, node := range overlaySnapshot.putNodes {
-			if node.DomainID != mustDomainID(tx.DomainID) || !nodeMatchesConfiguredIndex(node, scan.IndexName, store) {
+			if err := ctx.Err(); err != nil {
+				return nil, "", stats, err
+			}
+			stats.IndexEntriesScanned++
+			stats.NodesLoaded++
+			if node.DomainID != mustDomainID(tx.DomainID) || !nodeHasAnyLabelForIndexedRead(node, indexStatus.Labels) {
 				continue
 			}
-			value, ok := domaingraph.Property(node, indexedFieldName(scan.IndexName, store, mustDomainID(tx.DomainID)))
+			value, ok := domaingraph.Property(node, indexStatus.Field.Name)
 			if !ok {
 				continue
 			}
 			key, err := graphstorage.EncodeOrderedNodeKey(value, node.ID)
-			if err != nil {
+			if err != nil || !indexedValueInBounds(key, scan) {
 				continue
 			}
-			if !indexedValueInBounds(key, scan) {
-				continue
-			}
-			if cursorKey != "" {
-				if scan.Direction == schemamodel.IndexSortDirectionDesc {
-					if key >= cursorKey {
-						continue
-					}
-				} else if key <= cursorKey {
+			if scan.Direction == schemamodel.IndexSortDirectionDesc {
+				if cursorKey != "" && key >= cursorKey || storageBoundary != "" && key < storageBoundary {
 					continue
 				}
+			} else if cursorKey != "" && key <= cursorKey || storageBoundary != "" && key > storageBoundary {
+				continue
 			}
 			items = append(items, indexedNodeResult{node: cloneNode(node), key: key})
 		}
 	}
 	out, next := finishIndexedNodeResults(items, scan.Limit, scan.Direction, next)
-	stats.NodesLoaded = len(out)
 	return out, next, stats, nil
 }
 
@@ -3389,32 +3479,19 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransac
 		return nil, "", stats, err
 	}
 	label := strings.TrimSpace(scan.Label)
-	if label == "" {
-		return nil, "", stats, fmt.Errorf("%w: adjacency label is required", ErrInvalidInput)
-	}
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", stats, err
 	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	var overlaySnapshot *overlay
-	if o != nil {
-		overlaySnapshot = o.clone()
-	}
-	m.mu.Unlock()
 	storageDirection := graphstorage.AdjacencyDirectionOut
 	if scan.Direction == graphquery.AdjacencyDirectionIn {
 		storageDirection = graphstorage.AdjacencyDirectionIn
 	}
-	limit := scan.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 500
-	}
+	limit, examineLimit := boundedOverlayLimits(scan.Limit, scan.ExamineLimit)
 	storageScan := graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: id, Label: label, Direction: storageDirection, Limit: limit, Cursor: scan.Cursor}
 	snapshotRev, snapshoted := snapshotRevision(tx)
 	if snapshoted {
-		edgeIDs, next, examined, scanErr := store.ScanAdjacencyAt(ctx, storageScan, snapshotRev, limit)
+		edgeIDs, next, examined, scanErr := store.ScanAdjacencyAt(ctx, storageScan, snapshotRev, examineLimit)
 		stats.IndexEntriesScanned = examined
 		if scanErr != nil {
 			return nil, "", stats, mapStorageError(scanErr)
@@ -3430,8 +3507,12 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransac
 		stats.EdgesLoaded = len(out)
 		return out, next, stats, nil
 	}
+	overlaySnapshot, storageLimit, err := m.boundedAdjacencyOverlay(ctx, tx.ID, limit, examineLimit)
+	if err != nil {
+		return nil, "", stats, err
+	}
 	if overlaySnapshot != nil {
-		out, next, examined, loaded, scanErr := scanAdjacencyWithOverlay(ctx, store, mustDomainID(tx.DomainID), id, label, storageDirection, limit, scan.Cursor, overlaySnapshot)
+		out, next, examined, loaded, scanErr := scanAdjacencyWithOverlay(ctx, store, mustDomainID(tx.DomainID), id, label, storageDirection, limit, storageLimit, scan.Cursor, overlaySnapshot)
 		stats.IndexEntriesScanned = examined
 		stats.EdgesLoaded = loaded
 		if scanErr != nil {
@@ -3456,15 +3537,14 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransac
 	return out, next, stats, nil
 }
 
-func scanAdjacencyWithOverlay(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, nodeID domaingraph.NodeID, label string, direction graphstorage.AdjacencyDirection, limit int, cursor string, overlaySnapshot *overlay) ([]domaingraph.Edge, string, int, int, error) {
-	storageLimit := limit
+func scanAdjacencyWithOverlay(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, nodeID domaingraph.NodeID, label string, direction graphstorage.AdjacencyDirection, limit int, storageLimit int, cursor string, overlaySnapshot *overlay) ([]domaingraph.Edge, string, int, int, error) {
 	edgeIDs, storageNext, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{
 		DomainID: domainID, NodeID: nodeID, Label: label, Direction: direction, Limit: storageLimit, Cursor: cursor,
 	})
 	if err != nil {
 		return nil, "", 0, 0, mapStorageError(err)
 	}
-	examined := len(edgeIDs)
+	examined := len(edgeIDs) + len(overlaySnapshot.deleteEdges)
 	loaded := 0
 	items := make([]domaingraph.Edge, 0, len(edgeIDs)+len(overlaySnapshot.putEdges))
 	for _, edgeID := range edgeIDs {
@@ -3493,11 +3573,17 @@ func scanAdjacencyWithOverlay(ctx context.Context, store *graphstorage.LocalStor
 		}
 	}
 	for _, edge := range overlaySnapshot.putEdges {
+		if err := ctx.Err(); err != nil {
+			return nil, "", examined, loaded, err
+		}
 		examined++
-		if edge.DomainID != domainID || !domaingraph.EdgeHasLabels(edge, []string{label}) {
+		if edge.DomainID != domainID || label != "" && !domaingraph.EdgeHasLabels(edge, []string{label}) {
 			continue
 		}
 		if direction == graphstorage.AdjacencyDirectionIn && edge.ToID != nodeID || direction == graphstorage.AdjacencyDirectionOut && edge.FromID != nodeID {
+			continue
+		}
+		if label == "" && direction == graphstorage.AdjacencyDirectionIn && edge.FromID == edge.ToID {
 			continue
 		}
 		key := adjacencyServiceKey(edge)
@@ -3838,79 +3924,48 @@ func (m *Module) scanSnapshotTag(ctx context.Context, store *graphstorage.LocalS
 }
 
 func scanSnapshotNodes(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, cursor string, limit int, revision uint64, include func(domaingraph.Node) bool) ([]domaingraph.Node, string, int, error) {
-	nodes, err := store.ListNodesByDomainAt(ctx, domainID, revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
+	if limit <= 0 || limit > 500 {
+		limit = 500
 	}
 	cursorKey, err := graphstorage.DecodeIndexCursor(cursor)
 	if err != nil {
 		return nil, "", 0, mapStorageError(err)
 	}
-	items := make([]domaingraph.Node, 0, len(nodes))
-	for _, node := range nodes {
-		if !include(node) || cursorKey != "" && node.ID.String() <= cursorKey {
-			continue
-		}
-		items = append(items, cloneNode(node))
+	nodes, next, examined, err := store.ScanNodesByDomain(ctx, graphstorage.DomainNodeScan{
+		DomainID: domainID, Limit: limit, Cursor: cursorKey,
+		Snapshot: true, Revision: revision, ExamineLimit: limit,
+	})
+	if err != nil {
+		return nil, "", examined, mapStorageError(err)
 	}
-	return limitSnapshotNodes(items, limit), snapshotNodeNext(items, limit), len(nodes), nil
+	out := make([]domaingraph.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if include(node) {
+			out = append(out, cloneNode(node))
+		}
+	}
+	return out, graphstorage.EncodeIndexCursor(next), examined, nil
 }
 
 func (m *Module) scanSnapshotNodePropertyOrdered(ctx context.Context, store *graphstorage.LocalStore, tx sessionmodel.GraphTransaction, scan graphquery.OrderedNodePropertyScan, revision uint64) ([]domaingraph.Node, string, int, error) {
-	status, ok, err := readyNodeIndexStatus(ctx, store, mustDomainID(tx.DomainID), scan.IndexName)
+	entries, next, examined, err := store.ScanNodePropertyOrderedAt(ctx, graphstorage.OrderedNodePropertyScan{
+		DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction,
+		Limit: scan.Limit, Cursor: scan.Cursor, ExamineLimit: scan.ExamineLimit,
+		HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive,
+		HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive,
+	}, revision)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", examined, mapStorageError(err)
 	}
-	if !ok {
-		return nil, "", 0, mapStorageError(graphstorage.ErrIndexUnavailable)
-	}
-	nodes, err := store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	items := make([]indexedNodeResult, 0, len(nodes))
-	for _, node := range nodes {
-		if !nodeHasAnyLabelForIndexedRead(node, status.Labels) {
-			continue
+	out := make([]domaingraph.Node, 0, len(entries))
+	for _, entry := range entries {
+		node, readErr := store.GetNodeAt(ctx, entry.NodeID, revision)
+		if readErr != nil {
+			return nil, "", examined, mapStorageError(readErr)
 		}
-		value, ok := domaingraph.Property(node, status.Field.Name)
-		if !ok {
-			continue
-		}
-		key, err := graphstorage.EncodeOrderedNodeKey(value, node.ID)
-		if err != nil || !indexedValueInBounds(key, scan) {
-			continue
-		}
-		if cursorKey != "" {
-			if scan.Direction == schemamodel.IndexSortDirectionDesc {
-				if key >= cursorKey {
-					continue
-				}
-			} else if key <= cursorKey {
-				continue
-			}
-		}
-		items = append(items, indexedNodeResult{node: cloneNode(node), key: key})
+		out = append(out, cloneNode(node))
 	}
-	out, next := finishIndexedNodeResults(items, scan.Limit, scan.Direction, "")
-	return out, next, len(nodes), nil
-}
-
-func readyNodeIndexStatus(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, indexName string) (graphstorage.IndexMetadata, bool, error) {
-	statuses, err := store.IndexStatuses(ctx)
-	if err != nil {
-		return graphstorage.IndexMetadata{}, false, mapStorageError(err)
-	}
-	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == domainID && status.TargetKind == schemamodel.IndexTargetNode && status.BuildState == graphstorage.IndexBuildStateReady {
-			return status, true, nil
-		}
-	}
-	return graphstorage.IndexMetadata{}, false, nil
+	return out, next, examined, nil
 }
 
 func limitSnapshotNodes(items []domaingraph.Node, limit int) []domaingraph.Node {
@@ -3947,33 +4002,17 @@ func indexedValueInBounds(key string, scan graphquery.OrderedNodePropertyScan) b
 	return true
 }
 
-func nodeMatchesConfiguredIndex(node domaingraph.Node, indexName string, store *graphstorage.LocalStore) bool {
-	statuses, err := store.IndexStatuses(context.Background())
+func readyNodeIndexMetadata(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, indexName string) (graphstorage.IndexMetadata, error) {
+	statuses, err := store.IndexStatuses(ctx)
 	if err != nil {
-		return false
+		return graphstorage.IndexMetadata{}, mapStorageError(err)
 	}
 	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == node.DomainID {
-			if len(status.Labels) == 0 {
-				return false
-			}
-			return nodeHasAnyLabelForIndexedRead(node, status.Labels)
+		if status.Name == indexName && status.DomainID == domainID && status.TargetKind == schemamodel.IndexTargetNode && status.BuildState == graphstorage.IndexBuildStateReady {
+			return status, nil
 		}
 	}
-	return false
-}
-
-func indexedFieldName(indexName string, store *graphstorage.LocalStore, domainID domaingraph.DomainID) string {
-	statuses, err := store.IndexStatuses(context.Background())
-	if err != nil {
-		return ""
-	}
-	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == domainID {
-			return status.Field.Name
-		}
-	}
-	return ""
+	return graphstorage.IndexMetadata{}, mapStorageError(graphstorage.ErrIndexUnavailable)
 }
 
 func nodeHasAnyLabelForIndexedRead(node domaingraph.Node, labels []string) bool {

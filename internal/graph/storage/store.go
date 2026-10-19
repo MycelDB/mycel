@@ -58,6 +58,8 @@ type LocalStore struct {
 	configuredIndexes         map[graph.DomainID][]schema.IndexDefinition
 	indexMetadata             map[string]IndexMetadata
 	nodePropertyIndex         map[string]map[string]nodePropertyIndexEntry
+	nodePropertyOrder         map[string]*orderedTree[string, nodePropertyIndexEntry]
+	historyNodePropertyOrder  map[string]*orderedTree[string, graph.NodeID]
 	edgePropertyIndex         map[string]map[string]edgePropertyIndexEntry
 	edgeAdjacencyOut          map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
 	edgeAdjacencyIn           map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID
@@ -138,6 +140,7 @@ func (s *LocalStore) open(ctx context.Context) error {
 			return err
 		}
 	}
+	s.rebuildNodePropertyOrdersLocked()
 	s.state = StoreStateReady
 	return nil
 }
@@ -218,6 +221,8 @@ func (s *LocalStore) resetIndexes() {
 	s.configuredIndexes = map[graph.DomainID][]schema.IndexDefinition{}
 	s.indexMetadata = map[string]IndexMetadata{}
 	s.nodePropertyIndex = map[string]map[string]nodePropertyIndexEntry{}
+	s.nodePropertyOrder = map[string]*orderedTree[string, nodePropertyIndexEntry]{}
+	s.historyNodePropertyOrder = map[string]*orderedTree[string, graph.NodeID]{}
 	s.edgePropertyIndex = map[string]map[string]edgePropertyIndexEntry{}
 	s.edgeAdjacencyOut = map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}
 	s.edgeAdjacencyIn = map[graph.DomainID]map[graph.NodeID]map[string]map[string]graph.EdgeID{}

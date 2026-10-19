@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	graph "github.com/myceldb/mycel/internal/graph/model"
@@ -29,6 +31,14 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	}
 	if err := queryexecution.ValidatePage(prepared.Statement.Mutation.Page); err != nil {
 		return querylogical.Result{}, err
+	}
+	if strings.TrimSpace(prepared.Statement.Mutation.Page.Cursor) != "" {
+		return querylogical.Result{}, querylogical.NewError(
+			querylogical.ErrorInvalidQuery,
+			"paginate mutation result",
+			"mutation continuations are not supported; execute each mutation exactly once",
+			nil,
+		)
 	}
 	if execution.Now.IsZero() {
 		execution.Now = time.Now()
@@ -69,6 +79,14 @@ func (e *Engine) executeMutation(ctx context.Context, execution ExecutionContext
 	result, err := shapeMutationResult(mutationCtx, run.rows, mutation, prepared, execution, tracker, budget)
 	if err != nil {
 		return finish(false, err)
+	}
+	if result.NextCursor != "" {
+		return finish(false, querylogical.NewError(
+			querylogical.ErrorResourceExhausted,
+			"paginate mutation result",
+			"mutation result exceeds one response page; increase the page size or narrow the mutation match",
+			nil,
+		))
 	}
 	releaseRows()
 	result.Diagnostics.RetainedMemoryBytes = tracker.Snapshot().RetainedMemory
@@ -374,21 +392,40 @@ func (e *Engine) validateNodeDeletes(ctx context.Context, execution ExecutionCon
 		return nil
 	}
 	if e.ports.Traversals == nil {
-		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "validate node delete", "adjacency access is required", nil)
+		return querylogical.NewError(querylogical.ErrorUnavailableAccessPath, "validate node delete", "bounded incident-edge access is required", nil)
 	}
-	limit := tracker.Limits().BatchSize
+	seenEdges := map[string]struct{}{}
 	for nodeID := range nodes {
 		for _, direction := range []graphquery.AdjacencyDirection{graphquery.AdjacencyDirectionOut, graphquery.AdjacencyDirectionIn} {
 			cursor := ""
 			for {
+				remainingEdges := tracker.RemainingEdgesLoaded()
+				remainingCandidates := tracker.RemainingCandidates()
+				remainingIndex := tracker.RemainingIndexEntries()
+				if remainingEdges == 0 {
+					return tracker.LoadEdges(1)
+				}
+				if remainingCandidates == 0 {
+					return tracker.ExamineCandidates(1)
+				}
+				if remainingIndex == 0 {
+					return tracker.ScanIndexEntries(1)
+				}
+				examineAllowance := min(remainingEdges, remainingCandidates, remainingIndex)
+				pageAllowance := max(int64(1), examineAllowance/3)
+				limit := min(int64(tracker.Limits().BatchSize), pageAllowance)
 				if err := tracker.UseAdjacency(1); err != nil {
 					return err
 				}
 				edges, next, stats, scanErr := e.ports.Traversals.ScanAdjacency(ctx, execution.Transaction, graphquery.AdjacencyScan{
-					NodeID: nodeID, Direction: direction, Limit: limit, Cursor: cursor,
+					NodeID: nodeID, Direction: direction, Limit: int(limit), Cursor: cursor,
+					ExamineLimit: int(min(examineAllowance, int64(^uint(0)>>1))),
 				})
 				if err := mutationDependencyError(ctx, "validate node delete", scanErr); err != nil {
 					return err
+				}
+				if len(edges) > int(limit) {
+					return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "incident-edge access returned an oversized page", nil)
 				}
 				if err := tracker.ScanIndexEntries(int64(stats.IndexEntriesScanned)); err != nil {
 					return err
@@ -396,16 +433,24 @@ func (e *Engine) validateNodeDeletes(ctx context.Context, execution ExecutionCon
 				if err := tracker.LoadEdges(int64(stats.EdgesLoaded)); err != nil {
 					return err
 				}
+				if err := tracker.ExamineCandidates(int64(len(edges))); err != nil {
+					return err
+				}
 				for _, edge := range edges {
-					if _, ok := deletedEdges[edge.ID.String()]; !ok {
-						return querylogical.NewError(querylogical.ErrorInvalidQuery, "delete node", fmt.Sprintf("node %q requires deleting incident edge %q first", nodeID, edge.ID.String()), nil)
+					edgeID := edge.ID.String()
+					if _, duplicate := seenEdges[edgeID]; duplicate {
+						continue
+					}
+					seenEdges[edgeID] = struct{}{}
+					if _, ok := deletedEdges[edgeID]; !ok {
+						return querylogical.NewError(querylogical.ErrorInvalidQuery, "delete node", fmt.Sprintf("node %q requires deleting incident edge %q first", nodeID, edgeID), nil)
 					}
 				}
 				if next == "" {
 					break
 				}
 				if next == cursor {
-					return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "adjacency cursor did not advance", nil)
+					return querylogical.NewError(querylogical.ErrorInternal, "validate node delete", "incident-edge cursor did not advance", nil)
 				}
 				cursor = next
 			}
@@ -561,7 +606,7 @@ func (e *Engine) collectMutationMatches(ctx context.Context, execution Execution
 		return queryexecution.Matches{}, err
 	}
 	prepared.readViewIdentity = view
-	source, err := e.indexedSource(ctx, execution, prepared, tracker, indexedCursor{}, 0)
+	source, err := e.indexedSource(ctx, execution, prepared, tracker, indexedCursor{}, 0, &executionContinuation{})
 	if err != nil {
 		return queryexecution.Matches{}, err
 	}
@@ -592,9 +637,10 @@ func shapeMutationResult(ctx context.Context, rows []queryexecution.BindingRow, 
 	}
 	sourceRows := rows
 	for index := range sourceRows {
-		// Mutation continuations preserve the established output-offset contract. A
-		// native read-source checkpoint would be rejected by mutation pagination
-		// and must never escape as the response cursor.
+		// Mutation results must fit one response page. Clear read-source
+		// checkpoints so shaping can only signal an output overflow, which causes
+		// the statement scope to roll back rather than issue a continuation that
+		// would execute the mutation again.
 		sourceRows[index].Cursor = ""
 	}
 	if mutation.Kind == querylogical.MutationInsertNode || mutation.Kind == querylogical.MutationCreateRelationship {
@@ -806,6 +852,9 @@ func mutationDependencyError(ctx context.Context, operation string, err error) e
 	}
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, graphquery.ErrScanBudgetExceeded) {
+		return querylogical.NewError(querylogical.ErrorResourceExhausted, operation, err.Error(), err)
 	}
 	return querylogical.NewError(querylogical.ErrorDependencyFailure, operation, err.Error(), err)
 }

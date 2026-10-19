@@ -21,7 +21,7 @@ The physical planner emits `FamilyMutation` with `AccessMutation` and one explic
 
 Mutation plans require the consumer-owned `engine.MutationWriter` capability. They never use `OperatorLegacyBridge` and Explain remains side-effect-free.
 
-Matched mutations prepare native read subplans and reuse finite node/index/adjacency sources, residual predicate evaluation, transaction snapshot/overlay propagation, cancellation checks, and shared resource budgets. Node deletes perform bounded incoming and outgoing adjacency validation before staging any selected edge deletion, preserving the existing incident-edge rule without leaving a partially changed overlay on validation failure.
+Matched mutations prepare native read subplans and reuse finite node/index/adjacency sources, residual predicate evaluation, transaction snapshot/overlay propagation, cancellation checks, and shared resource budgets. Node deletes page a wildcard incident-edge index in both directions, clamp each request to remaining work budgets, and validate all incident edges before staging any selected edge deletion. Unrelated domain edges are never materialized, and the existing incident-edge rule cannot leave a partially changed overlay on validation failure.
 
 All graph calls carry the complete `sessionmodel.GraphTransaction`. Before a statement writes, the engine enters an opaque graph-owned mutation scope. A per-transaction lease serializes the statement with primitive writes, compound writes, commit, and discard. After acquiring the lease, production composition revalidates the transaction against the authoritative session manager. Commit and discard record terminal graph state before releasing the lease, and rollback/close discard graph state before transitioning session state, so a queued stale request cannot stage or acknowledge writes after finalization. After the authoritative session transition succeeds, daemon and automation callers acknowledge graph finalization under the same lease; the graph then removes the short-lived terminal record, keeping lifecycle state bounded while authoritative validation continues to reject stale writes.
 
@@ -35,7 +35,7 @@ Mutation execution preserves:
 - returned rows and graph projection;
 - parameter resolution;
 - mutation `LIMIT` behavior;
-- response page size and legacy output-offset continuation behavior (native read-source checkpoints are cleared before mutation result shaping);
+- response page size as a statement-scope safety bound: mutations do not accept or emit continuations, and an oversized returned result rolls the statement scope back with `ResourceExhausted`;
 - node/relationship merge identity rules;
 - read-write access enforcement.
 
@@ -67,7 +67,7 @@ Coverage includes:
 - native physical mutation plan and Explain assertions;
 - existing daemon GQL insert, set, delete, node merge, relationship create/merge, parameters, counters, rows, graph, and overlay tests;
 - incident-edge validation before mutation writes;
-- mutation continuation round trips across multiple result pages;
+- mutation continuation rejection plus rollback of oversized `SET` and `DELETE` result statements;
 - overlay restoration after shaping-budget exhaustion, post-write cancellation, and a later writer failure;
 - per-transaction write serialization across rollback and concurrent primitive writes;
 - both mutation-before-finalization and finalization-before-mutation orderings for commit and discard, stale primitive-write rejection after commit, rollback, and close, and reclamation of acknowledged terminal records across repeated lifecycle operations;

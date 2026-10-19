@@ -174,11 +174,12 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		return querylogical.Result{}, err
 	}
 	pageRows := indexedPageRows(query, cursor, prepared.Physical.Family)
+	continuation := &executionContinuation{}
 	var source queryexecution.Operator
 	if pageRows == 0 {
 		source = queryexecution.NewSliceSource([]queryexecution.BindingRow{}, budget.BatchSize, tracker)
 	} else {
-		source, err = e.indexedSource(ctx, execution, prepared, tracker, cursor, cursor.RowsReturned+int64(pageRows))
+		source, err = e.indexedSource(ctx, execution, prepared, tracker, cursor, cursor.RowsReturned+int64(pageRows), continuation)
 		if err != nil {
 			return querylogical.Result{}, err
 		}
@@ -211,7 +212,7 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 	if currentReadView != readViewIdentity {
 		return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
 	}
-	result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor)
+	result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor, continuation.semanticIdentity)
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
 	if prepared.Physical.Family == queryphysical.FamilyIndexedSubtree {
 		result.Diagnostics.RootCount = result.Diagnostics.RowsReturned
@@ -291,7 +292,7 @@ func executionQuery(query querylogical.Query, plan queryphysical.Plan, cursor in
 	return query
 }
 
-func wrapIndexedNextCursor(prepared PreparedQuery, next string) string {
+func wrapIndexedNextCursor(prepared PreparedQuery, next string, semanticIdentity string) string {
 	if next == "" || strings.HasPrefix(next, indexedCursorPrefix) {
 		return next
 	}
@@ -299,7 +300,7 @@ func wrapIndexedNextCursor(prepared PreparedQuery, next string) string {
 	if err != nil || offset < 0 {
 		return ""
 	}
-	return encodeIndexedCursor(prepared, indexedCursor{Mode: cursorModeOutput, OutputOffset: offset, RowsReturned: int64(offset)})
+	return encodeIndexedCursor(prepared, indexedCursor{Mode: cursorModeOutput, OutputOffset: offset, RowsReturned: int64(offset), SemanticIdentity: semanticIdentity})
 }
 
 func mergeRuntimeDiagnostics(plan querylogical.Diagnostics, runtime querylogical.Diagnostics) querylogical.Diagnostics {

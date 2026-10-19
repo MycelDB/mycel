@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented and independently reviewed on `feat/query-refactor-qrx11-adapter-cleanup` for [mycel#213](https://github.com/MycelDB/mycel/issues/213). CI and integration-branch merge remain pending.
+Merged into `improved_querying` through PR #228 for [mycel#213](https://github.com/MycelDB/mycel/issues/213). Post-QRX0–QRX11 aggregate-review corrections are implemented and independently accepted on the follow-up branch; CI/SonarCloud, integration-branch merge, and promotion to `develop` remain separately gated.
 
 ## Scope
 
@@ -70,6 +70,20 @@ QRX11 coverage includes:
 - source-relative import and adapter-ownership checks.
 
 The merge gate additionally requires focused race tests, `make test`, `make build`, `make docs-check`, daemon-only/public-surface checks, `git diff --check`, independent exact-head review, CI, and SonarCloud. Broad daemon-client race runs can still expose the known pre-existing consensus waiter race in `consensus.Group.completeWaiter` versus `Propose`; query-only and non-Raft daemon query race suites are the attribution gate for this tranche.
+
+## Aggregate review resolution
+
+The complete QRX0–QRX11 range received independent architecture, transaction/resource-safety, and compatibility review. Three exact-head follow-up reviews verified the corrections and their boundedness/accounting seams; the final review found no issues and returned `Merge verdict: OK`. Follow-up corrections:
+
+- distinguish missing values from explicit null during equality while retaining `IS NULL` compatibility;
+- apply `DISTINCT` to projected rows before ordering;
+- reject mutation continuations and roll back statements whose returned mutation rows cannot fit one response page;
+- page node-delete incident-edge validation through finite wildcard incoming/outgoing adjacency indexes rather than whole-domain edge materialization;
+- bind semantic cursors to deterministic ranked-candidate identity;
+- execute default GQL undirected relationships through finite outgoing/incoming adjacency scans with self-loop deduplication;
+- back current and historical ordered-property scans with derived ordered trees, finite examine limits, and actual examined-entry/node-load accounting; read-write overlay merges are preflighted against the supplied examine bound and fail closed before snapshotting when they cannot fit;
+- execute revision-pinned label and tag scans through finite snapshot pages rather than loading the complete visible domain;
+- refresh the QRX0 inventory so resolved bridge-era mismatches are no longer documented as current behavior.
 
 ## Explicit follow-ups
 

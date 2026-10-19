@@ -192,6 +192,20 @@ func (t *Tracker) RemainingEdgesLoaded() int64 {
 	return max(0, t.limits.MaxEdgesLoaded-t.usage.EdgesLoaded)
 }
 
+// RemainingIndexEntries reports how many additional index entries can be examined.
+func (t *Tracker) RemainingIndexEntries() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return max(0, t.limits.MaxIndexEntries-t.usage.IndexEntries)
+}
+
+// RemainingCandidates reports how many additional candidates can be examined.
+func (t *Tracker) RemainingCandidates() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return max(0, t.limits.MaxCandidates-t.usage.CandidatesExamined)
+}
+
 func (t *Tracker) ExamineCandidates(delta int64) error {
 	return t.add("candidate", delta, &t.usage.CandidatesExamined, t.limits.MaxCandidates)
 }
