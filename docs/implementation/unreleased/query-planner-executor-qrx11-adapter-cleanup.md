@@ -81,7 +81,7 @@ The complete QRX0–QRX11 range received independent architecture, transaction/r
 - page node-delete incident-edge validation through finite wildcard incoming/outgoing adjacency indexes rather than whole-domain edge materialization;
 - bind semantic cursors to deterministic ranked-candidate identity;
 - execute default GQL undirected relationships through finite outgoing/incoming adjacency scans with self-loop deduplication;
-- back current and historical ordered-property scans with derived ordered trees, finite examine limits, and actual examined-entry accounting; read-write overlay merges are preflighted against the supplied examine bound and fail closed before cloning when they cannot fit;
+- back current and historical ordered-property scans with derived ordered trees, finite examine limits, and actual examined-entry/node-load accounting; read-write overlay merges are preflighted against the supplied examine bound and fail closed before snapshotting when they cannot fit;
 - execute revision-pinned label and tag scans through finite snapshot pages rather than loading the complete visible domain;
 - refresh the QRX0 inventory so resolved bridge-era mismatches are no longer documented as current behavior.
 

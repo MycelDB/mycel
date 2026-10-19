@@ -3429,6 +3429,7 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.Gr
 				return nil, "", stats, err
 			}
 			stats.IndexEntriesScanned++
+			stats.NodesLoaded++
 			if node.DomainID != mustDomainID(tx.DomainID) || !nodeHasAnyLabelForIndexedRead(node, indexStatus.Labels) {
 				continue
 			}
@@ -3451,7 +3452,6 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.Gr
 		}
 	}
 	out, next := finishIndexedNodeResults(items, scan.Limit, scan.Direction, next)
-	stats.NodesLoaded = len(out)
 	return out, next, stats, nil
 }
 

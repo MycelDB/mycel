@@ -572,6 +572,73 @@ func TestOrderedPropertyOverlayHonorsExamineBoundAndPaginates(t *testing.T) {
 	}
 }
 
+func TestOrderedPropertyOverlayReportsActualLoadsAndPaginatesDescending(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphModule(t, ctx)
+	spaceID, domainID := uuid.NewString(), uuid.NewString()
+	seed := graphTx(spaceID, domainID, 0)
+	index := schemamodel.IndexDefinition{
+		Name: "note_rank", TargetKind: schemamodel.IndexTargetNode, Labels: []string{"Note"},
+		Field: schemamodel.FieldPath{Namespace: "properties", Name: "rank"},
+		Kind:  schemamodel.IndexKindOrdered, Direction: schemamodel.IndexSortDirectionAsc,
+	}
+	if err := m.ConfigureIndexes(ctx, seed, "schema-1", []schemamodel.IndexDefinition{index}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rank := range []int64{2, 3} {
+		if _, err := m.CreateNode(ctx, seed, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"rank": rank}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit, err := m.CommitTransactionGraph(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	for _, rank := range []int64{1, 4} {
+		if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Labels: []string{"Note"}, Properties: map[string]any{"rank": rank}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	nodes, _, stats, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+		IndexName: index.Name, Direction: schemamodel.IndexSortDirectionAsc, Limit: 1, ExamineLimit: 16,
+	})
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("ascending mixed overlay nodes=%+v stats=%+v err=%v", nodes, stats, err)
+	}
+	value, _ := domaingraph.Property(nodes[0], "rank")
+	if value != int64(1) || stats.NodesLoaded != 4 {
+		t.Fatalf("ascending rank=%v nodes loaded=%d, want rank 1 and 4 actual loads", value, stats.NodesLoaded)
+	}
+
+	cursor := ""
+	var got []int64
+	for page := 0; page < 5; page++ {
+		nodes, next, pageStats, err := m.ScanNodePropertyOrdered(ctx, tx, graphquery.OrderedNodePropertyScan{
+			IndexName: index.Name, Direction: schemamodel.IndexSortDirectionDesc,
+			Limit: 1, Cursor: cursor, ExamineLimit: 16,
+		})
+		if err != nil || pageStats.NodesLoaded > 4 {
+			t.Fatalf("descending page %d nodes=%+v stats=%+v err=%v", page, nodes, pageStats, err)
+		}
+		for _, node := range nodes {
+			value, _ := domaingraph.Property(node, "rank")
+			got = append(got, value.(int64))
+		}
+		if next == "" {
+			break
+		}
+		if next == cursor {
+			t.Fatalf("descending cursor did not advance: %q", next)
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(got, []int64{4, 3, 2, 1}) {
+		t.Fatalf("descending ranks=%v", got)
+	}
+}
+
 func TestSnapshotLabelScanMakesBoundedProgress(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphModule(t, ctx)

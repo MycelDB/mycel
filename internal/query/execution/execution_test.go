@@ -107,6 +107,33 @@ func TestPagedNodeSourceResumesInsideFinitePageAndReleasesMemory(t *testing.T) {
 	}
 }
 
+func TestPagedNodeSourceFailsClosedWhenDependencyReportsHiddenNodeLoads(t *testing.T) {
+	budget := queryexecution.ResolveBudget(queryexecution.Budget{BatchSize: 1, MaxNodesLoaded: 1}, queryexecution.Budget{})
+	tracker, err := queryexecution.NewTracker(budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := queryexecution.NewPagedNodeSource("n", func(_ context.Context, limit int, _ string) (queryexecution.NodePage, error) {
+		if limit != 1 {
+			t.Fatalf("dependency limit = %d, want remaining node budget 1", limit)
+		}
+		return queryexecution.NodePage{
+			Nodes: []graph.Node{{ID: uuid.New()}}, IndexEntries: 3, NodesLoaded: 3,
+		}, nil
+	}, nil, "", 0, false, 1, tracker)
+	if err := source.Open(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = source.Next(context.Background())
+	assertQueryErrorCode(t, err, querylogical.ErrorResourceExhausted)
+	if closeErr := source.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if usage := tracker.Snapshot(); usage.NodesLoaded != 0 || usage.RetainedMemory != 0 {
+		t.Fatalf("usage after hidden-load rejection = %+v", usage)
+	}
+}
+
 func TestPagedNodeSourceFailsClosedOnEmptyNonTerminalPage(t *testing.T) {
 	budget := queryexecution.ResolveBudget(queryexecution.Budget{}, queryexecution.Budget{})
 	tracker, err := queryexecution.NewTracker(budget)
