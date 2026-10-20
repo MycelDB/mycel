@@ -49,7 +49,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	if err != nil {
 		return run, err
 	}
-	baseRevision, err := m.graphs.CurrentRevision(ctx, inv.SpaceID)
+	baseRevision, err := m.graphs.CurrentDomainRevision(ctx, inv.SpaceID, inv.DomainID.String())
 	if err != nil {
 		return run, err
 	}
@@ -244,7 +244,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 }
 
 func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionmodel.GraphTransaction, graph.Node, map[string]any, error) {
-	baseRevision, err := m.graphs.CurrentRevision(ctx, inv.SpaceID)
+	baseRevision, err := m.graphs.CurrentDomainRevision(ctx, inv.SpaceID, inv.DomainID.String())
 	if err != nil {
 		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}

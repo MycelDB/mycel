@@ -196,8 +196,16 @@ func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	entry2 := graph.Node{ID: graph.NodeID(entryID2), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "Did another thing"}}
 	edge := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 1}}
 	edge2 := graph.Edge{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry2.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 2}}
-	graphs := &automationE2EGraph{nodes: map[string]graph.Node{journal.ID.String(): journal, entry.ID.String(): entry, entry2.ID.String(): entry2}, edges: []graph.Edge{edge, edge2}}
-	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	domainRevisionCalls := [][2]string{}
+	graphs := &automationE2EGraph{
+		nodes:               map[string]graph.Node{journal.ID.String(): journal, entry.ID.String(): entry, entry2.ID.String(): entry2},
+		edges:               []graph.Edge{edge, edge2},
+		spaceRevision:       99,
+		domainRevision:      7,
+		domainRevisionCalls: &domainRevisionCalls,
+	}
+	beginInputs := []sessionmodel.BeginTransactionInput{}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String(), beginInputs: &beginInputs}
 	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
 	def := automation.Definition{ID: "daily", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Trigger: automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"JournalEntry"}}, Condition: automation.Condition{GQL: "MATCH (journal:Journal)-[r:HAS_ENTRY]->(changed:JournalEntry) RETURN changed, journal"}, Input: automation.Input{Target: "journal", Mode: automation.InputModeGQLTemplate, Template: "# {{journal.properties.date}}\n{{#each entries}}- {{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (journal)-[r:HAS_ENTRY]->(entry:JournalEntry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize journal", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "journal", Set: map[string]string{"payload.summary": "$result.text"}}}}}, Safety: automation.Safety{Idempotency: automation.Idempotency{Scope: "target", Target: "journal", SkipIfOutputUnchanged: true}}}
 	if err := store.PutDefinition(ctx, def); err != nil {
@@ -213,6 +221,12 @@ func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	}
 	if processed != 1 {
 		t.Fatalf("processed = %d", processed)
+	}
+	if len(domainRevisionCalls) != 1 || domainRevisionCalls[0] != [2]string{ids.spaceID, ids.domainID.String()} {
+		t.Fatalf("domain revision calls = %#v, want target space/domain", domainRevisionCalls)
+	}
+	if len(beginInputs) != 1 || beginInputs[0].BaseRevision == nil || *beginInputs[0].BaseRevision != 7 {
+		t.Fatalf("begin transaction inputs = %#v, want target domain revision 7 instead of space revision 99", beginInputs)
 	}
 	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
 	if err != nil {
@@ -407,13 +421,21 @@ type automationE2ESessions struct {
 	domainID           string
 	commitCalls        *int
 	commitContextError *error
+	beginInputs        *[]sessionmodel.BeginTransactionInput
 }
 
 func (s automationE2ESessions) OpenSession(context.Context, sessionmodel.OpenSessionInput) (sessionmodel.GraphSession, error) {
 	return sessionmodel.GraphSession{ID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, State: sessionmodel.SessionStateActive}, nil
 }
-func (s automationE2ESessions) BeginTransaction(context.Context, sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
-	return sessionmodel.GraphTransaction{ID: "tx", SessionID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive}, nil
+func (s automationE2ESessions) BeginTransaction(_ context.Context, input sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
+	if s.beginInputs != nil {
+		*s.beginInputs = append(*s.beginInputs, input)
+	}
+	baseRevision := int64(0)
+	if input.BaseRevision != nil {
+		baseRevision = *input.BaseRevision
+	}
+	return sessionmodel.GraphTransaction{ID: "tx", SessionID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision}, nil
 }
 func (s automationE2ESessions) CommitTransactionAtRevision(ctx context.Context, _ string, _ string, _ int32, _ int64) (sessionmodel.TransactionCommit, error) {
 	if s.commitCalls != nil {
@@ -432,11 +454,14 @@ func (s automationE2ESessions) RollbackTransaction(context.Context, string, stri
 }
 
 type automationE2EGraph struct {
-	node             graph.Node
-	nodes            map[string]graph.Node
-	edges            []graph.Edge
-	cancelOnCommit   context.CancelFunc
-	acknowledgements *int
+	node                graph.Node
+	nodes               map[string]graph.Node
+	edges               []graph.Edge
+	cancelOnCommit      context.CancelFunc
+	acknowledgements    *int
+	spaceRevision       int64
+	domainRevision      int64
+	domainRevisionCalls *[][2]string
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -500,7 +525,21 @@ func (g *automationE2EGraph) ListEdges(_ context.Context, _ sessionmodel.GraphTr
 func (g *automationE2EGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graph.EdgeInput) (graph.Edge, error) {
 	return graph.Edge{}, fmt.Errorf("unused")
 }
-func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, error) { return 1, nil }
+func (g *automationE2EGraph) CurrentRevision(context.Context, string) (int64, error) {
+	if g.spaceRevision != 0 {
+		return g.spaceRevision, nil
+	}
+	return 1, nil
+}
+func (g *automationE2EGraph) CurrentDomainRevision(_ context.Context, spaceID string, domainID string) (int64, error) {
+	if g.domainRevisionCalls != nil {
+		*g.domainRevisionCalls = append(*g.domainRevisionCalls, [2]string{spaceID, domainID})
+	}
+	if g.domainRevision != 0 {
+		return g.domainRevision, nil
+	}
+	return 1, nil
+}
 func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	if g.cancelOnCommit != nil {
 		g.cancelOnCommit()
