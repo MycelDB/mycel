@@ -15,12 +15,17 @@ import (
 // Reference resolution and authorization helpers for AdminInferenceService.
 
 func (s *AdminInferenceService) resolveModelEndpointID(ctx context.Context, ref string) (domainsemantic.ModelEndpointID, error) {
-	if id, err := uuid.Parse(strings.TrimSpace(ref)); err == nil && id != uuid.Nil {
-		return domainsemantic.ModelEndpointID(id), nil
-	}
 	items, err := s.semantic.GlobalManager().ListModelEndpoints(ctx)
 	if err != nil {
 		return uuid.Nil, mapAdminInferenceError(err, "list model endpoints")
+	}
+	if id, err := uuid.Parse(strings.TrimSpace(ref)); err == nil && id != uuid.Nil {
+		for _, item := range items {
+			if item.ID == domainsemantic.ModelEndpointID(id) {
+				return item.ID, nil
+			}
+		}
+		return uuid.Nil, status.Errorf(codes.NotFound, "model endpoint %q not found", ref)
 	}
 	key := strings.ToLower(strings.TrimSpace(ref))
 	for _, item := range items {

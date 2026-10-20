@@ -125,7 +125,7 @@ printf '%s' "$OPENAI_API_KEY" | ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admi
   --privacy-class third_party
 ```
 
-API key material is encrypted by the daemon using the encryption-at-rest envelope service. Deployments that create inline inference credentials must enable encryption at rest with `MYCELD_ENCRYPTION_*` settings; the old `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` path is no longer accepted. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history. Endpoints declaring credential-free authentication may use `auth_type=none`; those credentials must omit `secret_value`, persist no secret reference, and never trigger secret resolution.
+API key material is encrypted by the daemon using the encryption-at-rest envelope service. Deployments that create inline inference credentials must enable encryption at rest with `MYCELD_ENCRYPTION_*` settings; the old `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` path is no longer accepted. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history. Endpoints declaring credential-free authentication may use `auth_type=none`; those credentials must omit `secret_value`, persist no secret reference, reject secret rotation, and never trigger secret resolution. Credential auth modes must be declared by an existing catalog endpoint. API-key rotation overwrites the existing encrypted secret identity so superseded ciphertext is not retained, and unsupported credential statuses are rejected rather than projected active.
 
 Daemon-backed soft cleanup/lifecycle commands:
 

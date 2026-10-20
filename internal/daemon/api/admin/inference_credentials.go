@@ -35,6 +35,9 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	if authType != domainsemantic.AuthModeAPIKey && authType != domainsemantic.AuthModeNone {
 		return nil, status.Error(codes.InvalidArgument, "auth_type must be api_key or none")
 	}
+	if err := s.requireEndpointAuthMode(ctx, endpointID, authType); err != nil {
+		return nil, err
+	}
 	secretValue := strings.TrimSpace(req.GetSecretValue())
 	if authType == domainsemantic.AuthModeAPIKey && secretValue == "" {
 		return nil, status.Error(codes.InvalidArgument, "api key is required")
@@ -117,9 +120,11 @@ func (s *AdminInferenceService) SetCredentialStatus(ctx context.Context, req *ad
 	if err != nil {
 		return nil, err
 	}
-	statusValue := domainsemantic.CredentialStatus(req.GetStatus())
-	if statusValue == "" {
-		return nil, status.Error(codes.InvalidArgument, "status is required")
+	statusValue := domainsemantic.CredentialStatus(strings.ToLower(strings.TrimSpace(req.GetStatus())))
+	switch statusValue {
+	case domainsemantic.CredentialStatusActive, domainsemantic.CredentialStatusDisabled, domainsemantic.CredentialStatusRevoked, domainsemantic.CredentialStatusExpired:
+	default:
+		return nil, status.Error(codes.InvalidArgument, "status must be active, disabled, revoked, or expired")
 	}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
@@ -164,6 +169,12 @@ func (s *AdminInferenceService) RotateCredential(ctx context.Context, req *admin
 	if err := s.hydrateCredentialFromInferenceStore(ctx, &credential); err != nil {
 		return nil, err
 	}
+	if credential.AuthType != domainsemantic.AuthModeAPIKey {
+		return nil, status.Error(codes.FailedPrecondition, "only api_key credentials can rotate secret material")
+	}
+	if err := s.requireEndpointAuthMode(ctx, credential.ModelEndpointID, credential.AuthType); err != nil {
+		return nil, err
+	}
 	secret, err := s.rotatedSecretFromRequest(ctx, req, credential)
 	if err != nil {
 		return nil, err
@@ -201,7 +212,26 @@ func (s *AdminInferenceService) rotatedSecretFromRequest(ctx context.Context, re
 	if err != nil {
 		return domainsemantic.Secret{}, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
 	}
-	return domainsemantic.Secret{OwnerType: credential.OwnerType, OwnerID: credential.OwnerID, Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: ciphertext, SecretSuffix: secretSuffix(secretValue)}, nil
+	return domainsemantic.Secret{ID: credential.SecretRef, OwnerType: credential.OwnerType, OwnerID: credential.OwnerID, Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: ciphertext, SecretSuffix: secretSuffix(secretValue)}, nil
+}
+
+func (s *AdminInferenceService) requireEndpointAuthMode(ctx context.Context, endpointID domainsemantic.ModelEndpointID, authType domainsemantic.AuthMode) error {
+	items, err := s.semantic.GlobalManager().ListModelEndpoints(ctx)
+	if err != nil {
+		return mapAdminInferenceError(err, "list model endpoints")
+	}
+	for _, endpoint := range items {
+		if endpoint.ID != endpointID {
+			continue
+		}
+		for _, supported := range endpoint.AuthModes {
+			if supported == authType {
+				return nil
+			}
+		}
+		return status.Errorf(codes.InvalidArgument, "model endpoint does not support auth_type %q", authType)
+	}
+	return status.Error(codes.NotFound, "model endpoint not found")
 }
 
 func (s *AdminInferenceService) hydrateCredentialFromInferenceStore(ctx context.Context, credential *domainsemantic.InferenceCredential) error {

@@ -14,7 +14,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Changed
 
-- Admin inference credential provisioning now accepts `auth_type=none` without creating or resolving secret material, enabling credential-free local and deterministic fake endpoints while retaining API-key requirements for `auth_type=api_key` (#238).
+- Admin inference credentials now enforce catalog endpoint/auth-mode compatibility, accept `auth_type=none` without creating, rotating, or resolving secret material, overwrite API-key secret identity during rotation to avoid orphaned ciphertext, and reject unknown statuses fail-closed (#238).
 - Semantic search now rejects legacy or incompatible records without matching configuration/route provenance, fails closed when a bounded hard-filter scan cannot prove completeness, and never relabels configured route IDs as provider-observed route evidence (#238).
 - Semantic rebuild and publication transitions now use rule-scoped fencing, immutable revision-pinned graph reads, monotonic same-epoch publication ordering, and guarded generation/epoch/state changes, preserving cross-rule concurrency while rejecting stale baseline, completion, and failure updates (#238).
 - Cancelled semantic maintenance remains a bounded freshness barrier until explicitly covered by a pinned rebuild; revision zero is preserved as an explicit empty-domain rebuild target (#238).

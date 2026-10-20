@@ -660,12 +660,14 @@ func inferenceOwnerTypeFromSemantic(value domainsemantic.CredentialOwnerType) do
 
 func inferenceCredentialStatusFromSemantic(value domainsemantic.CredentialStatus) domaininference.CredentialStatus {
 	switch value {
+	case domainsemantic.CredentialStatusActive:
+		return domaininference.CredentialStatusActive
 	case domainsemantic.CredentialStatusDisabled:
 		return domaininference.CredentialStatusDisabled
 	case domainsemantic.CredentialStatusRevoked, domainsemantic.CredentialStatusExpired:
 		return domaininference.CredentialStatusRevoked
 	default:
-		return domaininference.CredentialStatusActive
+		return domaininference.CredentialStatusRevoked
 	}
 }
 
