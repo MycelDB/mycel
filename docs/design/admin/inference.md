@@ -20,6 +20,8 @@ mycel does not own application chat catalogs, chat prompts, chat tools, conversa
 
 The MVP moves inference package application, safe resource discovery, credentials, credential grants, and inference policies behind daemon gRPC so semantic provisioning and semantic execution can be controlled through the daemon.
 
+Credential-free reliability suites may opt the `fake` connector into the documented [`token-basis-v1` deterministic fixture strategy](deterministic-inference-fixtures.md). The opt-in metadata, exact vector algorithm, finite scripted outcomes, bounds, accounting, and process-reset semantics are part of that fixture contract; the historical fake default remains unchanged.
+
 ## Implemented MVP
 
 `AdminInferenceCatalogService`:
@@ -86,6 +88,7 @@ Daemon-backed package application:
 Example packages live under `examples/inference/`. mycel examples should focus on semantic/embedding resources, for example:
 
 - `standard-openai-embeddings.json`
+- `deterministic-token-basis-v1.json` (test-only, local fake connector)
 
 Chat catalogs/packages belong in applications such as Knot PKM, not in mycel.
 

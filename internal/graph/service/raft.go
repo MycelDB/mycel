@@ -238,6 +238,9 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 		return err
 	}
 	if err := m.validateAutomationOutputFences(ctx, record); err != nil {
+		if apply.Replay && isReplayConvergentAutomationFenceRejection(err) {
+			return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+		}
 		return err
 	}
 	event, changes, err := m.graphChangeEventFromRaftRecord(ctx, record, cmd.CommandID)
