@@ -10,15 +10,16 @@ import (
 )
 
 type FakeConnector struct {
-	mu              sync.Mutex
-	Text            string
-	Vector          []float64
-	Err             error
-	EmbedHits       int
-	ChatHits        int
-	LastChatRequest ChatRequest
-	fixtureAttempts map[string]int
-	fixtureStats    map[string]FakeFixtureStat
+	mu                sync.Mutex
+	Text              string
+	Vector            []float64
+	Err               error
+	EmbedHits         int
+	ChatHits          int
+	LastChatRequest   ChatRequest
+	fixtureAttempts   map[string]int
+	fixtureStats      map[string]FakeFixtureStat
+	fixtureGeneration uint64
 }
 
 func (f *FakeConnector) Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error) {

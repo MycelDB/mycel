@@ -64,11 +64,11 @@ A bounded script may be added under the same metadata object:
 - `refused`;
 - `wrong-dimensions`.
 
-Scripts allow at most 256 input entries, 32 outcomes per input, and 30 seconds delay per outcome. Unknown fields, strategies, versions, reset modes, outcome kinds, duplicate digests, unsafe error codes, excessive dimensions, and excessive delays fail before execution. Outcome sequences never repeat: after the last entry the connector returns `fake_fixture_script_exhausted`.
+Fixture metadata is capped at 1 MiB before decoding, and strategy/version/reset/outcome text is independently bounded. Scripts allow at most 256 input entries, 32 outcomes per input, and 30 seconds delay per outcome. Unknown fields, strategies, versions, reset modes, outcome kinds, duplicate digests, unsafe error codes, excessive dimensions, excessive text, and excessive delays fail with fixed bounded categories before execution. Outcome sequences never repeat: after the last entry the connector returns `fake_fixture_script_exhausted`.
 
 Attempt selection is linearized under the connector lock. Concurrent calls for one script/input digest consume each finite outcome exactly once. Delay waits are context-cancelable. Accounting retains only script/profile/input hashes and bounded counts for attempts, completions, failures, and cancellations; it never retains raw input.
 
-`reset: process` means daemon restart or connector recreation starts each sequence at attempt one. The connector's test-only `ResetFixtureState` method has the same semantics. A changed canonical script has a new script hash and independent sequence. Process-local script state is capped at 1024 script/input pairs.
+`reset: process` means daemon restart or connector recreation starts each sequence at attempt one. The connector's test-only `ResetFixtureState` method advances a state generation, rejects delayed requests selected before the reset, and prevents their completions from contaminating new accounting. A changed canonical script has a new script hash and independent sequence. Process-local script state is capped at 1024 script/input pairs.
 
 ## Response validation
 

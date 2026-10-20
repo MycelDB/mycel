@@ -106,6 +106,33 @@ func TestFakeFixtureScriptFiniteSequenceAndReset(t *testing.T) {
 	}
 }
 
+func TestFakeFixtureResetIsolatedFromDelayedInFlightRequest(t *testing.T) {
+	input := "axis-0"
+	script := fixtureScriptForInputs(map[string][]map[string]any{input: {
+		{"kind": "success", "delay_ms": 200},
+	}})
+	connector := &FakeConnector{}
+	result := make(chan error, 1)
+	go func() {
+		_, err := connector.Embed(context.Background(), tokenBasisRequest(input, 3, script))
+		result <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for len(connector.FixtureStats()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(connector.FixtureStats()) != 1 {
+		t.Fatal("delayed request did not select a scripted attempt")
+	}
+	connector.ResetFixtureState()
+	if err := <-result; ErrorCode(err) != "fake_fixture_reset" {
+		t.Fatalf("in-flight result error = %v", err)
+	}
+	if stats := connector.FixtureStats(); len(stats) != 0 {
+		t.Fatalf("pre-reset completion contaminated reset accounting: %#v", stats)
+	}
+}
+
 func TestFakeFixtureDelayHonorsCancellation(t *testing.T) {
 	input := "axis-0"
 	script := fixtureScriptForInputs(map[string][]map[string]any{
@@ -240,6 +267,20 @@ func TestFakeFixtureRejectsUnknownAndUnboundedConfiguration(t *testing.T) {
 	_, err := connector.Embed(context.Background(), tokenBasisRequest("axis-0", 0, nil))
 	if err == nil || !strings.Contains(err.Error(), "dimensions") {
 		t.Fatalf("zero-dimension error = %v", err)
+	}
+}
+
+func TestFakeFixtureMetadataAndErrorsAreByteBounded(t *testing.T) {
+	connector := &FakeConnector{}
+	fixture := map[string]any{"strategy": strings.Repeat("attacker-controlled", 100000)}
+	_, err := connector.Embed(context.Background(), tokenBasisRequest("axis-0", 3, fixture))
+	if !errors.Is(err, errFakeFixtureMetadataTooLarge) {
+		t.Fatalf("oversized metadata error = %v", err)
+	}
+	fixture = map[string]any{"strategy": strings.Repeat("x", fakeFixtureMaxTextBytes+1)}
+	_, err = connector.Embed(context.Background(), tokenBasisRequest("axis-0", 3, fixture))
+	if err == nil || len(err.Error()) > 256 || strings.Contains(err.Error(), strings.Repeat("x", fakeFixtureMaxTextBytes)) {
+		t.Fatalf("text-bound error is unsafe: %v", err)
 	}
 }
 

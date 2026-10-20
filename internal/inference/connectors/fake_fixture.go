@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"regexp"
 	"sort"
@@ -19,20 +20,23 @@ import (
 )
 
 const (
-	FakeFixtureMetadataKey     = "mycel_fixture"
-	FakeFixtureTokenBasisV1    = "token-basis-v1"
-	fakeFixtureScriptVersion   = "v1"
-	fakeFixtureResetProcess    = "process"
-	fakeFixtureMaxDimensions   = 4096
-	fakeFixtureMaxEntries      = 256
-	fakeFixtureMaxOutcomes     = 32
-	fakeFixtureMaxDelay        = 30 * time.Second
-	fakeFixtureMaxStateEntries = 1024
+	FakeFixtureMetadataKey      = "mycel_fixture"
+	FakeFixtureTokenBasisV1     = "token-basis-v1"
+	fakeFixtureScriptVersion    = "v1"
+	fakeFixtureResetProcess     = "process"
+	fakeFixtureMaxDimensions    = 4096
+	fakeFixtureMaxEntries       = 256
+	fakeFixtureMaxOutcomes      = 32
+	fakeFixtureMaxDelay         = 30 * time.Second
+	fakeFixtureMaxStateEntries  = 1024
+	fakeFixtureMaxMetadataBytes = 1 << 20
+	fakeFixtureMaxTextBytes     = 128
 )
 
 var (
-	fakeFixtureDigestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
-	fakeFixtureCodePattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	fakeFixtureDigestPattern       = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	fakeFixtureCodePattern         = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	errFakeFixtureMetadataTooLarge = errors.New("fake fixture metadata exceeds byte limit")
 )
 
 type fakeFixtureConfig struct {
@@ -73,11 +77,37 @@ type fakeFixtureSelection struct {
 	config      fakeFixtureConfig
 	configHash  string
 	scopeHash   string
+	generation  uint64
 	inputDigest string
 	normalized  string
 	outcome     *fakeFixtureOutcome
 	attempt     int
 	stateKey    string
+}
+
+type limitedFixtureBuffer struct {
+	bytes.Buffer
+	remaining int
+}
+
+func (w *limitedFixtureBuffer) Write(value []byte) (int, error) {
+	if len(value) > w.remaining {
+		return 0, errFakeFixtureMetadataTooLarge
+	}
+	written, err := w.Buffer.Write(value)
+	w.remaining -= written
+	return written, err
+}
+
+func encodeFakeFixtureMetadata(raw any) ([]byte, error) {
+	buffer := &limitedFixtureBuffer{remaining: fakeFixtureMaxMetadataBytes}
+	if err := json.NewEncoder(buffer).Encode(raw); err != nil {
+		if errors.Is(err, errFakeFixtureMetadataTooLarge) || errors.Is(err, io.ErrShortWrite) {
+			return nil, errFakeFixtureMetadataTooLarge
+		}
+		return nil, errors.New("fake fixture metadata cannot be encoded")
+	}
+	return buffer.Bytes(), nil
 }
 
 func fakeFixtureFromRequest(req EmbeddingRequest) (fakeFixtureConfig, string, bool, error) {
@@ -86,25 +116,22 @@ func fakeFixtureFromRequest(req EmbeddingRequest) (fakeFixtureConfig, string, bo
 		if !ok {
 			continue
 		}
-		encoded, err := json.Marshal(raw)
+		encoded, err := encodeFakeFixtureMetadata(raw)
 		if err != nil {
-			return fakeFixtureConfig{}, "", true, fmt.Errorf("encode fake fixture metadata: %w", err)
+			return fakeFixtureConfig{}, "", true, err
 		}
 		decoder := json.NewDecoder(bytes.NewReader(encoded))
 		decoder.DisallowUnknownFields()
 		var config fakeFixtureConfig
 		if err := decoder.Decode(&config); err != nil {
-			return fakeFixtureConfig{}, "", true, fmt.Errorf("decode fake fixture metadata: %w", err)
-		}
-		if decoder.More() {
-			return fakeFixtureConfig{}, "", true, errors.New("decode fake fixture metadata: trailing value")
+			return fakeFixtureConfig{}, "", true, errors.New("fake fixture metadata is invalid")
 		}
 		if err := validateFakeFixtureConfig(config, req.Model.EmbeddingDims); err != nil {
 			return fakeFixtureConfig{}, "", true, err
 		}
 		canonical, err := json.Marshal(config)
-		if err != nil {
-			return fakeFixtureConfig{}, "", true, fmt.Errorf("canonicalize fake fixture metadata: %w", err)
+		if err != nil || len(canonical) > fakeFixtureMaxMetadataBytes {
+			return fakeFixtureConfig{}, "", true, errors.New("fake fixture metadata canonicalization failed")
 		}
 		sum := sha256.Sum256(canonical)
 		return config, hex.EncodeToString(sum[:]), true, nil
@@ -113,8 +140,8 @@ func fakeFixtureFromRequest(req EmbeddingRequest) (fakeFixtureConfig, string, bo
 }
 
 func validateFakeFixtureConfig(config fakeFixtureConfig, dimensions int) error {
-	if config.Strategy != FakeFixtureTokenBasisV1 {
-		return fmt.Errorf("unknown fake fixture strategy %q", config.Strategy)
+	if len(config.Strategy) == 0 || len(config.Strategy) > fakeFixtureMaxTextBytes || config.Strategy != FakeFixtureTokenBasisV1 {
+		return errors.New("fake fixture strategy is invalid")
 	}
 	if dimensions <= 0 || dimensions > fakeFixtureMaxDimensions {
 		return fmt.Errorf("fake fixture dimensions must be between 1 and %d", fakeFixtureMaxDimensions)
@@ -123,11 +150,11 @@ func validateFakeFixtureConfig(config fakeFixtureConfig, dimensions int) error {
 		return nil
 	}
 	script := config.Script
-	if script.Version != fakeFixtureScriptVersion {
-		return fmt.Errorf("unknown fake fixture script version %q", script.Version)
+	if len(script.Version) == 0 || len(script.Version) > fakeFixtureMaxTextBytes || script.Version != fakeFixtureScriptVersion {
+		return errors.New("fake fixture script version is invalid")
 	}
-	if script.Reset != fakeFixtureResetProcess {
-		return fmt.Errorf("fake fixture script reset must be %q", fakeFixtureResetProcess)
+	if len(script.Reset) == 0 || len(script.Reset) > fakeFixtureMaxTextBytes || script.Reset != fakeFixtureResetProcess {
+		return errors.New("fake fixture script reset mode is invalid")
 	}
 	if len(script.Entries) == 0 || len(script.Entries) > fakeFixtureMaxEntries {
 		return fmt.Errorf("fake fixture script entries must contain between 1 and %d items", fakeFixtureMaxEntries)
@@ -154,16 +181,19 @@ func validateFakeFixtureConfig(config fakeFixtureConfig, dimensions int) error {
 }
 
 func validateFakeFixtureOutcome(outcome fakeFixtureOutcome, dimensions int) error {
+	if len(outcome.Kind) == 0 || len(outcome.Kind) > fakeFixtureMaxTextBytes {
+		return errors.New("outcome kind is invalid")
+	}
 	switch outcome.Kind {
 	case "success", "blocked", "refused", "retryable-error", "error", "wrong-dimensions":
 	default:
-		return fmt.Errorf("unknown outcome kind %q", outcome.Kind)
+		return errors.New("outcome kind is invalid")
 	}
 	if outcome.DelayMS < 0 || outcome.DelayMS > int(fakeFixtureMaxDelay/time.Millisecond) {
 		return fmt.Errorf("delay_ms must be between 0 and %d", fakeFixtureMaxDelay.Milliseconds())
 	}
-	if outcome.Code != "" && !fakeFixtureCodePattern.MatchString(outcome.Code) {
-		return fmt.Errorf("code must match %s", fakeFixtureCodePattern.String())
+	if len(outcome.Code) > fakeFixtureMaxTextBytes || (outcome.Code != "" && !fakeFixtureCodePattern.MatchString(outcome.Code)) {
+		return errors.New("outcome code is invalid")
 	}
 	if outcome.Kind == "wrong-dimensions" {
 		if outcome.Dimensions < 0 || outcome.Dimensions > fakeFixtureMaxDimensions || outcome.Dimensions == dimensions {
@@ -338,6 +368,7 @@ func (f *FakeConnector) selectFakeFixture(req EmbeddingRequest) (fakeFixtureSele
 	selection.stateKey = scopeHash + ":" + digest
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	selection.generation = f.fixtureGeneration
 	if f.fixtureAttempts == nil {
 		f.fixtureAttempts = map[string]int{}
 		f.fixtureStats = map[string]FakeFixtureStat{}
@@ -373,15 +404,18 @@ func (f *FakeConnector) executeFakeFixture(ctx context.Context, req EmbeddingReq
 				if !timer.Stop() {
 					<-timer.C
 				}
-				f.recordFakeFixtureCompletion(selection.stateKey, "canceled")
+				f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "canceled")
 				return EmbeddingResponse{ProviderRequestID: requestID}, ctx.Err()
 			case <-timer.C:
 			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		f.recordFakeFixtureCompletion(selection.stateKey, "canceled")
+		f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "canceled")
 		return EmbeddingResponse{ProviderRequestID: requestID}, err
+	}
+	if selection.stateKey != "" && !f.fixtureGenerationCurrent(selection.generation) {
+		return EmbeddingResponse{ProviderRequestID: requestID}, ConnectorError{Code: "fake_fixture_reset", Err: errors.New("fake fixture state reset during request")}
 	}
 	kind := "success"
 	if selection.outcome != nil {
@@ -389,10 +423,10 @@ func (f *FakeConnector) executeFakeFixture(ctx context.Context, req EmbeddingReq
 	}
 	switch kind {
 	case "blocked":
-		f.recordFakeFixtureCompletion(selection.stateKey, "failed")
+		f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "failed")
 		return EmbeddingResponse{ProviderRequestID: requestID}, ConnectorError{Code: "fake_blocked", Err: errors.New("fake fixture blocked response")}
 	case "refused":
-		f.recordFakeFixtureCompletion(selection.stateKey, "failed")
+		f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "failed")
 		return EmbeddingResponse{ProviderRequestID: requestID}, ConnectorError{Code: "fake_refused", Err: errors.New("fake fixture refused response")}
 	case "retryable-error", "error":
 		code := selection.outcome.Code
@@ -403,7 +437,7 @@ func (f *FakeConnector) executeFakeFixture(ctx context.Context, req EmbeddingReq
 				code = "fake_failure"
 			}
 		}
-		f.recordFakeFixtureCompletion(selection.stateKey, "failed")
+		f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "failed")
 		return EmbeddingResponse{ProviderRequestID: requestID}, ConnectorError{Code: code, Retryable: kind == "retryable-error", Err: errors.New("fake fixture scripted error")}
 	}
 	dimensions := req.Model.EmbeddingDims
@@ -418,20 +452,32 @@ func (f *FakeConnector) executeFakeFixture(ctx context.Context, req EmbeddingReq
 	}
 	vector, err := tokenBasisV1(selection.normalized, dimensions)
 	if err != nil {
-		f.recordFakeFixtureCompletion(selection.stateKey, "failed")
+		f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "failed")
 		return EmbeddingResponse{ProviderRequestID: requestID}, ConnectorError{Code: "fake_fixture_invalid", Err: err}
 	}
 	inputTokens := EstimateTokens(req.Input)
-	f.recordFakeFixtureCompletion(selection.stateKey, "completed")
+	f.recordFakeFixtureCompletion(selection.stateKey, selection.generation, "completed")
 	return EmbeddingResponse{Vector: vector, ProviderRequestID: requestID, Usage: domaininference.Usage{InputTokens: inputTokens, TotalTokens: inputTokens, TokenCountSource: "estimated"}}, nil
 }
 
-func (f *FakeConnector) recordFakeFixtureCompletion(stateKey, outcome string) {
+func (f *FakeConnector) fixtureGenerationCurrent(generation uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return generation == f.fixtureGeneration
+}
+
+func (f *FakeConnector) recordFakeFixtureCompletion(stateKey string, generation uint64, outcome string) {
 	if stateKey == "" {
 		return
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if generation != f.fixtureGeneration {
+		return
+	}
+	if f.fixtureStats == nil {
+		f.fixtureStats = map[string]FakeFixtureStat{}
+	}
 	stat := f.fixtureStats[stateKey]
 	switch outcome {
 	case "completed":
@@ -468,6 +514,7 @@ func (f *FakeConnector) FixtureStats() []FakeFixtureStat {
 func (f *FakeConnector) ResetFixtureState() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.fixtureAttempts = nil
-	f.fixtureStats = nil
+	f.fixtureGeneration++
+	f.fixtureAttempts = map[string]int{}
+	f.fixtureStats = map[string]FakeFixtureStat{}
 }
