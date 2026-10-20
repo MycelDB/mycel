@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
@@ -195,7 +196,12 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 		procedure.DomainID = rec.DomainID
 		if rec.Kind == "procedure.create" {
 			if existing, err := m.store.GetProcedure(ctx, rec.DomainID, procedure.ID); err == nil {
-				if automationJSONEqual(existing.Normalize(), procedure.Normalize()) {
+				existing = existing.Normalize()
+				procedure = procedure.Normalize()
+				if automationJSONEqual(existing, procedure) {
+					return nil
+				}
+				if apply.Replay && automationDefinitionDominatesReplay(existing.Version, existing.UpdatedAt, procedure.Version, procedure.UpdatedAt) {
 					return nil
 				}
 				return fmt.Errorf("graph procedure %q already exists with different content", procedure.ID)
@@ -220,7 +226,12 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 		binding.DomainID = rec.DomainID
 		if rec.Kind == "binding.create" {
 			if existing, err := m.store.GetBinding(ctx, rec.DomainID, binding.ID); err == nil {
-				if automationJSONEqual(existing.Normalize(), binding.Normalize()) {
+				existing = existing.Normalize()
+				binding = binding.Normalize()
+				if automationJSONEqual(existing, binding) {
+					return nil
+				}
+				if apply.Replay && automationBindingDominatesReplay(existing, binding) {
 					return nil
 				}
 				return fmt.Errorf("graph automation binding %q already exists with different content", binding.ID)
@@ -519,6 +530,23 @@ func (m *AutomationManager) deleteAutomationPartitionDefinitions(ctx context.Con
 		}
 	}
 	return nil
+}
+
+func automationDefinitionDominatesReplay(existingVersion int, existingUpdatedAt time.Time, incomingVersion int, incomingUpdatedAt time.Time) bool {
+	if existingVersion != incomingVersion {
+		return existingVersion > incomingVersion
+	}
+	return !existingUpdatedAt.IsZero() && !incomingUpdatedAt.IsZero() && existingUpdatedAt.After(incomingUpdatedAt)
+}
+
+func automationBindingDominatesReplay(existing, incoming automation.Binding) bool {
+	if existing.Version != incoming.Version {
+		return existing.Version > incoming.Version
+	}
+	if existing.ProcedureVersion != incoming.ProcedureVersion {
+		return existing.ProcedureVersion > incoming.ProcedureVersion
+	}
+	return !existing.UpdatedAt.IsZero() && !incoming.UpdatedAt.IsZero() && existing.UpdatedAt.After(incoming.UpdatedAt)
 }
 
 func automationJSONEqual(a any, b any) bool {
