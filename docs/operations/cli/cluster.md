@@ -41,7 +41,9 @@ forcing Raft snapshots on the daemon you are connected to. It is intended for
 snapshot catch-up drills and diagnostics. It does not create graph checkpoints,
 backups, or cross-node snapshots. Use repeated `--group-id` flags to target
 specific local groups; otherwise all local groups are snapshotted. `--compact`
-defaults to `true` and compacts local Raft logs through the snapshot index.
+defaults to `true` and compacts local Raft logs through the snapshot index. Mycel
+v0.20 writes graph snapshot V2, which older daemons are not expected to restore;
+follow the [v0.20 upgrade and downgrade procedure](../procedures/raft-cluster-operations.md#v020-graph-snapshot-upgrade-and-downgrade) before forcing snapshots during an upgrade window.
 
 ```sh
 mycel cluster graph-checkpoint create --space-id <space-id> --domain-id <domain-id>

@@ -31,7 +31,7 @@ func TestFileStorePutGetDomainSchema(t *testing.T) {
 
 func TestFileStoreMissingSchema(t *testing.T) {
 	_, err := NewFileStore(t.TempDir()).GetDomainSchema(context.Background(), uuid.New())
-	if !errors.Is(err, ErrNotFound) {
+	if !errors.Is(err, schema.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

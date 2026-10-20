@@ -32,4 +32,5 @@ notes and Git evidence used to move historical plans out of `unreleased/`.
 | [v0.12](v0.12/README.md) | Hybrid lexical/semantic search plans and validation reports. |
 | [v0.14](v0.14/README.md) | Encryption-at-rest plans and inventory notes. |
 | [v0.17](v0.17/README.md) | Advanced storage, graph checkpoints, persistent indexes, and graph write latency plans. |
+| [v0.20](v0.20/README.md) | Neutral query planning/execution and durable graph transaction idempotency plans and conformance records. |
 | [unreleased](unreleased/README.md) | Future implementation plans not yet assigned to a shipped minor release. |

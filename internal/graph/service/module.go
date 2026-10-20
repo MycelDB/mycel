@@ -2,6 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/myceldb/mycel/internal/fsperm"
@@ -25,27 +30,50 @@ import (
 	"github.com/myceldb/mycel/internal/encryption"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/graph/writetrace"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
-const childOrderStep = 1000
+const (
+	childOrderStep      = 1000
+	nodePageTokenPrefix = "nodes-v1:"
+)
+
+type nodePageCursor struct {
+	TransactionID string `json:"transaction_id"`
+	BaseRevision  int64  `json:"base_revision"`
+	OverlayOps    int32  `json:"overlay_ops"`
+	AfterNodeID   string `json:"after_node_id"`
+	Checksum      string `json:"checksum"`
+}
+
+type nodeOverlayPage struct {
+	operations int32
+	putNodes   []domaingraph.Node
+	replaced   map[domaingraph.NodeID]struct{}
+	deleted    map[domaingraph.NodeID]struct{}
+}
 
 type Module struct {
 	mu                             sync.Mutex
 	dataDir                        string
 	stores                         map[domainStoreKey]*graphstorage.LocalStore
 	overlays                       map[string]*overlay
+	transactionMutationLocks       map[string]*transactionMutationLock
+	idempotencyScopeLocks          [64]sync.Mutex
+	activeMutationScopes           map[string]*mutationScope
+	finalizedTransactions          map[string]transactionFinalization
+	transactionValidator           TransactionValidator
 	changeSink                     graphchange.Sink
 	raftApplyChangeSink            graphchange.Sink
-	schemaManager                  schemaservice.Manager
+	schemaValidator                SchemaValidator
 	blobRefs                       BlobReferenceChecker
 	automationOutputFenceValidator AutomationOutputFenceValidator
 	lastGraphChangeSinkErr         error
@@ -68,6 +96,10 @@ type Module struct {
 	raftAppliedCommandsPersistMu   sync.Mutex
 	logger                         *slog.Logger
 	writeTrace                     writetrace.Config
+	idempotencyReplayHits          atomic.Uint64
+	idempotencyReplayMisses        atomic.Uint64
+	idempotencyMismatches          atomic.Uint64
+	idempotencyCapacityRejections  atomic.Uint64
 }
 
 type domainStoreKey struct {
@@ -86,7 +118,11 @@ type overlay struct {
 }
 
 func NewModule() *Module {
-	return &Module{stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{}, checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName)}
+	return &Module{
+		stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{},
+		transactionMutationLocks: map[string]*transactionMutationLock{}, activeMutationScopes: map[string]*mutationScope{}, finalizedTransactions: map[string]transactionFinalization{},
+		checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName),
+	}
 }
 
 func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
@@ -118,10 +154,16 @@ type BlobReferenceChecker interface {
 	EnsureBlobReference(ctx context.Context, spaceID string, blobID string) error
 }
 
-func (m *Module) SetSchemaManager(manager schemaservice.Manager) {
+func (m *Module) SetTransactionValidator(validator TransactionValidator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.schemaManager = manager
+	m.transactionValidator = validator
+}
+
+func (m *Module) SetSchemaValidator(validator SchemaValidator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schemaValidator = validator
 }
 
 func (m *Module) SetBlobReferenceChecker(checker BlobReferenceChecker) {
@@ -155,7 +197,7 @@ func (m *Module) validateBlobReferences(ctx context.Context, spaceID string, nod
 
 func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) error {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager == nil {
 		return nil
@@ -172,11 +214,11 @@ func (m *Module) validateSchemaNode(ctx context.Context, node domaingraph.Node) 
 
 func (m *Module) hierarchyEdgeLabelsForMutation(ctx context.Context, domainID domaingraph.DomainID) ([]string, error) {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager != nil {
 		schema, err := manager.GetDomainSchema(ctx, domainID)
-		if err != nil && !errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		if err != nil && !errors.Is(err, schemamodel.ErrNotFound) {
 			return nil, err
 		}
 		if err == nil {
@@ -195,7 +237,7 @@ func (m *Module) hierarchyEdgeLabelsForMutation(ctx context.Context, domainID do
 
 func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingraph.DomainID, labels []string) (*schemamodel.HierarchyPolicy, error) {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager == nil {
 		if hasEdgeLabel(labels, "contains") {
@@ -206,7 +248,7 @@ func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingr
 	matchedSchema := false
 	for _, label := range labels {
 		types, err := manager.ResolveEdgeLabel(ctx, domainID, label)
-		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		if errors.Is(err, schemamodel.ErrNotFound) {
 			if hasEdgeLabel(labels, "contains") {
 				return &schemamodel.HierarchyPolicy{Enabled: true, Acyclic: true, SingleParent: true, SameDomain: true}, nil
 			}
@@ -236,7 +278,7 @@ func (m *Module) hierarchyPolicyForLabels(ctx context.Context, domainID domaingr
 
 func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, from domaingraph.Node, to domaingraph.Node) error {
 	m.mu.Lock()
-	manager := m.schemaManager
+	manager := m.schemaValidator
 	m.mu.Unlock()
 	if manager == nil {
 		return nil
@@ -251,7 +293,7 @@ func (m *Module) validateSchemaEdge(ctx context.Context, edge domaingraph.Edge, 
 	return fmt.Errorf("%w: schema validation failed: %s", ErrInvalidInput, formatSchemaIssues(result.Issues))
 }
 
-func formatSchemaIssues(issues []schemaservice.ValidationIssue) string {
+func formatSchemaIssues(issues []schemamodel.ValidationIssue) string {
 	if len(issues) == 0 {
 		return "unknown schema validation error"
 	}
@@ -279,6 +321,15 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}
 	}
+	if m.transactionMutationLocks == nil {
+		m.transactionMutationLocks = map[string]*transactionMutationLock{}
+	}
+	if m.activeMutationScopes == nil {
+		m.activeMutationScopes = map[string]*mutationScope{}
+	}
+	if m.finalizedTransactions == nil {
+		m.finalizedTransactions = map[string]transactionFinalization{}
+	}
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -287,13 +338,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.checkpointPolicy = normalizeCheckpointPolicyConfig(m.checkpointPolicy)
 	m.loadRaftAppliedCommands()
-	if lookup, ok := host.(runtime.ServiceLookup); ok {
-		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
-			if manager, ok := schemaSvc.(schemaservice.Manager); ok {
-				m.schemaManager = manager
-			}
-		}
-	}
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
 		m.walProgress = provider.WALProgressStore()
@@ -327,7 +371,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	return runtime.OK(ModuleName)
 }
 
-func (m *Module) GetNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string) (domaingraph.Node, error) {
+func (m *Module) GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (domaingraph.Node, error) {
 	if err := ensureReadable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
@@ -352,7 +396,7 @@ func (m *Module) GetNode(ctx context.Context, tx daemonsession.GraphTransaction,
 	return m.node(ctx, tx, id)
 }
 
-func (m *Module) ListNodes(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
+func (m *Module) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", err
 	}
@@ -371,10 +415,339 @@ func (m *Module) ListNodes(ctx context.Context, tx daemonsession.GraphTransactio
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", err
 	}
-	return m.listNodesLocal(ctx, tx, pageSize, pageToken)
+	nodes, next, _, err := m.scanNodesLocal(ctx, tx, graphquery.NodeScan{Limit: pageSize, Cursor: pageToken, ExamineLimit: pageSize})
+	return nodes, next, err
 }
 
-func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error) {
+// ScanNodes exposes the finite node cursor together with examined-entry work
+// so the query runtime can charge revision-history progress to its budget.
+func (m *Module) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.NodeScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "NodeScan", IndexName: "node_id", FullScan: true, NextCursorKind: "node_key"}
+	if err := ensureReadable(tx); err != nil {
+		return nil, "", stats, err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return nil, "", stats, err
+	} else if forward {
+		req := raftReadRequest("scan_nodes", tx)
+		req.NodeScan = scan
+		var res raftGraphNodesResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return nil, "", stats, err
+		}
+		return res.Nodes, res.NextPageToken, res.Stats, nil
+	}
+	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
+		return nil, "", stats, err
+	}
+	return m.scanNodesLocal(ctx, tx, scan)
+}
+
+// ReadViewIdentity identifies the mutable transaction overlay observed by query
+// execution. BaseRevision and transaction identity are already bound by query
+// cursors; the operation count changes for every staged node or edge mutation.
+func (m *Module) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
+	if err := ensureReadable(tx); err != nil {
+		return "", err
+	}
+	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
+		return "", err
+	} else if forward {
+		req := raftReadRequest("read_view_identity", tx)
+		var res raftGraphReadViewResponse
+		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
+			return "", err
+		}
+		return res.Identity, nil
+	}
+	return m.readViewIdentityLocal(tx), ctx.Err()
+}
+
+func (m *Module) readViewIdentityLocal(tx sessionmodel.GraphTransaction) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if overlay := m.overlays[tx.ID]; overlay != nil {
+		return strconv.FormatInt(int64(overlay.opCount), 10)
+	}
+	return "0"
+}
+
+type transactionFinalizationKind uint8
+
+const (
+	transactionCommitted transactionFinalizationKind = iota + 1
+	transactionDiscarded
+)
+
+type transactionFinalization struct {
+	kind   transactionFinalizationKind
+	commit graphchange.CommitResult
+}
+
+type transactionMutationLock struct {
+	token chan struct{}
+	refs  int
+}
+
+type transactionMutationLockOwner struct {
+	module        *Module
+	transactionID string
+}
+
+type transactionMutationLockContextKey struct{}
+
+type nodeMutationUndo struct {
+	put     domaingraph.Node
+	hadPut  bool
+	deleted bool
+	fence   bool
+}
+
+type edgeMutationUndo struct {
+	put     domaingraph.Edge
+	hadPut  bool
+	deleted bool
+	fence   bool
+}
+
+type mutationScope struct {
+	module         *Module
+	transactionID  string
+	release        func()
+	overlayExisted bool
+	initialOpCount int32
+	nodes          map[domaingraph.NodeID]nodeMutationUndo
+	edges          map[domaingraph.EdgeID]edgeMutationUndo
+}
+
+func (m *Module) lockTransactionMutation(ctx context.Context, transactionID string) (context.Context, func(), error) {
+	if owner, _ := ctx.Value(transactionMutationLockContextKey{}).(transactionMutationLockOwner); owner.module == m && owner.transactionID == transactionID {
+		return ctx, func() {}, nil
+	}
+	m.mu.Lock()
+	if m.transactionMutationLocks == nil {
+		m.transactionMutationLocks = map[string]*transactionMutationLock{}
+	}
+	lock := m.transactionMutationLocks[transactionID]
+	if lock == nil {
+		lock = &transactionMutationLock{token: make(chan struct{}, 1)}
+		lock.token <- struct{}{}
+		m.transactionMutationLocks[transactionID] = lock
+	}
+	lock.refs++
+	m.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		m.releaseTransactionMutationLockRef(transactionID, lock)
+		return ctx, nil, ctx.Err()
+	case <-lock.token:
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			lock.token <- struct{}{}
+			m.releaseTransactionMutationLockRef(transactionID, lock)
+		})
+	}
+	owner := transactionMutationLockOwner{module: m, transactionID: transactionID}
+	return context.WithValue(ctx, transactionMutationLockContextKey{}, owner), release, nil
+}
+
+func (m *Module) lockActiveTransactionMutation(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, func(), error) {
+	lockedCtx, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	return lockedCtx, release, nil
+}
+
+func (m *Module) validateTransactionActive(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	m.mu.Lock()
+	finalized := m.finalizedTransactions[tx.ID]
+	validator := m.transactionValidator
+	m.mu.Unlock()
+	if finalized.kind != 0 {
+		return fmt.Errorf("%w: transaction graph is finalized", ErrInvalidState)
+	}
+	if err := ensureReadable(tx); err != nil {
+		return err
+	}
+	if validator != nil {
+		if err := validator.ValidateTransactionActive(ctx, tx); err != nil {
+			return fmt.Errorf("%w: transaction is no longer active: %v", ErrInvalidState, err)
+		}
+	}
+	return nil
+}
+
+func (m *Module) finalizeTransactionLocked(transactionID string, finalization transactionFinalization) error {
+	if m.finalizedTransactions == nil {
+		m.finalizedTransactions = map[string]transactionFinalization{}
+	}
+	if existing := m.finalizedTransactions[transactionID]; existing.kind != 0 {
+		if existing.kind == finalization.kind {
+			return nil
+		}
+		return fmt.Errorf("%w: transaction graph is already finalized", ErrInvalidState)
+	}
+	m.finalizedTransactions[transactionID] = finalization
+	return nil
+}
+
+func (m *Module) releaseTransactionMutationLockRef(transactionID string, lock *transactionMutationLock) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock.refs--
+	if lock.refs == 0 && m.transactionMutationLocks[transactionID] == lock {
+		delete(m.transactionMutationLocks, transactionID)
+	}
+}
+
+// BeginMutationStatement acquires the transaction mutation lease and starts a
+// graph-owned undo journal. The journal stores only pre-existing entries first
+// touched by this statement rather than cloning the accumulated overlay.
+func (m *Module) BeginMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction) (context.Context, any, error) {
+	if err := ensureWritable(tx); err != nil {
+		return ctx, nil, err
+	}
+	lockedCtx, release, err := m.lockTransactionMutation(ctx, tx.ID)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	scope := &mutationScope{
+		module: m, transactionID: tx.ID, release: release,
+		nodes: map[domaingraph.NodeID]nodeMutationUndo{}, edges: map[domaingraph.EdgeID]edgeMutationUndo{},
+	}
+	m.mu.Lock()
+	if m.activeMutationScopes == nil {
+		m.activeMutationScopes = map[string]*mutationScope{}
+	}
+	if m.activeMutationScopes[tx.ID] != nil {
+		m.mu.Unlock()
+		release()
+		return ctx, nil, fmt.Errorf("%w: mutation statement is already active", ErrInvalidState)
+	}
+	if current := m.overlays[tx.ID]; current != nil {
+		scope.overlayExisted = true
+		scope.initialOpCount = current.opCount
+	}
+	m.activeMutationScopes[tx.ID] = scope
+	m.mu.Unlock()
+	return lockedCtx, scope, nil
+}
+
+// FinishMutationStatement releases the transaction mutation lease. Failed
+// statements restore only entries recorded by the bounded undo journal.
+func (m *Module) FinishMutationStatement(ctx context.Context, tx sessionmodel.GraphTransaction, captured any, commit bool) error {
+	scope, ok := captured.(*mutationScope)
+	if !ok || scope == nil || scope.module != m || scope.transactionID != tx.ID {
+		return fmt.Errorf("%w: invalid mutation scope", ErrInvalidInput)
+	}
+	var validationErr error
+	if commit {
+		validationErr = m.validateTransactionActive(ctx, tx)
+	}
+	m.mu.Lock()
+	if m.activeMutationScopes[tx.ID] != scope {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: mutation scope is not active", ErrInvalidState)
+	}
+	if !commit || validationErr != nil {
+		m.restoreMutationScopeLocked(scope)
+	}
+	delete(m.activeMutationScopes, tx.ID)
+	m.mu.Unlock()
+	scope.release()
+	return validationErr
+}
+
+func (m *Module) restoreMutationScopeLocked(scope *mutationScope) {
+	if !scope.overlayExisted {
+		delete(m.overlays, scope.transactionID)
+		return
+	}
+	o := m.overlay(scope.transactionID)
+	for id, undo := range scope.nodes {
+		if undo.hadPut {
+			o.putNodes[id] = undo.put
+		} else {
+			delete(o.putNodes, id)
+		}
+		if undo.deleted {
+			o.deleteNodes[id] = struct{}{}
+		} else {
+			delete(o.deleteNodes, id)
+		}
+		if undo.fence {
+			o.automationFenceNodes[id] = struct{}{}
+		} else {
+			delete(o.automationFenceNodes, id)
+		}
+	}
+	for id, undo := range scope.edges {
+		if undo.hadPut {
+			o.putEdges[id] = undo.put
+		} else {
+			delete(o.putEdges, id)
+		}
+		if undo.deleted {
+			o.deleteEdges[id] = struct{}{}
+		} else {
+			delete(o.deleteEdges, id)
+		}
+		if undo.fence {
+			o.automationFenceEdges[id] = struct{}{}
+		} else {
+			delete(o.automationFenceEdges, id)
+		}
+	}
+	o.opCount = scope.initialOpCount
+}
+
+func (m *Module) recordNodeMutationLocked(transactionID string, o *overlay, id domaingraph.NodeID) {
+	scope := m.activeMutationScopes[transactionID]
+	if scope == nil || !scope.overlayExisted {
+		return
+	}
+	if _, recorded := scope.nodes[id]; recorded {
+		return
+	}
+	put, hadPut := o.putNodes[id]
+	_, deleted := o.deleteNodes[id]
+	_, fence := o.automationFenceNodes[id]
+	scope.nodes[id] = nodeMutationUndo{put: put, hadPut: hadPut, deleted: deleted, fence: fence}
+}
+
+func (m *Module) recordEdgeMutationLocked(transactionID string, o *overlay, id domaingraph.EdgeID) {
+	scope := m.activeMutationScopes[transactionID]
+	if scope == nil || !scope.overlayExisted {
+		return
+	}
+	if _, recorded := scope.edges[id]; recorded {
+		return
+	}
+	put, hadPut := o.putEdges[id]
+	_, deleted := o.deleteEdges[id]
+	_, fence := o.automationFenceEdges[id]
+	scope.edges[id] = edgeMutationUndo{put: put, hadPut: hadPut, deleted: deleted, fence: fence}
+}
+
+func (m *Module) CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Node{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -444,7 +817,13 @@ func (m *Module) CreateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	return cloneNode(n), nil
 }
 
-func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateNodeInput) (domaingraph.Node, error) {
+func (m *Module) UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.UpdateNodeInput) (domaingraph.Node, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Node{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	traceStart := time.Now()
 	var timing graphStageTiming
 	stepStart := time.Now()
@@ -511,7 +890,13 @@ func (m *Module) UpdateNode(ctx context.Context, tx daemonsession.GraphTransacti
 	return cloneNode(n), nil
 }
 
-func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransaction, input NodeInput) (domaingraph.Node, error) {
+func (m *Module) UpsertNode(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.NodeInput) (domaingraph.Node, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Node{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Node{}, err
 	}
@@ -527,14 +912,20 @@ func (m *Module) UpsertNode(ctx context.Context, tx daemonsession.GraphTransacti
 	}
 	if _, err := m.node(ctx, tx, id); err == nil {
 		content := input.Content
-		return m.UpdateNode(ctx, tx, UpdateNodeInput{NodeID: input.NodeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props, AutomationOutputFence: input.AutomationOutputFence})
+		return m.UpdateNode(ctx, tx, domaingraph.UpdateNodeInput{NodeID: input.NodeID, Labels: input.Labels, Properties: input.Properties, Payload: input.Payload, Meta: input.Meta, Content: &content, Props: input.Props, AutomationOutputFence: input.AutomationOutputFence})
 	} else if !errors.Is(err, ErrNotFound) {
 		return domaingraph.Node{}, err
 	}
 	return m.CreateNode(ctx, tx, input)
 }
 
-func (m *Module) DeleteNode(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error) {
+func (m *Module) DeleteNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, recursive bool) ([]string, []string, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return nil, nil, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return nil, nil, err
 	}
@@ -596,7 +987,7 @@ func (m *Module) DeleteNode(ctx context.Context, tx daemonsession.GraphTransacti
 	return deletedNodes, deletedEdges, nil
 }
 
-func (m *Module) GetEdge(ctx context.Context, tx daemonsession.GraphTransaction, edgeID string) (domaingraph.Edge, error) {
+func (m *Module) GetEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (domaingraph.Edge, error) {
 	if err := ensureReadable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -621,7 +1012,7 @@ func (m *Module) GetEdge(ctx context.Context, tx daemonsession.GraphTransaction,
 	return m.edge(ctx, tx, id)
 }
 
-func (m *Module) ListEdges(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
+func (m *Module) ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", err
 	}
@@ -643,7 +1034,13 @@ func (m *Module) ListEdges(ctx context.Context, tx daemonsession.GraphTransactio
 	return m.listEdgesLocal(ctx, tx, pageSize, pageToken)
 }
 
-func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransaction, input EdgeInput) (domaingraph.Edge, error) {
+func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.EdgeInput) (domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Edge{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -719,7 +1116,13 @@ func (m *Module) CreateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	return cloneEdge(e), nil
 }
 
-func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransaction, input UpdateEdgeInput) (domaingraph.Edge, error) {
+func (m *Module) UpdateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.UpdateEdgeInput) (domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Edge{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -765,7 +1168,13 @@ func (m *Module) UpdateEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	return cloneEdge(e), nil
 }
 
-func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransaction, edgeID string) (string, error) {
+func (m *Module) DeleteEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edgeID string) (string, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return "", lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return "", err
 	}
@@ -785,45 +1194,51 @@ func (m *Module) DeleteEdge(ctx context.Context, tx daemonsession.GraphTransacti
 	return id.String(), nil
 }
 
-func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTransaction, input ReplaceReferencesInput) (ReplaceReferencesResult, error) {
+func (m *Module) ReplaceReferences(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.ReplaceReferencesInput) (domaingraph.ReplaceReferencesResult, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.ReplaceReferencesResult{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
-		return ReplaceReferencesResult{}, err
+		return domaingraph.ReplaceReferencesResult{}, err
 	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
-		return ReplaceReferencesResult{}, err
+		return domaingraph.ReplaceReferencesResult{}, err
 	}
 	sourceID, err := parseUUID[domaingraph.NodeID](input.SourceNodeID, "source_node_id")
 	if err != nil {
-		return ReplaceReferencesResult{}, err
+		return domaingraph.ReplaceReferencesResult{}, err
 	}
 	source, err := m.node(ctx, tx, sourceID)
 	if err != nil {
-		return ReplaceReferencesResult{}, fmt.Errorf("%w: source node: %v", ErrInvalidInput, err)
+		return domaingraph.ReplaceReferencesResult{}, fmt.Errorf("%w: source node: %v", ErrInvalidInput, err)
 	}
 	if source.DomainID != mustDomainID(tx.DomainID) {
-		return ReplaceReferencesResult{}, fmt.Errorf("%w: source node must be in transaction domain", ErrInvalidInput)
+		return domaingraph.ReplaceReferencesResult{}, fmt.Errorf("%w: source node must be in transaction domain", ErrInvalidInput)
 	}
 	labels := normalizeLabels(input.Labels)
 	if len(labels) == 0 {
-		return ReplaceReferencesResult{}, fmt.Errorf("%w: reference labels are required", ErrInvalidInput)
+		return domaingraph.ReplaceReferencesResult{}, fmt.Errorf("%w: reference labels are required", ErrInvalidInput)
 	}
 	mode := input.Mode
 	if mode == "" {
-		mode = ReferenceReplacementModeReplace
+		mode = domaingraph.ReferenceReplacementModeReplace
 	}
-	if mode != ReferenceReplacementModeReplace && mode != ReferenceReplacementModeAdd && mode != ReferenceReplacementModeRemove {
-		return ReplaceReferencesResult{}, fmt.Errorf("%w: unsupported reference replacement mode %q", ErrInvalidInput, input.Mode)
+	if mode != domaingraph.ReferenceReplacementModeReplace && mode != domaingraph.ReferenceReplacementModeAdd && mode != domaingraph.ReferenceReplacementModeRemove {
+		return domaingraph.ReplaceReferencesResult{}, fmt.Errorf("%w: unsupported reference replacement mode %q", ErrInvalidInput, input.Mode)
 	}
 
-	targets := make(map[domaingraph.NodeID]ReferenceTargetInput, len(input.Targets))
+	targets := make(map[domaingraph.NodeID]domaingraph.ReferenceTargetInput, len(input.Targets))
 	targetOrder := make([]domaingraph.NodeID, 0, len(input.Targets))
 	for i, target := range input.Targets {
 		targetID, err := parseUUID[domaingraph.NodeID](target.TargetNodeID, fmt.Sprintf("targets[%d].target_node_id", i))
 		if err != nil {
-			return ReplaceReferencesResult{}, err
+			return domaingraph.ReplaceReferencesResult{}, err
 		}
 		if _, duplicate := targets[targetID]; duplicate {
-			return ReplaceReferencesResult{}, fmt.Errorf("%w: duplicate reference target %s", ErrInvalidInput, targetID)
+			return domaingraph.ReplaceReferencesResult{}, fmt.Errorf("%w: duplicate reference target %s", ErrInvalidInput, targetID)
 		}
 		targets[targetID] = target
 		targetOrder = append(targetOrder, targetID)
@@ -831,11 +1246,11 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 
 	view, err := m.transactionEdgeView(ctx, tx)
 	if err != nil {
-		return ReplaceReferencesResult{}, err
+		return domaingraph.ReplaceReferencesResult{}, err
 	}
 	existingOutgoing, err := view.outgoing(ctx, sourceID)
 	if err != nil {
-		return ReplaceReferencesResult{}, err
+		return domaingraph.ReplaceReferencesResult{}, err
 	}
 	existingByTarget := map[domaingraph.NodeID][]domaingraph.Edge{}
 	for _, edge := range existingOutgoing {
@@ -850,7 +1265,7 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 		})
 	}
 
-	var result ReplaceReferencesResult
+	var result domaingraph.ReplaceReferencesResult
 	deleteEdge := func(edge domaingraph.Edge) error {
 		deleted, err := m.DeleteEdge(ctx, tx, edge.ID.String())
 		if err != nil {
@@ -860,24 +1275,24 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 		return nil
 	}
 
-	if mode == ReferenceReplacementModeReplace {
+	if mode == domaingraph.ReferenceReplacementModeReplace {
 		for targetID, edges := range existingByTarget {
 			if _, desired := targets[targetID]; desired {
 				continue
 			}
 			for _, edge := range edges {
 				if err := deleteEdge(edge); err != nil {
-					return ReplaceReferencesResult{}, err
+					return domaingraph.ReplaceReferencesResult{}, err
 				}
 			}
 		}
 	}
-	if mode == ReferenceReplacementModeRemove {
+	if mode == domaingraph.ReferenceReplacementModeRemove {
 		if len(targets) == 0 {
 			for _, edges := range existingByTarget {
 				for _, edge := range edges {
 					if err := deleteEdge(edge); err != nil {
-						return ReplaceReferencesResult{}, err
+						return domaingraph.ReplaceReferencesResult{}, err
 					}
 				}
 			}
@@ -886,7 +1301,7 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 		for targetID := range targets {
 			for _, edge := range existingByTarget[targetID] {
 				if err := deleteEdge(edge); err != nil {
-					return ReplaceReferencesResult{}, err
+					return domaingraph.ReplaceReferencesResult{}, err
 				}
 			}
 		}
@@ -897,9 +1312,9 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 		target := targets[targetID]
 		existing := existingByTarget[targetID]
 		if len(existing) == 0 {
-			created, err := m.CreateEdge(ctx, tx, EdgeInput{EdgeID: target.EdgeID, FromNodeID: sourceID.String(), ToNodeID: targetID.String(), Labels: labels, Properties: target.Properties, Payload: target.Payload, Meta: target.Meta})
+			created, err := m.CreateEdge(ctx, tx, domaingraph.EdgeInput{EdgeID: target.EdgeID, FromNodeID: sourceID.String(), ToNodeID: targetID.String(), Labels: labels, Properties: target.Properties, Payload: target.Payload, Meta: target.Meta})
 			if err != nil {
-				return ReplaceReferencesResult{}, err
+				return domaingraph.ReplaceReferencesResult{}, err
 			}
 			result.AddedEdges = append(result.AddedEdges, created)
 			continue
@@ -907,10 +1322,10 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 		kept := existing[0]
 		for _, duplicate := range existing[1:] {
 			if err := deleteEdge(duplicate); err != nil {
-				return ReplaceReferencesResult{}, err
+				return domaingraph.ReplaceReferencesResult{}, err
 			}
 		}
-		update := UpdateEdgeInput{EdgeID: kept.ID.String()}
+		update := domaingraph.UpdateEdgeInput{EdgeID: kept.ID.String()}
 		if target.HasProps && !reflect.DeepEqual(kept.Properties, target.Properties) {
 			update.Properties = target.Properties
 			update.UpdateMask = append(update.UpdateMask, "properties")
@@ -928,14 +1343,14 @@ func (m *Module) ReplaceReferences(ctx context.Context, tx daemonsession.GraphTr
 		}
 		updated, err := m.UpdateEdge(ctx, tx, update)
 		if err != nil {
-			return ReplaceReferencesResult{}, err
+			return domaingraph.ReplaceReferencesResult{}, err
 		}
 		result.UpdatedEdges = append(result.UpdatedEdges, updated)
 	}
 	return result, nil
 }
 
-func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
+func (m *Module) ListChildren(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, err
 	}
@@ -956,7 +1371,7 @@ func (m *Module) ListChildren(ctx context.Context, tx daemonsession.GraphTransac
 	return m.listChildrenLocal(ctx, tx, parentNodeID)
 }
 
-func (m *Module) GetParent(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*domaingraph.Edge, error) {
+func (m *Module) GetParent(ctx context.Context, tx sessionmodel.GraphTransaction, childNodeID string) (*domaingraph.Edge, error) {
 	if err := ensureReadable(tx); err != nil {
 		return nil, err
 	}
@@ -977,7 +1392,13 @@ func (m *Module) GetParent(ctx context.Context, tx daemonsession.GraphTransactio
 	return m.parentEdgeLocal(ctx, tx, childNodeID)
 }
 
-func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error) {
+func (m *Module) MoveSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string, newParentNodeID string, order *int32) (domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return domaingraph.Edge{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return domaingraph.Edge{}, err
 	}
@@ -1037,7 +1458,13 @@ func (m *Module) MoveSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	return cloneEdge(e), nil
 }
 
-func (m *Module) ReorderChildren(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error) {
+func (m *Module) ReorderChildren(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string, childNodeIDs []string) ([]domaingraph.Edge, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockActiveTransactionMutation(ctx, tx)
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
 	if err := ensureWritable(tx); err != nil {
 		return nil, err
 	}
@@ -1130,19 +1557,40 @@ func (m *Module) CurrentDomainRevision(ctx context.Context, spaceID string, doma
 	return revision, nil
 }
 
-func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (CommitResult, error) {
-	if tx.Mode == daemonsession.TransactionModeReadOnly {
-		return CommitResult{}, nil
+func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
+	if lockErr != nil {
+		return graphchange.CommitResult{}, lockErr
+	}
+	ctx = lockedCtx
+	defer releaseMutation()
+	m.mu.Lock()
+	finalized := m.finalizedTransactions[tx.ID]
+	m.mu.Unlock()
+	if finalized.kind == transactionCommitted {
+		return finalized.commit, nil
+	}
+	if finalized.kind == transactionDiscarded {
+		return graphchange.CommitResult{}, fmt.Errorf("%w: transaction graph was discarded", ErrInvalidState)
+	}
+	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	if tx.Mode == sessionmodel.TransactionModeReadOnly {
+		m.mu.Lock()
+		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
+		m.mu.Unlock()
+		return graphchange.CommitResult{}, err
 	}
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
-		return CommitResult{}, err
+		return graphchange.CommitResult{}, err
 	}
 	traceStart := time.Now()
 	var timing graphCommitTiming
 	stepStart := time.Now()
 	release, err := m.enterWrite(ctx)
 	if err != nil {
-		return CommitResult{}, err
+		return graphchange.CommitResult{}, err
 	}
 	timing.EnterWrite = time.Since(stepStart)
 	defer release()
@@ -1150,9 +1598,14 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
 	if o == nil || o.opCount == 0 {
+		if tx.IdempotencyKey != "" {
+			m.mu.Unlock()
+			return graphchange.CommitResult{}, fmt.Errorf("%w: idempotent commit requires at least one graph mutation", ErrInvalidInput)
+		}
 		delete(m.overlays, tx.ID)
+		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
 		m.mu.Unlock()
-		return CommitResult{}, nil
+		return graphchange.CommitResult{}, err
 	}
 	snapshot := o.clone()
 	delete(m.overlays, tx.ID)
@@ -1172,27 +1625,68 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	stepStart = time.Now()
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
-		return CommitResult{}, err
+		return graphchange.CommitResult{}, err
 	}
 	timing.StoreOpen = time.Since(stepStart)
 	stepStart = time.Now()
+	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	idempotency, err := newGraphCommitIdempotency(tx, record)
+	if err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	record.Idempotency = idempotency
+	timing.RecordBuild = time.Since(stepStart)
+	releaseIdempotency := m.lockGraphCommitIdempotencyScope(tx)
+	idempotencyLocked := true
+	defer func() {
+		if idempotencyLocked {
+			releaseIdempotency()
+		}
+	}()
+	if idempotency != nil {
+		candidate, err := idempotency.storageRecord()
+		if err != nil {
+			return graphchange.CommitResult{}, err
+		}
+		existing, ok, err := store.CheckIdempotencyRecord(ctx, candidate)
+		if err != nil {
+			mappedErr := mapStorageError(err)
+			return graphchange.CommitResult{}, m.observeIdempotencyError(idempotency, mappedErr)
+		}
+		if !ok {
+			m.idempotencyReplayMisses.Add(1)
+		} else {
+			m.idempotencyReplayHits.Add(1)
+			_ = m.deliverIdempotencyEvent(ctx, store, existing)
+			commitResult, err := graphCommitResultFromIdempotency(existing, true)
+			if err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			restoreOverlay = false
+			if err := m.finalizeCommittedTransactionGraph(tx.ID, commitResult); err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			return commitResult, nil
+		}
+	}
+	stepStart = time.Now()
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
-		return CommitResult{}, err
+		return graphchange.CommitResult{}, err
 	}
 	timing.OverlayChanges = time.Since(stepStart)
 	stepStart = time.Now()
 	graphEvent, err := m.graphChangeEvent(ctx, tx, store, snapshot)
 	if err != nil {
-		return CommitResult{}, err
+		return graphchange.CommitResult{}, err
+	}
+	if err := attachIdempotencyEvent(record.Idempotency, graphEvent, changes); err != nil {
+		return graphchange.CommitResult{}, err
 	}
 	timing.GraphEvent = time.Since(stepStart)
 	stepStart = time.Now()
-	record := graphCommitRecordFromSnapshot(tx, snapshot)
-	timing.RecordBuild = time.Since(stepStart)
-	stepStart = time.Now()
 	if err := m.validateBlobReferences(ctx, tx.SpaceID, record.PutNodes); err != nil {
-		return CommitResult{}, err
+		return graphchange.CommitResult{}, err
 	}
 	timing.BlobReferenceValidate = time.Since(stepStart)
 	var committedRevision int64
@@ -1200,15 +1694,15 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 	if m.raftGroups != nil {
 		timing.StorageMode = "raft"
 		stepStart = time.Now()
-		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, graphRaftCommandID(ctx, tx.ID))
+		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, graphRaftCommandIDForRecord(ctx, tx.ID, record))
 		if err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, err
 		}
 		timing.RaftBuild = time.Since(stepStart)
 		stepStart = time.Now()
 		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
 		if err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, err)
 		}
 		timing.RaftPropose = time.Since(stepStart)
 		timing.RaftProposal = proposal.Timing
@@ -1219,41 +1713,69 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		// applied locally.
 		committedRevision = int64(store.Revision())
 		info = graphstorage.CommitInfo{TxnID: uuid.New(), NextRevision: uint64(committedRevision)}
+		if record.Idempotency != nil {
+			idempotencyRecord, ok, err := store.GetIdempotencyRecord(ctx, record.Idempotency.Scope, record.Idempotency.Key)
+			if err != nil {
+				return graphchange.CommitResult{}, mapStorageError(err)
+			}
+			if !ok {
+				return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, ErrIdempotencyCapacity)
+			}
+			if idempotencyRecord.Digest != record.Idempotency.Digest {
+				return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, ErrIdempotencyConflict)
+			}
+			storedResult, err := graphCommitResultFromIdempotency(idempotencyRecord, false)
+			if err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			info.Idempotency = &idempotencyRecord
+			info.IdempotentReplay = storedResult.CommitID != record.Idempotency.Metadata.CommitID
+			committedRevision = int64(idempotencyRecord.CommittedRevision)
+		}
 	} else if m.wal == nil {
 		timing.StorageMode = "direct"
 		stepStart = time.Now()
 		storageTx, err := store.Begin(ctx)
 		if err != nil {
-			return CommitResult{}, mapStorageError(err)
+			return graphchange.CommitResult{}, mapStorageError(err)
+		}
+		if record.Idempotency != nil {
+			idempotencyRecord, err := record.Idempotency.storageRecord()
+			if err != nil {
+				_ = storageTx.Rollback()
+				return graphchange.CommitResult{}, err
+			}
+			storageTx.SetIdempotency(idempotencyRecord)
 		}
 		storageTx.ExpectRevision(uint64(tx.BaseRevision))
 		for _, node := range record.PutNodes {
 			if err := storageTx.PutNode(node); err != nil {
 				_ = storageTx.Rollback()
-				return CommitResult{}, mapStorageError(err)
+				return graphchange.CommitResult{}, mapStorageError(err)
 			}
 		}
 		for _, edge := range record.PutEdges {
 			if err := storageTx.PutEdge(edge); err != nil {
 				_ = storageTx.Rollback()
-				return CommitResult{}, mapStorageError(err)
+				return graphchange.CommitResult{}, mapStorageError(err)
 			}
 		}
 		for _, id := range record.DeleteNodeIDs {
 			if err := storageTx.DeleteNode(id); err != nil {
 				_ = storageTx.Rollback()
-				return CommitResult{}, mapStorageError(err)
+				return graphchange.CommitResult{}, mapStorageError(err)
 			}
 		}
 		for _, id := range record.DeleteEdgeIDs {
 			if err := storageTx.DeleteEdge(id); err != nil {
 				_ = storageTx.Rollback()
-				return CommitResult{}, mapStorageError(err)
+				return graphchange.CommitResult{}, mapStorageError(err)
 			}
 		}
 		info, err = storageTx.CommitWithInfo()
 		if err != nil {
-			return CommitResult{}, mapStorageError(err)
+			mappedErr := mapStorageError(err)
+			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, mappedErr)
 		}
 		committedRevision = int64(store.Revision())
 		timing.DirectStorage = time.Since(stepStart)
@@ -1263,45 +1785,79 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx daemonsession.Gr
 		stepStart = time.Now()
 		payload, err := json.Marshal(record)
 		if err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, err
 		}
 		timing.WALMarshal = time.Since(stepStart)
 		stepStart = time.Now()
 		lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeGraphCommit, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
 		if err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, err
 		}
 		timing.WALAppend = time.Since(stepStart)
 		stepStart = time.Now()
 		if err := m.wal.Sync(ctx, lsn); err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, err
 		}
 		timing.WALSync = time.Since(stepStart)
 		stepStart = time.Now()
 		committedRevision, _, info, err = m.applyGraphCommitRecord(ctx, record)
 		if err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, err)
 		}
 		timing.WALApply = time.Since(stepStart)
 		timing.StorageCommit = info.Timing
 		stepStart = time.Now()
 		if err := m.markWALApplied(ctx, lsn); err != nil {
-			return CommitResult{}, err
+			return graphchange.CommitResult{}, err
 		}
 		timing.WALMarkApplied = time.Since(stepStart)
 		info.TxnID = uuid.New()
 		info.NextRevision = uint64(committedRevision)
 	}
 	restoreOverlay = false
-	graphEvent.Changes = changes
-	stepStart = time.Now()
-	recorder := &graphSinkTimingRecorder{}
-	m.notifyGraphChangeSink(withGraphSinkTimingRecorder(ctx, recorder), info, graphEvent)
-	timing.ChangeSink = time.Since(stepStart)
-	timing.SinkTimings = recorder.timings
+	commitResult := graphchange.CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}
+	if info.Idempotency != nil {
+		if info.IdempotentReplay {
+			m.idempotencyReplayHits.Add(1)
+		}
+		commitResult, err = graphCommitResultFromIdempotency(*info.Idempotency, info.IdempotentReplay)
+		if err != nil {
+			return graphchange.CommitResult{}, err
+		}
+		if !info.IdempotentReplay {
+			commitResult.Changes = changes
+		}
+	}
+	if err := m.finalizeCommittedTransactionGraph(tx.ID, commitResult); err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	if info.Idempotency != nil {
+		stepStart = time.Now()
+		recorder := &graphSinkTimingRecorder{}
+		_ = m.deliverIdempotencyEvent(withGraphSinkTimingRecorder(ctx, recorder), store, *info.Idempotency)
+		timing.ChangeSink = time.Since(stepStart)
+		timing.SinkTimings = recorder.timings
+	} else if !info.IdempotentReplay {
+		graphEvent.Changes = changes
+		stepStart = time.Now()
+		recorder := &graphSinkTimingRecorder{}
+		m.notifyGraphChangeSink(withGraphSinkTimingRecorder(ctx, recorder), info, graphEvent)
+		timing.ChangeSink = time.Since(stepStart)
+		timing.SinkTimings = recorder.timings
+	}
+	releaseIdempotency()
+	idempotencyLocked = false
 	timing.Total = time.Since(traceStart)
 	m.logGraphCommitTiming(tx, map[string]int{"operation_count": int(snapshot.opCount), "put_nodes": len(record.PutNodes), "put_edges": len(record.PutEdges), "delete_nodes": len(record.DeleteNodeIDs), "delete_edges": len(record.DeleteEdgeIDs), "changes": len(changes)}, committedRevision, timing)
-	return CommitResult{OperationCount: snapshot.opCount, CommittedRevision: committedRevision, Changes: changes}, nil
+	return commitResult, nil
+}
+
+func (m *Module) finalizeCommittedTransactionGraph(transactionID string, commit graphchange.CommitResult) error {
+	cached := commit
+	cached.Changes = nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.finalizeTransactionLocked(transactionID, transactionFinalization{kind: transactionCommitted, commit: cached})
 }
 
 func (m *Module) enterWrite(ctx context.Context) (func(), error) {
@@ -1327,41 +1883,53 @@ func (m *Module) requireLocalWriteAllowed() error {
 	return m.writeAllowed()
 }
 
-func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+func (m *Module) notifyGraphChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
 	m.mu.Lock()
 	sink := m.changeSink
 	m.mu.Unlock()
-	m.notifyChangeSink(ctx, sink, info, event)
+	return m.notifyChangeSink(ctx, sink, info, event)
 }
 
-func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
+func (m *Module) notifyRaftApplyChangeSink(ctx context.Context, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
 	m.mu.Lock()
 	sink := m.raftApplyChangeSink
 	m.mu.Unlock()
-	m.notifyChangeSink(ctx, sink, info, event)
+	return m.notifyChangeSink(ctx, sink, info, event)
 }
 
-func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) {
-	if sink == nil || event.Empty() {
-		return
+func (m *Module) notifyChangeSink(ctx context.Context, sink graphchange.Sink, info graphstorage.CommitInfo, event graphchange.CommittedEvent) (bool, error) {
+	if event.Empty() {
+		return true, nil
 	}
-	event.TxnID = info.TxnID
-	event.TransactionID = info.TxnID
-	event.GraphRevision = info.NextRevision
-	event.Revision = info.NextRevision
+	if sink == nil {
+		return false, nil
+	}
+	if event.TxnID == uuid.Nil {
+		event.TxnID = info.TxnID
+	}
+	if event.TransactionID == uuid.Nil {
+		event.TransactionID = event.TxnID
+	}
+	if event.GraphRevision == 0 {
+		event.GraphRevision = info.NextRevision
+	}
+	if event.Revision == 0 {
+		event.Revision = info.NextRevision
+	}
 	event.Normalize()
 	if err := sink.OnGraphCommitted(ctx, event); err != nil {
 		m.mu.Lock()
 		m.lastGraphChangeSinkErr = err
 		m.mu.Unlock()
-		return
+		return false, err
 	}
 	m.mu.Lock()
 	m.lastGraphChangeSinkErr = nil
 	m.mu.Unlock()
+	return true, nil
 }
 
-func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTransaction, store *graphstorage.LocalStore, snapshot *overlay) (graphchange.CommittedEvent, error) {
+func (m *Module) graphChangeEvent(ctx context.Context, tx sessionmodel.GraphTransaction, store *graphstorage.LocalStore, snapshot *overlay) (graphchange.CommittedEvent, error) {
 	spaceID, err := uuid.Parse(tx.SpaceID)
 	if err != nil || spaceID == uuid.Nil {
 		return graphchange.CommittedEvent{}, fmt.Errorf("%w: space_id must be a UUID", ErrInvalidInput)
@@ -1456,13 +2024,13 @@ func (m *Module) graphChangeEvent(ctx context.Context, tx daemonsession.GraphTra
 	return event, nil
 }
 
-func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalStore, snapshot *overlay) ([]GraphChange, error) {
-	changes := []GraphChange{}
+func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalStore, snapshot *overlay) ([]graphchange.Change, error) {
+	changes := []graphchange.Change{}
 	for _, node := range sortedNodes(snapshot.putNodes) {
-		changeType := ChangeTypeNodeUpdated
+		changeType := graphchange.ChangeTypeNodeUpdated
 		var oldCopy *domaingraph.Node
 		if old, err := store.GetNode(ctx, node.ID); errors.Is(err, graphstorage.ErrNotFound) {
-			changeType = ChangeTypeNodeCreated
+			changeType = graphchange.ChangeTypeNodeCreated
 		} else if err != nil {
 			return nil, mapStorageError(err)
 		} else {
@@ -1470,14 +2038,14 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 			oldCopy = &copy
 		}
 		copy := cloneNode(node)
-		changes = append(changes, GraphChange{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String(), AffectedNodeIDs: []string{node.ID.String()}})
+		changes = append(changes, graphchange.Change{Type: changeType, Node: &copy, OldNode: oldCopy, NodeID: node.ID.String(), AffectedNodeIDs: []string{node.ID.String()}})
 	}
 	for _, edge := range sortedEdges(snapshot.putEdges) {
-		changeType := ChangeTypeEdgeUpdated
+		changeType := graphchange.ChangeTypeEdgeUpdated
 		var oldCopy *domaingraph.Edge
 		affectedNodeIDs := []string{edge.FromID.String(), edge.ToID.String()}
 		if old, err := store.GetEdge(ctx, edge.ID); errors.Is(err, graphstorage.ErrNotFound) {
-			changeType = ChangeTypeEdgeCreated
+			changeType = graphchange.ChangeTypeEdgeCreated
 		} else if err != nil {
 			return nil, mapStorageError(err)
 		} else {
@@ -1486,7 +2054,7 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 			affectedNodeIDs = appendUniqueStrings(affectedNodeIDs, old.FromID.String(), old.ToID.String())
 		}
 		copy := cloneEdge(edge)
-		changes = append(changes, GraphChange{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String(), AffectedNodeIDs: affectedNodeIDs, AffectedEdgeIDs: []string{edge.ID.String()}})
+		changes = append(changes, graphchange.Change{Type: changeType, Edge: &copy, OldEdge: oldCopy, EdgeID: edge.ID.String(), AffectedNodeIDs: affectedNodeIDs, AffectedEdgeIDs: []string{edge.ID.String()}})
 	}
 	for _, id := range sortedNodeIDs(snapshot.deleteNodes) {
 		var oldCopy *domaingraph.Node
@@ -1496,10 +2064,10 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 		} else if err != nil && !errors.Is(err, graphstorage.ErrNotFound) {
 			return nil, mapStorageError(err)
 		}
-		changes = append(changes, GraphChange{Type: ChangeTypeNodeDeleted, OldNode: oldCopy, NodeID: id.String(), AffectedNodeIDs: []string{id.String()}})
+		changes = append(changes, graphchange.Change{Type: graphchange.ChangeTypeNodeDeleted, OldNode: oldCopy, NodeID: id.String(), AffectedNodeIDs: []string{id.String()}})
 	}
 	for _, id := range sortedEdgeIDs(snapshot.deleteEdges) {
-		change := GraphChange{Type: ChangeTypeEdgeDeleted, EdgeID: id.String(), AffectedEdgeIDs: []string{id.String()}}
+		change := graphchange.Change{Type: graphchange.ChangeTypeEdgeDeleted, EdgeID: id.String(), AffectedEdgeIDs: []string{id.String()}}
 		if old, err := store.GetEdge(ctx, id); err == nil {
 			copy := cloneEdge(old)
 			change.OldEdge = &copy
@@ -1512,10 +2080,45 @@ func (m *Module) overlayChanges(ctx context.Context, store *graphstorage.LocalSt
 	return changes, nil
 }
 
-func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID string) {
+func (m *Module) DiscardTransactionGraph(ctx context.Context, transactionID string) error {
+	_, releaseMutation, err := m.lockTransactionMutation(context.WithoutCancel(ctx), transactionID)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.finalizeTransactionLocked(transactionID, transactionFinalization{kind: transactionDiscarded}); err != nil {
+		return err
+	}
 	delete(m.overlays, transactionID)
+	return nil
+}
+
+// AcknowledgeTransactionFinalization removes the short-lived terminal race
+// barrier only after the authoritative session state is no longer active.
+func (m *Module) AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	lockedCtx, releaseMutation, err := m.lockTransactionMutation(context.WithoutCancel(ctx), tx.ID)
+	if err != nil {
+		return err
+	}
+	defer releaseMutation()
+	m.mu.Lock()
+	_, finalized := m.finalizedTransactions[tx.ID]
+	validator := m.transactionValidator
+	m.mu.Unlock()
+	if !finalized {
+		return nil
+	}
+	if validator != nil {
+		if err := validator.ValidateTransactionFinalized(lockedCtx, tx); err != nil {
+			return fmt.Errorf("%w: transaction finalization is not authoritative: %v", ErrInvalidState, err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.finalizedTransactions, tx.ID)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Module) BlobRefCount(ctx context.Context, spaceID string, blobID string) (int, error) {
@@ -1669,7 +2272,7 @@ func newDomainStoreKey(spaceID string, domainID string) (domainStoreKey, error) 
 	return domainStoreKey{SpaceID: spaceID, DomainID: parsedDomain.String()}, nil
 }
 
-func (m *Module) node(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.NodeID) (domaingraph.Node, error) {
+func (m *Module) node(ctx context.Context, tx sessionmodel.GraphTransaction, id domaingraph.NodeID) (domaingraph.Node, error) {
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
 	if o != nil {
@@ -1702,7 +2305,7 @@ func (m *Module) node(ctx context.Context, tx daemonsession.GraphTransaction, id
 	return cloneNode(node), nil
 }
 
-func (m *Module) edge(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.EdgeID) (domaingraph.Edge, error) {
+func (m *Module) edge(ctx context.Context, tx sessionmodel.GraphTransaction, id domaingraph.EdgeID) (domaingraph.Edge, error) {
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
 	if o != nil {
@@ -1739,7 +2342,7 @@ type transactionEdgeView struct {
 	snapshoted bool
 }
 
-func (m *Module) transactionEdgeView(ctx context.Context, tx daemonsession.GraphTransaction) (transactionEdgeView, error) {
+func (m *Module) transactionEdgeView(ctx context.Context, tx sessionmodel.GraphTransaction) (transactionEdgeView, error) {
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return transactionEdgeView{}, err
@@ -1834,7 +2437,7 @@ func (m *Module) storeHierarchyParent(ctx context.Context, store *graphstorage.L
 	return nil, nil
 }
 
-func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.GraphTransaction, from domaingraph.NodeID, target domaingraph.NodeID) (bool, error) {
+func (m *Module) hierarchyPathExists(ctx context.Context, tx sessionmodel.GraphTransaction, from domaingraph.NodeID, target domaingraph.NodeID) (bool, error) {
 	view, err := m.transactionEdgeView(ctx, tx)
 	if err != nil {
 		return false, err
@@ -1870,28 +2473,209 @@ func (m *Module) hierarchyPathExists(ctx context.Context, tx daemonsession.Graph
 	return false, nil
 }
 
-func (m *Module) listNodesLocal(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Node, string, error) {
+func (m *Module) scanNodesLocal(ctx context.Context, tx sessionmodel.GraphTransaction, request graphquery.NodeScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "NodeScan", IndexName: "node_id", FullScan: true, NextCursorKind: "node_key"}
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", stats, err
 	}
-	var base []domaingraph.Node
-	if revision, ok := snapshotRevision(tx); ok {
-		base, err = store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	} else {
-		base, err = store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+	pageSize := boundedGraphPageSize(request.Limit)
+	pageToken := strings.TrimSpace(request.Cursor)
+	examineLimit := request.ExamineLimit
+	if examineLimit <= 0 {
+		examineLimit = pageSize
+	} else if examineLimit > 500 {
+		examineLimit = 500
 	}
+	// Numeric offsets remain readable as a compatibility path for tokens issued
+	// before the cursor-driven node scan. New scans always emit nodes-v1 tokens.
+	if pageToken != "" && !strings.HasPrefix(pageToken, nodePageTokenPrefix) {
+		if _, err := pageStart(pageToken); err != nil {
+			return nil, "", stats, err
+		}
+		m.mu.Lock()
+		overlay := m.overlays[tx.ID]
+		mutableView := overlay != nil && overlay.opCount != 0
+		m.mu.Unlock()
+		if mutableView {
+			return nil, "", stats, fmt.Errorf("%w: legacy page_token is not bound to the transaction overlay", ErrInvalidInput)
+		}
+		var base []domaingraph.Node
+		if revision, ok := snapshotRevision(tx); ok {
+			base, err = store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
+		} else {
+			base, err = store.ListNodesByDomain(ctx, mustDomainID(tx.DomainID))
+		}
+		if err != nil {
+			return nil, "", stats, mapStorageError(err)
+		}
+		m.mu.Lock()
+		overlay = m.overlays[tx.ID]
+		if overlay != nil && overlay.opCount != 0 {
+			m.mu.Unlock()
+			return nil, "", stats, fmt.Errorf("%w: legacy page_token is not bound to the transaction overlay", ErrInvalidInput)
+		}
+		merged := mergeNodes(base, overlay, mustDomainID(tx.DomainID))
+		m.mu.Unlock()
+		out, next, pageErr := paginateNodes(merged, pageSize, pageToken)
+		stats.IndexEntriesScanned = len(base)
+		stats.NodesLoaded = len(out)
+		return out, next, stats, pageErr
+	}
+
+	cursor, err := decodeNodePageCursor(tx, pageToken)
 	if err != nil {
-		return nil, "", mapStorageError(err)
+		return nil, "", stats, err
 	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	merged := mergeNodes(base, o, mustDomainID(tx.DomainID))
-	m.mu.Unlock()
-	return paginateNodes(merged, pageSize, pageToken)
+	overlay, err := m.nodeOverlayPageSnapshot(tx, cursor, pageSize+1)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	scan := graphstorage.DomainNodeScan{
+		DomainID: mustDomainID(tx.DomainID), Limit: pageSize, Cursor: cursor.AfterNodeID, ExamineLimit: examineLimit,
+	}
+	if revision, ok := snapshotRevision(tx); ok {
+		scan.Snapshot = true
+		scan.Revision = revision
+	}
+	if len(overlay.replaced) == 0 && len(overlay.deleted) == 0 {
+		items, storageNext, examined, scanErr := store.ScanNodesByDomain(ctx, scan)
+		stats.IndexEntriesScanned += examined
+		stats.NodesLoaded = len(items)
+		if scanErr != nil {
+			return nil, "", stats, mapStorageError(scanErr)
+		}
+		if storageNext == "" {
+			return items, "", stats, nil
+		}
+		next := encodeNodePageCursor(tx, nodePageCursor{OverlayOps: overlay.operations, AfterNodeID: storageNext})
+		return items, next, stats, nil
+	}
+
+	// A mutable node overlay requires a finite merge lookahead. The current
+	// committed order excludes tombstones; overlay identity prevents
+	// continuation if the merge input changes.
+	scan.Limit = pageSize + 1
+	scan.ExamineLimit = min(500, pageSize+1+len(overlay.replaced)+len(overlay.deleted))
+	items := make([]domaingraph.Node, 0, pageSize+1+len(overlay.putNodes))
+	storageCursor := scan.Cursor
+	for len(items) < pageSize+1 {
+		scan.Cursor = storageCursor
+		scan.Limit = min(500, pageSize+1-len(items))
+		base, next, examined, scanErr := store.ScanNodesByDomain(ctx, scan)
+		stats.IndexEntriesScanned += examined
+		stats.NodesLoaded += len(base)
+		if scanErr != nil {
+			return nil, "", stats, mapStorageError(scanErr)
+		}
+		for _, node := range base {
+			if _, deleted := overlay.deleted[node.ID]; deleted {
+				continue
+			}
+			if _, replaced := overlay.replaced[node.ID]; replaced {
+				continue
+			}
+			items = append(items, node)
+		}
+		if next == "" {
+			break
+		}
+		storageCursor = next
+	}
+	items = append(items, overlay.putNodes...)
+	stats.IndexEntriesScanned += len(overlay.replaced) + len(overlay.deleted)
+	stats.NodesLoaded += len(overlay.putNodes)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID.String() < items[j].ID.String() })
+	if len(items) <= pageSize {
+		return items, "", stats, nil
+	}
+	items = items[:pageSize]
+	next := encodeNodePageCursor(tx, nodePageCursor{OverlayOps: overlay.operations, AfterNodeID: items[len(items)-1].ID.String()})
+	return items, next, stats, nil
 }
 
-func (m *Module) listEdgesLocal(ctx context.Context, tx daemonsession.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
+func boundedGraphPageSize(pageSize int) int {
+	if pageSize <= 0 || pageSize > 500 {
+		return 500
+	}
+	return pageSize
+}
+
+func (m *Module) nodeOverlayPageSnapshot(tx sessionmodel.GraphTransaction, cursor nodePageCursor, limit int) (nodeOverlayPage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	page := nodeOverlayPage{replaced: map[domaingraph.NodeID]struct{}{}, deleted: map[domaingraph.NodeID]struct{}{}}
+	overlay := m.overlays[tx.ID]
+	if overlay == nil {
+		if cursor.AfterNodeID != "" && cursor.OverlayOps != 0 {
+			return nodeOverlayPage{}, fmt.Errorf("%w: page_token transaction overlay changed", ErrInvalidInput)
+		}
+		return page, nil
+	}
+	page.operations = overlay.opCount
+	if cursor.AfterNodeID != "" && cursor.OverlayOps != overlay.opCount {
+		return nodeOverlayPage{}, fmt.Errorf("%w: page_token transaction overlay changed", ErrInvalidInput)
+	}
+	ids := make([]domaingraph.NodeID, 0, len(overlay.putNodes))
+	domainID := mustDomainID(tx.DomainID)
+	for id, node := range overlay.putNodes {
+		page.replaced[id] = struct{}{}
+		if node.DomainID == domainID && (cursor.AfterNodeID == "" || id.String() > cursor.AfterNodeID) {
+			ids = append(ids, id)
+		}
+	}
+	for id := range overlay.deleteNodes {
+		page.deleted[id] = struct{}{}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	page.putNodes = make([]domaingraph.Node, 0, len(ids))
+	for _, id := range ids {
+		page.putNodes = append(page.putNodes, cloneNode(overlay.putNodes[id]))
+	}
+	return page, nil
+}
+
+func decodeNodePageCursor(tx sessionmodel.GraphTransaction, token string) (nodePageCursor, error) {
+	if token == "" {
+		return nodePageCursor{}, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, nodePageTokenPrefix))
+	if err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	var cursor nodePageCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	want := nodePageCursorChecksum(cursor)
+	if subtle.ConstantTimeCompare([]byte(cursor.Checksum), []byte(want)) != 1 || cursor.TransactionID != tx.ID || cursor.BaseRevision != tx.BaseRevision {
+		return nodePageCursor{}, fmt.Errorf("%w: page_token does not match transaction view", ErrInvalidInput)
+	}
+	if _, err := uuid.Parse(cursor.AfterNodeID); err != nil {
+		return nodePageCursor{}, fmt.Errorf("%w: invalid page_token", ErrInvalidInput)
+	}
+	return cursor, nil
+}
+
+func encodeNodePageCursor(tx sessionmodel.GraphTransaction, cursor nodePageCursor) string {
+	cursor.TransactionID = tx.ID
+	cursor.BaseRevision = tx.BaseRevision
+	cursor.Checksum = nodePageCursorChecksum(cursor)
+	payload, _ := json.Marshal(cursor)
+	return nodePageTokenPrefix + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func nodePageCursorChecksum(cursor nodePageCursor) string {
+	cursor.Checksum = ""
+	payload, _ := json.Marshal(cursor)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Module) listEdgesLocal(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]domaingraph.Edge, string, error) {
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", err
@@ -1912,7 +2696,7 @@ func (m *Module) listEdgesLocal(ctx context.Context, tx daemonsession.GraphTrans
 	return paginateEdges(merged, pageSize, pageToken)
 }
 
-func (m *Module) listChildrenLocal(ctx context.Context, tx daemonsession.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
+func (m *Module) listChildrenLocal(ctx context.Context, tx sessionmodel.GraphTransaction, parentNodeID string) ([]domaingraph.Edge, error) {
 	parentID, err := parseUUID[domaingraph.NodeID](parentNodeID, "parent_node_id")
 	if err != nil {
 		return nil, err
@@ -1940,11 +2724,11 @@ func (m *Module) listChildrenLocal(ctx context.Context, tx daemonsession.GraphTr
 	return out, nil
 }
 
-func (m *Module) parentEdge(ctx context.Context, tx daemonsession.GraphTransaction, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
+func (m *Module) parentEdge(ctx context.Context, tx sessionmodel.GraphTransaction, childID domaingraph.NodeID) (*domaingraph.Edge, error) {
 	return m.parentEdgeLocal(ctx, tx, childID.String())
 }
 
-func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTransaction, childNodeID string) (*domaingraph.Edge, error) {
+func (m *Module) parentEdgeLocal(ctx context.Context, tx sessionmodel.GraphTransaction, childNodeID string) (*domaingraph.Edge, error) {
 	childID, err := parseUUID[domaingraph.NodeID](childNodeID, "child_node_id")
 	if err != nil {
 		return nil, err
@@ -1971,11 +2755,11 @@ func (m *Module) parentEdgeLocal(ctx context.Context, tx daemonsession.GraphTran
 	return nil, nil
 }
 
-func (m *Module) stageNode(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node) error {
+func (m *Module) stageNode(ctx context.Context, tx sessionmodel.GraphTransaction, node domaingraph.Node) error {
 	return m.stageNodeWithFence(ctx, tx, node, false)
 }
 
-func (m *Module) stageNodeWithFence(ctx context.Context, tx daemonsession.GraphTransaction, node domaingraph.Node, automationOutputFence bool) error {
+func (m *Module) stageNodeWithFence(ctx context.Context, tx sessionmodel.GraphTransaction, node domaingraph.Node, automationOutputFence bool) error {
 	if node.DomainID.String() != strings.TrimSpace(tx.DomainID) {
 		return fmt.Errorf("%w: node domain_id %s does not match transaction domain_id %s", ErrInvalidInput, node.DomainID, tx.DomainID)
 	}
@@ -1985,6 +2769,7 @@ func (m *Module) stageNodeWithFence(ctx context.Context, tx daemonsession.GraphT
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordNodeMutationLocked(tx.ID, o, node.ID)
 	delete(o.deleteNodes, node.ID)
 	o.putNodes[node.ID] = cloneNode(node)
 	if automationOutputFence {
@@ -1994,13 +2779,14 @@ func (m *Module) stageNodeWithFence(ctx context.Context, tx daemonsession.GraphT
 	return nil
 }
 
-func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.NodeID) error {
+func (m *Module) stageNodeDelete(ctx context.Context, tx sessionmodel.GraphTransaction, id domaingraph.NodeID) error {
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordNodeMutationLocked(tx.ID, o, id)
 	delete(o.putNodes, id)
 	delete(o.automationFenceNodes, id)
 	o.deleteNodes[id] = struct{}{}
@@ -2008,11 +2794,11 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx daemonsession.GraphTran
 	return nil
 }
 
-func (m *Module) stageEdge(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge) error {
+func (m *Module) stageEdge(ctx context.Context, tx sessionmodel.GraphTransaction, edge domaingraph.Edge) error {
 	return m.stageEdgeWithFence(ctx, tx, edge, false)
 }
 
-func (m *Module) stageEdgeWithFence(ctx context.Context, tx daemonsession.GraphTransaction, edge domaingraph.Edge, automationOutputFence bool) error {
+func (m *Module) stageEdgeWithFence(ctx context.Context, tx sessionmodel.GraphTransaction, edge domaingraph.Edge, automationOutputFence bool) error {
 	if edge.DomainID.String() != strings.TrimSpace(tx.DomainID) {
 		return fmt.Errorf("%w: edge domain_id %s does not match transaction domain_id %s", ErrInvalidInput, edge.DomainID, tx.DomainID)
 	}
@@ -2022,6 +2808,7 @@ func (m *Module) stageEdgeWithFence(ctx context.Context, tx daemonsession.GraphT
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordEdgeMutationLocked(tx.ID, o, edge.ID)
 	delete(o.deleteEdges, edge.ID)
 	o.putEdges[edge.ID] = cloneEdge(edge)
 	if automationOutputFence {
@@ -2031,13 +2818,14 @@ func (m *Module) stageEdgeWithFence(ctx context.Context, tx daemonsession.GraphT
 	return nil
 }
 
-func (m *Module) stageEdgeDelete(ctx context.Context, tx daemonsession.GraphTransaction, id domaingraph.EdgeID) error {
+func (m *Module) stageEdgeDelete(ctx context.Context, tx sessionmodel.GraphTransaction, id domaingraph.EdgeID) error {
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	m.recordEdgeMutationLocked(tx.ID, o, id)
 	delete(o.putEdges, id)
 	delete(o.automationFenceEdges, id)
 	o.deleteEdges[id] = struct{}{}
@@ -2056,6 +2844,84 @@ func (m *Module) overlay(txID string) *overlay {
 
 func newOverlay() *overlay {
 	return &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}, automationFenceNodes: map[domaingraph.NodeID]struct{}{}, automationFenceEdges: map[domaingraph.EdgeID]struct{}{}}
+}
+
+func (m *Module) boundedOrderedNodeOverlay(ctx context.Context, txID string, requestedLimit int, requestedExamine int) (*overlay, int, error) {
+	pageLimit, examineLimit := boundedOverlayLimits(requestedLimit, requestedExamine)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	source := m.overlays[txID]
+	if source == nil || len(source.putNodes)+len(source.deleteNodes) == 0 {
+		return nil, pageLimit, nil
+	}
+	affected := len(source.putNodes) + len(source.deleteNodes)
+	storageLimit := pageLimit + affected
+	requiredExamine := storageLimit + affected
+	if storageLimit > 500 || requiredExamine > examineLimit {
+		return nil, 0, fmt.Errorf("%w: ordered node overlay requires examining %d entries (limit %d)", graphquery.ErrScanBudgetExceeded, requiredExamine, examineLimit)
+	}
+	out := newOverlay()
+	for id, node := range source.putNodes {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		// Staged values are immutable snapshots replaced atomically under m.mu;
+		// copy the struct here and clone only rows selected for output.
+		out.putNodes[id] = node
+	}
+	for id := range source.deleteNodes {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		out.deleteNodes[id] = struct{}{}
+	}
+	return out, storageLimit, nil
+}
+
+func (m *Module) boundedAdjacencyOverlay(ctx context.Context, txID string, requestedLimit int, requestedExamine int) (*overlay, int, error) {
+	pageLimit, examineLimit := boundedOverlayLimits(requestedLimit, requestedExamine)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	source := m.overlays[txID]
+	if source == nil || len(source.putEdges)+len(source.deleteEdges) == 0 {
+		return nil, pageLimit, nil
+	}
+	affected := len(source.putEdges) + len(source.deleteEdges)
+	storageLimit := pageLimit + affected
+	requiredExamine := storageLimit + affected
+	if storageLimit > 500 || requiredExamine > examineLimit {
+		return nil, 0, fmt.Errorf("%w: adjacency overlay requires examining %d entries (limit %d)", graphquery.ErrScanBudgetExceeded, requiredExamine, examineLimit)
+	}
+	out := newOverlay()
+	for id, edge := range source.putEdges {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		// Staged values are immutable snapshots replaced atomically under m.mu;
+		// copy the struct here and clone only rows selected for output.
+		out.putEdges[id] = edge
+	}
+	for id := range source.deleteEdges {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		out.deleteEdges[id] = struct{}{}
+	}
+	return out, storageLimit, nil
+}
+
+func boundedOverlayLimits(requestedLimit int, requestedExamine int) (int, int) {
+	pageLimit := requestedLimit
+	if pageLimit <= 0 || pageLimit > 500 {
+		pageLimit = 500
+	}
+	if requestedExamine <= 0 {
+		requestedExamine = pageLimit * 16
+	}
+	if pageLimit > requestedExamine {
+		pageLimit = requestedExamine
+	}
+	return pageLimit, requestedExamine
 }
 
 func (o *overlay) clone() *overlay {
@@ -2082,8 +2948,8 @@ func (o *overlay) clone() *overlay {
 	return out
 }
 
-func snapshotRevision(tx daemonsession.GraphTransaction) (uint64, bool) {
-	if tx.Mode != daemonsession.TransactionModeReadOnly {
+func snapshotRevision(tx sessionmodel.GraphTransaction) (uint64, bool) {
+	if tx.Mode != sessionmodel.TransactionModeReadOnly {
 		return 0, false
 	}
 	if tx.BaseRevision <= 0 {
@@ -2092,18 +2958,18 @@ func snapshotRevision(tx daemonsession.GraphTransaction) (uint64, bool) {
 	return uint64(tx.BaseRevision), true
 }
 
-func ensureReadable(tx daemonsession.GraphTransaction) error {
-	if tx.State != daemonsession.TransactionStateActive {
+func ensureReadable(tx sessionmodel.GraphTransaction) error {
+	if tx.State != sessionmodel.TransactionStateActive {
 		return ErrInvalidState
 	}
 	return nil
 }
 
-func ensureWritable(tx daemonsession.GraphTransaction) error {
+func ensureWritable(tx sessionmodel.GraphTransaction) error {
 	if err := ensureReadable(tx); err != nil {
 		return err
 	}
-	if tx.Mode != daemonsession.TransactionModeReadWrite {
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
 		return ErrReadOnly
 	}
 	return nil
@@ -2115,6 +2981,12 @@ func mapStorageError(err error) error {
 	}
 	if errors.Is(err, graphstorage.ErrConflict) {
 		return ErrConflict
+	}
+	if errors.Is(err, graphstorage.ErrIdempotencyConflict) {
+		return ErrIdempotencyConflict
+	}
+	if errors.Is(err, graphstorage.ErrIdempotencyCapacity) {
+		return ErrIdempotencyCapacity
 	}
 	if errors.Is(err, graphstorage.ErrTxnClosed) || errors.Is(err, graphstorage.ErrClosed) || errors.Is(err, graphstorage.ErrIndexUnavailable) {
 		return ErrInvalidState
@@ -2339,7 +3211,7 @@ func intProp(value any) (int, bool) {
 	}
 }
 
-func (m *Module) isDescendant(ctx context.Context, tx daemonsession.GraphTransaction, candidate domaingraph.NodeID, ancestor domaingraph.NodeID) bool {
+func (m *Module) isDescendant(ctx context.Context, tx sessionmodel.GraphTransaction, candidate domaingraph.NodeID, ancestor domaingraph.NodeID) bool {
 	children, err := m.ListChildren(ctx, tx, ancestor.String())
 	if err != nil {
 		return false
@@ -2385,7 +3257,7 @@ func sortedEdgeIDs(in map[domaingraph.EdgeID]struct{}) []domaingraph.EdgeID {
 	return out
 }
 
-func (m *Module) ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error {
+func (m *Module) ConfigureIndexes(ctx context.Context, tx sessionmodel.GraphTransaction, schemaHash string, indexes []schemamodel.IndexDefinition) error {
 	if err := ensureReadable(tx); err != nil {
 		return err
 	}
@@ -2408,9 +3280,9 @@ func (m *Module) ConfigureIndexes(ctx context.Context, tx daemonsession.GraphTra
 	return mapStorageError(store.ConfigureIndexes(ctx, mustDomainID(tx.DomainID), schemaHash, indexes))
 }
 
-func (m *Module) ScanLabel(ctx context.Context, tx daemonsession.GraphTransaction, scan LabelScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
+func (m *Module) ScanLabel(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.LabelScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
 	label := strings.TrimSpace(scan.Label)
-	stats := IndexedReadStats{Plan: "LabelIndexScan", IndexName: "label:" + label, NextCursorKind: "label_key"}
+	stats := graphquery.IndexedReadStats{Plan: "LabelIndexScan", IndexName: "label:" + label, NextCursorKind: "label_key"}
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", stats, err
 	}
@@ -2461,9 +3333,9 @@ func (m *Module) ScanLabel(ctx context.Context, tx daemonsession.GraphTransactio
 	return out, next, stats, nil
 }
 
-func (m *Module) ScanTag(ctx context.Context, tx daemonsession.GraphTransaction, scan TagScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
+func (m *Module) ScanTag(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.TagScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
 	tag, err := domaingraph.NormalizeTag(scan.Tag)
-	stats := IndexedReadStats{Plan: "TagIndexScan", IndexName: "tag:" + tag, NextCursorKind: "tag_key"}
+	stats := graphquery.IndexedReadStats{Plan: "TagIndexScan", IndexName: "tag:" + tag, NextCursorKind: "tag_key"}
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", stats, err
 	}
@@ -2587,8 +3459,8 @@ func nodeHasTagForIndexedRead(node domaingraph.Node, tag string) bool {
 	return false
 }
 
-func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan) ([]domaingraph.Node, string, IndexedReadStats, error) {
-	stats := IndexedReadStats{Plan: "OrderedNodePropertyIndexScan", IndexName: scan.IndexName, NextCursorKind: "index_key"}
+func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.OrderedNodePropertyScan) ([]domaingraph.Node, string, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "OrderedNodePropertyIndexScan", IndexName: scan.IndexName, NextCursorKind: "index_key"}
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", stats, err
 	}
@@ -2619,26 +3491,32 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.G
 		stats.NodesLoaded = len(out)
 		return out, next, stats, nil
 	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	var overlaySnapshot *overlay
-	if o != nil {
-		overlaySnapshot = o.clone()
+	overlaySnapshot, storageLimit, err := m.boundedOrderedNodeOverlay(ctx, tx.ID, scan.Limit, scan.ExamineLimit)
+	if err != nil {
+		return nil, "", stats, err
 	}
-	m.mu.Unlock()
-	extra := 0
+	var indexStatus graphstorage.IndexMetadata
 	if overlaySnapshot != nil {
-		extra = len(overlaySnapshot.putNodes)
+		indexStatus, err = readyNodeIndexMetadata(ctx, store, mustDomainID(tx.DomainID), scan.IndexName)
+		if err != nil {
+			return nil, "", stats, err
+		}
 	}
-	storageLimit := scan.Limit
-	if storageLimit > 0 {
-		storageLimit += extra
-	}
-	entries, next, err := store.ScanNodePropertyOrdered(ctx, graphstorage.OrderedNodePropertyScan{DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction, Limit: storageLimit, Cursor: scan.Cursor, HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive, HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive})
+	entries, next, scanned, err := store.ScanNodePropertyOrderedBounded(ctx, graphstorage.OrderedNodePropertyScan{
+		DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction,
+		Limit: storageLimit, Cursor: scan.Cursor, ExamineLimit: storageLimit,
+		HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive,
+		HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive,
+	})
 	if err != nil {
 		return nil, "", stats, mapStorageError(err)
 	}
-	stats.IndexEntriesScanned = len(entries)
+	stats.IndexEntriesScanned = scanned
+	extra := 0
+	if overlaySnapshot != nil {
+		extra = len(overlaySnapshot.putNodes)
+		stats.IndexEntriesScanned += len(overlaySnapshot.deleteNodes)
+	}
 	items := make([]indexedNodeResult, 0, len(entries)+extra)
 	for _, entry := range entries {
 		if overlaySnapshot != nil {
@@ -2662,40 +3540,46 @@ func (m *Module) ScanNodePropertyOrdered(ctx context.Context, tx daemonsession.G
 		if err != nil {
 			return nil, "", stats, mapStorageError(err)
 		}
+		storageBoundary := ""
+		if next != "" {
+			storageBoundary, err = graphstorage.DecodeIndexCursor(next)
+			if err != nil {
+				return nil, "", stats, mapStorageError(err)
+			}
+		}
 		for _, node := range overlaySnapshot.putNodes {
-			if node.DomainID != mustDomainID(tx.DomainID) || !nodeMatchesConfiguredIndex(node, scan.IndexName, store) {
+			if err := ctx.Err(); err != nil {
+				return nil, "", stats, err
+			}
+			stats.IndexEntriesScanned++
+			stats.NodesLoaded++
+			if node.DomainID != mustDomainID(tx.DomainID) || !nodeHasAnyLabelForIndexedRead(node, indexStatus.Labels) {
 				continue
 			}
-			value, ok := domaingraph.Property(node, indexedFieldName(scan.IndexName, store, mustDomainID(tx.DomainID)))
+			value, ok := domaingraph.Property(node, indexStatus.Field.Name)
 			if !ok {
 				continue
 			}
 			key, err := graphstorage.EncodeOrderedNodeKey(value, node.ID)
-			if err != nil {
+			if err != nil || !indexedValueInBounds(key, scan) {
 				continue
 			}
-			if !indexedValueInBounds(key, scan) {
-				continue
-			}
-			if cursorKey != "" {
-				if scan.Direction == schemamodel.IndexSortDirectionDesc {
-					if key >= cursorKey {
-						continue
-					}
-				} else if key <= cursorKey {
+			if scan.Direction == schemamodel.IndexSortDirectionDesc {
+				if cursorKey != "" && key >= cursorKey || storageBoundary != "" && key < storageBoundary {
 					continue
 				}
+			} else if cursorKey != "" && key <= cursorKey || storageBoundary != "" && key > storageBoundary {
+				continue
 			}
 			items = append(items, indexedNodeResult{node: cloneNode(node), key: key})
 		}
 	}
 	out, next := finishIndexedNodeResults(items, scan.Limit, scan.Direction, next)
-	stats.NodesLoaded = len(out)
 	return out, next, stats, nil
 }
 
-func (m *Module) ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransaction, scan AdjacencyScan) ([]domaingraph.Edge, string, IndexedReadStats, error) {
-	stats := IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(scan.Direction) + ":" + scan.Label, NextCursorKind: "adjacency_key"}
+func (m *Module) ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]domaingraph.Edge, string, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(scan.Direction) + ":" + scan.Label, NextCursorKind: "adjacency_key"}
 	if err := ensureReadable(tx); err != nil {
 		return nil, "", stats, err
 	}
@@ -2718,78 +3602,57 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransa
 		return nil, "", stats, err
 	}
 	label := strings.TrimSpace(scan.Label)
-	if label == "" {
-		return nil, "", stats, fmt.Errorf("%w: adjacency label is required", ErrInvalidInput)
-	}
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
 		return nil, "", stats, err
 	}
-	m.mu.Lock()
-	o := m.overlays[tx.ID]
-	var overlaySnapshot *overlay
-	if o != nil {
-		overlaySnapshot = o.clone()
-	}
-	m.mu.Unlock()
 	storageDirection := graphstorage.AdjacencyDirectionOut
-	if scan.Direction == AdjacencyDirectionIn {
+	if scan.Direction == graphquery.AdjacencyDirectionIn {
 		storageDirection = graphstorage.AdjacencyDirectionIn
 	}
+	limit, examineLimit := boundedOverlayLimits(scan.Limit, scan.ExamineLimit)
+	storageScan := graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: id, Label: label, Direction: storageDirection, Limit: limit, Cursor: scan.Cursor}
 	snapshotRev, snapshoted := snapshotRevision(tx)
-	if overlaySnapshot != nil || snapshoted {
-		view := transactionEdgeView{store: store, overlay: overlaySnapshot, revision: snapshotRev, snapshoted: snapshoted}
-		var endpointEdges []domaingraph.Edge
-		if scan.Direction == AdjacencyDirectionIn {
-			endpointEdges, err = view.incoming(ctx, id)
-		} else {
-			endpointEdges, err = view.outgoing(ctx, id)
+	if snapshoted {
+		edgeIDs, next, examined, scanErr := store.ScanAdjacencyAt(ctx, storageScan, snapshotRev, examineLimit)
+		stats.IndexEntriesScanned = examined
+		if scanErr != nil {
+			return nil, "", stats, mapStorageError(scanErr)
 		}
-		if err != nil {
-			return nil, "", stats, err
-		}
-		cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
-		if err != nil {
-			return nil, "", stats, mapStorageError(err)
-		}
-		items := make([]domaingraph.Edge, 0, len(endpointEdges))
-		for _, edge := range endpointEdges {
-			if edge.DomainID != mustDomainID(tx.DomainID) || !domaingraph.EdgeHasLabels(edge, []string{label}) {
-				continue
+		out := make([]domaingraph.Edge, 0, len(edgeIDs))
+		for _, edgeID := range edgeIDs {
+			edge, readErr := store.GetEdgeAt(ctx, edgeID, snapshotRev)
+			if readErr != nil {
+				return nil, "", stats, mapStorageError(readErr)
 			}
-			key := adjacencyServiceKey(edge)
-			if cursorKey != "" && key <= cursorKey {
-				continue
-			}
-			items = append(items, cloneEdge(edge))
-		}
-		sort.Slice(items, func(i, j int) bool { return adjacencyServiceKey(items[i]) < adjacencyServiceKey(items[j]) })
-		limit := scan.Limit
-		if limit <= 0 || limit > len(items) {
-			limit = len(items)
-		}
-		out := make([]domaingraph.Edge, 0, limit)
-		for _, edge := range items[:limit] {
 			out = append(out, cloneEdge(edge))
 		}
-		next := ""
-		if limit < len(items) && limit > 0 {
-			next = graphstorage.EncodeIndexCursor(adjacencyServiceKey(items[limit-1]))
-		}
-		stats.IndexEntriesScanned = len(items)
 		stats.EdgesLoaded = len(out)
 		return out, next, stats, nil
 	}
-	edgeIDs, next, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{DomainID: mustDomainID(tx.DomainID), NodeID: id, Label: label, Direction: storageDirection, Limit: scan.Limit, Cursor: scan.Cursor})
+	overlaySnapshot, storageLimit, err := m.boundedAdjacencyOverlay(ctx, tx.ID, limit, examineLimit)
+	if err != nil {
+		return nil, "", stats, err
+	}
+	if overlaySnapshot != nil {
+		out, next, examined, loaded, scanErr := scanAdjacencyWithOverlay(ctx, store, mustDomainID(tx.DomainID), id, label, storageDirection, limit, storageLimit, scan.Cursor, overlaySnapshot)
+		stats.IndexEntriesScanned = examined
+		stats.EdgesLoaded = loaded
+		if scanErr != nil {
+			return nil, "", stats, scanErr
+		}
+		return out, next, stats, nil
+	}
+	edgeIDs, next, err := store.ScanAdjacency(ctx, storageScan)
 	if err != nil {
 		return nil, "", stats, mapStorageError(err)
 	}
 	stats.IndexEntriesScanned = len(edgeIDs)
 	out := make([]domaingraph.Edge, 0, len(edgeIDs))
 	for _, edgeID := range edgeIDs {
-		edge, err := store.GetEdge(ctx, edgeID)
-		if err != nil {
-			return nil, "", stats, mapStorageError(err)
+		edge, readErr := store.GetEdge(ctx, edgeID)
+		if readErr != nil {
+			return nil, "", stats, mapStorageError(readErr)
 		}
 		out = append(out, cloneEdge(edge))
 	}
@@ -2797,38 +3660,102 @@ func (m *Module) ScanAdjacency(ctx context.Context, tx daemonsession.GraphTransa
 	return out, next, stats, nil
 }
 
-func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransaction, scan SubtreeScan) (SubtreeResult, IndexedReadStats, error) {
-	stats := IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(scan.Direction) + ":" + scan.Label, NextCursorKind: "root_index_key"}
+func scanAdjacencyWithOverlay(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, nodeID domaingraph.NodeID, label string, direction graphstorage.AdjacencyDirection, limit int, storageLimit int, cursor string, overlaySnapshot *overlay) ([]domaingraph.Edge, string, int, int, error) {
+	edgeIDs, storageNext, err := store.ScanAdjacency(ctx, graphstorage.AdjacencyScan{
+		DomainID: domainID, NodeID: nodeID, Label: label, Direction: direction, Limit: storageLimit, Cursor: cursor,
+	})
+	if err != nil {
+		return nil, "", 0, 0, mapStorageError(err)
+	}
+	examined := len(edgeIDs) + len(overlaySnapshot.deleteEdges)
+	loaded := 0
+	items := make([]domaingraph.Edge, 0, len(edgeIDs)+len(overlaySnapshot.putEdges))
+	for _, edgeID := range edgeIDs {
+		if _, deleted := overlaySnapshot.deleteEdges[edgeID]; deleted {
+			continue
+		}
+		if _, replaced := overlaySnapshot.putEdges[edgeID]; replaced {
+			continue
+		}
+		edge, readErr := store.GetEdge(ctx, edgeID)
+		if readErr != nil {
+			return nil, "", examined, loaded, mapStorageError(readErr)
+		}
+		loaded++
+		items = append(items, cloneEdge(edge))
+	}
+	cursorKey, err := graphstorage.DecodeIndexCursor(cursor)
+	if err != nil {
+		return nil, "", examined, loaded, mapStorageError(err)
+	}
+	storageBoundary := ""
+	if storageNext != "" {
+		storageBoundary, err = graphstorage.DecodeIndexCursor(storageNext)
+		if err != nil {
+			return nil, "", examined, loaded, mapStorageError(err)
+		}
+	}
+	for _, edge := range overlaySnapshot.putEdges {
+		if err := ctx.Err(); err != nil {
+			return nil, "", examined, loaded, err
+		}
+		examined++
+		if edge.DomainID != domainID || label != "" && !domaingraph.EdgeHasLabels(edge, []string{label}) {
+			continue
+		}
+		if direction == graphstorage.AdjacencyDirectionIn && edge.ToID != nodeID || direction == graphstorage.AdjacencyDirectionOut && edge.FromID != nodeID {
+			continue
+		}
+		if label == "" && direction == graphstorage.AdjacencyDirectionIn && edge.FromID == edge.ToID {
+			continue
+		}
+		key := adjacencyServiceKey(edge)
+		if cursorKey != "" && key <= cursorKey || storageBoundary != "" && key > storageBoundary {
+			continue
+		}
+		loaded++
+		items = append(items, cloneEdge(edge))
+	}
+	sort.Slice(items, func(i, j int) bool { return adjacencyServiceKey(items[i]) < adjacencyServiceKey(items[j]) })
+	if len(items) > limit {
+		items = items[:limit]
+		return items, graphstorage.EncodeIndexCursor(adjacencyServiceKey(items[len(items)-1])), examined, loaded, nil
+	}
+	return items, storageNext, examined, loaded, nil
+}
+
+func (m *Module) ScanSubtree(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.SubtreeScan) (graphquery.SubtreeResult, graphquery.IndexedReadStats, error) {
+	stats := graphquery.IndexedReadStats{Plan: "EdgeAdjacencyIndexScan", IndexName: string(scan.Direction) + ":" + scan.Label, NextCursorKind: "root_index_key"}
 	if err := ensureReadable(tx); err != nil {
-		return SubtreeResult{}, stats, err
+		return graphquery.SubtreeResult{}, stats, err
 	}
 	if leader, forward, err := m.shouldForwardRaftGraphTransactionRead(tx); err != nil {
-		return SubtreeResult{}, stats, err
+		return graphquery.SubtreeResult{}, stats, err
 	} else if forward {
 		req := raftReadRequest("scan_subtree", tx)
 		req.SubtreeScan = scan
 		var res raftGraphSubtreeResponse
 		if err := m.forwardRaftGraphRead(ctx, leader, req, &res); err != nil {
-			return SubtreeResult{}, stats, err
+			return graphquery.SubtreeResult{}, stats, err
 		}
 		return res.Result, res.Stats, nil
 	}
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
-		return SubtreeResult{}, stats, err
+		return graphquery.SubtreeResult{}, stats, err
 	}
 	label := strings.TrimSpace(scan.Label)
 	if label == "" {
-		return SubtreeResult{}, stats, fmt.Errorf("%w: subtree label is required", ErrInvalidInput)
+		return graphquery.SubtreeResult{}, stats, fmt.Errorf("%w: subtree label is required", ErrInvalidInput)
 	}
-	if scan.Direction != AdjacencyDirectionOut && scan.Direction != AdjacencyDirectionIn {
-		return SubtreeResult{}, stats, fmt.Errorf("%w: subtree direction is required", ErrInvalidInput)
+	if scan.Direction != graphquery.AdjacencyDirectionOut && scan.Direction != graphquery.AdjacencyDirectionIn {
+		return graphquery.SubtreeResult{}, stats, fmt.Errorf("%w: subtree direction is required", ErrInvalidInput)
 	}
 	if scan.MinDepth < 0 || (scan.MaxDepth != -1 && scan.MaxDepth < scan.MinDepth) {
-		return SubtreeResult{}, stats, fmt.Errorf("%w: invalid subtree depth", ErrInvalidInput)
+		return graphquery.SubtreeResult{}, stats, fmt.Errorf("%w: invalid subtree depth", ErrInvalidInput)
 	}
 	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 	if err != nil {
-		return SubtreeResult{}, stats, err
+		return graphquery.SubtreeResult{}, stats, err
 	}
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
@@ -2838,7 +3765,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	}
 	m.mu.Unlock()
 	storageDirection := graphstorage.AdjacencyDirectionOut
-	if scan.Direction == AdjacencyDirectionIn {
+	if scan.Direction == graphquery.AdjacencyDirectionIn {
 		storageDirection = graphstorage.AdjacencyDirectionIn
 	}
 	snapshotRev, snapshoted := snapshotRevision(tx)
@@ -2850,7 +3777,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 	if maxEdges <= 0 {
 		maxEdges = int(^uint(0) >> 1)
 	}
-	result := SubtreeResult{Roots: make([]SubtreeRoot, 0, len(scan.Roots))}
+	result := graphquery.SubtreeResult{Roots: make([]graphquery.SubtreeRoot, 0, len(scan.Roots))}
 	seenGraphNodes := map[string]bool{}
 	seenGraphEdges := map[string]bool{}
 	addGraphNode := func(node domaingraph.Node) bool {
@@ -2927,7 +3854,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 			view := transactionEdgeView{store: store, overlay: overlaySnapshot, revision: snapshotRev, snapshoted: snapshoted}
 			var endpointEdges []domaingraph.Edge
 			var err error
-			if scan.Direction == AdjacencyDirectionIn {
+			if scan.Direction == graphquery.AdjacencyDirectionIn {
 				endpointEdges, err = view.incoming(ctx, nodeID)
 			} else {
 				endpointEdges, err = view.outgoing(ctx, nodeID)
@@ -2977,7 +3904,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 		if !addGraphNode(root) {
 			break
 		}
-		row := SubtreeRoot{Root: root, ParentByChild: map[string]string{}, OrderByChild: map[string]any{}}
+		row := graphquery.SubtreeRoot{Root: root, ParentByChild: map[string]string{}, OrderByChild: map[string]any{}}
 		if scan.MinDepth == 0 && subtreeNodeMatchesLabels(root, scan.TargetLabels) {
 			row.Nodes = append(row.Nodes, root)
 		}
@@ -2991,14 +3918,14 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 			}
 			edges, err := loadAdjacency(current.node.ID)
 			if err != nil {
-				return SubtreeResult{}, stats, err
+				return graphquery.SubtreeResult{}, stats, err
 			}
 			for _, edge := range edges {
 				if !canAddGraphEdge(edge) {
 					break
 				}
 				endpointID := edge.ToID
-				if scan.Direction == AdjacencyDirectionIn {
+				if scan.Direction == graphquery.AdjacencyDirectionIn {
 					endpointID = edge.FromID
 				}
 				if visited[endpointID.String()] {
@@ -3009,7 +3936,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 				}
 				endpoint, err := loadNode(endpointID)
 				if err != nil {
-					return SubtreeResult{}, stats, err
+					return graphquery.SubtreeResult{}, stats, err
 				}
 				stats.NodesLoaded++
 				if !addGraphNode(endpoint) {
@@ -3022,7 +3949,7 @@ func (m *Module) ScanSubtree(ctx context.Context, tx daemonsession.GraphTransact
 				childDepth := current.depth + 1
 				if childDepth >= scan.MinDepth && subtreeNodeMatchesLabels(endpoint, scan.TargetLabels) {
 					row.Nodes = append(row.Nodes, endpoint)
-					if scan.Direction == AdjacencyDirectionOut && label == "contains" {
+					if scan.Direction == graphquery.AdjacencyDirectionOut && label == "contains" {
 						row.ParentByChild[endpoint.ID.String()] = current.node.ID.String()
 						row.OrderByChild[endpoint.ID.String()] = edge.Properties["order"]
 					}
@@ -3107,92 +4034,61 @@ func finishIndexedNodeResults(items []indexedNodeResult, limit int, direction sc
 	return out, fallbackNext
 }
 
-func (m *Module) scanSnapshotLabel(ctx context.Context, store *graphstorage.LocalStore, tx daemonsession.GraphTransaction, label string, scan LabelScan, revision uint64) ([]domaingraph.Node, string, int, error) {
+func (m *Module) scanSnapshotLabel(ctx context.Context, store *graphstorage.LocalStore, tx sessionmodel.GraphTransaction, label string, scan graphquery.LabelScan, revision uint64) ([]domaingraph.Node, string, int, error) {
 	return scanSnapshotNodes(ctx, store, mustDomainID(tx.DomainID), scan.Cursor, scan.Limit, revision, func(node domaingraph.Node) bool {
 		return nodeHasAnyLabelForIndexedRead(node, []string{label})
 	})
 }
 
-func (m *Module) scanSnapshotTag(ctx context.Context, store *graphstorage.LocalStore, tx daemonsession.GraphTransaction, tag string, scan TagScan, revision uint64) ([]domaingraph.Node, string, int, error) {
+func (m *Module) scanSnapshotTag(ctx context.Context, store *graphstorage.LocalStore, tx sessionmodel.GraphTransaction, tag string, scan graphquery.TagScan, revision uint64) ([]domaingraph.Node, string, int, error) {
 	return scanSnapshotNodes(ctx, store, mustDomainID(tx.DomainID), scan.Cursor, scan.Limit, revision, func(node domaingraph.Node) bool {
 		return nodeHasTagForIndexedRead(node, tag)
 	})
 }
 
 func scanSnapshotNodes(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, cursor string, limit int, revision uint64, include func(domaingraph.Node) bool) ([]domaingraph.Node, string, int, error) {
-	nodes, err := store.ListNodesByDomainAt(ctx, domainID, revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
+	if limit <= 0 || limit > 500 {
+		limit = 500
 	}
 	cursorKey, err := graphstorage.DecodeIndexCursor(cursor)
 	if err != nil {
 		return nil, "", 0, mapStorageError(err)
 	}
-	items := make([]domaingraph.Node, 0, len(nodes))
-	for _, node := range nodes {
-		if !include(node) || cursorKey != "" && node.ID.String() <= cursorKey {
-			continue
-		}
-		items = append(items, cloneNode(node))
+	nodes, next, examined, err := store.ScanNodesByDomain(ctx, graphstorage.DomainNodeScan{
+		DomainID: domainID, Limit: limit, Cursor: cursorKey,
+		Snapshot: true, Revision: revision, ExamineLimit: limit,
+	})
+	if err != nil {
+		return nil, "", examined, mapStorageError(err)
 	}
-	return limitSnapshotNodes(items, limit), snapshotNodeNext(items, limit), len(nodes), nil
+	out := make([]domaingraph.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if include(node) {
+			out = append(out, cloneNode(node))
+		}
+	}
+	return out, graphstorage.EncodeIndexCursor(next), examined, nil
 }
 
-func (m *Module) scanSnapshotNodePropertyOrdered(ctx context.Context, store *graphstorage.LocalStore, tx daemonsession.GraphTransaction, scan OrderedNodePropertyScan, revision uint64) ([]domaingraph.Node, string, int, error) {
-	status, ok, err := readyNodeIndexStatus(ctx, store, mustDomainID(tx.DomainID), scan.IndexName)
+func (m *Module) scanSnapshotNodePropertyOrdered(ctx context.Context, store *graphstorage.LocalStore, tx sessionmodel.GraphTransaction, scan graphquery.OrderedNodePropertyScan, revision uint64) ([]domaingraph.Node, string, int, error) {
+	entries, next, examined, err := store.ScanNodePropertyOrderedAt(ctx, graphstorage.OrderedNodePropertyScan{
+		DomainID: mustDomainID(tx.DomainID), IndexName: scan.IndexName, Direction: scan.Direction,
+		Limit: scan.Limit, Cursor: scan.Cursor, ExamineLimit: scan.ExamineLimit,
+		HasLow: scan.HasLow, Low: scan.Low, LowExclusive: scan.LowExclusive,
+		HasHigh: scan.HasHigh, High: scan.High, HighExclusive: scan.HighExclusive,
+	}, revision)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", examined, mapStorageError(err)
 	}
-	if !ok {
-		return nil, "", 0, mapStorageError(graphstorage.ErrIndexUnavailable)
-	}
-	nodes, err := store.ListNodesByDomainAt(ctx, mustDomainID(tx.DomainID), revision)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	cursorKey, err := graphstorage.DecodeIndexCursor(scan.Cursor)
-	if err != nil {
-		return nil, "", 0, mapStorageError(err)
-	}
-	items := make([]indexedNodeResult, 0, len(nodes))
-	for _, node := range nodes {
-		if !nodeHasAnyLabelForIndexedRead(node, status.Labels) {
-			continue
+	out := make([]domaingraph.Node, 0, len(entries))
+	for _, entry := range entries {
+		node, readErr := store.GetNodeAt(ctx, entry.NodeID, revision)
+		if readErr != nil {
+			return nil, "", examined, mapStorageError(readErr)
 		}
-		value, ok := domaingraph.Property(node, status.Field.Name)
-		if !ok {
-			continue
-		}
-		key, err := graphstorage.EncodeOrderedNodeKey(value, node.ID)
-		if err != nil || !indexedValueInBounds(key, scan) {
-			continue
-		}
-		if cursorKey != "" {
-			if scan.Direction == schemamodel.IndexSortDirectionDesc {
-				if key >= cursorKey {
-					continue
-				}
-			} else if key <= cursorKey {
-				continue
-			}
-		}
-		items = append(items, indexedNodeResult{node: cloneNode(node), key: key})
+		out = append(out, cloneNode(node))
 	}
-	out, next := finishIndexedNodeResults(items, scan.Limit, scan.Direction, "")
-	return out, next, len(nodes), nil
-}
-
-func readyNodeIndexStatus(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, indexName string) (graphstorage.IndexMetadata, bool, error) {
-	statuses, err := store.IndexStatuses(ctx)
-	if err != nil {
-		return graphstorage.IndexMetadata{}, false, mapStorageError(err)
-	}
-	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == domainID && status.TargetKind == schemamodel.IndexTargetNode && status.BuildState == graphstorage.IndexBuildStateReady {
-			return status, true, nil
-		}
-	}
-	return graphstorage.IndexMetadata{}, false, nil
+	return out, next, examined, nil
 }
 
 func limitSnapshotNodes(items []domaingraph.Node, limit int) []domaingraph.Node {
@@ -3209,7 +4105,7 @@ func snapshotNodeNext(items []domaingraph.Node, limit int) string {
 	return graphstorage.EncodeIndexCursor(items[limit-1].ID.String())
 }
 
-func indexedValueInBounds(key string, scan OrderedNodePropertyScan) bool {
+func indexedValueInBounds(key string, scan graphquery.OrderedNodePropertyScan) bool {
 	valueKey := key
 	if idx := strings.LastIndex(key, "\x00"); idx >= 0 {
 		valueKey = key[:idx]
@@ -3229,33 +4125,17 @@ func indexedValueInBounds(key string, scan OrderedNodePropertyScan) bool {
 	return true
 }
 
-func nodeMatchesConfiguredIndex(node domaingraph.Node, indexName string, store *graphstorage.LocalStore) bool {
-	statuses, err := store.IndexStatuses(context.Background())
+func readyNodeIndexMetadata(ctx context.Context, store *graphstorage.LocalStore, domainID domaingraph.DomainID, indexName string) (graphstorage.IndexMetadata, error) {
+	statuses, err := store.IndexStatuses(ctx)
 	if err != nil {
-		return false
+		return graphstorage.IndexMetadata{}, mapStorageError(err)
 	}
 	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == node.DomainID {
-			if len(status.Labels) == 0 {
-				return false
-			}
-			return nodeHasAnyLabelForIndexedRead(node, status.Labels)
+		if status.Name == indexName && status.DomainID == domainID && status.TargetKind == schemamodel.IndexTargetNode && status.BuildState == graphstorage.IndexBuildStateReady {
+			return status, nil
 		}
 	}
-	return false
-}
-
-func indexedFieldName(indexName string, store *graphstorage.LocalStore, domainID domaingraph.DomainID) string {
-	statuses, err := store.IndexStatuses(context.Background())
-	if err != nil {
-		return ""
-	}
-	for _, status := range statuses {
-		if status.Name == indexName && status.DomainID == domainID {
-			return status.Field.Name
-		}
-	}
-	return ""
+	return graphstorage.IndexMetadata{}, mapStorageError(graphstorage.ErrIndexUnavailable)
 }
 
 func nodeHasAnyLabelForIndexedRead(node domaingraph.Node, labels []string) bool {

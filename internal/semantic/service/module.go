@@ -17,13 +17,10 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	identity "github.com/myceldb/mycel/internal/identity/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
@@ -31,7 +28,7 @@ import (
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"github.com/myceldb/mycel/internal/wal"
@@ -52,9 +49,11 @@ type Module struct {
 	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
 	maintenanceManagers  map[domainspace.SpaceID]storesemantic.MaintenanceManager
 	maintenanceConfig    MaintenanceConfig
-	schemaManager        SchemaManager
-	graphReaderManager   GraphReadManager
-	inferenceManager     inferenceservice.Manager
+	schemas              SchemaReader
+	graphs               GraphReader
+	graphRevisions       GraphRevisionReader
+	inferenceInvoker     connectors.InferenceInvoker
+	inferenceProjection  InferenceProjection
 	logger               *slog.Logger
 	maintenanceCancel    context.CancelFunc
 	maintenanceWG        sync.WaitGroup
@@ -91,16 +90,10 @@ func NewModule(config ...Config) *Module {
 		cfg = config[0]
 	}
 
-	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), maintenanceConfig: cfg.MaintenanceConfig, schemaManager: cfg.SchemaManager, graphReaderManager: cfg.GraphReadManager, inferenceManager: cfg.InferenceManager}
+	return &Module{spaces: map[domainspace.SpaceID]storesemantic.SpaceManager{}, maintenanceManagers: map[domainspace.SpaceID]storesemantic.MaintenanceManager{}, gate: quiesce.NewGate(ModuleName), maintenanceConfig: cfg.MaintenanceConfig, schemas: cfg.SchemaReader, graphs: cfg.GraphReader, graphRevisions: cfg.GraphRevisionReader, inferenceInvoker: cfg.InferenceInvoker, inferenceProjection: cfg.InferenceProjection}
 }
 
 func (m *Module) Name() string { return ModuleName }
-
-func (m *Module) SetGraphReadManager(manager GraphReadManager) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.graphReaderManager = manager
-}
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	global := storesemantic.NewGlobalManager()
@@ -118,23 +111,6 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
 	m.loadRaftAppliedCommands()
-	if lookup, ok := host.(runtime.ServiceLookup); ok {
-		if schemaSvc, ok := lookup.Service(schemaservice.ModuleName); ok {
-			if manager, ok := schemaSvc.(schemaservice.Manager); ok {
-				m.schemaManager = manager
-			}
-		}
-		if graphSvc, ok := lookup.Service(graphservice.ModuleName); ok {
-			if manager, ok := graphSvc.(GraphReadManager); ok {
-				m.graphReaderManager = manager
-			}
-		}
-		if inferenceSvc, ok := lookup.Service(inferenceservice.ModuleName); ok {
-			if manager, ok := inferenceSvc.(inferenceservice.Manager); ok {
-				m.inferenceManager = manager
-			}
-		}
-	}
 	m.globalBase = global
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
@@ -820,7 +796,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 }
 
 func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {
-	if m.schemaManager == nil || reader == nil {
+	if m.schemas == nil || reader == nil {
 		return nil
 	}
 	return func(ctx context.Context, index domainsemantic.SemanticIndex, targetID graph.NodeID, fallback time.Duration) (time.Duration, error) {
@@ -828,8 +804,8 @@ func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphRe
 		if err != nil {
 			return fallback, nil
 		}
-		schema, err := m.schemaManager.GetDomainSchema(ctx, index.DomainID)
-		if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+		schema, err := m.schemas.GetDomainSchema(ctx, index.DomainID)
+		if errors.Is(err, schemamodel.ErrNotFound) {
 			return fallback, nil
 		}
 		if err != nil {
@@ -991,9 +967,9 @@ func (m *Module) isSemanticDisabledDomain(ctx context.Context, domainID graph.Do
 
 func (m *Module) semanticEmbeddingConnector(global storesemantic.GlobalManager, actor identity.PrincipalID) semanticEmbedder {
 	m.mu.Lock()
-	inference := m.inferenceManager
+	invoker := m.inferenceInvoker
 	m.mu.Unlock()
-	return connectors.InferenceAdapter{Manager: inference}
+	return connectors.InferenceAdapter{Invoker: invoker}
 }
 
 type semanticEmbedder interface {
@@ -1005,12 +981,13 @@ func (m *Module) graphReader(ctx context.Context, spaceID domainspace.SpaceID) (
 		return semanticGraphReader{}, err
 	}
 	m.mu.Lock()
-	manager := m.graphReaderManager
+	reader := m.graphs
+	revisions := m.graphRevisions
 	m.mu.Unlock()
-	if manager == nil {
+	if reader == nil {
 		return semanticGraphReader{}, fmt.Errorf("graph reader is not configured")
 	}
-	return semanticGraphReader{manager: manager, spaceID: spaceID}, nil
+	return semanticGraphReader{reader: reader, revisions: revisions, spaceID: spaceID}, nil
 }
 
 func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager) (semanticbackfill.Runner, error) {
@@ -1023,71 +1000,72 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 }
 
 type semanticGraphReader struct {
-	manager GraphReadManager
-	spaceID domainspace.SpaceID
+	reader    GraphReader
+	revisions GraphRevisionReader
+	spaceID   domainspace.SpaceID
 }
 
 func (r semanticGraphReader) GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error) {
-	if r.manager == nil {
+	if r.reader == nil {
 		return graph.Node{}, fmt.Errorf("graph reader is not configured")
 	}
 	tx, err := r.tx(ctx, domainID)
 	if err != nil {
 		return graph.Node{}, err
 	}
-	return r.manager.GetNode(ctx, tx, id.String())
+	return r.reader.GetNode(ctx, tx, id.String())
 }
 
 func (r semanticGraphReader) Parent(ctx context.Context, domainID graph.DomainID, childID graph.NodeID) (*graph.Edge, error) {
-	if r.manager == nil {
+	if r.reader == nil {
 		return nil, fmt.Errorf("graph reader is not configured")
 	}
 	tx, err := r.tx(ctx, domainID)
 	if err != nil {
 		return nil, err
 	}
-	return r.manager.GetParent(ctx, tx, childID.String())
+	return r.reader.GetParent(ctx, tx, childID.String())
 }
 
 func (r semanticGraphReader) ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error) {
-	if r.manager == nil {
+	if r.reader == nil {
 		return nil, fmt.Errorf("graph reader is not configured")
 	}
 	tx, err := r.tx(ctx, domainID)
 	if err != nil {
 		return nil, err
 	}
-	return listAllGraphNodes(ctx, r.manager, tx)
+	return listAllGraphNodes(ctx, r.reader, tx)
 }
 
 func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error) {
-	if r.manager == nil {
+	if r.reader == nil {
 		return nil, fmt.Errorf("graph reader is not configured")
 	}
 	tx, err := r.tx(ctx, domainID)
 	if err != nil {
 		return nil, err
 	}
-	return listAllGraphEdges(ctx, r.manager, tx)
+	return listAllGraphEdges(ctx, r.reader, tx)
 }
 
-func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (daemonsession.GraphTransaction, error) {
+func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (sessionmodel.GraphTransaction, error) {
 	baseRevision := int64(0)
-	if revisions, ok := r.manager.(GraphRevisionReader); ok {
-		rev, err := revisions.CurrentDomainRevision(ctx, r.spaceID.String(), domainID.String())
+	if r.revisions != nil {
+		rev, err := r.revisions.CurrentDomainRevision(ctx, r.spaceID.String(), domainID.String())
 		if err != nil {
-			return daemonsession.GraphTransaction{}, err
+			return sessionmodel.GraphTransaction{}, err
 		}
 		baseRevision = rev
 	}
-	return daemonsession.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: daemonsession.TransactionModeReadOnly, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision}, nil
+	return sessionmodel.GraphTransaction{ID: "semantic-read-" + r.spaceID.String() + "-" + domainID.String(), SessionID: "semantic-read", PrincipalID: "semantic", SpaceID: r.spaceID.String(), DomainID: domainID.String(), Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision}, nil
 }
 
-func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Node, error) {
+func listAllGraphNodes(ctx context.Context, reader GraphReader, tx sessionmodel.GraphTransaction) ([]graph.Node, error) {
 	out := []graph.Node{}
 	pageToken := ""
 	for {
-		nodes, next, err := manager.ListNodes(ctx, tx, 1000, pageToken)
+		nodes, next, err := reader.ListNodes(ctx, tx, 1000, pageToken)
 		if err != nil {
 			return nil, err
 		}
@@ -1099,11 +1077,11 @@ func listAllGraphNodes(ctx context.Context, manager GraphReadManager, tx daemons
 	}
 }
 
-func listAllGraphEdges(ctx context.Context, manager GraphReadManager, tx daemonsession.GraphTransaction) ([]graph.Edge, error) {
+func listAllGraphEdges(ctx context.Context, reader GraphReader, tx sessionmodel.GraphTransaction) ([]graph.Edge, error) {
 	out := []graph.Edge{}
 	pageToken := ""
 	for {
-		edges, next, err := manager.ListEdges(ctx, tx, 1000, pageToken)
+		edges, next, err := reader.ListEdges(ctx, tx, 1000, pageToken)
 		if err != nil {
 			return nil, err
 		}

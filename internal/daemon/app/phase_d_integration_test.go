@@ -22,7 +22,7 @@ import (
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	semanticmodel "github.com/myceldb/mycel/internal/semantic/model"
 	semanticservice "github.com/myceldb/mycel/internal/semantic/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	spacemodel "github.com/myceldb/mycel/internal/space/model"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
 	"github.com/myceldb/mycel/internal/wal"
@@ -76,7 +76,7 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	graphLeader := cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode := cluster.nodes[graphLeader]
 	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
-	node, err := graphNode.graph.CreateNode(ctx, tx, graphservice.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
+	node, err := graphNode.graph.CreateNode(ctx, tx, graphmodel.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -92,7 +92,7 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	cluster.waitForVectorStore(ctx, t, "phase-d-store")
 
 	updateTx := phaseDGraphTx(spaceID, domainID.String(), 1)
-	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
+	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphmodel.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
 		t.Fatalf("UpdateNode() error = %v", err)
 	}
 	if _, err := graphNode.graph.CommitTransactionGraph(ctx, updateTx); err != nil {
@@ -136,7 +136,7 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	graphLeader := cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode := cluster.nodes[graphLeader]
 	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
-	node, err := graphNode.graph.CreateNode(ctx, tx, graphservice.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
+	node, err := graphNode.graph.CreateNode(ctx, tx, graphmodel.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -153,7 +153,7 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	graphLeader = cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode = cluster.nodes[graphLeader]
 	updateTx := phaseDGraphTx(spaceID, domainID.String(), 1)
-	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
+	if _, err := graphNode.graph.UpdateNode(ctx, updateTx, graphmodel.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Lovelace"}}); err != nil {
 		t.Fatalf("UpdateNode(snapshot) error = %v", err)
 	}
 	if _, err := graphNode.graph.CommitTransactionGraph(ctx, updateTx); err != nil {
@@ -170,7 +170,7 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	graphLeader = cluster.leaderForSpace(ctx, t, spaceID)
 	graphNode = cluster.nodes[graphLeader]
 	tailTx := phaseDGraphTx(spaceID, domainID.String(), 2)
-	if _, err := graphNode.graph.UpdateNode(ctx, tailTx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Byron"}}); err != nil {
+	if _, err := graphNode.graph.UpdateNode(ctx, tailTx, graphmodel.UpdateNodeInput{NodeID: node.ID.String(), Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Ada Byron"}}); err != nil {
 		t.Fatalf("UpdateNode(tail) error = %v", err)
 	}
 	if _, err := graphNode.graph.CommitTransactionGraph(ctx, tailTx); err != nil {
@@ -286,8 +286,9 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	host := &runtimetest.Runtime{Config: runtimetest.Config{DataDir: dataDir, Cluster: runtimetest.ClusterConfig{RaftPartitionCount: int(c.partitionCount)}}, LoggerValue: logger}
 	node := &phaseDIntegrationNode{id: id, dataDir: dataDir, space: spaceservice.NewModule(), schema: schemaservice.NewModule(""), graph: graphservice.NewModule(), blob: blobservice.NewModule(nil)}
 	semanticConfig := c.semanticConfig
-	semanticConfig.SchemaManager = node.schema
-	semanticConfig.GraphReadManager = node.graph
+	semanticConfig.SchemaReader = node.schema
+	semanticConfig.GraphReader = node.graph
+	semanticConfig.GraphRevisionReader = node.graph
 	node.semantic = semanticservice.NewModule(semanticConfig)
 	if result := node.space.Init(ctx, host); !result.OK {
 		t.Fatalf("space Init(%d): %v", id, result.Error)
@@ -304,7 +305,7 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	if result := node.semantic.Init(ctx, host); !result.OK {
 		t.Fatalf("semantic Init(%d): %v", id, result.Error)
 	}
-	node.graph.SetSchemaManager(node.schema.SchemaManager)
+	node.graph.SetSchemaValidator(node.schema.SchemaManager)
 	node.graph.SetBlobReferenceChecker(node.blob)
 	return node
 }
@@ -652,9 +653,9 @@ func phaseDContainsNodeID(ids []consensus.NodeID, want consensus.NodeID) bool {
 	return false
 }
 
-func phaseDGraphTx(spaceID string, domainID string, baseRevision int64) sessionservice.GraphTransaction {
+func phaseDGraphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
-	return sessionservice.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionservice.TransactionModeReadWrite, State: sessionservice.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func phaseDTestSchema(domainID graphmodel.DomainID) schemamodel.DomainSchema {

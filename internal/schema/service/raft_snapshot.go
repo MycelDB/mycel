@@ -9,7 +9,6 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	schema "github.com/myceldb/mycel/internal/schema/model"
-	"github.com/myceldb/mycel/internal/schema/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -94,7 +93,7 @@ func (m *SchemaManager) restoreRaftPartition(ctx context.Context, data []byte, p
 		if pid != partitionID {
 			continue
 		}
-		if err := m.applyDeleteDomainSchema(ctx, item.DomainID); err != nil && err != storage.ErrNotFound {
+		if err := m.applyDeleteDomainSchema(ctx, item.DomainID); err != nil && err != schema.ErrNotFound {
 			return err
 		}
 	}

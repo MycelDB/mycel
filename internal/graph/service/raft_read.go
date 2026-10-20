@@ -10,9 +10,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -55,16 +57,19 @@ type raftGraphReadRequest struct {
 		HomeNodeID                                                 uint64
 		BaseRevision                                               int64
 	} `json:"tx"`
-	ID                      string                        `json:"id,omitempty"`
-	PageSize                int                           `json:"page_size,omitempty"`
-	PageToken               string                        `json:"page_token,omitempty"`
-	SchemaHash              string                        `json:"schema_hash,omitempty"`
-	Indexes                 []schemamodel.IndexDefinition `json:"indexes,omitempty"`
-	LabelScan               LabelScan                     `json:"label_scan,omitempty"`
-	TagScan                 TagScan                       `json:"tag_scan,omitempty"`
-	OrderedNodePropertyScan OrderedNodePropertyScan       `json:"ordered_node_property_scan,omitempty"`
-	AdjacencyScan           AdjacencyScan                 `json:"adjacency_scan,omitempty"`
-	SubtreeScan             SubtreeScan                   `json:"subtree_scan,omitempty"`
+	ID                      string                             `json:"id,omitempty"`
+	PrincipalID             string                             `json:"principal_id,omitempty"`
+	IdempotencyKey          string                             `json:"idempotency_key,omitempty"`
+	PageSize                int                                `json:"page_size,omitempty"`
+	PageToken               string                             `json:"page_token,omitempty"`
+	NodeScan                graphquery.NodeScan                `json:"node_scan,omitempty"`
+	SchemaHash              string                             `json:"schema_hash,omitempty"`
+	Indexes                 []schemamodel.IndexDefinition      `json:"indexes,omitempty"`
+	LabelScan               graphquery.LabelScan               `json:"label_scan,omitempty"`
+	TagScan                 graphquery.TagScan                 `json:"tag_scan,omitempty"`
+	OrderedNodePropertyScan graphquery.OrderedNodePropertyScan `json:"ordered_node_property_scan,omitempty"`
+	AdjacencyScan           graphquery.AdjacencyScan           `json:"adjacency_scan,omitempty"`
+	SubtreeScan             graphquery.SubtreeScan             `json:"subtree_scan,omitempty"`
 }
 
 type StrongReadContext struct {
@@ -82,9 +87,15 @@ type raftGraphNodeResponse struct {
 	Read *StrongReadContext `json:"read,omitempty"`
 }
 type raftGraphNodesResponse struct {
-	Nodes         []domaingraph.Node `json:"nodes"`
-	NextPageToken string             `json:"next_page_token"`
-	Read          *StrongReadContext `json:"read,omitempty"`
+	Nodes         []domaingraph.Node          `json:"nodes"`
+	NextPageToken string                      `json:"next_page_token"`
+	Stats         graphquery.IndexedReadStats `json:"stats,omitempty"`
+	Read          *StrongReadContext          `json:"read,omitempty"`
+}
+
+type raftGraphReadViewResponse struct {
+	Identity string             `json:"identity"`
+	Read     *StrongReadContext `json:"read,omitempty"`
 }
 type raftGraphEdgeResponse struct {
 	Edge domaingraph.Edge   `json:"edge"`
@@ -111,28 +122,34 @@ type raftGraphCountResponse struct {
 }
 
 type raftGraphIndexedNodesResponse struct {
-	Nodes         []domaingraph.Node `json:"nodes"`
-	NextPageToken string             `json:"next_page_token"`
-	Stats         IndexedReadStats   `json:"stats"`
-	Read          *StrongReadContext `json:"read,omitempty"`
+	Nodes         []domaingraph.Node          `json:"nodes"`
+	NextPageToken string                      `json:"next_page_token"`
+	Stats         graphquery.IndexedReadStats `json:"stats"`
+	Read          *StrongReadContext          `json:"read,omitempty"`
 }
 
 type raftGraphIndexedEdgesResponse struct {
-	Edges         []domaingraph.Edge `json:"edges"`
-	NextPageToken string             `json:"next_page_token"`
-	Stats         IndexedReadStats   `json:"stats"`
-	Read          *StrongReadContext `json:"read,omitempty"`
+	Edges         []domaingraph.Edge          `json:"edges"`
+	NextPageToken string                      `json:"next_page_token"`
+	Stats         graphquery.IndexedReadStats `json:"stats"`
+	Read          *StrongReadContext          `json:"read,omitempty"`
 }
 
 type raftGraphSubtreeResponse struct {
-	Result SubtreeResult      `json:"result"`
-	Stats  IndexedReadStats   `json:"stats"`
-	Read   *StrongReadContext `json:"read,omitempty"`
+	Result graphquery.SubtreeResult    `json:"result"`
+	Stats  graphquery.IndexedReadStats `json:"stats"`
+	Read   *StrongReadContext          `json:"read,omitempty"`
 }
 
 type raftGraphOKResponse struct {
 	OK   bool               `json:"ok"`
 	Read *StrongReadContext `json:"read,omitempty"`
+}
+
+type raftGraphIdempotencyResponse struct {
+	Commit graphchange.CommitResult `json:"commit"`
+	Found  bool                     `json:"found"`
+	Read   *StrongReadContext       `json:"read,omitempty"`
 }
 
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
@@ -149,8 +166,8 @@ func (m *Module) shouldForwardRaftGraphRead(spaceID string) (consensus.NodeID, b
 	return leader, leader != local, nil
 }
 
-func (m *Module) shouldForwardRaftGraphTransactionRead(tx daemonsession.GraphTransaction) (consensus.NodeID, bool, error) {
-	if tx.Mode == daemonsession.TransactionModeReadWrite {
+func (m *Module) shouldForwardRaftGraphTransactionRead(tx sessionmodel.GraphTransaction) (consensus.NodeID, bool, error) {
+	if tx.Mode == sessionmodel.TransactionModeReadWrite {
 		if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 			return 0, false, err
 		}
@@ -253,8 +270,8 @@ func (m *Module) strongGraphRead(ctx context.Context, spaceID string) (*StrongRe
 	return &StrongReadContext{GroupID: consensus.PartitionGroupID(partitionID), PartitionID: partitionID, LeaderNodeID: leader, ReadIndex: barrier.Index, AppliedIndex: applied, Strong: true}, nil
 }
 
-func (m *Module) strongGraphReadForTransaction(ctx context.Context, tx daemonsession.GraphTransaction) (*StrongReadContext, error) {
-	if tx.Mode == daemonsession.TransactionModeReadWrite {
+func (m *Module) strongGraphReadForTransaction(ctx context.Context, tx sessionmodel.GraphTransaction) (*StrongReadContext, error) {
+	if tx.Mode == sessionmodel.TransactionModeReadWrite {
 		RecordOverlayRead(ctx)
 		return nil, nil
 	}
@@ -317,6 +334,8 @@ func recordForwardedRaftGraphRead(ctx context.Context, out any) {
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphNodesResponse:
 		RecordStrongReadContext(ctx, res.Read)
+	case *raftGraphReadViewResponse:
+		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphEdgeResponse:
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphOptionalEdgeResponse:
@@ -334,6 +353,8 @@ func recordForwardedRaftGraphRead(ctx context.Context, out any) {
 	case *raftGraphSubtreeResponse:
 		RecordStrongReadContext(ctx, res.Read)
 	case *raftGraphOKResponse:
+		RecordStrongReadContext(ctx, res.Read)
+	case *raftGraphIdempotencyResponse:
 		RecordStrongReadContext(ctx, res.Read)
 	}
 }
@@ -362,7 +383,7 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		tx.DomainID = req.DomainID
 	}
 	var read *StrongReadContext
-	if tx.Mode != daemonsession.TransactionModeReadWrite {
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
 		var err error
 		if strings.TrimSpace(tx.DomainID) == "" {
 			read, err = m.strongGraphRead(ctx, req.SpaceID)
@@ -385,11 +406,19 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		}
 		return json.Marshal(raftGraphNodeResponse{Node: n, Read: read})
 	case "list_nodes":
-		n, next, err := m.listNodesLocal(ctx, tx, req.PageSize, req.PageToken)
+		n, next, stats, err := m.scanNodesLocal(ctx, tx, graphquery.NodeScan{Limit: req.PageSize, Cursor: req.PageToken, ExamineLimit: req.PageSize})
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Read: read})
+		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
+	case "scan_nodes":
+		n, next, stats, err := m.scanNodesLocal(ctx, tx, req.NodeScan)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
+	case "read_view_identity":
+		return json.Marshal(raftGraphReadViewResponse{Identity: m.readViewIdentityLocal(tx), Read: read})
 	case "configure_indexes":
 		store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
 		if err != nil {
@@ -457,6 +486,12 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 			return nil, err
 		}
 		return json.Marshal(raftGraphOptionalEdgeResponse{Edge: e, Read: read})
+	case "get_idempotent_commit":
+		commit, found, err := m.lookupIdempotentCommitWithDelivery(ctx, req.PrincipalID, req.SpaceID, req.DomainID, req.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftGraphIdempotencyResponse{Commit: commit, Found: found, Read: read})
 	case "current_revision":
 		var revision int64
 		if strings.TrimSpace(req.DomainID) != "" {
@@ -503,13 +538,13 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 	}
 }
 
-func raftReadRequest(op string, tx daemonsession.GraphTransaction) raftGraphReadRequest {
+func raftReadRequest(op string, tx sessionmodel.GraphTransaction) raftGraphReadRequest {
 	return raftGraphReadRequest{Op: op, SpaceID: tx.SpaceID, Tx: struct {
 		ID, SessionID, PrincipalID, SpaceID, DomainID, Mode, State string
 		HomeNodeID                                                 uint64
 		BaseRevision                                               int64
 	}{tx.ID, tx.SessionID, tx.PrincipalID, tx.SpaceID, tx.DomainID, string(tx.Mode), string(tx.State), uint64(tx.HomeNodeID), tx.BaseRevision}}
 }
-func (r raftGraphReadRequest) toTx() daemonsession.GraphTransaction {
-	return daemonsession.GraphTransaction{ID: r.Tx.ID, SessionID: r.Tx.SessionID, PrincipalID: r.Tx.PrincipalID, SpaceID: r.Tx.SpaceID, DomainID: r.Tx.DomainID, HomeNodeID: consensus.NodeID(r.Tx.HomeNodeID), Mode: daemonsession.TransactionMode(r.Tx.Mode), State: daemonsession.TransactionState(r.Tx.State), BaseRevision: r.Tx.BaseRevision}
+func (r raftGraphReadRequest) toTx() sessionmodel.GraphTransaction {
+	return sessionmodel.GraphTransaction{ID: r.Tx.ID, SessionID: r.Tx.SessionID, PrincipalID: r.Tx.PrincipalID, SpaceID: r.Tx.SpaceID, DomainID: r.Tx.DomainID, HomeNodeID: consensus.NodeID(r.Tx.HomeNodeID), Mode: sessionmodel.TransactionMode(r.Tx.Mode), State: sessionmodel.TransactionState(r.Tx.State), BaseRevision: r.Tx.BaseRevision}
 }

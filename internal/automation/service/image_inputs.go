@@ -9,9 +9,8 @@ import (
 	"strings"
 
 	automation "github.com/myceldb/mycel/internal/automation/model"
-	blobservice "github.com/myceldb/mycel/internal/blob/service"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
 
@@ -21,7 +20,7 @@ const (
 	maxImageAnalysisTotalBytes = 40 * 1024 * 1024
 )
 
-func (m *AutomationManager) imageInputsForProcedure(ctx context.Context, inv automation.Invocation, def automation.Definition, run automation.Run, changed graph.Node, aliases map[string]any, collections map[string][]map[string]any) ([]connectors.ImageInput, error) {
+func (m *AutomationManager) imageInputsForProcedure(ctx context.Context, inv automation.Invocation, def automation.Definition, run automation.Run, changed graph.Node, aliases map[string]any, collections map[string][]map[string]any) ([]domaininference.ImageInput, error) {
 	operation := domaininference.Operation(strings.ToLower(strings.TrimSpace(def.Inference.Operation)))
 	if operation == "" {
 		operation = domaininference.OperationChat
@@ -34,7 +33,7 @@ func (m *AutomationManager) imageInputsForProcedure(ctx context.Context, inv aut
 	}
 	nodes := imageCandidateNodes(run.TargetAlias, changed, aliases, collections)
 	seen := map[string]struct{}{}
-	images := make([]connectors.ImageInput, 0, min(len(nodes), maxImageAnalysisImages))
+	images := make([]domaininference.ImageInput, 0, min(len(nodes), maxImageAnalysisImages))
 	var totalBytes int64
 	for _, node := range nodes {
 		blobID := nodeBlobID(node)
@@ -111,34 +110,34 @@ func imageCandidateNodes(targetAlias string, changed graph.Node, aliases map[str
 	return out
 }
 
-func (m *AutomationManager) loadImageBlobInput(ctx context.Context, spaceID string, domainID string, blobID string, node graph.Node) (connectors.ImageInput, error) {
+func (m *AutomationManager) loadImageBlobInput(ctx context.Context, spaceID string, domainID string, blobID string, node graph.Node) (domaininference.ImageInput, error) {
 	meta, reader, err := m.blobs.OpenBlobInDomain(ctx, spaceID, domainID, blobID)
 	if err != nil {
-		if errors.Is(err, blobservice.ErrNotFound) {
-			return connectors.ImageInput{}, fmt.Errorf("image_analysis blob %q was not found", blobID)
+		if errors.Is(err, blobmodel.ErrNotFound) {
+			return domaininference.ImageInput{}, fmt.Errorf("image_analysis blob %q was not found", blobID)
 		}
-		return connectors.ImageInput{}, fmt.Errorf("open image_analysis blob %q: %w", blobID, err)
+		return domaininference.ImageInput{}, fmt.Errorf("open image_analysis blob %q: %w", blobID, err)
 	}
 	defer reader.Close()
 	mimeType := normalizeImageInputMimeType(firstNonEmptyString(meta.MimeType, meta.DeclaredMimeType, nodePayloadString(node.Payload, "mime_type"), nodePayloadString(node.Payload, "declared_mime_type")))
 	if !strings.HasPrefix(mimeType, "image/") {
-		return connectors.ImageInput{}, fmt.Errorf("image_analysis blob %q has unsupported MIME type %q", blobID, mimeType)
+		return domaininference.ImageInput{}, fmt.Errorf("image_analysis blob %q has unsupported MIME type %q", blobID, mimeType)
 	}
 	if meta.SizeBytes > maxImageAnalysisImageBytes {
-		return connectors.ImageInput{}, fmt.Errorf("image_analysis blob %q exceeds per-image size limit of %d bytes", blobID, maxImageAnalysisImageBytes)
+		return domaininference.ImageInput{}, fmt.Errorf("image_analysis blob %q exceeds per-image size limit of %d bytes", blobID, maxImageAnalysisImageBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(reader, maxImageAnalysisImageBytes+1))
 	if err != nil {
-		return connectors.ImageInput{}, fmt.Errorf("read image_analysis blob %q: %w", blobID, err)
+		return domaininference.ImageInput{}, fmt.Errorf("read image_analysis blob %q: %w", blobID, err)
 	}
 	if int64(len(data)) > maxImageAnalysisImageBytes {
-		return connectors.ImageInput{}, fmt.Errorf("image_analysis blob %q exceeds per-image size limit of %d bytes", blobID, maxImageAnalysisImageBytes)
+		return domaininference.ImageInput{}, fmt.Errorf("image_analysis blob %q exceeds per-image size limit of %d bytes", blobID, maxImageAnalysisImageBytes)
 	}
 	sizeBytes := meta.SizeBytes
 	if sizeBytes <= 0 {
 		sizeBytes = int64(len(data))
 	}
-	return connectors.ImageInput{MimeType: mimeType, Data: data, SizeBytes: sizeBytes, Source: "graph_blob", BlobID: blobID}, nil
+	return domaininference.ImageInput{MimeType: mimeType, Data: data, SizeBytes: sizeBytes, Source: "graph_blob", BlobID: blobID}, nil
 }
 
 func nodeBlobID(node graph.Node) string {

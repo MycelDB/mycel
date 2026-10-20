@@ -11,15 +11,10 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
-	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
 )
 
 var ErrAutomationNotFound = errors.New("automation not found")
@@ -61,11 +56,11 @@ type Manager interface {
 type AutomationManager struct {
 	store                                 storage.Store
 	now                                   func() time.Time
-	sessions                              sessionservice.Manager
-	graphs                                graphservice.Manager
-	schemas                               schemaservice.Manager
-	inference                             inferenceservice.Manager
-	blobs                                 blobservice.Manager
+	sessions                              SessionRuntime
+	graphs                                GraphRuntime
+	schemas                               SchemaReader
+	inference                             InferenceInvoker
+	blobs                                 BlobReader
 	raftGroups                            *consensus.MultiGroup
 	raftPartitionCount                    uint32
 	raftLocalNode                         consensus.NodeID
@@ -96,23 +91,23 @@ func NewManager(store storage.Store) *AutomationManager {
 	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
 }
 
-func (m *AutomationManager) WithGraphRuntime(sessions sessionservice.Manager, graphs graphservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *AutomationManager {
 	m.sessions = sessions
 	m.graphs = graphs
 	return m
 }
 
-func (m *AutomationManager) WithInferenceManager(inference inferenceservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithInferenceInvoker(inference InferenceInvoker) *AutomationManager {
 	m.inference = inference
 	return m
 }
 
-func (m *AutomationManager) WithBlobManager(blobs blobservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithBlobReader(blobs BlobReader) *AutomationManager {
 	m.blobs = blobs
 	return m
 }
 
-func (m *AutomationManager) WithSchemaManager(schemas schemaservice.Manager) *AutomationManager {
+func (m *AutomationManager) WithSchemaReader(schemas SchemaReader) *AutomationManager {
 	m.schemas = schemas
 	return m
 }

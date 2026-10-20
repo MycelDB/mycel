@@ -1,0 +1,766 @@
+package execution
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"time"
+
+	graph "github.com/myceldb/mycel/internal/graph/model"
+	querylogical "github.com/myceldb/mycel/internal/query/logical"
+)
+
+// NodePage is one finite page returned by an indexed graph access method.
+type NodePage struct {
+	Nodes              []graph.Node
+	NextCursor         string
+	IndexEntries       int64
+	NodesLoaded        int64
+	NodeReadCalls      int64
+	SemanticCandidates int64
+	// SourceRetainedBytes accounts for source state retained across page reads.
+	// A source reports each allocation once; PagedNodeSource releases it on Close.
+	SourceRetainedBytes int64
+}
+
+// NodePageReader reads at most limit nodes beginning at cursor.
+type NodePageReader func(context.Context, int, string) (NodePage, error)
+
+// PageCheckpointEncoder binds a resumable source position to the query plan.
+type PageCheckpointEncoder func(pageCursor string, offset int) string
+
+type bufferedNodeRow struct {
+	row   BindingRow
+	bytes int64
+}
+
+// PagedNodeSource adapts a cursor-based graph access method to bounded pulls.
+// A checkpoint identifies a row before it is emitted, allowing the lookahead
+// row retained by response pagination to become the next page's first row.
+type PagedNodeSource struct {
+	alias                   string
+	reader                  NodePageReader
+	checkpointEncoder       PageCheckpointEncoder
+	resumeCursor            string
+	resumeOffset            int
+	resumeRequested         bool
+	pendingResume           int
+	resuming                bool
+	batchSize               int
+	tracker                 *Tracker
+	trackStartNodes         bool
+	truncateOnStartCapacity bool
+
+	pageCursor     string
+	nextCursor     string
+	buffer         []bufferedNodeRow
+	offset         int
+	sequence       int64
+	retained       int64
+	sourceRetained int64
+	opened         bool
+	closed         bool
+	exhausted      bool
+}
+
+func NewPagedNodeSource(alias string, reader NodePageReader, checkpointEncoder PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int, tracker *Tracker) *PagedNodeSource {
+	if batchSize <= 0 {
+		batchSize = DefaultBatchSize
+	}
+	return &PagedNodeSource{
+		alias: alias, reader: reader, checkpointEncoder: checkpointEncoder,
+		resumeCursor: resumeCursor, resumeOffset: resumeOffset, resumeRequested: resuming,
+		batchSize: batchSize, tracker: tracker,
+	}
+}
+
+// NodeScan is the finite, cursor-driven broad node access operator. It embeds
+// the shared paged source so full scans use the same cursor, budget,
+// cancellation, and retained-memory rules as indexed node sources.
+type NodeScan struct {
+	*PagedNodeSource
+}
+
+func NewNodeScan(alias string, reader NodePageReader, checkpointEncoder PageCheckpointEncoder, resumeCursor string, resumeOffset int, resuming bool, batchSize int, tracker *Tracker) *NodeScan {
+	return &NodeScan{PagedNodeSource: NewPagedNodeSource(alias, reader, checkpointEncoder, resumeCursor, resumeOffset, resuming, batchSize, tracker)}
+}
+
+// WithStartNodeBudget makes this source account returned nodes as traversal
+// roots and clamp every dependency request to the remaining root/node budget.
+// Subtree roots may stop cleanly at a root boundary; path starts fail closed.
+func (s *PagedNodeSource) WithStartNodeBudget(truncate bool) *PagedNodeSource {
+	s.trackStartNodes = true
+	s.truncateOnStartCapacity = truncate
+	return s
+}
+
+func (s *PagedNodeSource) Open(ctx context.Context) error {
+	if err := canceled(ctx, "open indexed node source"); err != nil {
+		return err
+	}
+	if s.opened && !s.closed {
+		return invalidState("open indexed node source", "operator is already open")
+	}
+	if s.reader == nil {
+		return invalidState("open indexed node source", "node page reader is required")
+	}
+	if s.resumeOffset < 0 || s.resumeOffset >= s.batchSize {
+		return executionInvalid("open indexed node source", "source cursor offset is outside the bounded page")
+	}
+	s.releaseBuffer()
+	s.releaseSourceMemory()
+	s.pageCursor = s.resumeCursor
+	s.pendingResume = s.resumeOffset
+	s.resuming = s.resumeRequested
+	s.nextCursor = ""
+	s.buffer = nil
+	s.offset = 0
+	s.sequence = 0
+	s.opened = true
+	s.closed = false
+	s.exhausted = false
+	return nil
+}
+
+func (s *PagedNodeSource) Next(ctx context.Context) (Batch, error) {
+	if err := s.ready(ctx); err != nil {
+		return Batch{}, err
+	}
+	rows := make([]BindingRow, 0, s.batchSize)
+	for len(rows) < s.batchSize {
+		if s.offset >= len(s.buffer) {
+			if s.exhausted {
+				if len(rows) > 0 {
+					return Batch{Rows: rows}, nil
+				}
+				return Batch{}, io.EOF
+			}
+			if err := s.fetch(ctx); err != nil {
+				if err == io.EOF {
+					s.exhausted = true
+					if len(rows) > 0 {
+						return Batch{Rows: rows}, nil
+					}
+					return Batch{}, io.EOF
+				}
+				_ = s.Close()
+				return Batch{}, err
+			}
+			if len(s.buffer) == 0 {
+				if len(rows) > 0 {
+					return Batch{Rows: rows}, nil
+				}
+				if s.exhausted {
+					return Batch{}, io.EOF
+				}
+				continue
+			}
+		}
+		item := &s.buffer[s.offset]
+		item.row.Sequence = s.sequence
+		s.sequence++
+		if s.checkpointEncoder != nil {
+			item.row.Cursor = s.checkpointEncoder(s.pageCursor, s.offset)
+		}
+		rows = append(rows, item.row)
+		if s.tracker != nil {
+			if err := s.tracker.ExamineCandidates(1); err != nil {
+				_ = s.Close()
+				return Batch{}, err
+			}
+			s.tracker.ReleaseMemory(item.bytes)
+		}
+		s.retained -= item.bytes
+		item.bytes = 0
+		s.offset++
+	}
+	return Batch{Rows: rows}, nil
+}
+
+func (s *PagedNodeSource) fetch(ctx context.Context) error {
+	if err := canceled(ctx, "scan indexed nodes"); err != nil {
+		return err
+	}
+	cursor := s.pageCursor
+	if s.buffer != nil {
+		cursor = s.nextCursor
+	}
+	limit := s.batchSize
+	if s.tracker != nil {
+		remainingNodes := s.tracker.RemainingNodesLoaded()
+		if remainingNodes == 0 {
+			if s.trackStartNodes && s.truncateOnStartCapacity {
+				s.tracker.MarkTruncated("max_nodes exceeded")
+				return io.EOF
+			}
+			return s.tracker.LoadNodes(1)
+		}
+		if remainingNodes < int64(limit) {
+			limit = int(remainingNodes)
+		}
+		if s.trackStartNodes {
+			remainingStarts := s.tracker.RemainingStartNodes()
+			if remainingStarts == 0 {
+				if s.truncateOnStartCapacity {
+					s.tracker.MarkTruncated("max_start_nodes exceeded")
+					return io.EOF
+				}
+				return s.tracker.UseStartNodes(1)
+			}
+			if remainingStarts < int64(limit) {
+				limit = int(remainingStarts)
+			}
+		}
+	}
+	page, err := s.reader(ctx, limit, cursor)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", contextErr)
+	}
+	if err != nil {
+		var queryErr *querylogical.QueryError
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return querylogical.NewError(querylogical.ErrorCanceled, "scan indexed nodes", "query context canceled", err)
+		case errors.As(err, &queryErr):
+			return err
+		default:
+			return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", err.Error(), err)
+		}
+	}
+	if len(page.Nodes) > limit {
+		return invalidState("scan indexed nodes", "access method returned an oversized page")
+	}
+	if page.SourceRetainedBytes < 0 {
+		return invalidState("scan indexed nodes", "access method reported negative retained memory")
+	}
+	if s.tracker != nil {
+		if err := s.tracker.ReserveMemory(page.SourceRetainedBytes); err != nil {
+			return err
+		}
+		s.sourceRetained += page.SourceRetainedBytes
+		if err := s.tracker.ScanIndexEntries(page.IndexEntries); err != nil {
+			return err
+		}
+		if err := s.tracker.LoadNodes(page.NodesLoaded); err != nil {
+			return err
+		}
+		if s.trackStartNodes {
+			if err := s.tracker.UseStartNodes(int64(len(page.Nodes))); err != nil {
+				return err
+			}
+		}
+		if err := s.tracker.RecordNodeReads(page.NodeReadCalls); err != nil {
+			return err
+		}
+		if err := s.tracker.UseSemanticCandidates(page.SemanticCandidates); err != nil {
+			return err
+		}
+	}
+	if s.resuming && s.pendingResume >= len(page.Nodes) {
+		return querylogical.NewError(querylogical.ErrorStaleCursor, "resume indexed node source", "source cursor offset exceeds the indexed page", nil)
+	}
+	if len(page.Nodes) == 0 && page.NextCursor != "" && page.NextCursor == cursor {
+		return querylogical.NewError(querylogical.ErrorDependencyFailure, "scan indexed nodes", "access method returned a non-progressing empty page", nil)
+	}
+	s.releaseBuffer()
+	s.pageCursor = cursor
+	s.nextCursor = page.NextCursor
+	s.offset = 0
+	s.buffer = make([]bufferedNodeRow, 0, len(page.Nodes))
+	for _, node := range page.Nodes {
+		row := BindingRow{Nodes: map[string]graph.Node{s.alias: node}}
+		bytes := estimateBindingRow(row)
+		if s.tracker != nil {
+			if err := s.tracker.ReserveMemory(bytes); err != nil {
+				s.releaseBuffer()
+				return err
+			}
+		}
+		s.retained += bytes
+		s.buffer = append(s.buffer, bufferedNodeRow{row: row, bytes: bytes})
+	}
+	if s.buffer == nil || len(s.buffer) == 0 || page.NextCursor == "" {
+		s.exhausted = page.NextCursor == ""
+	}
+	if s.resuming {
+		for i := 0; i < s.pendingResume; i++ {
+			if s.tracker != nil {
+				s.tracker.ReleaseMemory(s.buffer[i].bytes)
+			}
+			s.retained -= s.buffer[i].bytes
+			s.buffer[i].bytes = 0
+		}
+		s.offset = s.pendingResume
+		s.pendingResume = 0
+		s.resuming = false
+	}
+	return nil
+}
+
+func (s *PagedNodeSource) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	s.releaseBuffer()
+	s.releaseSourceMemory()
+	return nil
+}
+
+func (s *PagedNodeSource) ready(ctx context.Context) error {
+	if err := canceled(ctx, "read indexed node source"); err != nil {
+		_ = s.Close()
+		return err
+	}
+	if !s.opened {
+		return invalidState("read indexed node source", "operator is not open")
+	}
+	if s.closed {
+		return io.EOF
+	}
+	return nil
+}
+
+func (s *PagedNodeSource) releaseBuffer() {
+	if s.tracker != nil && s.retained > 0 {
+		s.tracker.ReleaseMemory(s.retained)
+	}
+	s.retained = 0
+	s.buffer = nil
+	s.offset = 0
+}
+
+func (s *PagedNodeSource) releaseSourceMemory() {
+	if s.tracker != nil && s.sourceRetained > 0 {
+		s.tracker.ReleaseMemory(s.sourceRetained)
+	}
+	s.sourceRetained = 0
+}
+
+// NodePatternFilter applies start-node labels, IDs, and literal properties.
+type NodePatternFilter struct {
+	unaryOperator
+	pattern querylogical.NodePattern
+	eval    evaluator
+	tracker *Tracker
+}
+
+func NewNodePatternFilter(input Operator, pattern querylogical.NodePattern, parameters map[string]querylogical.Value, now time.Time, tracker *Tracker) *NodePatternFilter {
+	return &NodePatternFilter{unaryOperator: unaryOperator{input: input}, pattern: pattern, eval: newEvaluator(parameters, now), tracker: tracker}
+}
+
+func (o *NodePatternFilter) Open(ctx context.Context) error {
+	return o.open(ctx, "open node pattern filter")
+}
+
+func (o *NodePatternFilter) Next(ctx context.Context) (Batch, error) {
+	if err := o.ready(ctx, "filter start nodes"); err != nil {
+		return Batch{}, err
+	}
+	for {
+		batch, err := o.input.Next(ctx)
+		if err != nil {
+			if err == io.EOF {
+				return Batch{}, io.EOF
+			}
+			return Batch{}, o.fail(err)
+		}
+		rows := make([]BindingRow, 0, len(batch.Rows))
+		for _, row := range batch.Rows {
+			matched, err := o.matches(row)
+			if err != nil {
+				return Batch{}, o.fail(err)
+			}
+			if matched {
+				rows = append(rows, row)
+			}
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		if o.tracker != nil {
+			if err := o.tracker.ProduceIntermediate(int64(len(rows))); err != nil {
+				return Batch{}, o.fail(err)
+			}
+		}
+		return Batch{Rows: rows}, nil
+	}
+}
+
+func (o *NodePatternFilter) matches(row BindingRow) (bool, error) {
+	node, ok := row.Nodes[o.pattern.Alias]
+	if !ok {
+		return false, executionInvalid("filter start nodes", fmt.Sprintf("alias %q is not bound", o.pattern.Alias))
+	}
+	return matchesNodePattern(row, node, o.pattern, o.eval)
+}
+
+func (o *NodePatternFilter) Close() error { return o.close() }
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// NodeSetMode selects union or intersection over child node sources.
+type NodeSetMode string
+
+const (
+	NodeSetUnion        NodeSetMode = "union"
+	NodeSetIntersection NodeSetMode = "intersection"
+)
+
+// NodeSetOperator materializes bounded child sets, deduplicates by node ID,
+// and emits a deterministic ID order.
+type NodeSetOperator struct {
+	children          []Operator
+	mode              NodeSetMode
+	batchSize         int
+	tracker           *Tracker
+	accountStartNodes bool
+
+	rows     []BindingRow
+	sizes    []int64
+	offset   int
+	retained int64
+	opened   bool
+	closed   bool
+}
+
+func NewNodeSet(children []Operator, mode NodeSetMode, batchSize int, tracker *Tracker) *NodeSetOperator {
+	if batchSize <= 0 {
+		batchSize = DefaultBatchSize
+	}
+	return &NodeSetOperator{children: append([]Operator(nil), children...), mode: mode, batchSize: batchSize, tracker: tracker}
+}
+
+// WithStartNodeBudget accounts the final deduplicated set as traversal roots.
+// Intermediate intersection and union branches remain candidate work and do
+// not consume the root budget more than once.
+func (o *NodeSetOperator) WithStartNodeBudget() *NodeSetOperator {
+	o.accountStartNodes = true
+	return o
+}
+
+func (o *NodeSetOperator) Open(ctx context.Context) error {
+	if err := canceled(ctx, "open indexed node set"); err != nil {
+		return err
+	}
+	if o.opened && !o.closed {
+		return invalidState("open indexed node set", "operator is already open")
+	}
+	if len(o.children) == 0 {
+		return executionInvalid("open indexed node set", "at least one child source is required")
+	}
+	if o.mode != NodeSetUnion && o.mode != NodeSetIntersection {
+		return executionInvalid("open indexed node set", "unsupported set mode "+string(o.mode))
+	}
+	o.releaseRows()
+	for index, child := range o.children {
+		if child == nil {
+			o.closeChildren(index)
+			return invalidState("open indexed node set", "child source is required")
+		}
+		if err := child.Open(ctx); err != nil {
+			o.closeChildren(index + 1)
+			return err
+		}
+	}
+	o.offset = 0
+	o.opened = true
+	o.closed = false
+	return nil
+}
+
+func (o *NodeSetOperator) Next(ctx context.Context) (Batch, error) {
+	if err := canceled(ctx, "read indexed node set"); err != nil {
+		_ = o.Close()
+		return Batch{}, err
+	}
+	if !o.opened {
+		return Batch{}, invalidState("read indexed node set", "operator is not open")
+	}
+	if o.closed {
+		return Batch{}, io.EOF
+	}
+	if o.rows == nil {
+		if err := o.materialize(ctx); err != nil {
+			_ = o.Close()
+			return Batch{}, err
+		}
+	}
+	if o.offset >= len(o.rows) {
+		return Batch{}, io.EOF
+	}
+	end := o.offset + o.batchSize
+	if end > len(o.rows) {
+		end = len(o.rows)
+	}
+	rows := append([]BindingRow(nil), o.rows[o.offset:end]...)
+	for index := o.offset; index < end; index++ {
+		if o.tracker != nil {
+			o.tracker.ReleaseMemory(o.sizes[index])
+		}
+		o.retained -= o.sizes[index]
+		o.sizes[index] = 0
+	}
+	o.offset = end
+	return Batch{Rows: rows}, nil
+}
+
+func (o *NodeSetOperator) materialize(ctx context.Context) error {
+	var retained map[string]BindingRow
+	retainedSizes := map[string]int64{}
+	materialized := false
+	defer func() {
+		if !materialized {
+			releaseSizeMap(o.tracker, retainedSizes)
+		}
+	}()
+	for childIndex, child := range o.children {
+		current := map[string]BindingRow{}
+		currentSizes := map[string]int64{}
+		for {
+			batch, err := child.Next(ctx)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				releaseSizeMap(o.tracker, currentSizes)
+				return err
+			}
+			for _, row := range batch.Rows {
+				id, err := bindingNodeID(row)
+				if err != nil {
+					releaseSizeMap(o.tracker, currentSizes)
+					return err
+				}
+				if _, exists := current[id]; exists {
+					continue
+				}
+				row.Cursor = ""
+				bytes := estimateBindingRow(row) + int64(len(id))
+				if o.tracker != nil {
+					if err := o.tracker.ReserveMemory(bytes); err != nil {
+						releaseSizeMap(o.tracker, currentSizes)
+						return err
+					}
+				}
+				current[id] = row
+				currentSizes[id] = bytes
+			}
+		}
+		if childIndex == 0 {
+			retained, retainedSizes = current, currentSizes
+			if o.mode == NodeSetUnion {
+				if err := o.ensureStartCapacity(len(retained)); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if o.mode == NodeSetUnion {
+			for id, row := range current {
+				if _, exists := retained[id]; exists {
+					if o.tracker != nil {
+						o.tracker.ReleaseMemory(currentSizes[id])
+					}
+					continue
+				}
+				retained[id] = row
+				retainedSizes[id] = currentSizes[id]
+			}
+			if err := o.ensureStartCapacity(len(retained)); err != nil {
+				return err
+			}
+			continue
+		}
+		for id := range retained {
+			if _, ok := current[id]; !ok {
+				if o.tracker != nil {
+					o.tracker.ReleaseMemory(retainedSizes[id])
+				}
+				delete(retained, id)
+				delete(retainedSizes, id)
+			}
+		}
+		releaseSizeMap(o.tracker, currentSizes)
+		if len(retained) == 0 {
+			break
+		}
+	}
+	ids := make([]string, 0, len(retained))
+	for id := range retained {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if o.accountStartNodes && o.tracker != nil {
+		if err := o.tracker.UseStartNodes(int64(len(ids))); err != nil {
+			return err
+		}
+	}
+	o.rows = make([]BindingRow, 0, len(ids))
+	o.sizes = make([]int64, 0, len(ids))
+	for _, id := range ids {
+		o.rows = append(o.rows, retained[id])
+		o.sizes = append(o.sizes, retainedSizes[id])
+		o.retained += retainedSizes[id]
+	}
+	materialized = true
+	if o.tracker != nil {
+		if err := o.tracker.ProduceIntermediate(int64(len(o.rows))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *NodeSetOperator) ensureStartCapacity(count int) error {
+	if !o.accountStartNodes || o.tracker == nil || int64(count) <= o.tracker.RemainingStartNodes() {
+		return nil
+	}
+	return o.tracker.UseStartNodes(int64(count))
+}
+
+func releaseSizeMap(tracker *Tracker, sizes map[string]int64) {
+	if tracker == nil {
+		return
+	}
+	for _, bytes := range sizes {
+		tracker.ReleaseMemory(bytes)
+	}
+}
+
+func bindingNodeID(row BindingRow) (string, error) {
+	if len(row.Nodes) != 1 {
+		return "", executionInvalid("combine indexed node sets", "child row must contain exactly one node binding")
+	}
+	for _, node := range row.Nodes {
+		return node.ID.String(), nil
+	}
+	return "", executionInvalid("combine indexed node sets", "child row has no node binding")
+}
+
+func (o *NodeSetOperator) Close() error {
+	if o.closed {
+		return nil
+	}
+	o.closed = true
+	o.releaseRows()
+	var first error
+	for _, child := range o.children {
+		if child != nil {
+			if err := child.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
+func (o *NodeSetOperator) closeChildren(limit int) {
+	if limit > len(o.children) {
+		limit = len(o.children)
+	}
+	for index := 0; index < limit; index++ {
+		if o.children[index] != nil {
+			_ = o.children[index].Close()
+		}
+	}
+}
+
+func (o *NodeSetOperator) releaseRows() {
+	if o.tracker != nil && o.retained > 0 {
+		o.tracker.ReleaseMemory(o.retained)
+	}
+	o.retained = 0
+	o.rows = nil
+	o.sizes = nil
+	o.offset = 0
+}
+
+// StartNodeLimit accounts for start candidates independently from expanded
+// rows, so traversal fan-out cannot hide an over-broad root source.
+type StartNodeLimit struct {
+	unaryOperator
+	tracker *Tracker
+}
+
+func NewStartNodeLimit(input Operator, tracker *Tracker) *StartNodeLimit {
+	return &StartNodeLimit{unaryOperator: unaryOperator{input: input}, tracker: tracker}
+}
+
+func (o *StartNodeLimit) Open(ctx context.Context) error {
+	return o.open(ctx, "open traversal start limiter")
+}
+
+func (o *StartNodeLimit) Next(ctx context.Context) (Batch, error) {
+	if err := o.ready(ctx, "read traversal starts"); err != nil {
+		return Batch{}, err
+	}
+	if o.tracker != nil && o.tracker.RemainingStartNodes() == 0 {
+		return Batch{}, o.fail(o.tracker.UseStartNodes(1))
+	}
+	batch, err := o.input.Next(ctx)
+	if err != nil {
+		if err == io.EOF {
+			return Batch{}, io.EOF
+		}
+		return Batch{}, o.fail(err)
+	}
+	if o.tracker != nil {
+		if err := o.tracker.UseStartNodes(int64(len(batch.Rows))); err != nil {
+			return Batch{}, o.fail(err)
+		}
+	}
+	return batch, nil
+}
+
+func (o *StartNodeLimit) Close() error { return o.close() }
+
+// StaticValue resolves a bound literal/parameter/date for a storage boundary.
+func StaticValue(value querylogical.Value, parameters map[string]querylogical.Value, now time.Time) (any, error) {
+	resolved, err := newEvaluator(parameters, now).value(BindingRow{}, value)
+	if err != nil {
+		return nil, err
+	}
+	return nativeStaticValue(resolved), nil
+}
+
+func nativeStaticValue(value querylogical.Value) any {
+	switch value.Kind {
+	case querylogical.ValueNull:
+		return nil
+	case querylogical.ValueBool:
+		return value.Bool
+	case querylogical.ValueNumber:
+		return value.Number
+	case querylogical.ValueInteger:
+		return value.Integer
+	case querylogical.ValueUnsigned:
+		return value.Unsigned
+	case querylogical.ValueString, querylogical.ValueDate, querylogical.ValueUnknown:
+		return value.String
+	case querylogical.ValueList:
+		out := make([]any, 0, len(value.List))
+		for _, item := range value.List {
+			out = append(out, nativeStaticValue(item))
+		}
+		return out
+	case querylogical.ValueObject:
+		out := make(map[string]any, len(value.Object))
+		for name, item := range value.Object {
+			out[name] = nativeStaticValue(item)
+		}
+		return out
+	default:
+		return strings.TrimSpace(value.String)
+	}
+}

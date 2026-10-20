@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	clusterbackend "github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/model"
@@ -40,7 +41,7 @@ func TestBlobRaftDedupeSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta := BlobMeta{BlobID: string(id), SpaceID: spaceID, Digest: "sha256:" + string(id), SizeBytes: size, MimeType: "text/plain"}
+	meta := blobmodel.BlobMeta{BlobID: string(id), SpaceID: spaceID, Digest: "sha256:" + string(id), SizeBytes: size, MimeType: "text/plain"}
 	payload, err := jsonMarshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ func TestBlobRaftStateMachineAppliesMetaPut(t *testing.T) {
 		t.Fatal(err)
 	}
 	blobID := string(id)
-	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: "text/plain"}
+	meta := blobmodel.BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: size, MimeType: "text/plain"}
 	payload, err := jsonMarshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
 	if err != nil {
 		t.Fatal(err)
@@ -417,7 +418,7 @@ func TestBlobRaftStateMachineRejectsMetadataWithoutPayload(t *testing.T) {
 	}
 	spaceID := uuid.NewString()
 	blobID := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	meta := BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: 4, MimeType: "text/plain"}
+	meta := blobmodel.BlobMeta{BlobID: blobID, SpaceID: spaceID, Digest: "sha256:" + blobID, SizeBytes: 4, MimeType: "text/plain"}
 	payload, err := jsonMarshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
 	if err != nil {
 		t.Fatal(err)

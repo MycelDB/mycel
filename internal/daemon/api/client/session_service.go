@@ -3,12 +3,15 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
-	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	daemongraph "github.com/myceldb/mycel/internal/graph/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -68,7 +71,7 @@ func (s *SessionService) OpenSession(ctx context.Context, req *clientv1.OpenSess
 	if req.GetRequestedIdleTimeout() != nil {
 		idle = req.GetRequestedIdleTimeout().AsDuration()
 	}
-	session, err := s.sessions.OpenSession(ctx, daemonsession.OpenSessionInput{PrincipalID: principal.PrincipalID, SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), IdleTimeout: idle})
+	session, err := s.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: principal.PrincipalID, SpaceID: req.GetSpaceId(), DomainID: req.GetDomainId(), IdleTimeout: idle})
 	if err != nil {
 		return nil, mapSessionError(err, "open session")
 	}
@@ -138,8 +141,17 @@ func (s *SessionService) CloseSession(ctx context.Context, req *clientv1.CloseSe
 
 type TransactionGraphCommitter interface {
 	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
-	CommitTransactionGraph(ctx context.Context, tx daemonsession.GraphTransaction) (daegraph.CommitResult, error)
-	DiscardTransactionGraph(ctx context.Context, transactionID string)
+	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
+	DiscardTransactionGraph(ctx context.Context, transactionID string) error
+	AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error
+}
+
+type TransactionGraphIdempotencyReader interface {
+	LookupIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) (graphchange.CommitResult, bool, error)
+}
+
+type TransactionReplayCommitter interface {
+	CommitTransactionReplay(ctx context.Context, principalID string, transactionID string, original sessionmodel.TransactionCommit) (sessionmodel.TransactionCommit, error)
 }
 
 type TransactionGraphDomainRevisioner interface {
@@ -188,8 +200,8 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	input := daemonsession.BeginTransactionInput{PrincipalID: principal.PrincipalID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
-	var session daemonsession.GraphSession
+	input := sessionmodel.BeginTransactionInput{PrincipalID: principal.PrincipalID, SessionID: req.GetSessionId(), Mode: transactionModeFromProto(req.GetMode()), Origin: graphchange.OriginMetadata{OperationID: req.GetOperationId()}}
+	var session sessionmodel.GraphSession
 	if s.graphs != nil || s.spaces != nil {
 		var err error
 		session, err = s.sessions.GetSession(ctx, principal.PrincipalID, req.GetSessionId())
@@ -202,11 +214,11 @@ func (s *TransactionService) BeginTransaction(ctx context.Context, req *clientv1
 		if err != nil {
 			return nil, mapDomainError(err, "begin transaction domain")
 		}
-		if domain.ReadOnly && input.Mode != daemonsession.TransactionModeReadOnly {
+		if domain.ReadOnly && input.Mode != sessionmodel.TransactionModeReadOnly {
 			return nil, status.Error(codes.FailedPrecondition, "domain is read-only")
 		}
 	}
-	if input.Mode == daemonsession.TransactionModeReadWrite && s.graphs != nil {
+	if input.Mode == sessionmodel.TransactionModeReadWrite && s.graphs != nil {
 		if router, ok := s.graphs.(GraphWriteRouteProvider); ok {
 			if _, _, err := router.GraphWriteRoute(ctx, session.SpaceID); err != nil {
 				return nil, mapGraphError(err, "begin transaction write route")
@@ -257,6 +269,13 @@ func (s *TransactionService) GetTransaction(ctx context.Context, req *clientv1.G
 }
 
 func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv1.CommitTransactionRequest) (*clientv1.CommitTransactionResponse, error) {
+	if err := validateCommitIdempotencyRequest(req); err != nil {
+		return nil, err
+	}
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if s.router != nil {
 		res := &clientv1.CommitTransactionResponse{}
 		forwarded, err := s.router.ForwardUnary(ctx, clientv1.TransactionService_CommitTransaction_FullMethodName, "", req.GetTransactionId(), req, res)
@@ -264,15 +283,38 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 			return res, err
 		}
 	}
-	principal, err := spaceUserPrincipalFromContext(ctx)
-	if err != nil {
-		return nil, err
+	if req.GetIdempotencyKey() != "" && s.graphs != nil {
+		if reader, ok := s.graphs.(TransactionGraphIdempotencyReader); ok {
+			commit, found, lookupErr := reader.LookupIdempotentCommit(ctx, principal.PrincipalID, req.GetSpaceId(), req.GetDomainId(), req.GetIdempotencyKey())
+			if lookupErr != nil {
+				return nil, mapGraphError(lookupErr, "lookup idempotent graph commit")
+			}
+			if found && commit.TransactionID == req.GetTransactionId() {
+				s.finalizeIdempotentLookup(context.WithoutCancel(ctx), principal.PrincipalID, req.GetTransactionId(), commit)
+				return mapIdempotentCommitResponse(commit), nil
+			}
+		}
 	}
 	tx, err := s.sessions.GetTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
-	var graphCommit daegraph.CommitResult
+	if req.GetIdempotencyKey() != "" {
+		if tx.SpaceID != req.GetSpaceId() || tx.DomainID != req.GetDomainId() {
+			return nil, status.Error(codes.InvalidArgument, "commit transaction idempotency scope does not match transaction")
+		}
+		tx.IdempotencyKey = req.GetIdempotencyKey()
+	}
+	if tx.State != sessionmodel.TransactionStateActive {
+		if s.graphs != nil {
+			_ = s.graphs.AcknowledgeTransactionFinalization(context.WithoutCancel(ctx), tx)
+		}
+		return nil, status.Error(codes.FailedPrecondition, "commit transaction: transaction is not active")
+	}
+	if tx.Mode != sessionmodel.TransactionModeReadWrite {
+		return nil, status.Error(codes.FailedPrecondition, "commit transaction: read-only transaction cannot be committed")
+	}
+	var graphCommit graphchange.CommitResult
 	if s.graphs != nil {
 		graphCommit, err = s.graphs.CommitTransactionGraph(ctx, tx)
 		if err != nil {
@@ -280,8 +322,14 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 		}
 	}
 	commitCtx := context.WithoutCancel(ctx)
-	var commit daemonsession.TransactionCommit
-	if graphCommit.CommittedRevision > 0 {
+	var commit sessionmodel.TransactionCommit
+	if graphCommit.IdempotentReplay {
+		replayer, ok := s.sessions.(TransactionReplayCommitter)
+		if !ok {
+			return nil, status.Error(codes.Internal, "session manager does not support idempotent replay finalization")
+		}
+		commit, err = replayer.CommitTransactionReplay(commitCtx, principal.PrincipalID, req.GetTransactionId(), transactionCommitFromGraphResult(graphCommit, principal.PrincipalID))
+	} else if graphCommit.CommittedRevision > 0 {
 		commit, err = s.sessions.CommitTransactionAtRevision(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount, graphCommit.CommittedRevision)
 	} else {
 		commit, err = s.sessions.CommitTransaction(commitCtx, principal.PrincipalID, req.GetTransactionId(), graphCommit.OperationCount)
@@ -289,7 +337,79 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	if err != nil {
 		return nil, mapSessionError(err, "commit transaction")
 	}
-	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit)}, nil
+	if graphCommit.IdempotencyKey != "" {
+		commit = transactionCommitFromGraphResult(graphCommit, principal.PrincipalID)
+	}
+	if s.graphs != nil {
+		if err := s.graphs.AcknowledgeTransactionFinalization(commitCtx, tx); err != nil {
+			return nil, mapGraphError(err, "acknowledge committed graph transaction")
+		}
+	}
+	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(commit), IdempotentReplay: graphCommit.IdempotentReplay}, nil
+}
+
+func validateCommitIdempotencyRequest(req *clientv1.CommitTransactionRequest) error {
+	if req == nil {
+		return status.Error(codes.InvalidArgument, "commit transaction request is required")
+	}
+	key := req.GetIdempotencyKey()
+	if key == "" {
+		if req.GetSpaceId() != "" || req.GetDomainId() != "" {
+			return status.Error(codes.InvalidArgument, "space_id and domain_id require idempotency_key")
+		}
+		return nil
+	}
+	if key != strings.TrimSpace(key) || !utf8.ValidString(key) || len(key) > daemongraph.MaxGraphCommitIdempotencyKeyBytes {
+		return status.Errorf(codes.InvalidArgument, "idempotency_key must be valid UTF-8 without surrounding whitespace and at most %d bytes", daemongraph.MaxGraphCommitIdempotencyKeyBytes)
+	}
+	if strings.TrimSpace(req.GetSpaceId()) == "" || strings.TrimSpace(req.GetDomainId()) == "" {
+		return status.Error(codes.InvalidArgument, "space_id and domain_id are required with idempotency_key")
+	}
+	return nil
+}
+
+func transactionCommitFromGraphResult(result graphchange.CommitResult, principalID string) sessionmodel.TransactionCommit {
+	return sessionmodel.TransactionCommit{
+		ID:                   result.CommitID,
+		TransactionID:        result.TransactionID,
+		SessionID:            result.SessionID,
+		PrincipalID:          principalID,
+		SpaceID:              result.SpaceID,
+		DomainID:             result.DomainID,
+		BaseRevision:         result.BaseRevision,
+		CommittedRevision:    result.CommittedRevision,
+		OperationCount:       result.OperationCount,
+		Origin:               graphchange.OriginMetadata{OperationID: result.OperationID, PrincipalID: principalID, SessionID: result.SessionID, TransactionID: result.TransactionID},
+		CommittedAt:          result.CommittedAt,
+		IdempotencyKey:       result.IdempotencyKey,
+		IdempotencyExpiresAt: result.IdempotencyExpiresAt,
+	}
+}
+
+func mapIdempotentCommitResponse(result graphchange.CommitResult) *clientv1.CommitTransactionResponse {
+	return &clientv1.CommitTransactionResponse{Commit: mapTransactionCommit(transactionCommitFromGraphResult(result, "")), IdempotentReplay: true}
+}
+
+func (s *TransactionService) finalizeIdempotentLookup(ctx context.Context, principalID, transactionID string, result graphchange.CommitResult) {
+	if s.sessions == nil {
+		return
+	}
+	tx, err := s.sessions.GetTransaction(ctx, principalID, transactionID)
+	if err != nil {
+		return
+	}
+	if tx.State == sessionmodel.TransactionStateActive {
+		replayer, ok := s.sessions.(TransactionReplayCommitter)
+		if !ok {
+			return
+		}
+		if _, err := replayer.CommitTransactionReplay(ctx, principalID, transactionID, transactionCommitFromGraphResult(result, principalID)); err != nil {
+			return
+		}
+	}
+	if s.graphs != nil {
+		_ = s.graphs.AcknowledgeTransactionFinalization(ctx, tx)
+	}
 }
 
 func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clientv1.RollbackTransactionRequest) (*clientv1.RollbackTransactionResponse, error) {
@@ -304,12 +424,9 @@ func (s *TransactionService) RollbackTransaction(ctx context.Context, req *clien
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.RollbackTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
-	if err == nil && s.graphs != nil {
-		s.graphs.DiscardTransactionGraph(ctx, req.GetTransactionId())
-	}
+	tx, err := s.discardAndTransitionTransaction(ctx, principal.PrincipalID, req.GetTransactionId(), "rollback", "rolled back", s.sessions.RollbackTransaction)
 	if err != nil {
-		return nil, mapSessionError(err, "rollback transaction")
+		return nil, err
 	}
 	return &clientv1.RollbackTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }
@@ -326,70 +443,107 @@ func (s *TransactionService) CloseTransaction(ctx context.Context, req *clientv1
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.sessions.CloseTransaction(ctx, principal.PrincipalID, req.GetTransactionId())
-	if err == nil && s.graphs != nil {
-		s.graphs.DiscardTransactionGraph(ctx, req.GetTransactionId())
-	}
+	tx, err := s.discardAndTransitionTransaction(ctx, principal.PrincipalID, req.GetTransactionId(), "close", "closed", s.sessions.CloseTransaction)
 	if err != nil {
-		return nil, mapSessionError(err, "close transaction")
+		return nil, err
 	}
 	return &clientv1.CloseTransactionResponse{Transaction: mapGraphTransaction(tx)}, nil
 }
 
-func mapGraphSession(session daemonsession.GraphSession) *clientv1.GraphSession {
+func (s *TransactionService) discardAndTransitionTransaction(
+	ctx context.Context,
+	principalID string,
+	transactionID string,
+	action string,
+	completedAction string,
+	transition func(context.Context, string, string) (sessionmodel.GraphTransaction, error),
+) (sessionmodel.GraphTransaction, error) {
+	current, err := s.sessions.GetTransaction(ctx, principalID, transactionID)
+	if err != nil {
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, action+" transaction")
+	}
+	finalizeCtx := context.WithoutCancel(ctx)
+	if current.State != sessionmodel.TransactionStateActive {
+		if s.graphs != nil {
+			_ = s.graphs.AcknowledgeTransactionFinalization(finalizeCtx, current)
+		}
+		return current, nil
+	}
+	if s.graphs != nil {
+		if err := s.graphs.DiscardTransactionGraph(ctx, transactionID); err != nil {
+			return sessionmodel.GraphTransaction{}, mapGraphError(err, action+" graph transaction")
+		}
+	}
+	tx, err := transition(finalizeCtx, principalID, transactionID)
+	if err != nil {
+		return sessionmodel.GraphTransaction{}, mapSessionError(err, action+" transaction")
+	}
+	if s.graphs != nil {
+		if err := s.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx); err != nil {
+			return sessionmodel.GraphTransaction{}, mapGraphError(err, "acknowledge "+completedAction+" graph transaction")
+		}
+	}
+	return tx, nil
+}
+
+func mapGraphSession(session sessionmodel.GraphSession) *clientv1.GraphSession {
 	return &clientv1.GraphSession{SessionId: session.ID, SpaceId: session.SpaceID, DomainId: session.DomainID, State: sessionStateToProto(session.State), CreateTime: timestamppb.New(session.CreatedAt), LastSeenTime: timestamppb.New(session.LastSeen), ExpireTime: timestamppb.New(session.ExpiresAt)}
 }
 
-func mapGraphTransaction(tx daemonsession.GraphTransaction) *clientv1.GraphTransaction {
+func mapGraphTransaction(tx sessionmodel.GraphTransaction) *clientv1.GraphTransaction {
 	return &clientv1.GraphTransaction{TransactionId: tx.ID, SessionId: tx.SessionID, SpaceId: tx.SpaceID, DomainId: tx.DomainID, Mode: transactionModeToProto(tx.Mode), State: transactionStateToProto(tx.State), BaseRevision: tx.BaseRevision, CreateTime: timestamppb.New(tx.CreatedAt), LastSeenTime: timestamppb.New(tx.LastSeen), ExpireTime: timestamppb.New(tx.ExpiresAt), OperationId: tx.Origin.OperationID}
 }
 
-func mapTransactionCommit(commit daemonsession.TransactionCommit) *clientv1.TransactionCommit {
-	return &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID}
+func mapTransactionCommit(commit sessionmodel.TransactionCommit) *clientv1.TransactionCommit {
+	mapped := &clientv1.TransactionCommit{CommitId: commit.ID, TransactionId: commit.TransactionID, SessionId: commit.SessionID, SpaceId: commit.SpaceID, DomainId: commit.DomainID, BaseRevision: commit.BaseRevision, CommittedRevision: commit.CommittedRevision, OperationCount: commit.OperationCount, CommitTime: timestamppb.New(commit.CommittedAt), OperationId: commit.Origin.OperationID, IdempotencyKey: commit.IdempotencyKey}
+	if !commit.IdempotencyExpiresAt.IsZero() {
+		mapped.IdempotencyExpireTime = timestamppb.New(commit.IdempotencyExpiresAt)
+	}
+	return mapped
 }
 
-func sessionStateToProto(state daemonsession.SessionState) clientv1.SessionState {
+func sessionStateToProto(state sessionmodel.SessionState) clientv1.SessionState {
 	switch state {
-	case daemonsession.SessionStateClosed:
+	case sessionmodel.SessionStateClosed:
 		return clientv1.SessionState_SESSION_STATE_CLOSED
-	case daemonsession.SessionStateExpired:
+	case sessionmodel.SessionStateExpired:
 		return clientv1.SessionState_SESSION_STATE_EXPIRED
 	default:
 		return clientv1.SessionState_SESSION_STATE_ACTIVE
 	}
 }
 
-func transactionModeFromProto(mode clientv1.TransactionMode) daemonsession.TransactionMode {
+func transactionModeFromProto(mode clientv1.TransactionMode) sessionmodel.TransactionMode {
 	if mode == clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE {
-		return daemonsession.TransactionModeReadWrite
+		return sessionmodel.TransactionModeReadWrite
 	}
 	if mode == clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY {
-		return daemonsession.TransactionModeReadOnly
+		return sessionmodel.TransactionModeReadOnly
 	}
 	return ""
 }
 
-func transactionModeToProto(mode daemonsession.TransactionMode) clientv1.TransactionMode {
-	if mode == daemonsession.TransactionModeReadWrite {
+func transactionModeToProto(mode sessionmodel.TransactionMode) clientv1.TransactionMode {
+	if mode == sessionmodel.TransactionModeReadWrite {
 		return clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE
 	}
-	if mode == daemonsession.TransactionModeReadOnly {
+	if mode == sessionmodel.TransactionModeReadOnly {
 		return clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY
 	}
 	return clientv1.TransactionMode_TRANSACTION_MODE_UNSPECIFIED
 }
 
-func transactionStateToProto(state daemonsession.TransactionState) clientv1.TransactionState {
+func transactionStateToProto(state sessionmodel.TransactionState) clientv1.TransactionState {
 	switch state {
-	case daemonsession.TransactionStateCommitted:
+	case sessionmodel.TransactionStateCommitted:
 		return clientv1.TransactionState_TRANSACTION_STATE_COMMITTED
-	case daemonsession.TransactionStateRolledBack:
+	case sessionmodel.TransactionStateRolledBack:
 		return clientv1.TransactionState_TRANSACTION_STATE_ROLLED_BACK
-	case daemonsession.TransactionStateClosed:
+	case sessionmodel.TransactionStateClosed:
 		return clientv1.TransactionState_TRANSACTION_STATE_CLOSED
-	case daemonsession.TransactionStateExpired:
+	case sessionmodel.TransactionStateExpired:
 		return clientv1.TransactionState_TRANSACTION_STATE_EXPIRED
-	case daemonsession.TransactionStateAborted:
+	case sessionmodel.TransactionStateAborted:
 		return clientv1.TransactionState_TRANSACTION_STATE_ABORTED
 	default:
 		return clientv1.TransactionState_TRANSACTION_STATE_ACTIVE

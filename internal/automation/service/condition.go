@@ -11,13 +11,13 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	"github.com/myceldb/mycel/internal/query/gql/execution"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
-	schemaservice "github.com/myceldb/mycel/internal/schema/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	schemamodel "github.com/myceldb/mycel/internal/schema/model"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const conditionTimeout = 2 * time.Second
@@ -29,7 +29,7 @@ type conditionResult struct {
 	Aliases map[string]any
 }
 
-func (m *AutomationManager) conditionSchemaContext(ctx context.Context, tx sessionservice.GraphTransaction) (analysis.SchemaContext, error) {
+func (m *AutomationManager) conditionSchemaContext(ctx context.Context, tx sessionmodel.GraphTransaction) (analysis.SchemaContext, error) {
 	if m.schemas == nil || tx.DomainID == "" {
 		return analysis.SchemaContext{}, nil
 	}
@@ -42,13 +42,13 @@ func (m *AutomationManager) conditionSchemaContext(ctx context.Context, tx sessi
 	if err == nil {
 		return analysis.SchemaContext{Schema: &schemaDoc}, nil
 	}
-	if errors.Is(err, schemaservice.ErrSchemaNotFound) {
+	if errors.Is(err, schemamodel.ErrNotFound) {
 		return analysis.SchemaContext{}, nil
 	}
 	return analysis.SchemaContext{}, err
 }
 
-func (m *AutomationManager) evaluateCondition(ctx context.Context, tx sessionservice.GraphTransaction, def automation.Definition, changed graph.Node, old *graph.Node) (conditionResult, error) {
+func (m *AutomationManager) evaluateCondition(ctx context.Context, tx sessionmodel.GraphTransaction, def automation.Definition, changed graph.Node, old *graph.Node) (conditionResult, error) {
 	if strings.TrimSpace(def.Condition.GQL) == "" {
 		return conditionResult{Matched: true, Aliases: map[string]any{"changed": changed}}, nil
 	}
@@ -90,8 +90,8 @@ func (m *AutomationManager) evaluateCondition(ctx context.Context, tx sessionser
 }
 
 type automationGQLGraph struct {
-	graphs  graphservice.Manager
-	tx      sessionservice.GraphTransaction
+	graphs  GraphRuntime
+	tx      sessionmodel.GraphTransaction
 	changed *graph.Node
 	old     *graph.Node
 	aliases map[string]any
@@ -270,41 +270,41 @@ func (g automationGQLGraph) boundPatternCandidateEdges(ctx context.Context, quer
 	if startBound {
 		switch query.Relationship.Direction {
 		case execution.RelationshipIncoming:
-			return g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionIn)
+			return g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionIn)
 		case execution.RelationshipUndirected:
-			out, err := g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionOut)
+			out, err := g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionOut)
 			if err != nil {
 				return nil, err
 			}
-			in, err := g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionIn)
+			in, err := g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionIn)
 			return append(out, in...), err
 		default:
-			return g.scanAdjacencyEdges(ctx, startID, label, graphservice.AdjacencyDirectionOut)
+			return g.scanAdjacencyEdges(ctx, startID, label, graphquery.AdjacencyDirectionOut)
 		}
 	}
 	if endBound {
 		switch query.Relationship.Direction {
 		case execution.RelationshipIncoming:
-			return g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionOut)
+			return g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionOut)
 		case execution.RelationshipUndirected:
-			out, err := g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionIn)
+			out, err := g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionIn)
 			if err != nil {
 				return nil, err
 			}
-			outgoing, err := g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionOut)
+			outgoing, err := g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionOut)
 			return append(out, outgoing...), err
 		default:
-			return g.scanAdjacencyEdges(ctx, endID, label, graphservice.AdjacencyDirectionIn)
+			return g.scanAdjacencyEdges(ctx, endID, label, graphquery.AdjacencyDirectionIn)
 		}
 	}
 	return listAllEdges(ctx, g.graphs, g.tx)
 }
 
-func (g automationGQLGraph) scanAdjacencyEdges(ctx context.Context, nodeID string, label string, direction graphservice.AdjacencyDirection) ([]graph.Edge, error) {
+func (g automationGQLGraph) scanAdjacencyEdges(ctx context.Context, nodeID string, label string, direction graphquery.AdjacencyDirection) ([]graph.Edge, error) {
 	out := []graph.Edge{}
 	cursor := ""
 	for {
-		edges, next, _, err := g.graphs.ScanAdjacency(ctx, g.tx, graphservice.AdjacencyScan{NodeID: nodeID, Label: label, Direction: direction, Limit: 500, Cursor: cursor})
+		edges, next, _, err := g.graphs.ScanAdjacency(ctx, g.tx, graphquery.AdjacencyScan{NodeID: nodeID, Label: label, Direction: direction, Limit: 500, Cursor: cursor})
 		if err != nil {
 			return nil, err
 		}
@@ -316,7 +316,7 @@ func (g automationGQLGraph) scanAdjacencyEdges(ctx context.Context, nodeID strin
 	}
 }
 
-func listAllNodes(ctx context.Context, graphs graphservice.Manager, tx sessionservice.GraphTransaction) ([]graph.Node, error) {
+func listAllNodes(ctx context.Context, graphs GraphRuntime, tx sessionmodel.GraphTransaction) ([]graph.Node, error) {
 	out := []graph.Node{}
 	token := ""
 	for {
@@ -332,7 +332,7 @@ func listAllNodes(ctx context.Context, graphs graphservice.Manager, tx sessionse
 	}
 }
 
-func listAllEdges(ctx context.Context, graphs graphservice.Manager, tx sessionservice.GraphTransaction) ([]graph.Edge, error) {
+func listAllEdges(ctx context.Context, graphs GraphRuntime, tx sessionmodel.GraphTransaction) ([]graph.Edge, error) {
 	out := []graph.Edge{}
 	token := ""
 	for {

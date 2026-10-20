@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	"github.com/myceldb/mycel/internal/encryption"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -75,29 +76,29 @@ func newS3PayloadStoreWithClient(cfg Config, tmpDir string, client s3PayloadAPI,
 	return &s3PayloadStore{cfg: cfg, client: client, tmpDir: tmpDir, encryption: svc}, nil
 }
 
-func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, PayloadDescriptor, error) {
+func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, domainID string, mimeType string, r io.Reader) (graphmodel.BlobID, int64, blobmodel.PayloadDescriptor, error) {
 	spaceID = strings.TrimSpace(spaceID)
 	domainID = strings.TrimSpace(domainID)
 	if spaceID == "" || domainID == "" || r == nil {
-		return "", 0, PayloadDescriptor{}, fmt.Errorf("%w: space_id, domain_id, and reader are required", ErrInvalidInput)
+		return "", 0, blobmodel.PayloadDescriptor{}, fmt.Errorf("%w: space_id, domain_id, and reader are required", ErrInvalidInput)
 	}
 	plaintext, err := io.ReadAll(r)
 	if err != nil {
-		return "", 0, PayloadDescriptor{}, err
+		return "", 0, blobmodel.PayloadDescriptor{}, err
 	}
 	size := int64(len(plaintext))
 	digest := sha256.Sum256(plaintext)
 	digestBytes := digest[:]
 	id, err := graphmodel.BlobIDFromBytes(digestBytes)
 	if err != nil {
-		return "", 0, PayloadDescriptor{}, err
+		return "", 0, blobmodel.PayloadDescriptor{}, err
 	}
 	key := s.objectKey(spaceID, domainID, string(id))
 	stored := plaintext
 	if s.encryption != nil && s.encryption.Enabled() {
 		stored, err = s.encryption.EncryptRecord(ctx, plaintext, s3BlobAAD(spaceID, domainID, id))
 		if err != nil {
-			return "", 0, PayloadDescriptor{}, err
+			return "", 0, blobmodel.PayloadDescriptor{}, err
 		}
 	}
 	storedDigest := sha256.Sum256(stored)
@@ -113,21 +114,21 @@ func (s *s3PayloadStore) Put(ctx context.Context, spaceID string, domainID strin
 	}
 	out, err := s.client.PutObject(ctx, put)
 	if err != nil {
-		return "", 0, PayloadDescriptor{}, err
+		return "", 0, blobmodel.PayloadDescriptor{}, err
 	}
-	desc := PayloadDescriptor{Backend: s.cfg.Backend, SpaceID: spaceID, DomainID: domainID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id), S3Bucket: s.cfg.S3Bucket, S3Key: key, S3Region: s.cfg.S3Region}
+	desc := blobmodel.PayloadDescriptor{Backend: s.cfg.Backend, SpaceID: spaceID, DomainID: domainID, BlobID: string(id), SizeBytes: size, ChecksumAlgorithm: "sha256", ChecksumHex: string(id), S3Bucket: s.cfg.S3Bucket, S3Key: key, S3Region: s.cfg.S3Region}
 	if out != nil && out.ETag != nil {
 		desc.S3ETag = strings.Trim(*out.ETag, "\"")
 	}
 	if ok, err := s.Exists(ctx, desc); err != nil {
-		return "", 0, PayloadDescriptor{}, err
+		return "", 0, blobmodel.PayloadDescriptor{}, err
 	} else if !ok {
-		return "", 0, PayloadDescriptor{}, fmt.Errorf("object store object %s/%s was not visible after upload", s.cfg.S3Bucket, key)
+		return "", 0, blobmodel.PayloadDescriptor{}, fmt.Errorf("object store object %s/%s was not visible after upload", s.cfg.S3Bucket, key)
 	}
 	return id, size, desc, nil
 }
 
-func (s *s3PayloadStore) Exists(ctx context.Context, desc PayloadDescriptor) (bool, error) {
+func (s *s3PayloadStore) Exists(ctx context.Context, desc blobmodel.PayloadDescriptor) (bool, error) {
 	bucket, key := s.bucketKey(desc)
 	if bucket == "" || key == "" {
 		return false, fmt.Errorf("%w: object store bucket and key are required", ErrInvalidInput)
@@ -145,7 +146,7 @@ func (s *s3PayloadStore) Exists(ctx context.Context, desc PayloadDescriptor) (bo
 	return true, nil
 }
 
-func (s *s3PayloadStore) Open(ctx context.Context, desc PayloadDescriptor) (io.ReadCloser, error) {
+func (s *s3PayloadStore) Open(ctx context.Context, desc blobmodel.PayloadDescriptor) (io.ReadCloser, error) {
 	bucket, key := s.bucketKey(desc)
 	if bucket == "" || key == "" {
 		return nil, fmt.Errorf("%w: object store bucket and key are required", ErrInvalidInput)
@@ -175,7 +176,7 @@ func (s *s3PayloadStore) Open(ctx context.Context, desc PayloadDescriptor) (io.R
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
-func (s *s3PayloadStore) Delete(ctx context.Context, desc PayloadDescriptor) error {
+func (s *s3PayloadStore) Delete(ctx context.Context, desc blobmodel.PayloadDescriptor) error {
 	bucket, key := s.bucketKey(desc)
 	if bucket == "" || key == "" {
 		return fmt.Errorf("%w: object store bucket and key are required", ErrInvalidInput)
@@ -204,7 +205,7 @@ func (s *s3PayloadStore) objectKey(spaceID string, domainID string, blobID strin
 	return strings.Join(clean, "/")
 }
 
-func (s *s3PayloadStore) bucketKey(desc PayloadDescriptor) (string, string) {
+func (s *s3PayloadStore) bucketKey(desc blobmodel.PayloadDescriptor) (string, string) {
 	bucket := firstNonEmpty(desc.S3Bucket, s.cfg.S3Bucket)
 	key := strings.TrimSpace(desc.S3Key)
 	if key == "" && desc.SpaceID != "" && desc.DomainID != "" && desc.BlobID != "" {

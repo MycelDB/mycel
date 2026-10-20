@@ -29,7 +29,7 @@ func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
 	ids := semanticInferenceAdapterIDs{spaceID: domainspace.SpaceID(uuid.New()), domainID: graph.DomainID(uuid.New()), indexID: domainsemantic.SemanticIndexID(uuid.New()), nodeID: graph.NodeID(uuid.New()), endpointID: domainsemantic.ModelEndpointID(uuid.New()), modelID: domainsemantic.InferenceModelID(uuid.New()), capID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), credentialID: domainsemantic.InferenceCredentialID(uuid.New()), secretID: domainsemantic.SecretID(uuid.New()), grantID: domainsemantic.CredentialGrantID(uuid.New()), profileID: uuid.New()}
 	seedStandaloneInferenceForSemanticAdapter(t, ctx, module, ids)
 
-	resp, err := (InferenceAdapter{Manager: module}).Embed(ctx, EmbedInput{ModelEndpointID: ids.endpointID, ModelID: ids.modelID, ModelEndpointCapabilityID: ids.capID, CredentialID: ids.credentialID, CredentialGrantID: ids.grantID, SpaceID: ids.spaceID, DomainID: ids.domainID, SemanticIndexID: ids.indexID, TargetNodeID: ids.nodeID, ActorPrincipalID: identity.PrincipalID("actor-a"), InferenceProfileID: ids.profileID, Input: "semantic text", Reason: "semantic_backfill"})
+	resp, err := (InferenceAdapter{Invoker: module}).Embed(ctx, EmbedInput{ModelEndpointID: ids.endpointID, ModelID: ids.modelID, ModelEndpointCapabilityID: ids.capID, CredentialID: ids.credentialID, CredentialGrantID: ids.grantID, SpaceID: ids.spaceID, DomainID: ids.domainID, SemanticIndexID: ids.indexID, TargetNodeID: ids.nodeID, ActorPrincipalID: identity.PrincipalID("actor-a"), InferenceProfileID: ids.profileID, Input: "semantic text", Reason: "semantic_backfill"})
 	if err != nil {
 		t.Fatalf("Embed() error = %v", err)
 	}
@@ -48,7 +48,7 @@ func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
 
 func TestInferenceAdapterRequiresProfile(t *testing.T) {
 	ctx := context.Background()
-	_, err := (InferenceAdapter{Manager: inferenceservice.NewModule()}).Embed(ctx, EmbedInput{Input: "semantic text"})
+	_, err := (InferenceAdapter{Invoker: inferenceservice.NewModule()}).Embed(ctx, EmbedInput{Input: "semantic text"})
 	if err == nil || !strings.Contains(err.Error(), "does not declare an inference profile") {
 		t.Fatalf("expected missing profile error, got %v", err)
 	}

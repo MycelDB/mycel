@@ -53,6 +53,11 @@ type Status struct {
 	LastError                string
 }
 
+// RebuildSnapshot captures a complete domain snapshot and its domain-scoped
+// graph revision. It is invoked while graph-change application is serialized
+// for the lexical scope being rebuilt.
+type RebuildSnapshot func() ([]index.IndexedDocument, uint64, error)
+
 func New(root, spaceID, domainID string) *Service {
 	return NewWithEncryption(root, spaceID, domainID, nil)
 }
@@ -91,6 +96,26 @@ func (s *Service) Rebuild(docs []index.IndexedDocument, latestRevision uint64) e
 	if s.paused {
 		return ErrIndexingPaused
 	}
+	return s.rebuildLocked(docs, latestRevision)
+}
+
+func (s *Service) RebuildFromSnapshot(snapshot RebuildSnapshot) error {
+	if snapshot == nil {
+		return errors.New("lexical rebuild snapshot is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.paused {
+		return ErrIndexingPaused
+	}
+	docs, latestRevision, err := snapshot()
+	if err != nil {
+		return err
+	}
+	return s.rebuildLocked(docs, latestRevision)
+}
+
+func (s *Service) rebuildLocked(docs []index.IndexedDocument, latestRevision uint64) error {
 	if err := os.RemoveAll(s.store.ScopeDir()); err != nil {
 		return err
 	}
@@ -124,7 +149,7 @@ func (s *Service) Search(input string, opts index.SearchOptions) (index.SearchRe
 func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	status := Status{SpaceID: s.spaceID, DomainID: s.domainID, AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
+	status := Status{SpaceID: s.spaceID, DomainID: s.domainID, LatestKnownGraphRevision: latestKnownGraphRevision, RevisionLag: latestKnownGraphRevision, AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
 	manifest, err := s.store.ReadManifest()
 	if err != nil {
 		status.State = StateUnavailable
@@ -145,11 +170,15 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 		return status
 	}
 	status.IndexedGraphRevision = cursor.IndexedGraphRevision
-	status.LatestKnownGraphRevision = latestKnownGraphRevision
-	if latestKnownGraphRevision > cursor.IndexedGraphRevision {
+	status.RevisionLag = 0
+	switch {
+	case cursor.IndexedGraphRevision > latestKnownGraphRevision:
+		status.State = StateError
+		status.LastError = cursorAheadError(cursor.IndexedGraphRevision, latestKnownGraphRevision)
+	case latestKnownGraphRevision > cursor.IndexedGraphRevision:
 		status.RevisionLag = latestKnownGraphRevision - cursor.IndexedGraphRevision
 		status.State = StateStale
-	} else {
+	default:
 		status.State = StateFresh
 	}
 	for _, segmentID := range manifest.Segments {
@@ -170,14 +199,38 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	return status
 }
 
+// ReconcileStatusLatest updates a cursor-ahead status using a graph revision
+// observed after the lexical cursor was captured. Other error states are left
+// unchanged.
+func ReconcileStatusLatest(in Status, latestKnownGraphRevision uint64) Status {
+	if in.State != StateError || in.LastError != cursorAheadError(in.IndexedGraphRevision, in.LatestKnownGraphRevision) {
+		return in
+	}
+	in.LatestKnownGraphRevision = latestKnownGraphRevision
+	in.RevisionLag = 0
+	in.LastError = ""
+	switch {
+	case in.IndexedGraphRevision > latestKnownGraphRevision:
+		in.State = StateError
+		in.LastError = cursorAheadError(in.IndexedGraphRevision, latestKnownGraphRevision)
+	case latestKnownGraphRevision > in.IndexedGraphRevision:
+		in.State = StateStale
+		in.RevisionLag = latestKnownGraphRevision - in.IndexedGraphRevision
+	default:
+		in.State = StateFresh
+	}
+	return in
+}
+
+func cursorAheadError(indexed uint64, latest uint64) string {
+	return fmt.Sprintf("indexed graph revision %d is ahead of latest domain revision %d; rebuild required", indexed, latest)
+}
+
 func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.paused {
 		return ErrIndexingPaused
-	}
-	if len(docs) == 0 {
-		return nil
 	}
 	if err := s.ensureManifest(); err != nil {
 		return err
@@ -188,6 +241,12 @@ func (s *Service) apply(docs []index.IndexedDocument, revision uint64) error {
 	}
 	if revision > 0 && cursor.IndexedGraphRevision >= revision {
 		return nil
+	}
+	if len(docs) == 0 {
+		if revision > cursor.IndexedGraphRevision {
+			cursor.IndexedGraphRevision = revision
+		}
+		return s.store.WriteCursor(cursor)
 	}
 	segmentID, err := s.nextSegmentID()
 	if err != nil {

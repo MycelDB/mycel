@@ -40,9 +40,14 @@ See [spaces and domains](spaces-domains/README.md).
 
 Graph data is represented as nodes and edges with labels, properties, payload,
 and metadata. Clients open sessions and transactions, then read/write graph data
-or execute queries. Change stream surfaces provide graph event observation.
+or execute queries. Structured protobuf and GQL statements converge on the
+transport-neutral `internal/query` binder, physical planner, and bounded
+pull-operator runtime. The daemon composes narrow graph/index/semantic/mutation
+capabilities and keeps protobuf, routing, identity, transaction/domain lookup,
+and gRPC mapping at the API boundary; it does not implement query algorithms.
+Change stream surfaces provide graph event observation.
 
-See [graph](graph/README.md) and [client API](api/README.md).
+See [graph](graph/README.md), [query API](api/query.md), and [client API](api/README.md).
 
 ### Blob storage
 

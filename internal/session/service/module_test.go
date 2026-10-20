@@ -13,6 +13,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -46,7 +47,7 @@ func TestModuleSessionRoutesEncodeHomeNode(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default(), routeIdentity: runtime.LocalRouteIdentity{RaftMode: true, RaftNodeID: 2}}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "u1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
+	opened, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "u1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
@@ -58,11 +59,11 @@ func TestModuleSessionRoutesEncodeHomeNode(t *testing.T) {
 		t.Fatalf("ParseSessionHomeNode()=(%d,%v,%v), want (2,true,nil)", home, ok, err)
 	}
 	route, ok := m.SessionRoute(opened.ID)
-	if !ok || route.HomeNodeID != 2 || route.State != SessionStateActive {
+	if !ok || route.HomeNodeID != 2 || route.State != sessionmodel.SessionStateActive {
 		t.Fatalf("SessionRoute()=(%#v,%v), want active home 2", route, ok)
 	}
 
-	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "u1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	tx, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "u1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
@@ -74,12 +75,12 @@ func TestModuleSessionRoutesEncodeHomeNode(t *testing.T) {
 		t.Fatalf("ParseTransactionHomeNode()=(%d,%v,%v), want (2,true,nil)", home, ok, err)
 	}
 	txRoute, ok := m.TransactionRoute(tx.ID)
-	if !ok || txRoute.HomeNodeID != 2 || txRoute.SessionID != opened.ID || txRoute.State != TransactionStateActive {
+	if !ok || txRoute.HomeNodeID != 2 || txRoute.SessionID != opened.ID || txRoute.State != sessionmodel.TransactionStateActive {
 		t.Fatalf("TransactionRoute()=(%#v,%v), want active home 2", txRoute, ok)
 	}
 	diag := m.RouteDiagnostics()
 	if diag.LocalHomeNodeID != 2 || diag.ActiveLocalSessions != 1 || diag.ActiveLocalTransactions != 1 {
-		t.Fatalf("RouteDiagnostics()=%#v", diag)
+		t.Fatalf("sessionmodel.RouteDiagnostics()=%#v", diag)
 	}
 }
 
@@ -89,7 +90,7 @@ func TestModuleOriginMetadataFlowsFromSessionToTransactionCommit(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), Origin: graphchange.OriginMetadata{ClientID: "knotpkm", ClientInstanceID: "tab-1", OperationID: "session-op", PrincipalID: "spoofed"}})
+	opened, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString(), Origin: graphchange.OriginMetadata{ClientID: "knotpkm", ClientInstanceID: "tab-1", OperationID: "session-op", PrincipalID: "spoofed"}})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
@@ -97,7 +98,7 @@ func TestModuleOriginMetadataFlowsFromSessionToTransactionCommit(t *testing.T) {
 		t.Fatalf("session origin = %#v", opened.Origin)
 	}
 	operationID := uuid.NewString()
-	tx, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: operationID, Label: "editor-save", SessionID: "spoofed", TransactionID: "spoofed"}})
+	tx, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: operationID, Label: "editor-save", SessionID: "spoofed", TransactionID: "spoofed"}})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
@@ -119,11 +120,11 @@ func TestModuleNoopReadWriteCommitDoesNotAdvanceRevision(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
+	opened, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
-	first, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	first, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction(first) error = %v", err)
 	}
@@ -135,7 +136,7 @@ func TestModuleNoopReadWriteCommitDoesNotAdvanceRevision(t *testing.T) {
 		t.Fatalf("first committed revision = %d, want 1", firstCommit.CommittedRevision)
 	}
 
-	noop, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	noop, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction(noop) error = %v", err)
 	}
@@ -147,12 +148,55 @@ func TestModuleNoopReadWriteCommitDoesNotAdvanceRevision(t *testing.T) {
 		t.Fatalf("noop committed revision = %d, want %d", noopCommit.CommittedRevision, firstCommit.CommittedRevision)
 	}
 
-	next, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	next, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction(next) error = %v", err)
 	}
 	if next.BaseRevision != firstCommit.CommittedRevision {
 		t.Fatalf("next base revision = %d, want %d", next.BaseRevision, firstCommit.CommittedRevision)
+	}
+}
+
+func TestModuleTransactionFinalizationPreservesModeSemantics(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	opened, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
+	if err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		mode      sessionmodel.TransactionMode
+		close     bool
+		wantState sessionmodel.TransactionState
+	}{
+		{name: "rollback read-only", mode: sessionmodel.TransactionModeReadOnly, wantState: sessionmodel.TransactionStateRolledBack},
+		{name: "close read-only", mode: sessionmodel.TransactionModeReadOnly, close: true, wantState: sessionmodel.TransactionStateClosed},
+		{name: "close read-write", mode: sessionmodel.TransactionModeReadWrite, close: true, wantState: sessionmodel.TransactionStateRolledBack},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: tt.mode})
+			if err != nil {
+				t.Fatalf("BeginTransaction() error = %v", err)
+			}
+			var finalized sessionmodel.GraphTransaction
+			if tt.close {
+				finalized, err = m.CloseTransaction(ctx, "user-1", tx.ID)
+			} else {
+				finalized, err = m.RollbackTransaction(ctx, "user-1", tx.ID)
+			}
+			if err != nil {
+				t.Fatalf("finalize transaction error = %v", err)
+			}
+			if finalized.State != tt.wantState {
+				t.Fatalf("finalized state = %q, want %q", finalized.State, tt.wantState)
+			}
+		})
 	}
 }
 
@@ -162,18 +206,18 @@ func TestModuleGeneratesAndValidatesOperationID(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
 		t.Fatalf("init failed: %v", result.Error)
 	}
-	opened, err := m.OpenSession(ctx, OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
+	opened, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "user-1", SpaceID: uuid.NewString(), DomainID: uuid.NewString()})
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
-	generated, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite})
+	generated, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite})
 	if err != nil {
 		t.Fatalf("BeginTransaction() error = %v", err)
 	}
 	if _, err := uuid.Parse(generated.Origin.OperationID); err != nil {
 		t.Fatalf("generated operation id %q is not a UUID: %v", generated.Origin.OperationID, err)
 	}
-	if _, err := m.BeginTransaction(ctx, BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: "not-a-uuid"}}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: opened.ID, Mode: sessionmodel.TransactionModeReadWrite, Origin: graphchange.OriginMetadata{OperationID: "not-a-uuid"}}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("BeginTransaction(invalid operation) error = %v, want ErrInvalidInput", err)
 	}
 }
@@ -209,7 +253,7 @@ func TestModuleQuiesceRejectsOpenSession(t *testing.T) {
 		t.Fatalf("Quiesce() error = %v", err)
 	}
 	defer lease.Release(ctx)
-	_, err = m.OpenSession(ctx, OpenSessionInput{PrincipalID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
+	_, err = m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: uuid.NewString(), IdleTimeout: time.Minute})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("OpenSession() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}

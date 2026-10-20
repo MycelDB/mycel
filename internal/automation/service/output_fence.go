@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/automation/storage"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -16,7 +16,7 @@ import (
 // Raft-owned invocation claim. This method intentionally avoids wall-clock lease
 // checks so graph state-machine apply remains deterministic across replicas;
 // workers check and renew lease expiry before proposing graph output commits.
-func (m *AutomationManager) ValidateAutomationOutputFence(ctx context.Context, validation graphservice.AutomationOutputFenceValidation) error {
+func (m *AutomationManager) ValidateAutomationOutputFence(ctx context.Context, validation graph.AutomationOutputFenceValidation) error {
 	if m == nil || m.store == nil {
 		return status.Error(codes.FailedPrecondition, "automation output fencing state is not configured")
 	}

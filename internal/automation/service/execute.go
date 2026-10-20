@@ -13,12 +13,11 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	autooutput "github.com/myceldb/mycel/internal/automation/output"
 	"github.com/myceldb/mycel/internal/automation/render"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
-	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
-	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const automationActor = "automation"
@@ -46,7 +45,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		return run, nil
 	}
 	executionPrincipal := firstNonEmptyString(run.ActorPrincipalID, automationActor)
-	sess, err := m.sessions.OpenSession(ctx, sessionservice.OpenSessionInput{PrincipalID: executionPrincipal, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
+	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: executionPrincipal, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
 	if err != nil {
 		return run, err
 	}
@@ -54,7 +53,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	if err != nil {
 		return run, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite, BaseRevision: &baseRevision})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
 	if err != nil {
 		return run, err
 	}
@@ -170,7 +169,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	return run, nil
 }
 
-func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionservice.GraphSession, firstTx sessionservice.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result) (bool, error) {
+func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, firstTx sessionmodel.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result) (bool, error) {
 	const maxAttempts = 3
 	engine := actions.Engine{Graphs: m.graphs}
 	tx := firstTx
@@ -230,44 +229,48 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			}
 			return false, err
 		}
-		commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
+		finalizeCtx := context.WithoutCancel(ctx)
+		commit, err := m.sessions.CommitTransactionAtRevision(finalizeCtx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
 		if err != nil {
+			return false, err
+		}
+		if err := m.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx); err != nil {
 			return false, err
 		}
 		run.MutationID = commit.ID
 		return true, nil
 	}
-	return false, graphservice.ErrConflict
+	return false, graphchange.ErrConflict
 }
 
-func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionservice.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionservice.GraphTransaction, graph.Node, map[string]any, error) {
+func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, def automation.Definition, inv automation.Invocation, run *automation.Run) (sessionmodel.GraphTransaction, graph.Node, map[string]any, error) {
 	baseRevision, err := m.graphs.CurrentRevision(ctx, inv.SpaceID)
 	if err != nil {
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionservice.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionservice.TransactionModeReadWrite, BaseRevision: &baseRevision})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
 	if err != nil {
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	condition, err := m.evaluateCondition(ctx, tx, def, node, inv.OldNode)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	if !condition.Matched {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, fmt.Errorf(conditionFalseReason)
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, fmt.Errorf(conditionFalseReason)
 	}
 	targetAlias := firstNonEmptyString(strings.TrimSpace(def.Input.Target), "changed")
 	targetNodeID, err := requireNodeAliasID(targetAlias, condition.Aliases, node)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	run.TargetAlias = targetAlias
 	run.TargetNodeID = targetNodeID
@@ -276,28 +279,36 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 		idempotencyTargetID, err := requireNodeAliasID(idempotencyAlias, condition.Aliases, node)
 		if err != nil {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-			return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+			return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 		}
 		run.IdempotencyTargetNodeID = idempotencyTargetID
 	}
 	if err := preflightActionTargets(def, condition.Aliases, node); err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-		return sessionservice.GraphTransaction{}, graph.Node{}, nil, err
+		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	return tx, node, condition.Aliases, nil
 }
 
 func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Context, principalID string, transactionID string) {
+	finalizeCtx := context.WithoutCancel(ctx)
 	if m.graphs != nil {
-		m.graphs.DiscardTransactionGraph(ctx, transactionID)
+		_ = m.graphs.DiscardTransactionGraph(finalizeCtx, transactionID)
 	}
-	if m.sessions != nil {
-		_, _ = m.sessions.RollbackTransaction(ctx, principalID, transactionID)
+	if m.sessions == nil {
+		return
+	}
+	tx, err := m.sessions.RollbackTransaction(finalizeCtx, principalID, transactionID)
+	if err != nil {
+		return
+	}
+	if m.graphs != nil {
+		_ = m.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx)
 	}
 }
 
 func isGraphConflict(err error) bool {
-	return errors.Is(err, graphservice.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
+	return errors.Is(err, graphchange.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
 }
 
 func newRunID() string { return uuid.NewString() }
@@ -337,7 +348,7 @@ func idempotencyElementID(def automation.Definition, run automation.Run, inv aut
 	return inv.ChangedElementID
 }
 
-func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run, imageInputs ...connectors.ImageInput) (string, error) {
+func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run, imageInputs ...domaininference.ImageInput) (string, error) {
 	if m.inference == nil {
 		run.Usage = automation.TokenUsage{Status: string(domaininference.UsageStatusFailed)}
 		return "", ErrInferenceUnavailable
@@ -392,10 +403,10 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 		}
 		metadata["image_input_total_bytes"] = totalBytes
 	}
-	resp, err := m.inference.Invoke(ctx, inferenceservice.InvokeRequest{Resolve: inferenceservice.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, ImageInputs: imageInputs, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata})
+	resp, err := m.inference.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, ImageInputs: imageInputs, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata})
 	populateRunFromInference(run, ref, resp)
 	if err != nil {
-		if errors.Is(err, inferenceservice.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
+		if errors.Is(err, inferenceruntime.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
 			return "", fmt.Errorf("%w: %s", err, resp.Decision.Reason)
 		}
 		return "", err
@@ -421,7 +432,7 @@ func parseOptionalUUID(value string) (uuid.UUID, error) {
 	return uuid.Parse(value)
 }
 
-func populateRunFromInference(run *automation.Run, ref automation.InferenceRef, resp inferenceservice.InvokeResponse) {
+func populateRunFromInference(run *automation.Run, ref automation.InferenceRef, resp inferenceruntime.InvokeResponse) {
 	run.InferenceProfile = strings.TrimSpace(ref.Profile)
 	if resp.Decision.ProfileID != uuid.Nil {
 		run.InferenceProfileID = resp.Decision.ProfileID.String()

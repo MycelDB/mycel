@@ -10,11 +10,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphsvc "github.com/myceldb/mycel/internal/graph/service"
 	hybridsearch "github.com/myceldb/mycel/internal/search/hybrid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 func TestSemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
@@ -24,7 +25,7 @@ func TestSemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	domainID := uuid.New()
 
 	writeTx := searchHydrationGraphTx(spaceID.String(), domainID.String(), 0)
-	node, err := graphs.CreateNode(ctx, writeTx, graphsvc.NodeInput{Content: "semantic hit", Props: map[string]any{"kind": "note"}})
+	node, err := graphs.CreateNode(ctx, writeTx, graphmodel.NodeInput{Content: "semantic hit", Props: map[string]any{"kind": "note"}})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -57,7 +58,7 @@ func TestHybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	domainID := uuid.New()
 
 	writeTx := searchHydrationGraphTx(spaceID.String(), domainID.String(), 0)
-	node, err := graphs.CreateNode(ctx, writeTx, graphsvc.NodeInput{Content: "hybrid hit"})
+	node, err := graphs.CreateNode(ctx, writeTx, graphmodel.NodeInput{Content: "hybrid hit"})
 	if err != nil {
 		t.Fatalf("CreateNode() error = %v", err)
 	}
@@ -66,7 +67,10 @@ func TestHybridSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	}
 
 	service := &SearchService{graphs: graphs}
-	nodes, warnings := service.loadHybridNodes(ctx, uuid.NewString(), spaceID, domainID, []hybridsearch.Result{{NodeID: node.ID.String(), Score: 1}})
+	nodes, warnings, err := service.loadHybridNodes(ctx, uuid.NewString(), spaceID, domainID, []hybridsearch.Result{{NodeID: node.ID.String(), Score: 1}})
+	if err != nil {
+		t.Fatalf("loadHybridNodes() error = %v", err)
+	}
 	if len(warnings) != 0 {
 		t.Fatalf("loadHybridNodes() warnings = %v, want none", warnings)
 	}
@@ -89,7 +93,7 @@ func newSearchHydrationGraphModule(t *testing.T, ctx context.Context) *graphsvc.
 	return m
 }
 
-func searchHydrationGraphTx(spaceID string, domainID string, baseRevision int64) daemonsession.GraphTransaction {
+func searchHydrationGraphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
-	return daemonsession.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: daemonsession.TransactionModeReadWrite, State: daemonsession.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
 }

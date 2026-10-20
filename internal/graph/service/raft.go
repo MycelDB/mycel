@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +16,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/metadata"
@@ -39,13 +41,18 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	return s.Module.applyGraphRaftCommand(ctx, apply, cmd, s.PartitionCount)
 }
 
-func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []GraphChange, error) {
+func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []graphchange.Change, error) {
 	if err := normalizeGraphCommitRecordDomain(&record); err != nil {
 		return graphchange.CommittedEvent{}, nil, err
 	}
 	store, err := m.store(ctx, record.SpaceID, record.DomainID)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err
+	}
+	if record.Idempotency != nil && record.Idempotency.Metadata.Event != nil {
+		event := *record.Idempotency.Metadata.Event
+		event.Normalize()
+		return event, append([]graphchange.Change(nil), event.Changes...), nil
 	}
 	snapshot := &overlay{putNodes: map[domaingraph.NodeID]domaingraph.Node{}, deleteNodes: map[domaingraph.NodeID]struct{}{}, putEdges: map[domaingraph.EdgeID]domaingraph.Edge{}, deleteEdges: map[domaingraph.EdgeID]struct{}{}, opCount: record.OperationCount}
 	for _, node := range record.PutNodes {
@@ -64,7 +71,7 @@ func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record grap
 	if strings.TrimSpace(domainID) == "" {
 		domainID = firstRecordDomainID(record)
 	}
-	tx := daemonsession.GraphTransaction{ID: commandID, SpaceID: record.SpaceID, DomainID: domainID, Origin: record.Origin}
+	tx := sessionmodel.GraphTransaction{ID: commandID, SpaceID: record.SpaceID, DomainID: domainID, Origin: record.Origin}
 	event, err := m.graphChangeEvent(ctx, tx, store, snapshot)
 	if err != nil {
 		return graphchange.CommittedEvent{}, nil, err
@@ -131,6 +138,14 @@ func graphRaftCommandID(ctx context.Context, txID string) string {
 	return "graph-commit-" + txID
 }
 
+func graphRaftCommandIDForRecord(ctx context.Context, txID string, record graphCommitRecord) string {
+	if record.Idempotency == nil {
+		return graphRaftCommandID(ctx, txID)
+	}
+	sum := sha256.Sum256([]byte(record.Idempotency.Scope + "\x00" + record.Idempotency.Key + "\x00" + record.Idempotency.Digest + "\x00" + record.Idempotency.Metadata.CommitID))
+	return "graph-commit-idempotency-v1-" + hex.EncodeToString(sum[:])
+}
+
 func graphIdempotencyKeyFromContext(ctx context.Context) string {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -176,6 +191,9 @@ func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.Raft
 	}
 	result, err := group.Propose(ctx, cmd)
 	if err != nil {
+		if errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity) {
+			return consensus.ProposalResult{}, err
+		}
 		return consensus.ProposalResult{}, raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)
 	}
 	return result, nil
@@ -226,8 +244,13 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	if err != nil {
 		return err
 	}
-	revision, _, _, err := m.applyGraphCommitRecord(ctx, record)
+	revision, _, info, err := m.applyGraphCommitRecord(ctx, record)
 	if err != nil {
+		if record.Idempotency != nil && (errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity)) {
+			// Expected idempotency rejections are committed Raft no-ops. Persist
+			// the marker so replay cannot turn one into a later mutation.
+			return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+		}
 		if errors.Is(err, ErrConflict) {
 			alreadyApplied, verifyErr := m.graphCommitRecordEffectsPresent(ctx, record)
 			if verifyErr != nil {
@@ -250,6 +273,17 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	}
 	if err := m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID); err != nil {
 		return err
+	}
+	if info.Idempotency != nil {
+		store, err := m.store(ctx, record.SpaceID, record.DomainID)
+		if err != nil {
+			return err
+		}
+		_ = m.deliverIdempotencyEvent(ctx, store, *info.Idempotency)
+		return nil
+	}
+	if info.IdempotentReplay {
+		return nil
 	}
 	event.Changes = changes
 	m.notifyRaftApplyChangeSink(ctx, graphstorage.CommitInfo{TxnID: event.TxnID, NextRevision: uint64(revision)}, event)

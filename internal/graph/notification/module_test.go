@@ -146,6 +146,62 @@ func TestRegisterConsumerReceivesMatchingProjectedEvent(t *testing.T) {
 	}
 }
 
+func TestOnGraphCommittedDoesNotRedeliverPersistedRevision(t *testing.T) {
+	ctx := context.Background()
+	m := initTestModule(t)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	consumer := newRecordingConsumer()
+	reg, err := m.RegisterConsumer(ctx, ConsumerSpec{ConsumerName: "dedupe", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}}, consumer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	event := committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})
+	if err := m.OnGraphCommitted(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	consumer.wait(t)
+	if err := m.OnGraphCommitted(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	events, gaps := consumer.snapshot()
+	if len(events) != 1 || len(gaps) != 0 || m.Diagnostics().EventsPublished != 1 {
+		t.Fatalf("duplicate delivery events=%d gaps=%d diagnostics=%+v", len(events), len(gaps), m.Diagnostics())
+	}
+}
+
+func TestReplayOrdersOutOfOrderPublishedRevisions(t *testing.T) {
+	ctx := context.Background()
+	m := initTestModule(t)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	if err := m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 2, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})); err != nil {
+		t.Fatalf("OnGraphCommitted(2) error = %v", err)
+	}
+	if err := m.OnGraphCommitted(ctx, committedEvent(spaceID, domainID, 1, graphchange.Change{Type: graphchange.ChangeTypeNodeCreated, NodeID: uuid.NewString()})); err != nil {
+		t.Fatalf("OnGraphCommitted(1) error = %v", err)
+	}
+	current, err := m.CurrentRevision(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatalf("CurrentRevision() error = %v", err)
+	}
+	if current != 2 {
+		t.Fatalf("CurrentRevision() = %d, want 2", current)
+	}
+	consumer := newRecordingConsumer()
+	if err := m.Replay(ctx, ConsumerSpec{ConsumerName: "ordered", Scope: graphchange.Scope{SpaceID: spaceID, DomainID: domainID}, Projection: graphchange.Projection{IncludeRevision: true}}, consumer); err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	events, gaps := consumer.snapshot()
+	if len(gaps) != 0 || len(events) != 2 {
+		t.Fatalf("Replay() events=%d gaps=%d", len(events), len(gaps))
+	}
+	if eventRevision(events[0]) != 1 || eventRevision(events[1]) != 2 {
+		t.Fatalf("Replay() revisions = [%d, %d], want [1, 2]", eventRevision(events[0]), eventRevision(events[1]))
+	}
+}
+
 func TestRegisterConsumerReplaysAndReportsGap(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()

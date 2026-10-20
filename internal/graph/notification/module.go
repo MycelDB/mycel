@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -338,7 +339,7 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 	if event.ID == uuid.Nil {
 		event.ID = uuid.New()
 	}
-	event.Normalize()
+	event = event.NormalizedCopy()
 	if event.Empty() {
 		return nil
 	}
@@ -364,6 +365,7 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 		return err
 	}
 	registrations := make([]*registration, 0, len(m.registrations))
+	insertedAny := false
 	for _, domainID := range domainIDs {
 		key := scopeKey(spaceID, domainID.String())
 		if err := m.loadHistoryLocked(key, spaceID, domainID.String()); err != nil {
@@ -371,14 +373,25 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 			m.mu.Unlock()
 			return err
 		}
-		m.history[key] = append(m.history[key], event)
-		m.current[key] = eventRevision(event)
+		var inserted bool
+		m.history[key], inserted = insertHistoryEvent(m.history[key], event)
+		if !inserted {
+			continue
+		}
+		insertedAny = true
+		if revision := eventRevision(event); revision > m.current[key] {
+			m.current[key] = revision
+		}
 		m.compactHistoryLocked(key)
 		if err := m.persistHistoryLocked(key, spaceID, domainID.String()); err != nil {
 			m.recordFailureLocked(err)
 			m.mu.Unlock()
 			return err
 		}
+	}
+	if !insertedAny {
+		m.mu.Unlock()
+		return nil
 	}
 	m.diagnostics.EventsPublished++
 	if leaderGate != nil {
@@ -753,6 +766,7 @@ func (m *Module) loadHistoryLocked(key, spaceID, domainID string) error {
 	} else if state.CurrentRevision > m.current[key] {
 		m.current[key] = state.CurrentRevision
 	}
+	m.history[key] = normalizeHistoryEvents(m.history[key])
 	m.compactHistoryLocked(key)
 	return nil
 }
@@ -850,7 +864,7 @@ func (m *Module) currentStatePath(spaceID, domainID string) string {
 }
 
 func matchesSpec(event graphchange.CommittedEvent, spec ConsumerSpec) bool {
-	event.Normalize()
+	event = event.NormalizedCopy()
 	if spec.Scope.SpaceID != "" && event.SpaceID.String() != strings.TrimSpace(spec.Scope.SpaceID) {
 		return false
 	}
@@ -1012,6 +1026,33 @@ func eventRevision(event graphchange.CommittedEvent) uint64 {
 		return event.Revision
 	}
 	return event.GraphRevision
+}
+
+func insertHistoryEvent(events []graphchange.CommittedEvent, event graphchange.CommittedEvent) ([]graphchange.CommittedEvent, bool) {
+	revision := eventRevision(event)
+	index := sort.Search(len(events), func(i int) bool { return eventRevision(events[i]) >= revision })
+	if index < len(events) && eventRevision(events[index]) == revision {
+		return events, false
+	}
+	events = append(events, graphchange.CommittedEvent{})
+	copy(events[index+1:], events[index:])
+	events[index] = event
+	return events, true
+}
+
+func normalizeHistoryEvents(events []graphchange.CommittedEvent) []graphchange.CommittedEvent {
+	if len(events) < 2 {
+		return events
+	}
+	sort.SliceStable(events, func(i, j int) bool { return eventRevision(events[i]) < eventRevision(events[j]) })
+	out := events[:0]
+	for _, event := range events {
+		if len(out) > 0 && eventRevision(out[len(out)-1]) == eventRevision(event) {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out
 }
 
 func scopeKey(spaceID, domainID string) string {

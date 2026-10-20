@@ -155,7 +155,7 @@ Current snapshot capability matrix:
 - system metadata: snapshot-capable and covered by snapshot-only restart/catch-up tests;
 - identity user/admin: initial system snapshot/restore for users/admins and refresh sessions;
 - backup: initial system snapshot/restore for policy only; running jobs and local archives are not authoritative snapshot state;
-- space/schema/graph: initial partition snapshot/restore; graph V1 snapshots are latest-state plus revision, not full tombstone history;
+- space/schema/graph: initial partition snapshot/restore; graph V2 snapshots contain latest state, revision, and live durable transaction-idempotency records, but not full tombstone history; v0.20 can also restore graph V1 snapshots;
 - blob: initial metadata snapshot/restore with fail-closed payload availability validation; payload bytes are not embedded in raft snapshots;
 - semantic: initial system/partition metadata snapshot/restore; vector indexes are derived/rebuildable, and running maintenance work is restored as pending;
 - automation/change-stream: not current composite raft children; local/worker state is not snapshotted as raft-authoritative state.
@@ -163,6 +163,26 @@ Current snapshot capability matrix:
 Use `mycel cluster raft-groups` to inspect each local group's `last_index` and `snapshot_index`. A nonzero `snapshot_index` indicates raft storage has a persisted snapshot for that group. Snapshot catch-up is only for admitted replicas in one authoritative cluster; it is not a divergent-PVC merge or repair workflow.
 
 If snapshot restore fails, keep the node out of service, preserve its PVC, collect daemon logs and `meta/raft/*/snapshot.pb` evidence, and rejoin from a known-good/fresh replica only after Phase G consistency evidence is understood. Do not copy graph/blob/semantic directories between divergent PVCs.
+
+### v0.20 graph snapshot upgrade and downgrade
+
+Mycel v0.20 writes graph Raft snapshot format V2 so live durable transaction-idempotency bindings survive snapshot restore. It can restore V1 or V2 graph snapshots. Daemons before v0.20 are not expected to restore graph V2 snapshots. The explicit `mycel cluster raft-snapshot create` command can write V2 snapshots immediately and compacts through the snapshot index by default, even though automatic compaction is disabled.
+
+Before starting any v0.20 daemon on existing cluster PVCs:
+
+1. Stop application writes and verify cluster health and graph consistency.
+2. Create and validate a [coordinated cluster backup](cluster-system-backup-restore.md) with the currently deployed pre-v0.20 daemon.
+3. Take storage-provider snapshots or offline copies of every ordinal's PVC while the cluster is stopped. Keep the ordinal-to-PVC mapping and cluster identity evidence with the backup.
+4. For an additional logical escape path, export each required domain, including blobs when needed, using the [export workflow](../cli/export.md). Record the space/domain/schema and identity setup needed to recreate the target before using the [domain import workflow](../cli/import.md).
+5. Keep those pre-upgrade artifacts immutable until the v0.20 rollback window closes.
+
+To downgrade after any v0.20 daemon has started:
+
+- Stop all daemons and preserve the upgraded PVCs before attempting recovery.
+- Do not start an older daemon against an upgraded PVC, delete `snapshot.pb`, remove V2 idempotency records, or mix files from different ordinals.
+- Preferred: restore the complete validated pre-upgrade backup or the complete set of pre-upgrade PVC snapshots into fresh/empty PVCs, preserving ordinal placement, then validate identity, Raft groups, health, and application data before reopening writes.
+- If no compatible physical backup exists, create a fresh cluster with the older daemon, recreate required principals/spaces/domains/schemas, and import previously exported domain data through normal APIs. Do not treat a post-upgrade V2 Raft snapshot or post-upgrade system backup as an older-daemon restore artifact.
+- A downgrade loses the v0.20 retained idempotency ledger. Do not automatically retry unresolved v0.20 commits after downgrade; reconcile their original commit outcome first to avoid duplicate graph effects.
 
 ## Existing pinned-pod split-brain migration warning
 

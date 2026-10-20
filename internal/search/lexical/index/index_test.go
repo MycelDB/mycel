@@ -1,6 +1,10 @@
 package index
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
@@ -92,6 +96,96 @@ func TestSearchPaginationStableTieOrdering(t *testing.T) {
 	if second.NextPageToken != "" || second.Diagnostics.Truncated {
 		t.Fatalf("second page token/truncated = %q/%v", second.NextPageToken, second.Diagnostics.Truncated)
 	}
+	offsetPage, err := searcher.Search(expr, SearchOptions{PageSize: 2, Offset: 1})
+	if err != nil {
+		t.Fatalf("Search offset page returned error: %v", err)
+	}
+	if got := resultIDs(offsetPage.Results); len(got) != 2 || got[0] != "node-b" || got[1] != "node-c" {
+		t.Fatalf("offset page = %#v", got)
+	}
+	if _, err := searcher.Search(expr, SearchOptions{PageSize: 1, Offset: 1, PageToken: first.NextPageToken}); err == nil {
+		t.Fatal("Search with offset and page token returned nil error")
+	}
+	compatibleRaw, err := json.Marshal(map[string]any{"cursor": map[string]any{"offset": 99}, "offset": 1, "checksum": "new-token-fields-are-ignored"})
+	if err != nil {
+		t.Fatalf("marshal compatible token: %v", err)
+	}
+	compatiblePage, err := searcher.Search(expr, SearchOptions{PageSize: 1, PageToken: base64.RawURLEncoding.EncodeToString(compatibleRaw)})
+	if err != nil {
+		t.Fatalf("Search with new envelope token returned error: %v", err)
+	}
+	if got := resultIDs(compatiblePage.Results); len(got) != 1 || got[0] != "node-b" {
+		t.Fatalf("compatible envelope page = %#v, want [node-b]", got)
+	}
+}
+
+func TestSearchBroadTerm10000DeterministicFirstPage(t *testing.T) {
+	searcher, expr := broadTermSearcher(t, 10_000)
+	first, err := searcher.Search(expr, SearchOptions{PageSize: 20})
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if len(first.Results) != 20 {
+		t.Fatalf("results = %d, want 20", len(first.Results))
+	}
+	if first.Results[0].NodeID != "node-00000" || first.Results[19].NodeID != "node-00019" {
+		t.Fatalf("first page bounds = %q..%q", first.Results[0].NodeID, first.Results[19].NodeID)
+	}
+	if first.Results[0].Score <= 0 || first.Results[0].Score != first.Results[19].Score {
+		t.Fatalf("tied scores = %v..%v", first.Results[0].Score, first.Results[19].Score)
+	}
+	if first.Diagnostics != (Diagnostics{SegmentsSearched: 1, PostingsListsScanned: 1, CandidateCount: 10_000, Truncated: true}) {
+		t.Fatalf("diagnostics = %#v", first.Diagnostics)
+	}
+	if first.NextPageToken == "" {
+		t.Fatal("next page token is empty")
+	}
+	repeated, err := searcher.Search(expr, SearchOptions{PageSize: 20})
+	if err != nil {
+		t.Fatalf("repeated Search returned error: %v", err)
+	}
+	if !reflect.DeepEqual(repeated, first) {
+		t.Fatal("repeated first page is not deterministic")
+	}
+	second, err := searcher.Search(expr, SearchOptions{PageSize: 20, PageToken: first.NextPageToken})
+	if err != nil {
+		t.Fatalf("second page Search returned error: %v", err)
+	}
+	if len(second.Results) != 20 || second.Results[0].NodeID != "node-00020" || second.Results[19].NodeID != "node-00039" {
+		t.Fatalf("second page = %#v", resultIDs(second.Results))
+	}
+}
+
+func BenchmarkSearchBroadTerm10000FirstPage(b *testing.B) {
+	searcher, expr := broadTermSearcher(b, 10_000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res, err := searcher.Search(expr, SearchOptions{PageSize: 20})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(res.Results) != 20 || res.Diagnostics.CandidateCount != 10_000 {
+			b.Fatalf("unexpected response: results=%d diagnostics=%#v", len(res.Results), res.Diagnostics)
+		}
+	}
+}
+
+func broadTermSearcher(tb testing.TB, count int) (*Searcher, *query.Node) {
+	tb.Helper()
+	docs := make([]IndexedDocument, count)
+	for i := range docs {
+		docs[i] = doc(fmt.Sprintf("node-%05d", i), 1, "latencyprobe")
+	}
+	segment, err := BuildSegment("broad", docs, BuildOptions{Analyzer: analyzer.New()})
+	if err != nil {
+		tb.Fatalf("BuildSegment returned error: %v", err)
+	}
+	parsed, err := parser.Parse("latencyprobe")
+	if err != nil {
+		tb.Fatalf("Parse returned error: %v", err)
+	}
+	return NewSearcher([]storage.SegmentData{segment}), parsed.Expr
 }
 
 func doc(nodeID string, revision uint64, text string) IndexedDocument {

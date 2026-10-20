@@ -105,7 +105,7 @@ func TestGraphQueryAndMetadataServicesUseRouter(t *testing.T) {
 	}
 
 	router = &fakeClientRequestRouter{}
-	querySvc := NewQueryService(nil, nil, nil).WithClientRequestRouter(router)
+	querySvc := NewQueryService(nil, nil).WithClientRequestRouter(router)
 	if _, err := querySvc.ExecuteQuery(ctx, &clientv1.ExecuteQueryRequest{TransactionId: "tx.2.00000000-0000-0000-0000-000000000002"}); err != nil {
 		t.Fatalf("Query ExecuteQuery() error = %v", err)
 	}

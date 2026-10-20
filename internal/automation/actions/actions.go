@@ -9,12 +9,20 @@ import (
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/output"
 	graph "github.com/myceldb/mycel/internal/graph/model"
-	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	execmodel "github.com/myceldb/mycel/internal/query/gql/execution/model"
-	sessionservice "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
-type Engine struct{ Graphs graphservice.Manager }
+type Graphs interface {
+	GetNode(ctx context.Context, tx sessionmodel.GraphTransaction, nodeID string) (graph.Node, error)
+	ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Node, string, error)
+	ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction, pageSize int, pageToken string) ([]graph.Edge, string, error)
+	CreateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.NodeInput) (graph.Node, error)
+	UpdateNode(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.UpdateNodeInput) (graph.Node, error)
+	CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input graph.EdgeInput) (graph.Edge, error)
+}
+
+type Engine struct{ Graphs Graphs }
 
 type Context struct {
 	Definition           automation.Definition
@@ -36,7 +44,7 @@ type Summary struct {
 	Changed   bool
 }
 
-func (e Engine) OutputAlreadyApplied(ctx context.Context, tx sessionservice.GraphTransaction, outputIdempotencyKey string) (bool, error) {
+func (e Engine) OutputAlreadyApplied(ctx context.Context, tx sessionmodel.GraphTransaction, outputIdempotencyKey string) (bool, error) {
 	key := strings.TrimSpace(outputIdempotencyKey)
 	if key == "" {
 		return false, nil
@@ -94,7 +102,7 @@ func automationOutputKey(meta map[string]any) string {
 	}
 }
 
-func (e Engine) Apply(ctx context.Context, tx sessionservice.GraphTransaction, in Context) (Summary, error) {
+func (e Engine) Apply(ctx context.Context, tx sessionmodel.GraphTransaction, in Context) (Summary, error) {
 	if e.Graphs == nil {
 		return Summary{}, fmt.Errorf("graph manager is required")
 	}
@@ -116,7 +124,7 @@ func (e Engine) Apply(ctx context.Context, tx sessionservice.GraphTransaction, i
 	return summary, nil
 }
 
-func (e Engine) applyAction(ctx context.Context, tx sessionservice.GraphTransaction, in Context, refs map[string]string, action automation.Action) (Summary, error) {
+func (e Engine) applyAction(ctx context.Context, tx sessionmodel.GraphTransaction, in Context, refs map[string]string, action automation.Action) (Summary, error) {
 	switch {
 	case action.UpdateNode != nil:
 		return e.updateNode(ctx, tx, in, *action.UpdateNode)
@@ -131,7 +139,7 @@ func (e Engine) applyAction(ctx context.Context, tx sessionservice.GraphTransact
 	}
 }
 
-func (e Engine) updateNode(ctx context.Context, tx sessionservice.GraphTransaction, in Context, action automation.UpdateNodeAction) (Summary, error) {
+func (e Engine) updateNode(ctx context.Context, tx sessionmodel.GraphTransaction, in Context, action automation.UpdateNodeAction) (Summary, error) {
 	node, err := e.resolveUpdateTarget(ctx, tx, in, action.Target)
 	if err != nil {
 		return Summary{}, err
@@ -152,14 +160,14 @@ func (e Engine) updateNode(ctx context.Context, tx sessionservice.GraphTransacti
 		return Summary{Changed: false}, nil
 	}
 	tagAutomation(&node, in)
-	_, err = e.Graphs.UpdateNode(ctx, tx, graphservice.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props, AutomationOutputFence: true})
+	_, err = e.Graphs.UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props, AutomationOutputFence: true})
 	if err != nil {
 		return Summary{}, err
 	}
 	return Summary{Mutations: 1, Changed: true}, nil
 }
 
-func (e Engine) resolveUpdateTarget(ctx context.Context, tx sessionservice.GraphTransaction, in Context, target string) (graph.Node, error) {
+func (e Engine) resolveUpdateTarget(ctx context.Context, tx sessionmodel.GraphTransaction, in Context, target string) (graph.Node, error) {
 	target = strings.TrimSpace(target)
 	if target == "" || target == "changed" {
 		return in.Changed, nil
@@ -207,7 +215,7 @@ func aliasNodeID(value any) (string, bool) {
 	}
 }
 
-func (e Engine) createNode(ctx context.Context, tx sessionservice.GraphTransaction, in Context, refs map[string]string, action automation.CreateNodeAction) (Summary, error) {
+func (e Engine) createNode(ctx context.Context, tx sessionmodel.GraphTransaction, in Context, refs map[string]string, action automation.CreateNodeAction) (Summary, error) {
 	items, err := output.Items(in.Result, action.ForEach)
 	if err != nil {
 		return Summary{}, err
@@ -223,7 +231,7 @@ func (e Engine) createNode(ctx context.Context, tx sessionservice.GraphTransacti
 			return summary, err
 		}
 		meta := automationMeta(in)
-		created, err := e.Graphs.CreateNode(ctx, tx, graphservice.NodeInput{Labels: append([]string(nil), action.Labels...), Properties: props, Payload: payload, Meta: meta, AutomationOutputFence: true})
+		created, err := e.Graphs.CreateNode(ctx, tx, graph.NodeInput{Labels: append([]string(nil), action.Labels...), Properties: props, Payload: payload, Meta: meta, AutomationOutputFence: true})
 		if err != nil {
 			return summary, err
 		}
@@ -236,7 +244,7 @@ func (e Engine) createNode(ctx context.Context, tx sessionservice.GraphTransacti
 	return summary, nil
 }
 
-func (e Engine) createEdge(ctx context.Context, tx sessionservice.GraphTransaction, in Context, refs map[string]string, action automation.EdgeAction, upsert bool) (Summary, error) {
+func (e Engine) createEdge(ctx context.Context, tx sessionmodel.GraphTransaction, in Context, refs map[string]string, action automation.EdgeAction, upsert bool) (Summary, error) {
 	items, err := output.Items(in.Result, action.ForEach)
 	if err != nil {
 		return Summary{}, err
@@ -258,7 +266,7 @@ func (e Engine) createEdge(ctx context.Context, tx sessionservice.GraphTransacti
 		if upsert && e.edgeExists(ctx, tx, from, to, action.Label) {
 			continue
 		}
-		_, err = e.Graphs.CreateEdge(ctx, tx, graphservice.EdgeInput{FromNodeID: from, ToNodeID: to, Labels: []string{action.Label}, Properties: props, Meta: automationMeta(in), AutomationOutputFence: true})
+		_, err = e.Graphs.CreateEdge(ctx, tx, graph.EdgeInput{FromNodeID: from, ToNodeID: to, Labels: []string{action.Label}, Properties: props, Meta: automationMeta(in), AutomationOutputFence: true})
 		if err != nil {
 			return summary, err
 		}
@@ -268,7 +276,7 @@ func (e Engine) createEdge(ctx context.Context, tx sessionservice.GraphTransacti
 	return summary, nil
 }
 
-func (e Engine) edgeExists(ctx context.Context, tx sessionservice.GraphTransaction, from, to, label string) bool {
+func (e Engine) edgeExists(ctx context.Context, tx sessionmodel.GraphTransaction, from, to, label string) bool {
 	token := ""
 	for {
 		edges, next, err := e.Graphs.ListEdges(ctx, tx, 500, token)

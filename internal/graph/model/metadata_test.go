@@ -55,6 +55,18 @@ func TestNormalizeCustomPropertiesValueRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestPropertyReadsCanonicalAndLegacyNestedCustomProperties(t *testing.T) {
+	for _, node := range []Node{
+		{Properties: map[string]any{"properties": map[string]any{"Status": "active"}}},
+		{Props: map[string]any{"properties": map[string]any{"Status": "active"}}},
+	} {
+		value, ok := Property(node, "status")
+		if !ok || value != "active" {
+			t.Fatalf("Property() = %#v, %v for node %#v", value, ok, node)
+		}
+	}
+}
+
 func TestNormalizeNodeMetadataPropsOnlyNormalizesCanonicalMetadataKeys(t *testing.T) {
 	props, err := NormalizeNodeMetadataProps(map[string]any{
 		"tags":       []any{"Project"},

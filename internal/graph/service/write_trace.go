@@ -10,7 +10,7 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/graph/writetrace"
-	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 type graphStageTiming struct {
@@ -79,7 +79,7 @@ func (r *graphSinkTimingRecorder) RecordGraphChangeSinkTiming(name string, durat
 	r.timings = append(r.timings, entry)
 }
 
-func (m *Module) logGraphStageTiming(operation string, tx daemonsession.GraphTransaction, counts map[string]int, timing graphStageTiming) {
+func (m *Module) logGraphStageTiming(operation string, tx sessionmodel.GraphTransaction, counts map[string]int, timing graphStageTiming) {
 	if m == nil || m.logger == nil || !m.writeTrace.ShouldLog(timing.Total) {
 		return
 	}
@@ -104,7 +104,7 @@ func (m *Module) logGraphStageTiming(operation string, tx daemonsession.GraphTra
 	m.logger.Info("graph write stage timing", attrs...)
 }
 
-func (m *Module) logGraphCommitTiming(tx daemonsession.GraphTransaction, counts map[string]int, committedRevision int64, timing graphCommitTiming) {
+func (m *Module) logGraphCommitTiming(tx sessionmodel.GraphTransaction, counts map[string]int, committedRevision int64, timing graphCommitTiming) {
 	if m == nil || m.logger == nil || !m.writeTrace.ShouldLog(timing.Total) {
 		return
 	}
