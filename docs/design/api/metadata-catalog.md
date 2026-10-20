@@ -24,7 +24,7 @@ docs/design/api/query.md
 
 The current daemon implementation scans the active graph transaction read context, including staged writes in read-write transactions.
 
-It lists known canonical tags and custom property names visible through that transaction context. Read-only transactions use current committed graph reads in V1 rather than pinned historical snapshots.
+It lists known canonical tags and custom property names visible through that transaction context. After the strong-read barrier, read-only transactions use the graph snapshot pinned to the transaction's `base_revision`.
 
 Metadata filtering/search belongs in `QueryService`, not this service, so graph relationships and metadata predicates can be composed in a single query.
 
