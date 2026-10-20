@@ -190,9 +190,18 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
 	}
+	configurationChanged := domainsemantic.SemanticRuleConfigurationHash(existing) != domainsemantic.SemanticRuleConfigurationHash(rule)
 	updated, err := spaceMgr.UpsertSemanticRule(ctx, rule)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "update semantic rule")
+	}
+	if configurationChanged {
+		if err := s.semantic.MarkRuleConfigurationChanged(ctx, spaceID, updated); err != nil {
+			if _, rollbackErr := spaceMgr.UpsertSemanticRule(ctx, existing); rollbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore semantic rule after reliability-state failure: %w", rollbackErr))
+			}
+			return nil, mapAdminSemanticError(err, "mark semantic rule rebuild required")
+		}
 	}
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {

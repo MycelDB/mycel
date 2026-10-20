@@ -65,8 +65,14 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		}
 		successfulSearches++
 		groupCount := 0
+		configurationHash := domainsemantic.SemanticRecordConfigurationHash(item.rule, item.binding, query.EndpointID, query.ModelID, query.CapabilityID, vectorSpaceKey, len(query.Vector))
+		staleConfiguration := false
 		for _, result := range results {
 			rec := result.Record
+			if rec.SemanticConfigurationHash == "" || rec.SemanticConfigurationHash != configurationHash {
+				staleConfiguration = true
+				continue
+			}
 			semanticRuleID := result.SemanticRuleID
 			if semanticRuleID == uuid.Nil {
 				semanticRuleID = item.rule.ID
@@ -79,8 +85,11 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 			if targetID == uuid.Nil {
 				targetID = result.NodeID
 			}
-			res.Results = append(res.Results, SearchResult{SemanticRuleID: semanticRuleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: result.SemanticIndexID, NodeID: result.NodeID, TargetNodeID: targetID, RecordID: rec.ID, MatchedRecordIDs: []domainsemantic.AdvancedEmbeddingRecordID{rec.ID}, MatchedBindings: []MatchedBinding{{SemanticRuleID: semanticRuleID, EmbeddingBindingKey: bindingKey, RecordID: rec.ID, Score: result.Score}}, Score: result.Score, ModelEndpointID: rec.ModelEndpointID, ModelID: rec.ModelID, VectorStoreID: rec.VectorStoreID, CredentialGrantID: rec.CredentialGrantID, VectorSpaceKey: rec.VectorSpaceKey, SourceHash: rec.SourceHash, SourceMode: rec.SourceMode, CreatedAt: rec.CreatedAt})
+			res.Results = append(res.Results, SearchResult{SemanticRuleID: semanticRuleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: result.SemanticIndexID, NodeID: result.NodeID, TargetNodeID: targetID, RecordID: rec.ID, MatchedRecordIDs: []domainsemantic.AdvancedEmbeddingRecordID{rec.ID}, MatchedBindings: []MatchedBinding{{SemanticRuleID: semanticRuleID, EmbeddingBindingKey: bindingKey, RecordID: rec.ID, Score: result.Score}}, Score: result.Score, ModelEndpointID: rec.ModelEndpointID, ModelID: rec.ModelID, VectorStoreID: rec.VectorStoreID, CredentialGrantID: rec.CredentialGrantID, VectorSpaceKey: rec.VectorSpaceKey, SourceHash: rec.SourceHash, SourceGraphRevision: rec.SourceGraphRevision, SemanticGeneration: rec.SemanticGeneration, SemanticConfigurationHash: rec.SemanticConfigurationHash, RebuildEpoch: rec.RebuildEpoch, IntelligenceProfileID: rec.IntelligenceProfileID, ModelEndpointCapabilityID: rec.ModelEndpointCapabilityID, Dimensions: rec.Dimensions, SourceMode: rec.SourceMode, CreatedAt: rec.CreatedAt})
 			groupCount++
+		}
+		if staleConfiguration {
+			addWarning(&res, Warning{Code: "semantic_generation_stale", Message: fmt.Sprintf("rule %s binding %q has stale records and requires rebuild", item.rule.Key, item.binding.Key), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key})
 		}
 		res.Groups = append(res.Groups, GroupSummary{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, VectorSpaceKey: vectorSpaceKey, ModelEndpointID: query.EndpointID, ModelID: query.ModelID, CredentialGrantID: query.CredentialGrantID, SemanticIndexIDs: []domainsemantic.SemanticIndexID{domainsemantic.SemanticIndexID(item.rule.ID)}, SemanticRuleIDs: []domainsemantic.SemanticRuleID{item.rule.ID}, ResultCount: groupCount})
 	}

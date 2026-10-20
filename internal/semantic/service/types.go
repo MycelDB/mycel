@@ -76,6 +76,9 @@ type Manager interface {
 	PurgeVectorIndex(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) error
 	EncryptSecret(ctx context.Context, plain string) (*domainsemantic.EncryptedSecretPayload, error)
 	GetMaintenanceStatus(ctx context.Context, in MaintenanceStatusInput) (MaintenanceStatus, error)
+	GetReliabilityStatus(ctx context.Context, in ReliabilityStatusInput) (ReliabilityStatus, error)
+	RebuildSemanticRule(ctx context.Context, in RebuildInput) (RebuildResult, error)
+	MarkRuleConfigurationChanged(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error
 	ListMaintenanceWork(ctx context.Context, in MaintenanceWorkListInput) ([]MaintenanceWorkItem, error)
 	RetryMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error)
 	CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error)
@@ -122,6 +125,51 @@ type MaintenanceStatus struct {
 	WorkerRuns                int
 }
 
+type ReliabilityStatusInput struct {
+	SpaceID             domainspace.SpaceID
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+}
+
+type ReliabilityStatus struct {
+	SpaceID                       domainspace.SpaceID
+	SemanticRuleID                domainsemantic.SemanticRuleID
+	EmbeddingBindingKey           string
+	LatestObservedGraphRevision   uint64
+	AnalyzedThroughGraphRevision  uint64
+	FreshThroughGraphRevision     uint64
+	UnresolvedGapCount            uint64
+	OldestUnresolvedGraphRevision uint64
+	ConfiguredFrontierLimit       uint64
+	ConfiguredGapIntervalLimit    uint64
+	ConfiguredRevisionSpanLimit   uint64
+	ConfiguredSerializedByteLimit uint64
+	RetainedWorkItemCount         uint64
+	RetainedGapIntervalCount      uint64
+	RetainedRevisionSpan          uint64
+	RetainedSerializedBytes       uint64
+	SemanticGeneration            uint64
+	CapacityState                 string
+	Degraded                      bool
+	DegradedReason                string
+	RebuildRequired               bool
+	Rebuild                       domainsemantic.SemanticReliabilityState
+}
+
+type RebuildInput struct {
+	SpaceID               domainspace.SpaceID
+	SemanticRuleID        domainsemantic.SemanticRuleID
+	EmbeddingBindingKey   string
+	BackfillLimit         int
+	MaintenanceBatchLimit int
+	MaxCatchupIterations  int
+}
+
+type RebuildResult struct {
+	Reliability ReliabilityStatus
+	Backfill    semanticbackfill.Result
+}
+
 type MaintenanceWorkListInput struct {
 	SpaceID             domainspace.SpaceID
 	Status              string
@@ -152,6 +200,9 @@ type MaintenanceWorkItem struct {
 	LastErrorMessageSanitized string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
+	FirstGraphRevision        uint64
+	LastGraphRevision         uint64
+	Generation                uint64
 }
 
 type ProcessInput struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -673,9 +674,15 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 		}
 	}()
 	active := map[consensus.NodeID]bool{1: true, 2: true, 3: true}
+	var activeMu sync.RWMutex
+	isActive := func(id consensus.NodeID) bool {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		return active[id]
+	}
 	tickActive := func() {
 		for id, mg := range groupsByNode {
-			if active[id] {
+			if isActive(id) {
 				mg.Tick()
 			}
 		}
@@ -702,7 +709,7 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 	leaderForPartition := func() consensus.NodeID {
 		counts := map[consensus.NodeID]int{}
 		for id, mg := range groupsByNode {
-			if !active[id] {
+			if !isActive(id) {
 				continue
 			}
 			if g, ok := mg.Group(consensus.PartitionGroupID(probe.PartitionID)); ok && g.Leader() != 0 {
@@ -710,7 +717,7 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 			}
 		}
 		for leader, count := range counts {
-			if active[leader] && count >= 2 {
+			if isActive(leader) && count >= 2 {
 				return leader
 			}
 		}
@@ -720,7 +727,9 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 		t.Fatalf("initial leader not elected: %v", err)
 	}
 	oldLeader := leaderForPartition()
+	activeMu.Lock()
 	active[oldLeader] = false
+	activeMu.Unlock()
 	groupsByNode[oldLeader].Stop()
 	for _, router := range routers {
 		router.UnregisterNode(oldLeader)
@@ -741,7 +750,7 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 		t.Fatalf("UpsertSemanticIndex() after failover error = %v", err)
 	}
 	for nodeID, m := range modules {
-		if !active[nodeID] {
+		if !isActive(nodeID) {
 			continue
 		}
 		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {

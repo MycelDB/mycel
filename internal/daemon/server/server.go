@@ -239,7 +239,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	clientv1.RegisterImportExportServiceServer(grpcServer, importExportAPI)
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, metadataCatalogAPI)
-	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))
+	semanticCursorKey, deriveErr := cfg.TokenManager.DeriveKey("direct-semantic-cursor-v1")
+	if deriveErr != nil {
+		return nil, fmt.Errorf("derive semantic cursor integrity key: %w", deriveErr)
+	}
+	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager, semanticCursorKey))
 	graphChangeAPI := clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager)
 	if checker, ok := cfg.GraphManager.(clientapi.TransactionGraphWriteLeaderChecker); ok {
 		graphChangeAPI.WithGraphWriteLeaderChecker(checker)

@@ -42,6 +42,44 @@ func (s *AdminSemanticMaintenanceService) GetSemanticMaintenanceStatus(ctx conte
 	return &adminv1.GetSemanticMaintenanceStatusResponse{Enabled: res.Enabled, Degraded: res.Degraded, DegradedReason: res.DegradedReason, QueueDepthPending: int32(res.QueueDepthPending), QueueDepthRunning: int32(res.QueueDepthRunning), QueueDepthFailedRetryable: int32(res.QueueDepthFailedRetryable), QueueDepthFailedPermanent: int32(res.QueueDepthFailedPermanent), OldestPendingAgeSeconds: int64(res.OldestPendingAge.Seconds()), LastDirtyEventAt: formatMaintenanceTime(res.LastDirtyEventAt), LastAnalyzedAt: formatMaintenanceTime(res.LastAnalyzedAt), LastWorkerSuccessAt: formatMaintenanceTime(res.LastWorkerSuccessAt), LastWorkerErrorAt: formatMaintenanceTime(res.LastWorkerErrorAt), ThrottleState: res.ThrottleState, AnalyzerRuns: int32(res.AnalyzerRuns), WorkerRuns: int32(res.WorkerRuns)}, nil
 }
 
+func (s *AdminSemanticMaintenanceService) GetSemanticReliabilityStatus(ctx context.Context, req *adminv1.GetSemanticReliabilityStatusRequest) (*adminv1.GetSemanticReliabilityStatusResponse, error) {
+	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
+	if err != nil {
+		return nil, err
+	}
+	ruleID, err := parseSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
+		return nil, err
+	}
+	result, err := s.semantic.GetReliabilityStatus(ctx, daemonsemantic.ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey()})
+	if err != nil {
+		return nil, mapAdminSemanticMaintenanceError(err, "get semantic reliability status")
+	}
+	return mapReliabilityStatus(result), nil
+}
+
+func (s *AdminSemanticMaintenanceService) RebuildSemanticRule(ctx context.Context, req *adminv1.RebuildSemanticRuleRequest) (*adminv1.RebuildSemanticRuleResponse, error) {
+	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
+	if err != nil {
+		return nil, err
+	}
+	ruleID, err := parseSemanticUUID[domainsemantic.SemanticRuleID](req.GetSemanticRuleId(), "semantic_rule_id")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireMaintenance(ctx, semanticScope(spaceID, uuid.Nil)); err != nil {
+		return nil, err
+	}
+	result, err := s.semantic.RebuildSemanticRule(ctx, daemonsemantic.RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), BackfillLimit: int(req.GetBackfillLimit()), MaintenanceBatchLimit: int(req.GetMaintenanceBatchLimit()), MaxCatchupIterations: int(req.GetMaxCatchupIterations())})
+	if err != nil {
+		return nil, mapAdminSemanticMaintenanceError(err, "rebuild semantic rule")
+	}
+	return &adminv1.RebuildSemanticRuleResponse{Rebuild: mapSemanticRebuildStatus(result.Reliability.Rebuild), Reliability: mapReliabilityStatus(result.Reliability), SelectedCount: int32(result.Backfill.SelectedCount), GeneratedCount: int32(result.Backfill.GeneratedCount), SkippedCount: int32(result.Backfill.SkippedCount), FailedCount: int32(result.Backfill.FailedCount)}, nil
+}
+
 func (s *AdminSemanticMaintenanceService) ListSemanticMaintenanceWork(ctx context.Context, req *adminv1.ListSemanticMaintenanceWorkRequest) (*adminv1.ListSemanticMaintenanceWorkResponse, error) {
 	spaceID, err := parseSemanticUUID[domainspace.SpaceID](req.GetSpaceId(), "space_id")
 	if err != nil {
@@ -187,7 +225,22 @@ func parseMaintenanceWorkControl(spaceIDText string, workIDText string) (domains
 }
 
 func mapMaintenanceWorkItem(item daemonsemantic.MaintenanceWorkItem) *adminv1.SemanticMaintenanceWorkItem {
-	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt)}
+	return &adminv1.SemanticMaintenanceWorkItem{WorkItemId: item.ID.String(), SpaceId: item.SpaceID.String(), DomainId: item.DomainID.String(), SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, TargetNodeId: item.TargetNodeID.String(), Action: item.Action, Status: item.Status, AttemptCount: int32(item.AttemptCount), NotBefore: formatMaintenanceTime(item.NotBefore), ClaimedUntil: formatMaintenanceTime(item.ClaimedUntil), LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: item.LastErrorMessageSanitized, CreatedAt: formatMaintenanceTime(item.CreatedAt), UpdatedAt: formatMaintenanceTime(item.UpdatedAt), FirstGraphRevision: item.FirstGraphRevision, LastGraphRevision: item.LastGraphRevision, WorkGeneration: item.Generation}
+}
+
+func mapReliabilityStatus(result daemonsemantic.ReliabilityStatus) *adminv1.GetSemanticReliabilityStatusResponse {
+	return &adminv1.GetSemanticReliabilityStatusResponse{SpaceId: result.SpaceID.String(), SemanticRuleId: result.SemanticRuleID.String(), EmbeddingBindingKey: result.EmbeddingBindingKey, LatestObservedGraphRevision: result.LatestObservedGraphRevision, AnalyzedThroughGraphRevision: result.AnalyzedThroughGraphRevision, FreshThroughGraphRevision: result.FreshThroughGraphRevision, UnresolvedGapCount: result.UnresolvedGapCount, OldestUnresolvedGraphRevision: result.OldestUnresolvedGraphRevision, ConfiguredFrontierLimit: result.ConfiguredFrontierLimit, ConfiguredGapIntervalLimit: result.ConfiguredGapIntervalLimit, ConfiguredRevisionSpanLimit: result.ConfiguredRevisionSpanLimit, ConfiguredSerializedByteLimit: result.ConfiguredSerializedByteLimit, RetainedWorkItemCount: result.RetainedWorkItemCount, RetainedGapIntervalCount: result.RetainedGapIntervalCount, RetainedRevisionSpan: result.RetainedRevisionSpan, RetainedSerializedBytes: result.RetainedSerializedBytes, SemanticGeneration: result.SemanticGeneration, CapacityState: result.CapacityState, Degraded: result.Degraded, DegradedReason: result.DegradedReason, RebuildRequired: result.RebuildRequired, Rebuild: mapSemanticRebuildStatus(result.Rebuild)}
+}
+
+func mapSemanticRebuildStatus(result domainsemantic.SemanticReliabilityState) *adminv1.SemanticRebuildStatus {
+	out := &adminv1.SemanticRebuildStatus{RebuildEpoch: result.RebuildEpoch, State: result.RebuildState, PinnedTargetGraphRevision: result.PinnedTargetRevision, DeltaCatchupGraphRevision: result.DeltaCatchupRevision, SemanticGeneration: result.SemanticGeneration, ErrorMessageSanitized: result.RebuildErrorSanitized}
+	if result.RebuildStartedAt != nil {
+		out.StartedAt = formatMaintenanceTime(*result.RebuildStartedAt)
+	}
+	if result.RebuildCompletedAt != nil {
+		out.CompletedAt = formatMaintenanceTime(*result.RebuildCompletedAt)
+	}
+	return out
 }
 
 func formatMaintenanceTime(value time.Time) string {

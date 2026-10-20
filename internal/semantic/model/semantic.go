@@ -1,6 +1,9 @@
 package semantic
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -225,6 +228,42 @@ type SemanticGenerationRule struct {
 	CreatedAt            time.Time                    `json:"created_at"`
 	UpdatedAt            time.Time                    `json:"updated_at"`
 	Metadata             map[string]any               `json:"metadata,omitempty"`
+}
+
+// SemanticRuleConfigurationHash identifies semantic-output compatibility. It
+// intentionally excludes display text, ownership, timestamps, enabled state,
+// and worker scheduling controls while binding selection, projection, route,
+// vector store, and physical ranking semantics.
+func SemanticRuleConfigurationHash(rule SemanticGenerationRule) string {
+	return semanticConfigurationHash(struct {
+		Selector   SemanticTargetSelector       `json:"selector"`
+		Source     SemanticSourceAssemblyPolicy `json:"source"`
+		Embeddings []SemanticEmbeddingBinding   `json:"embeddings"`
+		Storage    SemanticStoragePolicy        `json:"storage"`
+	}{Selector: NormalizeSemanticGenerationRule(rule).Selector, Source: NormalizeSemanticGenerationRule(rule).Source, Embeddings: NormalizeSemanticGenerationRule(rule).Embeddings, Storage: NormalizeSemanticGenerationRule(rule).Storage})
+}
+
+// SemanticRecordConfigurationHash binds a record to both rule semantics and
+// the concrete configured route/vector shape resolved for its binding.
+func SemanticRecordConfigurationHash(rule SemanticGenerationRule, binding SemanticEmbeddingBinding, endpointID ModelEndpointID, modelID InferenceModelID, capabilityID ModelEndpointCapabilityID, vectorSpaceKey string, dimensions int) string {
+	return semanticConfigurationHash(struct {
+		RuleHash     string `json:"ruleHash"`
+		BindingKey   string `json:"bindingKey"`
+		EndpointID   string `json:"endpointId"`
+		ModelID      string `json:"modelId"`
+		CapabilityID string `json:"capabilityId"`
+		VectorSpace  string `json:"vectorSpace"`
+		Dimensions   int    `json:"dimensions"`
+	}{RuleHash: SemanticRuleConfigurationHash(rule), BindingKey: NormalizeSemanticEmbeddingBinding(binding).Key, EndpointID: endpointID.String(), ModelID: modelID.String(), CapabilityID: capabilityID.String(), VectorSpace: strings.TrimSpace(vectorSpaceKey), Dimensions: dimensions})
+}
+
+func semanticConfigurationHash(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 type SemanticTriggerPolicy struct {
@@ -592,6 +631,10 @@ type SemanticVectorRecord struct {
 	EmbeddingBindingKey       string                    `json:"embedding_binding_key"`
 	TargetNodeID              graph.NodeID              `json:"target_node_id"`
 	SourceHash                string                    `json:"source_hash"`
+	SourceGraphRevision       uint64                    `json:"source_graph_revision,omitempty"`
+	SemanticGeneration        uint64                    `json:"semantic_generation,omitempty"`
+	SemanticConfigurationHash string                    `json:"semantic_configuration_hash,omitempty"`
+	RebuildEpoch              string                    `json:"rebuild_epoch,omitempty"`
 	IntelligenceProfileID     IntelligenceProfileID     `json:"intelligence_profile_id,omitempty"`
 	ModelEndpointID           ModelEndpointID           `json:"model_endpoint_id,omitempty"`
 	ModelID                   InferenceModelID          `json:"model_id,omitempty"`
@@ -623,6 +666,10 @@ type AdvancedEmbeddingRecord struct {
 	TargetNodeID              graph.NodeID              `json:"target_node_id,omitempty"`
 	NodeID                    graph.NodeID              `json:"node_id"`
 	SourceHash                string                    `json:"source_hash"`
+	SourceGraphRevision       uint64                    `json:"source_graph_revision,omitempty"`
+	SemanticGeneration        uint64                    `json:"semantic_generation,omitempty"`
+	SemanticConfigurationHash string                    `json:"semantic_configuration_hash,omitempty"`
+	RebuildEpoch              string                    `json:"rebuild_epoch,omitempty"`
 	ModelEndpointID           ModelEndpointID           `json:"model_endpoint_id"`
 	ModelID                   InferenceModelID          `json:"model_id"`
 	ModelEndpointCapabilityID ModelEndpointCapabilityID `json:"model_endpoint_capability_id,omitempty"`
@@ -759,14 +806,39 @@ type SemanticIndexState struct {
 }
 
 type SemanticRuleState struct {
-	SemanticRuleID SemanticRuleID `json:"semantic_rule_id"`
-	State          string         `json:"state"`
-	LastBackfillAt *time.Time     `json:"last_backfill_at,omitempty"`
-	LastRefreshAt  *time.Time     `json:"last_refresh_at,omitempty"`
-	LastError      string         `json:"last_error,omitempty"`
-	DirtyCount     int            `json:"dirty_count,omitempty"`
-	RecordCount    int            `json:"record_count,omitempty"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	SemanticRuleID       SemanticRuleID                      `json:"semantic_rule_id"`
+	State                string                              `json:"state"`
+	LastBackfillAt       *time.Time                          `json:"last_backfill_at,omitempty"`
+	LastRefreshAt        *time.Time                          `json:"last_refresh_at,omitempty"`
+	LastError            string                              `json:"last_error,omitempty"`
+	DirtyCount           int                                 `json:"dirty_count,omitempty"`
+	RecordCount          int                                 `json:"record_count,omitempty"`
+	ReliabilityByBinding map[string]SemanticReliabilityState `json:"reliability_by_binding,omitempty"`
+	UpdatedAt            time.Time                           `json:"updated_at"`
+}
+
+type SemanticRevisionRange struct {
+	FirstRevision uint64 `json:"first_revision"`
+	LastRevision  uint64 `json:"last_revision"`
+}
+
+type SemanticReliabilityState struct {
+	EmbeddingBindingKey   string                  `json:"embedding_binding_key"`
+	SemanticGeneration    uint64                  `json:"semantic_generation,omitempty"`
+	BaselineFreshThrough  uint64                  `json:"baseline_fresh_through,omitempty"`
+	RebuildEpoch          string                  `json:"rebuild_epoch,omitempty"`
+	RebuildState          string                  `json:"rebuild_state,omitempty"`
+	PinnedTargetRevision  uint64                  `json:"pinned_target_revision,omitempty"`
+	DeltaCatchupRevision  uint64                  `json:"delta_catchup_revision,omitempty"`
+	RebuildStartedAt      *time.Time              `json:"rebuild_started_at,omitempty"`
+	RebuildCompletedAt    *time.Time              `json:"rebuild_completed_at,omitempty"`
+	RebuildErrorSanitized string                  `json:"rebuild_error_sanitized,omitempty"`
+	LatestObserved        uint64                  `json:"latest_observed,omitempty"`
+	AnalyzedThrough       uint64                  `json:"analyzed_through,omitempty"`
+	FreshThrough          uint64                  `json:"fresh_through,omitempty"`
+	UnresolvedRanges      []SemanticRevisionRange `json:"unresolved_ranges,omitempty"`
+	CapacityState         string                  `json:"capacity_state,omitempty"`
+	CapacityReason        string                  `json:"capacity_reason,omitempty"`
 }
 
 type SemanticSearchIndexState struct {

@@ -18,6 +18,30 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func TestMycelFileBackendPersistsSemanticReliabilityProvenance(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	backend := MycelFileBackend{GraphsDir: t.TempDir()}
+	record, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: graph.NodeID(uuid.New()), SourceHash: "private-content-hash", SourceGraphRevision: 41, SemanticGeneration: 7, SemanticConfigurationHash: "sha256:configuration", RebuildEpoch: "epoch-7", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), ModelEndpointCapabilityID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "fixture/8", Dimensions: 2, Vector: []float64{1, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := backend.ListRecords(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded) != 1 {
+		t.Fatalf("records=%d, want 1", len(reloaded))
+	}
+	got := reloaded[0]
+	if got.ID != record.ID || got.SourceGraphRevision != 41 || got.SemanticGeneration != 7 || got.SemanticConfigurationHash != "sha256:configuration" || got.RebuildEpoch != "epoch-7" {
+		t.Fatalf("provenance did not round-trip: %+v", got)
+	}
+}
+
 func TestMycelFileVectorBackendEncryptionHidesRecordMetadata(t *testing.T) {
 	ctx := context.Background()
 	enc := testEncryptionService(t)

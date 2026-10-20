@@ -83,6 +83,21 @@ func NewTokenManager(secret []byte, ttl time.Duration) *TokenManager {
 	return &TokenManager{secret: append([]byte(nil), secret...), ttl: ttl, now: time.Now}
 }
 
+// DeriveKey returns a purpose-separated key without exposing token-signing
+// material. It is stable for persistent token managers across daemon restarts.
+func (m *TokenManager) DeriveKey(purpose string) ([]byte, error) {
+	if m == nil || len(m.secret) == 0 {
+		return nil, fmt.Errorf("token manager is not configured")
+	}
+	purpose = strings.TrimSpace(purpose)
+	if purpose == "" {
+		return nil, fmt.Errorf("derived key purpose is required")
+	}
+	mac := hmac.New(sha256.New, m.secret)
+	_, _ = mac.Write([]byte("mycel-derived-key-v1\x00" + purpose))
+	return mac.Sum(nil), nil
+}
+
 func (m *TokenManager) Issue(principal Principal) (string, time.Time, error) {
 	if m == nil || len(m.secret) == 0 {
 		return "", time.Time{}, fmt.Errorf("token manager is not configured")

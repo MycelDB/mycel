@@ -1438,7 +1438,7 @@ func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.Seman
 		if item.Generation <= 0 {
 			item.Generation = 1
 		}
-		if existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
+		if existing.Status != domainsemantic.SemanticDirtyWorkStatusComplete && existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
 			item.FirstGraphRevision = existing.FirstGraphRevision
 		}
 		item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)

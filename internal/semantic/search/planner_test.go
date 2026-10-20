@@ -45,6 +45,24 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	}
 }
 
+func TestPlannerRejectsLegacyOrIncompatibleRecordConfiguration(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "stale", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	record := env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))
+	record.SemanticConfigurationHash = ""
+	if _, err := env.vector.Upsert(ctx, record); err != nil {
+		t.Fatalf("upsert stale vector failed: %v", err)
+	}
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(result.Results) != 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), "stale records and requires rebuild") {
+		t.Fatalf("legacy record was not rejected explicitly: %+v", result)
+	}
+}
+
 func TestPlannerSearchesBindingsIndividuallyAndMergesDuplicateTargets(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)
@@ -185,7 +203,21 @@ func (e *searchEnv) addRule(t *testing.T, key string, bindings []domainsemantic.
 }
 
 func (e *searchEnv) record(ruleID domainsemantic.SemanticRuleID, bindingKey string, nodeID graph.NodeID, vector []float64, grantID domainsemantic.CredentialGrantID) domainsemantic.AdvancedEmbeddingRecord {
-	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
+	configurationHash := ""
+	rules, _ := e.spaceMgr.ListSemanticRules(context.Background())
+	for _, rule := range rules {
+		if rule.ID != ruleID {
+			continue
+		}
+		for _, binding := range rule.Embeddings {
+			if binding.Key == bindingKey {
+				configurationHash = domainsemantic.SemanticRecordConfigurationHash(rule, binding, e.endpoint.ID, e.model.ID, e.capability.ID, e.model.VectorSpaceKey, len(vector))
+				break
+			}
+		}
+		break
+	}
+	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SemanticConfigurationHash: configurationHash, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
 }
 
 type fakeSearchConnector struct {

@@ -8,10 +8,13 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
+- Added generation-scoped semantic record provenance, distinct analyzed/fresh revision frontiers, bounded gap/capacity diagnostics, pinned rebuild with delta catch-up, stale-completion rejection, and Raft-snapshotted reliability state (#238).
+- Added integrity-protected direct semantic pagination and authorization-safe hard eligibility filters with bounded candidate post-filter diagnostics (#238).
 - Added the opt-in, credential-free `token-basis-v1` fake embedding strategy with exact normalized vectors, finite scripted delays/errors/refusals/wrong-dimension outcomes, bounded concurrency-safe attempt accounting, and explicit process-reset semantics (#237).
 
 ### Changed
 
+- Semantic search now rejects legacy or incompatible records without matching configuration/route provenance and never relabels configured route IDs as provider-observed route evidence (#238).
 - Inference now rejects empty, non-finite, and declared-dimension-mismatched embedding responses before publication; the historical unconfigured fake connector response remains unchanged (#237).
 
 ## [v0.20.0] - 2026-10-19

@@ -53,23 +53,30 @@ type Warning struct {
 }
 
 type SearchResult struct {
-	SemanticRuleID      domainsemantic.SemanticRuleID              `json:"semantic_rule_id,omitempty"`
-	EmbeddingBindingKey string                                     `json:"embedding_binding_key,omitempty"`
-	SemanticIndexID     domainsemantic.SemanticIndexID             `json:"semantic_index_id,omitempty"` // transitional response field
-	NodeID              graph.NodeID                               `json:"node_id"`
-	TargetNodeID        graph.NodeID                               `json:"target_node_id,omitempty"`
-	RecordID            domainsemantic.AdvancedEmbeddingRecordID   `json:"record_id"`
-	MatchedRecordIDs    []domainsemantic.AdvancedEmbeddingRecordID `json:"matched_record_ids,omitempty"`
-	MatchedBindings     []MatchedBinding                           `json:"matched_bindings,omitempty"`
-	Score               float64                                    `json:"score"`
-	ModelEndpointID     domainsemantic.ModelEndpointID             `json:"model_endpoint_id"`
-	ModelID             domainsemantic.InferenceModelID            `json:"model_id"`
-	VectorStoreID       domainsemantic.VectorStoreID               `json:"vector_store_id"`
-	CredentialGrantID   domainsemantic.CredentialGrantID           `json:"credential_grant_id,omitempty"`
-	VectorSpaceKey      string                                     `json:"vector_space_key,omitempty"`
-	SourceHash          string                                     `json:"source_hash,omitempty"`
-	SourceMode          string                                     `json:"source_mode,omitempty"`
-	CreatedAt           time.Time                                  `json:"created_at,omitempty"`
+	SemanticRuleID            domainsemantic.SemanticRuleID              `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey       string                                     `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID           domainsemantic.SemanticIndexID             `json:"semantic_index_id,omitempty"` // transitional response field
+	NodeID                    graph.NodeID                               `json:"node_id"`
+	TargetNodeID              graph.NodeID                               `json:"target_node_id,omitempty"`
+	RecordID                  domainsemantic.AdvancedEmbeddingRecordID   `json:"record_id"`
+	MatchedRecordIDs          []domainsemantic.AdvancedEmbeddingRecordID `json:"matched_record_ids,omitempty"`
+	MatchedBindings           []MatchedBinding                           `json:"matched_bindings,omitempty"`
+	Score                     float64                                    `json:"score"`
+	ModelEndpointID           domainsemantic.ModelEndpointID             `json:"model_endpoint_id"`
+	ModelID                   domainsemantic.InferenceModelID            `json:"model_id"`
+	VectorStoreID             domainsemantic.VectorStoreID               `json:"vector_store_id"`
+	CredentialGrantID         domainsemantic.CredentialGrantID           `json:"credential_grant_id,omitempty"`
+	VectorSpaceKey            string                                     `json:"vector_space_key,omitempty"`
+	SourceHash                string                                     `json:"source_hash,omitempty"`
+	SourceGraphRevision       uint64                                     `json:"source_graph_revision,omitempty"`
+	SemanticGeneration        uint64                                     `json:"semantic_generation,omitempty"`
+	SemanticConfigurationHash string                                     `json:"semantic_configuration_hash,omitempty"`
+	RebuildEpoch              string                                     `json:"rebuild_epoch,omitempty"`
+	IntelligenceProfileID     domainsemantic.IntelligenceProfileID       `json:"intelligence_profile_id,omitempty"`
+	ModelEndpointCapabilityID domainsemantic.ModelEndpointCapabilityID   `json:"model_endpoint_capability_id,omitempty"`
+	Dimensions                int                                        `json:"dimensions,omitempty"`
+	SourceMode                string                                     `json:"source_mode,omitempty"`
+	CreatedAt                 time.Time                                  `json:"created_at,omitempty"`
 }
 
 type MatchedBinding struct {

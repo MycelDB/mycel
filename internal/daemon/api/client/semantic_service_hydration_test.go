@@ -18,6 +18,17 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
+func TestSemanticResultProvenanceDoesNotRelabelConfiguredRouteAsActual(t *testing.T) {
+	item := semanticsearch.SearchResult{ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), ModelEndpointCapabilityID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), SourceGraphRevision: 7, SemanticGeneration: 2, SemanticConfigurationHash: "sha256:configuration", RecordID: domainsemantic.AdvancedEmbeddingRecordID(uuid.New()), Dimensions: 8, VectorSpaceKey: "fixture/8", CreatedAt: time.Now().UTC()}
+	got := mapSemanticResultProvenance(item)
+	if got.GetConfiguredModelEndpointId() == "" || got.GetConfiguredModelId() == "" || got.GetConfiguredCapabilityId() == "" {
+		t.Fatalf("configured route provenance missing: %+v", got)
+	}
+	if got.GetActualRouteKnown() || got.GetActualModelEndpointId() != "" || got.GetActualModelId() != "" || got.GetActualCapabilityId() != "" {
+		t.Fatalf("configured route was relabeled as provider-observed: %+v", got)
+	}
+}
+
 func TestSemanticSearchHydratesHitsAtCurrentGraphRevision(t *testing.T) {
 	ctx := context.Background()
 	graphs := newSearchHydrationGraphModule(t, ctx)

@@ -711,7 +711,7 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 }
 
 func toMaintenanceWorkItem(item domainsemantic.SemanticDirtyWorkItem) MaintenanceWorkItem {
-	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt, FirstGraphRevision: item.FirstGraphRevision, LastGraphRevision: item.LastGraphRevision, Generation: uint64(item.Generation)}
 	if item.EarliestRunAt != nil {
 		out.NotBefore = *item.EarliestRunAt
 	}
@@ -848,7 +848,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem}.ProcessOnce(ctx, in.Limit)
+	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem, ResolveGeneration: m.semanticGenerationForWork, AuthorizeWorkItem: m.authorizeSemanticWorkItem}.ProcessOnce(ctx, in.Limit)
 	if err != nil {
 		return res, err
 	}
@@ -935,11 +935,71 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			break
 		}
 	}
+	var domainID graph.DomainID
+	if in.SemanticRuleID != uuid.Nil {
+		rules, listErr := mgr.ListSemanticRules(ctx)
+		if listErr != nil {
+			return semanticbackfill.Result{}, listErr
+		}
+		for _, rule := range rules {
+			if rule.ID == in.SemanticRuleID {
+				domainID = rule.DomainID
+				break
+			}
+		}
+	} else {
+		for _, index := range indexes {
+			if index.ID == in.SemanticIndexID {
+				domainID = index.DomainID
+				break
+			}
+		}
+	}
+	if in.SourceGraphRevision == 0 && domainID != uuid.Nil {
+		m.mu.Lock()
+		revisions := m.graphRevisions
+		m.mu.Unlock()
+		if revisions != nil {
+			revision, revisionErr := revisions.CurrentDomainRevision(ctx, in.SpaceID.String(), domainID.String())
+			if revisionErr != nil {
+				return semanticbackfill.Result{}, fmt.Errorf("read backfill graph revision: %w", revisionErr)
+			}
+			if revision > 0 {
+				in.SourceGraphRevision = uint64(revision)
+			}
+		}
+	}
+	if in.SemanticGeneration == 0 {
+		in.SemanticGeneration = 1
+	}
 	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
-	return runner.Run(ctx, in)
+	result, err := runner.Run(ctx, in)
+	if err != nil {
+		return result, err
+	}
+	if in.SemanticRuleID != uuid.Nil && result.FailedCount == 0 && in.SourceGraphRevision > 0 {
+		status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
+		if statusErr == nil {
+			reliability := status.Rebuild
+			reliability.EmbeddingBindingKey = in.EmbeddingBindingKey
+			if in.SemanticGeneration > reliability.SemanticGeneration {
+				reliability.SemanticGeneration = in.SemanticGeneration
+			}
+			if in.SourceGraphRevision > reliability.BaselineFreshThrough {
+				reliability.BaselineFreshThrough = in.SourceGraphRevision
+			}
+			if in.RebuildEpoch != "" {
+				reliability.RebuildEpoch = in.RebuildEpoch
+			}
+			if saveErr := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, reliability); saveErr != nil {
+				return result, saveErr
+			}
+		}
+	}
+	return result, nil
 }
 
 func (m *Module) skipSemanticDisabledIndex(ctx context.Context, index domainsemantic.SemanticIndex) (bool, error) {
@@ -996,7 +1056,7 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 		return semanticbackfill.Runner{}, err
 	}
 	global := m.GlobalManager()
-	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend()}, nil
+	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend(), AuthorizePublication: m.authorizeSemanticPublication}, nil
 }
 
 type semanticGraphReader struct {

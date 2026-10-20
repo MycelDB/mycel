@@ -649,13 +649,15 @@ func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, e
 	}
 	g.proposalTimings[cmd.CommandID] = timing
 	g.mu.Unlock()
-	timing.WaiterRegister = time.Since(stepStart)
+	waiterRegister := time.Since(stepStart)
+	g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.WaiterRegister = waiterRegister })
 	stepStart = time.Now()
 	if err := g.node.Propose(ctx, data); err != nil {
 		g.forgetWaiter(cmd.CommandID, proposalOutcome{err: err})
 		return ProposalResult{}, err
 	}
-	timing.NodePropose = time.Since(stepStart)
+	nodePropose := time.Since(stepStart)
+	g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.NodePropose = nodePropose })
 	waitStart := time.Now()
 	select {
 	case out := <-ch:

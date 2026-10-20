@@ -49,6 +49,9 @@ type DeleteInput struct {
 	CredentialGrantID   domainsemantic.CredentialGrantID
 	PolicyDecisionID    domainsemantic.PolicyDecisionID
 	ModelEndpointCapID  domainsemantic.ModelEndpointCapabilityID
+	SourceGraphRevision uint64
+	SemanticGeneration  uint64
+	RebuildEpoch        string
 	CreatedAt           time.Time
 }
 

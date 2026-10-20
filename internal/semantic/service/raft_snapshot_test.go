@@ -70,6 +70,11 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 	if _, err := spaceMgr.UpsertSemanticIndex(ctx, idx); err != nil {
 		t.Fatalf("UpsertSemanticIndex() error = %v", err)
 	}
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	reliability := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: "search", SemanticGeneration: 3, LatestObserved: 12, AnalyzedThrough: 11, FreshThrough: 8, UnresolvedRanges: []domainsemantic.SemanticRevisionRange{{FirstRevision: 9, LastRevision: 11}}, CapacityState: "exhausted", CapacityReason: "test capacity", RebuildState: "required"}
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "degraded", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": reliability}}); err != nil {
+		t.Fatalf("UpsertSemanticRuleState() error = %v", err)
+	}
 	maintMgr, err := source.MaintenanceManager(ctx, spaceID)
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +130,14 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 	}
 	if items[0].Status != domainsemantic.SemanticDirtyWorkStatusPending || items[0].ClaimedBy != "" || items[0].ClaimedUntil != nil {
 		t.Fatalf("restored running work not reset: %+v", items[0])
+	}
+	states, err := restoredSpace.ListSemanticRuleStates(ctx)
+	if err != nil || len(states) != 1 {
+		t.Fatalf("rule states=%#v err=%v want one", states, err)
+	}
+	gotReliability := states[0].ReliabilityByBinding["search"]
+	if gotReliability.SemanticGeneration != 3 || gotReliability.FreshThrough != 8 || gotReliability.CapacityState != "exhausted" || len(gotReliability.UnresolvedRanges) != 1 {
+		t.Fatalf("restored reliability state mismatch: %+v", gotReliability)
 	}
 	if restored.raftCommandApplied("semantic-maintenance-" + spaceID.String() + "-stale-post-snapshot") {
 		t.Fatal("RestoreSnapshot should trim stale same-partition semantic applied command IDs")

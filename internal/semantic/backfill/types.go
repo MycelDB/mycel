@@ -17,11 +17,12 @@ type GraphSourceReader interface {
 }
 
 type Runner struct {
-	GraphReader   GraphSourceReader
-	GlobalManager storesemantic.GlobalManager
-	SpaceManager  storesemantic.SpaceManager
-	Connector     ConnectorService
-	VectorBackend vectorstore.Backend
+	GraphReader          GraphSourceReader
+	GlobalManager        storesemantic.GlobalManager
+	SpaceManager         storesemantic.SpaceManager
+	Connector            ConnectorService
+	VectorBackend        vectorstore.Backend
+	AuthorizePublication func(context.Context, Publication) error
 }
 
 type ConnectorService interface {
@@ -37,6 +38,18 @@ type Input struct {
 	Force               bool
 	Limit               int
 	ContinueOnError     bool
+	SourceGraphRevision uint64
+	SemanticGeneration  uint64
+	RebuildEpoch        string
+	WorkItemID          domainsemantic.SemanticDirtyWorkItemID
+	WorkItemGeneration  int
+}
+
+type Publication struct {
+	Input                     Input
+	NodeID                    graph.NodeID
+	SourceHash                string
+	SemanticConfigurationHash string
 }
 
 type Result struct {

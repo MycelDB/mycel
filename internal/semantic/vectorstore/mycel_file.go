@@ -65,15 +65,19 @@ type latestSearchIndexFile struct {
 }
 
 type recordMetadata struct {
-	SemanticRuleID        string `json:"semantic_rule_id,omitempty"`
-	EmbeddingBindingKey   string `json:"embedding_binding_key,omitempty"`
-	TargetNodeID          string `json:"target_node_id,omitempty"`
-	IntelligenceProfileID string `json:"intelligence_profile_id,omitempty"`
-	SourceMode            string `json:"source_mode,omitempty"`
-	SourceHash            string `json:"source_hash,omitempty"`
-	VectorSpaceKey        string `json:"vector_space_key,omitempty"`
-	DeleteTargetRecordID  string `json:"delete_target_record_id,omitempty"`
-	DeleteReason          string `json:"delete_reason,omitempty"`
+	SemanticRuleID            string `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey       string `json:"embedding_binding_key,omitempty"`
+	TargetNodeID              string `json:"target_node_id,omitempty"`
+	IntelligenceProfileID     string `json:"intelligence_profile_id,omitempty"`
+	SourceMode                string `json:"source_mode,omitempty"`
+	SourceHash                string `json:"source_hash,omitempty"`
+	SourceGraphRevision       uint64 `json:"source_graph_revision,omitempty"`
+	SemanticGeneration        uint64 `json:"semantic_generation,omitempty"`
+	SemanticConfigurationHash string `json:"semantic_configuration_hash,omitempty"`
+	RebuildEpoch              string `json:"rebuild_epoch,omitempty"`
+	VectorSpaceKey            string `json:"vector_space_key,omitempty"`
+	DeleteTargetRecordID      string `json:"delete_target_record_id,omitempty"`
+	DeleteReason              string `json:"delete_reason,omitempty"`
 }
 
 func (b MycelFileBackend) Upsert(ctx context.Context, rec domainsemantic.AdvancedEmbeddingRecord) (domainsemantic.AdvancedEmbeddingRecord, error) {
@@ -129,26 +133,46 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if in.SpaceID == uuid.Nil || in.DomainID == uuid.Nil || in.SemanticIndexID == uuid.Nil || in.NodeID == uuid.Nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("space_id, domain_id, semantic_index_id, and node_id are required")
 	}
-	if in.TargetRecordID != uuid.Nil {
-		recs, err := b.readAll(in.SpaceID, in.SemanticIndexID)
-		if err != nil {
-			return domainsemantic.AdvancedEmbeddingRecord{}, err
-		}
-		found := false
-		for _, existing := range recs {
-			if existing.ID == in.TargetRecordID {
-				found = true
-				if existing.DomainID != in.DomainID || existing.NodeID != in.NodeID {
-					return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match domain_id and node_id")
-				}
-				break
+	recs, err := b.readAll(in.SpaceID, in.SemanticIndexID)
+	if err != nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, err
+	}
+	var source *domainsemantic.AdvancedEmbeddingRecord
+	for i := range recs {
+		existing := &recs[i]
+		if in.TargetRecordID != uuid.Nil && existing.ID == in.TargetRecordID {
+			if existing.DomainID != in.DomainID || existing.NodeID != in.NodeID {
+				return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match domain_id and node_id")
 			}
+			source = existing
+			break
 		}
-		if !found {
-			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
+		if in.TargetRecordID == uuid.Nil && existing.DomainID == in.DomainID && existing.NodeID == in.NodeID && !existing.Tombstone && (source == nil || existing.CreatedAt.After(source.CreatedAt)) {
+			source = existing
 		}
 	}
-	rec := domainsemantic.AdvancedEmbeddingRecord{ID: newID(), SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: in.SemanticIndexID, TargetNodeID: in.NodeID, NodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), ModelEndpointID: in.ModelEndpointID, ModelID: in.ModelID, ModelEndpointCapabilityID: in.ModelEndpointCapID, CredentialID: in.CredentialID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID, VectorStoreID: in.VectorStoreID, Tombstone: true, DeleteTargetRecordID: in.TargetRecordID, DeleteReason: strings.TrimSpace(in.Reason), CreatedAt: in.CreatedAt}
+	if in.TargetRecordID != uuid.Nil && source == nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
+	}
+	rec := domainsemantic.AdvancedEmbeddingRecord{ID: newID(), SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: in.SemanticIndexID, TargetNodeID: in.NodeID, NodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), ModelEndpointID: in.ModelEndpointID, ModelID: in.ModelID, ModelEndpointCapabilityID: in.ModelEndpointCapID, CredentialID: in.CredentialID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID, VectorStoreID: in.VectorStoreID, Tombstone: true, DeleteTargetRecordID: in.TargetRecordID, DeleteReason: strings.TrimSpace(in.Reason), SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch, CreatedAt: in.CreatedAt}
+	if source != nil {
+		rec.SourceHash = source.SourceHash
+		rec.SemanticConfigurationHash = source.SemanticConfigurationHash
+		rec.IntelligenceProfileID = source.IntelligenceProfileID
+		rec.VectorSpaceKey = source.VectorSpaceKey
+		rec.Dimensions = source.Dimensions
+		if rec.ModelEndpointID == uuid.Nil {
+			rec.ModelEndpointID = source.ModelEndpointID
+			rec.ModelID = source.ModelID
+			rec.ModelEndpointCapabilityID = source.ModelEndpointCapabilityID
+		}
+		if rec.VectorStoreID == uuid.Nil {
+			rec.VectorStoreID = source.VectorStoreID
+		}
+	}
+	if rec.Tombstone && rec.Dimensions > 0 && len(rec.Vector) == 0 {
+		rec.Vector = make([]float64, rec.Dimensions)
+	}
 	if rec.SemanticRuleID == uuid.Nil {
 		rec.SemanticRuleID = domainsemantic.SemanticRuleID(rec.SemanticIndexID)
 	}
@@ -615,7 +639,7 @@ func (b MycelFileBackend) appendRecord(ctx context.Context, path string, rec dom
 	if rec.TargetNodeID == uuid.Nil {
 		rec.TargetNodeID = rec.NodeID
 	}
-	meta, err := json.Marshal(recordMetadata{SemanticRuleID: uuidText(rec.SemanticRuleID), EmbeddingBindingKey: rec.EmbeddingBindingKey, TargetNodeID: uuidText(rec.TargetNodeID), IntelligenceProfileID: uuidText(rec.IntelligenceProfileID), SourceMode: rec.SourceMode, SourceHash: rec.SourceHash, VectorSpaceKey: rec.VectorSpaceKey, DeleteTargetRecordID: uuidText(rec.DeleteTargetRecordID), DeleteReason: rec.DeleteReason})
+	meta, err := json.Marshal(recordMetadata{SemanticRuleID: uuidText(rec.SemanticRuleID), EmbeddingBindingKey: rec.EmbeddingBindingKey, TargetNodeID: uuidText(rec.TargetNodeID), IntelligenceProfileID: uuidText(rec.IntelligenceProfileID), SourceMode: rec.SourceMode, SourceHash: rec.SourceHash, SourceGraphRevision: rec.SourceGraphRevision, SemanticGeneration: rec.SemanticGeneration, SemanticConfigurationHash: rec.SemanticConfigurationHash, RebuildEpoch: rec.RebuildEpoch, VectorSpaceKey: rec.VectorSpaceKey, DeleteTargetRecordID: uuidText(rec.DeleteTargetRecordID), DeleteReason: rec.DeleteReason})
 	if err != nil {
 		return err
 	}
@@ -776,6 +800,10 @@ func (b MycelFileBackend) readRecord(ctx context.Context, r io.Reader) (domainse
 	}
 	rec.SourceMode = md.SourceMode
 	rec.SourceHash = md.SourceHash
+	rec.SourceGraphRevision = md.SourceGraphRevision
+	rec.SemanticGeneration = md.SemanticGeneration
+	rec.SemanticConfigurationHash = md.SemanticConfigurationHash
+	rec.RebuildEpoch = md.RebuildEpoch
 	rec.VectorSpaceKey = md.VectorSpaceKey
 	if md.DeleteTargetRecordID != "" {
 		id, err := uuid.Parse(md.DeleteTargetRecordID)

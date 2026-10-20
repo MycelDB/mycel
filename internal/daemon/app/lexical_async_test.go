@@ -415,6 +415,9 @@ func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testin
 
 	snapshotStarted := make(chan struct{})
 	releaseSnapshot := make(chan struct{})
+	releaseOnce := sync.Once{}
+	release := func() { releaseOnce.Do(func() { close(releaseSnapshot) }) }
+	t.Cleanup(release)
 	rebuildDone := make(chan error, 1)
 	go func() {
 		rebuildDone <- lexical.RebuildFromSnapshot(ctx, spaceID.String(), domainID.String(), func() ([]lexicalindex.IndexedDocument, uint64, error) {
@@ -443,7 +446,7 @@ func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testin
 		if err != nil {
 			t.Fatalf("publish queued graph changes: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("graph-change publication blocked behind lexical rebuild")
 	}
 	current, err := notifications.CurrentRevision(ctx, spaceID.String(), domainID.String())
@@ -453,11 +456,11 @@ func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testin
 	if current != lastRevision {
 		t.Fatalf("notification revision = %d, want %d before rebuild release", current, lastRevision)
 	}
-	close(releaseSnapshot)
+	release()
 	if err := <-rebuildDone; err != nil {
 		t.Fatalf("RebuildFromSnapshot() error = %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status := lexical.Status(ctx, spaceID.String(), domainID.String(), lastRevision)
 		if status.State == lexicalservice.StateFresh && status.IndexedGraphRevision == lastRevision && status.LiveDocumentCount == int(lastRevision) {

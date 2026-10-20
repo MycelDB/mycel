@@ -35,7 +35,10 @@ type dirtyWorkBatchUpserter interface {
 	UpsertDirtyWorkItems(context.Context, []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error)
 }
 
-const defaultDirtyWorkUpsertBatchSize = 128
+const (
+	defaultDirtyWorkUpsertBatchSize = 128
+	maxReliabilityBarrierItems      = 100000
+)
 
 type AnalyzeInput struct {
 	SemanticRuleID      domainsemantic.SemanticRuleID
@@ -246,6 +249,19 @@ func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsem
 		return 0, fmt.Errorf("graph reader is required")
 	}
 	targets := a.resolveRuleTargets(ctx, rule, event)
+	existing, err := a.MaintenanceManager.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return 0, err
+	}
+	retained := 0
+	for _, item := range existing {
+		if item.EffectiveSemanticRuleID() == rule.ID && item.EmbeddingBindingKey == binding.Key && item.Status != domainsemantic.SemanticDirtyWorkStatusComplete && item.Status != domainsemantic.SemanticDirtyWorkStatusCancelled {
+			retained++
+		}
+	}
+	if retained >= maxReliabilityBarrierItems || retained+len(targets) > maxReliabilityBarrierItems {
+		return 0, fmt.Errorf("semantic reliability frontier capacity exhausted; rebuild required")
+	}
 	batchSize := a.MaxBatchSize
 	if batchSize <= 0 {
 		batchSize = defaultDirtyWorkUpsertBatchSize
@@ -672,6 +688,8 @@ type Worker struct {
 	VectorBackend      vectorstore.Backend
 	Config             WorkerConfig
 	SkipWorkItem       func(context.Context, domainsemantic.SemanticDirtyWorkItem) (bool, error)
+	ResolveGeneration  func(context.Context, domainsemantic.SemanticDirtyWorkItem) (uint64, string, error)
+	AuthorizeWorkItem  func(context.Context, domainsemantic.SemanticDirtyWorkItem) error
 	ClassifyFailure    func(error, domainsemantic.SemanticDirtyWorkItem, WorkerConfig, time.Time) storesemantic.WorkFailure
 	Logger             *slog.Logger
 }
@@ -778,6 +796,11 @@ func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDir
 }
 
 func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) error {
+	if w.AuthorizeWorkItem != nil {
+		if err := w.AuthorizeWorkItem(ctx, item); err != nil {
+			return err
+		}
+	}
 	if item.Action == domainsemantic.SemanticDirtyWorkActionRefresh || item.Action == domainsemantic.SemanticDirtyWorkActionBackfill {
 		nodeIDs := []graph.NodeID{item.TargetNodeID}
 		force := false
@@ -787,16 +810,46 @@ func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWo
 				nodeIDs = nil
 			}
 		}
-		_, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true})
-		return err
+		generation := uint64(1)
+		rebuildEpoch := ""
+		if w.ResolveGeneration != nil {
+			resolvedGeneration, resolvedEpoch, err := w.ResolveGeneration(ctx, item)
+			if err != nil {
+				return err
+			}
+			if resolvedGeneration > 0 {
+				generation = resolvedGeneration
+			}
+			rebuildEpoch = resolvedEpoch
+		}
+		result, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch, WorkItemID: item.ID, WorkItemGeneration: item.Generation})
+		if err != nil {
+			return err
+		}
+		if result.FailedCount > 0 {
+			return fmt.Errorf("semantic work produced %d failed records", result.FailedCount)
+		}
+		return nil
 	}
 	if item.Action == domainsemantic.SemanticDirtyWorkActionDelete || item.Action == domainsemantic.SemanticDirtyWorkActionCleanup {
-		return w.deleteVector(ctx, item)
+		generation := uint64(1)
+		rebuildEpoch := ""
+		if w.ResolveGeneration != nil {
+			resolvedGeneration, resolvedEpoch, err := w.ResolveGeneration(ctx, item)
+			if err != nil {
+				return err
+			}
+			if resolvedGeneration > 0 {
+				generation = resolvedGeneration
+			}
+			rebuildEpoch = resolvedEpoch
+		}
+		return w.deleteVector(ctx, item, generation, rebuildEpoch)
 	}
 	return nil
 }
 
-func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) error {
+func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem, generation uint64, rebuildEpoch string) error {
 	backend := w.VectorBackend
 	if backend == nil {
 		return fmt.Errorf("vector backend is required for delete work")
@@ -809,7 +862,7 @@ func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDi
 		if index.ID != item.SemanticIndexID {
 			continue
 		}
-		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason})
+		_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeID: item.TargetNodeID, VectorStoreID: index.VectorStoreID, Reason: item.Reason, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch})
 		return err
 	}
 	rules, err := w.SpaceManager.ListSemanticRules(ctx)
@@ -825,7 +878,7 @@ func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDi
 			if binding.Key != item.EmbeddingBindingKey || binding.VectorStoreID == uuid.Nil {
 				continue
 			}
-			_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, VectorStoreID: binding.VectorStoreID, Reason: item.Reason})
+			_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, VectorStoreID: binding.VectorStoreID, Reason: item.Reason, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch})
 			return err
 		}
 	}
