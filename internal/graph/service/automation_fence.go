@@ -45,6 +45,10 @@ func (m *Module) validateAutomationOutputFences(ctx context.Context, record grap
 	return nil
 }
 
+func isReplayConvergentAutomationFenceRejection(err error) bool {
+	return status.Code(err) == codes.FailedPrecondition && strings.Contains(strings.ToLower(err.Error()), "automation output fence rejected for invocation")
+}
+
 func automationOutputFenceValidations(record graphCommitRecord) ([]domaingraph.AutomationOutputFenceValidation, error) {
 	out := []domaingraph.AutomationOutputFenceValidation{}
 	nodeFenceIDs := idSet(record.AutomationFenceNodeIDs)
