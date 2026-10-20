@@ -90,6 +90,66 @@ func TestInvokeConnectorFailureRecordsFailedUsage(t *testing.T) {
 	}
 }
 
+func TestInvokeTokenBasisFixtureThroughFullPath(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fixture.endpoint.ConnectorType = domaininference.ConnectorFake
+	fixture.endpoint.Operations = []domaininference.Operation{domaininference.OperationEmbeddings}
+	if _, err := module.GlobalManager().UpsertEndpoint(ctx, fixture.endpoint); err != nil {
+		t.Fatalf("update fake endpoint: %v", err)
+	}
+	profile, model, capability := setupEmbeddingInvokePath(t, ctx, module, fixture, domaininference.Model{
+		Key:               "token-basis-model",
+		Kind:              domaininference.ModelKindEmbedding,
+		ProviderModelName: "mycel-token-basis-v1",
+		EmbeddingDims:     4,
+		VectorSpace:       "fixture/token-basis-v1/4",
+		Enabled:           true,
+		Metadata: map[string]any{
+			connectors.FakeFixtureMetadataKey: map[string]any{"strategy": connectors.FakeFixtureTokenBasisV1},
+		},
+	})
+	fake := &connectors.FakeConnector{}
+	module.SetConnector(domaininference.ConnectorFake, fake)
+	resolver := &countingSecretResolver{value: "must-not-be-read-by-fake"}
+	module.SetSecretResolver(resolver)
+
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: profile.Key, ActorPrincipalID: "actor-a", ModelID: model.ID, CapabilityID: capability.ID}, Input: "axis-2", RequestID: "token-basis-integration"})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if !resp.Allowed || len(resp.Embedding) != 4 || resp.Embedding[0] != 0 || resp.Embedding[1] != 0 || resp.Embedding[2] != 1 || resp.Embedding[3] != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+	if !strings.HasPrefix(resp.ProviderRequestID, "fake-tbv1-") || resp.Usage.TotalTokens != 1 {
+		t.Fatalf("request accounting = %#v", resp)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("fake fixture resolved credentials %d time(s)", resolver.calls)
+	}
+}
+
+func TestInvokeRejectsWrongEmbeddingDimensions(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fixture.endpoint.Operations = []domaininference.Operation{domaininference.OperationEmbeddings}
+	if _, err := module.GlobalManager().UpsertEndpoint(ctx, fixture.endpoint); err != nil {
+		t.Fatalf("update endpoint: %v", err)
+	}
+	profile, model, capability := setupEmbeddingInvokePath(t, ctx, module, fixture, domaininference.Model{Key: "dimension-model", Kind: domaininference.ModelKindEmbedding, ProviderModelName: "dimension-model", EmbeddingDims: 3, VectorSpace: "fixture/dimension-3", Enabled: true})
+	module.SetConnector(domaininference.ConnectorOpenAICompatible, &connectors.FakeConnector{Vector: []float64{1, 0}})
+	module.SetSecretResolver(&countingSecretResolver{value: "unused-by-test"})
+
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: profile.Key, ActorPrincipalID: "actor-a", ModelID: model.ID, CapabilityID: capability.ID}, Input: "wrong dimensions"})
+	if err == nil || connectors.ErrorCode(err) != "invalid_embedding_dimensions" {
+		t.Fatalf("Invoke() response=%#v error=%v", resp, err)
+	}
+	events, listErr := module.UsageLedger().ListUsageEvents(ctx)
+	if listErr != nil || len(events) != 1 || events[0].Status != domaininference.UsageStatusFailed || events[0].ErrorCode != "invalid_embedding_dimensions" {
+		t.Fatalf("usage events=%#v error=%v", events, listErr)
+	}
+}
+
 func TestInvokeFakeEmbeddingsThroughFullPath(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
@@ -130,6 +190,29 @@ func TestInvokeFakeEmbeddingsThroughFullPath(t *testing.T) {
 	if embedCalls != 1 {
 		t.Fatalf("expected one embedding call, got %d", embedCalls)
 	}
+}
+
+func setupEmbeddingInvokePath(t *testing.T, ctx context.Context, module *Module, fixture resolverFixture, modelInput domaininference.Model) (domaininference.Profile, domaininference.Model, domaininference.Capability) {
+	t.Helper()
+	profile, err := fixture.spaceMgr.UpsertProfile(ctx, domaininference.Profile{SpaceID: fixture.spaceID, Key: modelInput.Key + "-profile", Operation: domaininference.OperationEmbeddings, DomainIDs: []string{"domain-a"}, Enabled: true})
+	if err != nil {
+		t.Fatalf("upsert embedding profile: %v", err)
+	}
+	model, err := module.GlobalManager().UpsertModel(ctx, modelInput)
+	if err != nil {
+		t.Fatalf("upsert embedding model: %v", err)
+	}
+	capability, err := module.GlobalManager().UpsertCapability(ctx, domaininference.Capability{EndpointID: fixture.endpoint.ID, ModelID: model.ID, Operation: domaininference.OperationEmbeddings, Enabled: true})
+	if err != nil {
+		t.Fatalf("upsert embedding capability: %v", err)
+	}
+	if _, err := fixture.spaceMgr.UpsertCredentialGrant(ctx, domaininference.CredentialGrant{SpaceID: fixture.spaceID, CredentialID: fixture.credential.ID, Scope: domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a"}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profile.ID.String()}, EndpointRefs: []string{fixture.endpoint.ID.String()}, ModelRefs: []string{model.ID.String()}, UsageModes: []domaininference.UsageMode{domaininference.UsageModeSemantic}, State: domaininference.GrantStateActive}); err != nil {
+		t.Fatalf("upsert embedding grant: %v", err)
+	}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: fixture.spaceID, Scope: domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a"}, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, ProfileRefs: []string{profile.ID.String()}, Action: domaininference.PolicyActionAllow, State: domaininference.PolicyStateActive}); err != nil {
+		t.Fatalf("upsert embedding policy: %v", err)
+	}
+	return profile, model, capability
 }
 
 type countingSecretResolver struct {

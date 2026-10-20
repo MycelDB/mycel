@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -40,7 +41,7 @@ func (m *Module) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest)
 		return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, err
 	}
 	secretValue := ""
-	if resolved.Credential.AuthType != domaininference.CredentialAuthNone {
+	if resolved.Credential.AuthType != domaininference.CredentialAuthNone && resolved.Endpoint.ConnectorType != domaininference.ConnectorFake {
 		secretValue, err = m.resolveSecret(ctx, resolved.Secret)
 		if err != nil {
 			_, appendErr := m.appendUsage(ctx, req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusFailed, "secret_resolution_failed", err.Error(), started)
@@ -100,6 +101,9 @@ func (m *Module) invokeConnector(ctx context.Context, connector connectors.Conne
 	switch resolved.Profile.Operation {
 	case domaininference.OperationEmbeddings:
 		resp, err := connector.Embed(ctx, connectors.EmbeddingRequest{Endpoint: resolved.Endpoint, Model: resolved.Model, Capability: resolved.Capability, Credential: resolved.Credential, Secret: secretValue, Input: req.Input})
+		if err == nil {
+			err = validateEmbeddingResponse(resp.Vector, resolved.Model.EmbeddingDims)
+		}
 		return connectorResponse{ProviderRequestID: resp.ProviderRequestID, Embedding: resp.Vector, Usage: resp.Usage}, err
 	case domaininference.OperationChat, domaininference.OperationSummarize, domaininference.OperationClassify, domaininference.OperationImageAnalysis:
 		messages := normalizedMessages(req)
@@ -108,6 +112,21 @@ func (m *Module) invokeConnector(ctx context.Context, connector connectors.Conne
 	default:
 		return connectorResponse{}, fmt.Errorf("unsupported inference operation %q", resolved.Profile.Operation)
 	}
+}
+
+func validateEmbeddingResponse(vector []float64, expectedDimensions int) error {
+	if len(vector) == 0 {
+		return connectors.ConnectorError{Code: "invalid_embedding", Err: errors.New("embedding response is empty")}
+	}
+	if expectedDimensions > 0 && len(vector) != expectedDimensions {
+		return connectors.ConnectorError{Code: "invalid_embedding_dimensions", Err: fmt.Errorf("embedding response dimensions %d do not match declared dimensions %d", len(vector), expectedDimensions)}
+	}
+	for _, value := range vector {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return connectors.ConnectorError{Code: "invalid_embedding", Err: errors.New("embedding response contains a non-finite component")}
+		}
+	}
+	return nil
 }
 
 func normalizedMessages(req inferenceruntime.InvokeRequest) []domaininference.Message {
