@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -398,6 +399,9 @@ func TestRunnerDoesNotOverwriteDeltaWhenBaselinePublicationFinishesLater(t *test
 	publicationStarted := make(chan Publication, 1)
 	releaseBaseline := make(chan struct{})
 	env.runner.AcquirePublication = func(_ context.Context, publication Publication) (func(), error) {
+		if publication.NodeID == uuid.Nil {
+			return func() {}, nil
+		}
 		publicationStarted <- publication
 		<-releaseBaseline
 		return nil, ErrSupersededPublication
@@ -621,6 +625,62 @@ func TestRunnerRuleBackfillTombstonesShortSource(t *testing.T) {
 
 func (e *backfillTestEnv) semanticBinding(key string, enabled bool) domainsemantic.SemanticEmbeddingBinding {
 	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStoreID: e.index.VectorStoreID, Enabled: enabled}
+}
+
+func TestSearchIndexRebuildHoldsPublicationFence(t *testing.T) {
+	env := newBackfillTestEnv(t)
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	backend := &blockingSearchIndexBackend{Backend: env.vector, Rebuilder: env.vector, Entered: entered, Resume: resume}
+	runner := env.runner
+	runner.VectorBackend = backend
+	var fence sync.Mutex
+	runner.AcquirePublication = func(context.Context, Publication) (func(), error) {
+		fence.Lock()
+		return fence.Unlock, nil
+	}
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- runner.syncRuleBindingSearchIndexState(context.Background(), rule, binding, binding.VectorStoreID, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, SemanticGeneration: 1})
+	}()
+	<-entered
+	deltaAcquired := make(chan struct{})
+	go func() {
+		release, err := runner.acquirePublication(context.Background(), Publication{Input: Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, SemanticGeneration: 1}, NodeID: graph.NodeID(uuid.New())})
+		if err == nil {
+			close(deltaAcquired)
+			release()
+		}
+	}()
+	select {
+	case <-deltaAcquired:
+		t.Fatal("delta publication acquired the fence while physical index rebuild was running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(resume)
+	if err := <-syncDone; err != nil {
+		t.Fatalf("physical index rebuild failed: %v", err)
+	}
+	select {
+	case <-deltaAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("delta publication did not resume after physical index rebuild released the fence")
+	}
+}
+
+type blockingSearchIndexBackend struct {
+	vectorstore.Backend
+	Rebuilder vectorstore.SearchIndexRebuilder
+	Entered   chan<- struct{}
+	Resume    <-chan struct{}
+}
+
+func (b *blockingSearchIndexBackend) RebuildSearchIndex(ctx context.Context, key vectorstore.SearchIndexKey, limit vectorstore.RebuildLimit) (domainsemantic.SemanticSearchIndexState, error) {
+	close(b.Entered)
+	<-b.Resume
+	return b.Rebuilder.RebuildSearchIndex(ctx, key, limit)
 }
 
 func (e *backfillTestEnv) semanticRule(t *testing.T, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {

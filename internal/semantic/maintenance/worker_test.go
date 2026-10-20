@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -139,6 +140,64 @@ func TestWorkerDeleteUsesVectorBackend(t *testing.T) {
 	items, _ := maintenanceMgr.ListDirtyWorkItems(ctx)
 	if got := findWorkItem(items, item.ID); got.Status != domainsemantic.SemanticDirtyWorkStatusComplete {
 		t.Fatalf("delete item not complete: %+v", got)
+	}
+}
+
+func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	globalMgr := storesemantic.NewGlobalManager()
+	if err := globalMgr.Init(ctx, filepath.Join(root, "meta")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := globalMgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	spaceMgr := storesemantic.NewSpaceManager()
+	if err := spaceMgr.Init(ctx, filepath.Join(root, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
+		t.Fatal(err)
+	}
+	bindings := []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStore: "mycel-file", Enabled: true}, {Key: "summary", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: bindings}); err != nil {
+		t.Fatal(err)
+	}
+	maintenanceMgr := storesemantic.NewMaintenanceManager()
+	if err := maintenanceMgr.Init(ctx, filepath.Join(root, "graphs", spaceID.String(), "semantic", "maintenance"), spaceID); err != nil {
+		t.Fatal(err)
+	}
+	backend := vectorstore.MycelFileBackend{GraphsDir: filepath.Join(root, "graphs")}
+	for _, binding := range bindings {
+		if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceGraphRevision: 4, SemanticGeneration: 1, SemanticConfigurationHash: "config", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionDelete, Reason: "selector_transition_cleanup", FirstGraphRevision: 5, LastGraphRevision: 5}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := (Worker{GlobalManager: globalMgr, SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: &fakeBackfillRunner{}, VectorBackend: backend, Config: WorkerConfig{MaxBatchSize: 2}}).ProcessOnce(ctx, 2)
+	if err != nil || result.Completed != 2 || result.Failed != 0 {
+		t.Fatalf("delete processing: result=%+v err=%v", result, err)
+	}
+	for _, binding := range bindings {
+		search := func(stage string) {
+			t.Helper()
+			results, err := backend.Search(ctx, vectorstore.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), VectorStoreID: storeID, VectorSpaceKey: "test/2", Query: []float64{1, 0}, Limit: 10})
+			if err != nil || len(results) != 0 {
+				t.Fatalf("binding %q remained searchable %s delete: results=%+v err=%v", binding.Key, stage, results, err)
+			}
+		}
+		search("immediately after")
+		key := vectorstore.SearchIndexKey{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, VectorStoreID: storeID, VectorSpaceKey: "test/2"}
+		if _, err := backend.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{}); err != nil {
+			t.Fatal(err)
+		}
+		search("after physical index reconstruction following")
 	}
 }
 

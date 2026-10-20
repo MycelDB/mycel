@@ -207,7 +207,7 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 				result.Failures = append(result.Failures, Failure{Error: "semantic rebuild reconciliation failed"})
 			}
 		}
-		if err := r.syncRuleBindingSearchIndexState(ctx, *rule, binding, vectorStoreID); err != nil {
+		if err := r.syncRuleBindingSearchIndexState(ctx, *rule, binding, vectorStoreID, in); err != nil {
 			if !in.ContinueOnError {
 				return result, err
 			}
@@ -270,11 +270,16 @@ func (r Runner) reconcileRuleBinding(ctx context.Context, rule domainsemantic.Se
 	return nil
 }
 
-func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID) error {
+func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, in Input) error {
 	rebuilder, ok := r.VectorBackend.(vectorstore.SearchIndexRebuilder)
 	if !ok {
 		return nil
 	}
+	release, err := r.acquirePublication(ctx, Publication{Input: in})
+	if err != nil {
+		return err
+	}
+	defer release()
 	key := vectorstore.SearchIndexKey{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: vectorStoreID}
 	state, err := rebuilder.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{})
 	if err != nil {

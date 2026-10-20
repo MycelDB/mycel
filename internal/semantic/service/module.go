@@ -923,7 +923,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem, ResolveGeneration: m.semanticGenerationForWork, AuthorizeWorkItem: m.authorizeSemanticWorkItem, AcquireWorkItem: m.acquireSemanticWorkItem}.ProcessOnce(ctx, in.Limit)
+	res, err := semanticmaintenance.Worker{GlobalManager: m.GlobalManager(), SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem, ResolveGeneration: m.semanticGenerationForWork, AuthorizeWorkItem: m.authorizeSemanticWorkItem, AcquireWorkItem: m.acquireSemanticWorkItem}.ProcessOnce(ctx, in.Limit)
 	if err != nil {
 		return res, err
 	}

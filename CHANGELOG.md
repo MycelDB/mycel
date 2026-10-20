@@ -16,7 +16,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 - Semantic search now rejects legacy or incompatible records without matching configuration/route provenance, fails closed when a bounded hard-filter scan cannot prove completeness, and never relabels configured route IDs as provider-observed route evidence (#238).
 - Semantic rebuild and publication transitions now use rule-scoped fencing, immutable revision-pinned graph reads, monotonic same-epoch publication ordering, and guarded generation/epoch/state changes, preserving cross-rule concurrency while rejecting stale baseline, completion, and failure updates (#238).
-- Cancelled semantic maintenance remains a freshness barrier until explicitly covered by a pinned rebuild; revision zero is preserved as an explicit empty-domain rebuild target (#238).
+- Cancelled semantic maintenance remains a bounded freshness barrier until explicitly covered by a pinned rebuild; revision zero is preserved as an explicit empty-domain rebuild target (#238).
+- Semantic physical-index reconstruction now shares the rule publication fence, graph deletes resolve exact binding/store/source identities including key-only stores, and selector transitions enqueue cleanup before freshness can advance (#238).
 - Inference now rejects empty, non-finite, and declared-dimension-mismatched embedding responses before publication; the historical unconfigured fake connector response remains unchanged (#237).
 
 ## [v0.20.0] - 2026-10-19

@@ -27,6 +27,7 @@ type Analyzer struct {
 	GraphReader            GraphReader
 	DirtyCooldown          time.Duration
 	MaxBatchSize           int
+	MaxReliabilityBarriers int
 	DirtyCooldownForTarget func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error)
 	SkipIndex              func(context.Context, domainsemantic.SemanticIndex) (bool, error)
 }
@@ -251,11 +252,15 @@ func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsem
 	}
 	retained := 0
 	for _, item := range existing {
-		if item.EffectiveSemanticRuleID() == rule.ID && item.EmbeddingBindingKey == binding.Key && item.Status != domainsemantic.SemanticDirtyWorkStatusComplete && item.Status != domainsemantic.SemanticDirtyWorkStatusCancelled {
+		if item.EffectiveSemanticRuleID() == rule.ID && item.EmbeddingBindingKey == binding.Key && item.Status != domainsemantic.SemanticDirtyWorkStatusComplete {
 			retained++
 		}
 	}
-	if retained >= maxReliabilityBarrierItems || retained+len(targets) > maxReliabilityBarrierItems {
+	barrierLimit := a.MaxReliabilityBarriers
+	if barrierLimit <= 0 || barrierLimit > maxReliabilityBarrierItems {
+		barrierLimit = maxReliabilityBarrierItems
+	}
+	if retained >= barrierLimit || retained+len(targets) > barrierLimit {
 		if err := a.markRuleBindingCapacityExhausted(ctx, rule.ID, binding.Key, now); err != nil {
 			return 0, err
 		}
@@ -478,6 +483,11 @@ func (a Analyzer) eventMatchesRuleTrigger(ctx context.Context, rule domainsemant
 	if len(trigger.Labels) == 0 {
 		return true
 	}
+	// Dirty events do not retain old labels. An update that removes the last
+	// trigger label must still run so previously indexed records are cleaned up.
+	if len(event.UpdatedNodeIDs) > 0 {
+		return true
+	}
 	for _, nodeID := range candidateNodeIDs(event) {
 		if containsNode(event.DeletedNodeIDs, nodeID) {
 			// Deleted node labels are not always available in dirty events; evaluate
@@ -525,6 +535,12 @@ func (a Analyzer) resolveRuleTargets(ctx context.Context, rule domainsemantic.Se
 		}
 		if targetID, ok := a.targetForRuleNode(ctx, rule, nodeID); ok {
 			add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
+		}
+		if containsNode(event.UpdatedNodeIDs, nodeID) && rule.Selector.Mode == domainsemantic.SemanticTargetSelectorNodeType {
+			node, readErr := a.GraphReader.GetNode(ctx, rule.DomainID, nodeID)
+			if readErr != nil || node.DomainID != rule.DomainID || !nodeHasAnyLabel(node, rule.Selector.Labels) {
+				add(nodeID, domainsemantic.SemanticDirtyWorkActionDelete, "selector_transition_cleanup")
+			}
 		}
 		if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
 			if targetID, ok := a.targetForRuleNode(ctx, rule, oldParentID); ok {
@@ -712,6 +728,7 @@ type WorkerConfig struct {
 }
 
 type Worker struct {
+	GlobalManager      storesemantic.GlobalManager
 	SpaceManager       storesemantic.SpaceManager
 	MaintenanceManager storesemantic.MaintenanceManager
 	Backfill           BackfillRunner
@@ -915,14 +932,67 @@ func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDi
 		}
 		for _, binding := range rule.Embeddings {
 			binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
-			if binding.Key != item.EmbeddingBindingKey || binding.VectorStoreID == uuid.Nil {
+			if binding.Key != item.EmbeddingBindingKey {
 				continue
 			}
-			_, err := backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, VectorStoreID: binding.VectorStoreID, Reason: item.Reason, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch})
+			vectorStoreID, err := w.resolveBindingVectorStore(ctx, binding)
+			if err != nil {
+				return err
+			}
+			lister, ok := backend.(vectorstore.RecordLister)
+			if !ok {
+				return fmt.Errorf("vector backend does not support exact delete record lookup")
+			}
+			records, err := lister.ListRecords(ctx, item.SpaceID, domainsemantic.SemanticIndexID(rule.ID))
+			if err != nil {
+				return err
+			}
+			var source *domainsemantic.AdvancedEmbeddingRecord
+			for i := range records {
+				record := records[i]
+				if record.EffectiveSemanticRuleID() != rule.ID || record.EmbeddingBindingKey != binding.Key || record.NodeID != item.TargetNodeID || record.VectorStoreID != vectorStoreID || record.SemanticGeneration != generation || record.RebuildEpoch != rebuildEpoch {
+					continue
+				}
+				if source == nil || semanticMaintenanceRecordSupersedes(record, *source) {
+					copy := record
+					source = &copy
+				}
+			}
+			if source == nil || source.Tombstone {
+				return nil
+			}
+			_, err = backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, SourceMode: source.SourceMode, VectorStoreID: vectorStoreID, TargetRecordID: source.ID, Reason: item.Reason, ModelEndpointID: source.ModelEndpointID, ModelID: source.ModelID, ModelEndpointCapID: source.ModelEndpointCapabilityID, CredentialID: source.CredentialID, CredentialGrantID: source.CredentialGrantID, PolicyDecisionID: source.PolicyDecisionID, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch})
 			return err
 		}
+		return fmt.Errorf("semantic binding %q not found", item.EmbeddingBindingKey)
 	}
 	return fmt.Errorf("semantic rule %s not found", item.EffectiveSemanticRuleID())
+}
+
+func (w Worker) resolveBindingVectorStore(ctx context.Context, binding domainsemantic.SemanticEmbeddingBinding) (domainsemantic.VectorStoreID, error) {
+	if binding.VectorStoreID != uuid.Nil {
+		return binding.VectorStoreID, nil
+	}
+	if w.GlobalManager == nil {
+		return uuid.Nil, fmt.Errorf("global semantic manager is required to resolve vector store %q", binding.VectorStore)
+	}
+	stores, err := w.GlobalManager.ListVectorStores(ctx)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	for _, store := range stores {
+		if store.Enabled && strings.EqualFold(strings.TrimSpace(store.Key), strings.TrimSpace(binding.VectorStore)) {
+			return store.ID, nil
+		}
+	}
+	return uuid.Nil, fmt.Errorf("enabled vector store %q not found", binding.VectorStore)
+}
+
+func semanticMaintenanceRecordSupersedes(candidate, current domainsemantic.AdvancedEmbeddingRecord) bool {
+	if candidate.SourceGraphRevision != current.SourceGraphRevision {
+		return candidate.SourceGraphRevision > current.SourceGraphRevision
+	}
+	return candidate.CreatedAt.After(current.CreatedAt) || (candidate.CreatedAt.Equal(current.CreatedAt) && candidate.ID.String() > current.ID.String())
 }
 
 func (w Worker) effectiveConfig(limit int) WorkerConfig {

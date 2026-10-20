@@ -141,13 +141,13 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	for i := range recs {
 		existing := &recs[i]
 		if in.TargetRecordID != uuid.Nil && existing.ID == in.TargetRecordID {
-			if existing.DomainID != in.DomainID || existing.NodeID != in.NodeID {
-				return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match domain_id and node_id")
+			if !deleteSourceMatches(*existing, in) {
+				return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match semantic delete scope")
 			}
 			source = existing
 			break
 		}
-		if in.TargetRecordID == uuid.Nil && existing.DomainID == in.DomainID && existing.NodeID == in.NodeID && !existing.Tombstone && (source == nil || existing.CreatedAt.After(source.CreatedAt)) {
+		if in.TargetRecordID == uuid.Nil && deleteSourceMatches(*existing, in) && !existing.Tombstone && (source == nil || semanticRecordSupersedes(*existing, *source)) {
 			source = existing
 		}
 	}
@@ -157,6 +157,9 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	rec := domainsemantic.AdvancedEmbeddingRecord{ID: newID(), SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: in.SemanticIndexID, TargetNodeID: in.NodeID, NodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), ModelEndpointID: in.ModelEndpointID, ModelID: in.ModelID, ModelEndpointCapabilityID: in.ModelEndpointCapID, CredentialID: in.CredentialID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID, VectorStoreID: in.VectorStoreID, Tombstone: true, DeleteTargetRecordID: in.TargetRecordID, DeleteReason: strings.TrimSpace(in.Reason), SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch, CreatedAt: in.CreatedAt}
 	if source != nil {
 		rec.SourceHash = source.SourceHash
+		if rec.SourceMode == "" {
+			rec.SourceMode = source.SourceMode
+		}
 		rec.SemanticConfigurationHash = source.SemanticConfigurationHash
 		rec.IntelligenceProfileID = source.IntelligenceProfileID
 		rec.VectorSpaceKey = source.VectorSpaceKey
@@ -194,6 +197,28 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 		}
 	}
 	return rec, nil
+}
+
+func deleteSourceMatches(record domainsemantic.AdvancedEmbeddingRecord, in DeleteInput) bool {
+	if record.DomainID != in.DomainID || record.NodeID != in.NodeID {
+		return false
+	}
+	if in.SemanticRuleID != uuid.Nil && record.EffectiveSemanticRuleID() != in.SemanticRuleID {
+		return false
+	}
+	if bindingKey := strings.TrimSpace(in.EmbeddingBindingKey); bindingKey != "" && record.EmbeddingBindingKey != bindingKey {
+		return false
+	}
+	if in.VectorStoreID != uuid.Nil && record.VectorStoreID != in.VectorStoreID {
+		return false
+	}
+	if in.SemanticGeneration > 0 && record.SemanticGeneration != in.SemanticGeneration {
+		return false
+	}
+	if in.RebuildEpoch != "" && record.RebuildEpoch != in.RebuildEpoch {
+		return false
+	}
+	return true
 }
 
 func (b MycelFileBackend) ListRecords(ctx context.Context, spaceID uuid.UUID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
