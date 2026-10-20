@@ -20,7 +20,27 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestLexicalSearchUsesChannelQueryWithoutLegacyQuery(t *testing.T) {
+	fixture := newSearchPaginationFixture(1)
+	lexicalOptions := &clientv1.LexicalSearchOptions{}
+	setLexicalSearchQueryOverrideForTest(lexicalOptions, `"raft" OR "recovery"`)
+	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
+		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(),
+		Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Lexical: lexicalOptions,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(response.GetResults()) != 1 {
+		t.Fatalf("Search() result count = %d, want 1", len(response.GetResults()))
+	}
+	if fixture.lexical.lastQuery != `"raft" OR "recovery"` {
+		t.Fatalf("lexical query = %q", fixture.lexical.lastQuery)
+	}
+}
 
 func TestSearchSelectiveFiltersReachBelowInitialCandidateWindow(t *testing.T) {
 	fixture := newSearchPaginationFixture(60)
@@ -60,10 +80,12 @@ func TestHybridSearchSelectiveSemanticFilterReachesBelowInitialWindow(t *testing
 		semantic.results = append(semantic.results, semanticsearch.SearchResult{NodeID: graph.NodeID(uuid.MustParse(item.NodeID)), Score: float64(len(fixture.lexical.results) - i)})
 	}
 	fixture.service.semantic = semantic
+	semanticOptions := &clientv1.SemanticSearchOptions{}
+	setSemanticSearchQueryOverrideForTest(semanticOptions, "how does raft recover")
 	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
-		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Selected"}},
-		Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 0, SemanticWeight: 1},
+		PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Selected"}},
+		Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 0, SemanticWeight: 1}, Semantic: semanticOptions,
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -83,6 +105,9 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 		node.Properties = map[string]any{"status": "open"}
 		fixture.graphs.nodes[id] = node
 	}
+	lexicalQuery := `"raft" OR "recovery"`
+	lexicalOptions := &clientv1.LexicalSearchOptions{}
+	setLexicalSearchQueryOverrideForTest(lexicalOptions, lexicalQuery)
 	semanticQuery := "how does raft recover"
 	semanticOptions := &clientv1.SemanticSearchOptions{}
 	setSemanticSearchQueryOverrideForTest(semanticOptions, semanticQuery)
@@ -91,6 +116,7 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 		Query: "raft", PageSize: 2, AllowStale: true,
 		Filters:  &clientv1.SearchFilters{NodeLabels: []string{"Note"}, Properties: []*clientv1.PropertyFilter{{Path: "status", Operator: clientv1.FilterOperator_FILTER_OPERATOR_EQUALS, Values: []string{"open"}}}},
 		Hybrid:   &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0},
+		Lexical:  lexicalOptions,
 		Semantic: semanticOptions,
 	}
 	seen := map[string]bool{}
@@ -118,48 +144,55 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 		t.Fatalf("hybrid pages covered %d nodes with final token %q, want 6 and empty token", len(seen), request.GetPageToken())
 	}
 
-	mismatch := *request
+	mismatch := proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	fixture.lexical.results[0], fixture.lexical.results[1] = fixture.lexical.results[1], fixture.lexical.results[0]
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("candidate-changed cursor error = %v, want InvalidArgument", err)
 	}
 	fixture.lexical.results[0], fixture.lexical.results[1] = fixture.lexical.results[1], fixture.lexical.results[0]
 	fixture.lexical.analyzerVersion = "analyzer-v2"
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("analyzer-invalidated cursor error = %v, want InvalidArgument", err)
 	}
 	fixture.lexical.analyzerVersion = "analyzer-v1"
-	mismatch = *request
+	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	mismatch.Query = "different"
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("query-mismatched cursor error = %v, want InvalidArgument", err)
 	}
-	mismatch = *request
+	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
+	mismatch.PageToken = firstToken
+	mismatch.Lexical = &clientv1.LexicalSearchOptions{}
+	setLexicalSearchQueryOverrideForTest(mismatch.Lexical, `"raft" OR "failure"`)
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("lexical-query-mismatched cursor error = %v, want InvalidArgument", err)
+	}
+	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	changedSemanticQuery := "how does raft fail"
 	mismatch.Semantic = &clientv1.SemanticSearchOptions{}
 	setSemanticSearchQueryOverrideForTest(mismatch.Semantic, changedSemanticQuery)
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("semantic-query-mismatched cursor error = %v, want InvalidArgument", err)
 	}
-	mismatch = *request
+	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	mismatch.Filters = &clientv1.SearchFilters{NodeLabels: []string{"Other"}}
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("filter-mismatched cursor error = %v, want InvalidArgument", err)
 	}
-	mismatch = *request
+	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	mismatch.Hybrid = &clientv1.HybridSearchOptions{LexicalWeight: 0.75, SemanticWeight: 0.25}
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("ranking-mismatched cursor error = %v, want InvalidArgument", err)
 	}
-	mismatch = *request
+	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	fixture.graphs.revision++
-	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
+	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("revision-invalidated cursor error = %v, want InvalidArgument", err)
 	}
 }
@@ -282,6 +315,7 @@ type paginationLexicalManager struct {
 	indexFormatVersion string
 	results            []lexicalindex.Result
 	searchCalls        int
+	lastQuery          string
 }
 
 func (m *paginationLexicalManager) Status(_ context.Context, spaceID, domainID string, latest uint64) lexicalservice.Status {
@@ -294,8 +328,9 @@ func (m *paginationLexicalManager) Status(_ context.Context, spaceID, domainID s
 	return lexicalservice.Status{SpaceID: spaceID, DomainID: domainID, State: state, IndexedGraphRevision: m.revision, LatestKnownGraphRevision: latest, RevisionLag: lag, AnalyzerVersion: m.analyzerVersion, IndexFormatVersion: m.indexFormatVersion}
 }
 
-func (m *paginationLexicalManager) Search(_ context.Context, _, _, _ string, opts lexicalindex.SearchOptions) (lexicalindex.SearchResponse, error) {
+func (m *paginationLexicalManager) Search(_ context.Context, _, _, query string, opts lexicalindex.SearchOptions) (lexicalindex.SearchResponse, error) {
 	m.searchCalls++
+	m.lastQuery = query
 	start := min(opts.Offset, len(m.results))
 	end := min(start+opts.PageSize, len(m.results))
 	response := lexicalindex.SearchResponse{Results: append([]lexicalindex.Result(nil), m.results[start:end]...), Diagnostics: lexicalindex.Diagnostics{CandidateCount: len(m.results), Truncated: end < len(m.results)}}

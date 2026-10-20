@@ -67,6 +67,26 @@ func TestSearchFiltersFromProtoRejectsUnsupportedOperator(t *testing.T) {
 	}
 }
 
+func TestEffectiveSearchQueriesUseChannelOverridesAndLegacyFallback(t *testing.T) {
+	legacy := &clientv1.SearchRequest{Query: "legacy shared query"}
+	if got := effectiveLexicalSearchQuery(legacy); got != "legacy shared query" {
+		t.Fatalf("effective lexical fallback = %q", got)
+	}
+	if got := effectiveSemanticSearchQuery(legacy); got != "legacy shared query" {
+		t.Fatalf("effective semantic fallback = %q", got)
+	}
+
+	request := &clientv1.SearchRequest{Query: "legacy shared query", Lexical: &clientv1.LexicalSearchOptions{}, Semantic: &clientv1.SemanticSearchOptions{}}
+	setLexicalSearchQueryOverrideForTest(request.Lexical, `"team" OR "recovery"`)
+	setSemanticSearchQueryOverrideForTest(request.Semantic, "how can a team recover calmly")
+	if got := effectiveLexicalSearchQuery(request); got != `"team" OR "recovery"` {
+		t.Fatalf("effective lexical override = %q", got)
+	}
+	if got := effectiveSemanticSearchQuery(request); got != "how can a team recover calmly" {
+		t.Fatalf("effective semantic override = %q", got)
+	}
+}
+
 func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -101,30 +121,6 @@ func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 	}
 }
 
-func TestSemanticHybridCandidatesUsesSemanticQueryOverride(t *testing.T) {
-	ctx := context.Background()
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	ruleID := domainsemantic.SemanticRuleID(uuid.New())
-	semantic := &fakeHybridSemanticManager{
-		rules: []domainsemantic.SemanticGenerationRule{{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "notes", Enabled: true, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), Enabled: true}}}},
-	}
-	service := &SearchService{
-		semantic: semantic,
-		spaces:   fakeHybridSpaceManager{domain: graph.Domain{ID: domainID, SpaceID: spaceID, SemanticMode: graph.DomainSemanticModeNormal}},
-	}
-	override := "how can a team recover calmly"
-	semanticOptions := &clientv1.SemanticSearchOptions{}
-	setSemanticSearchQueryOverrideForTest(semanticOptions, override)
-	_, _, err := service.semanticHybridCandidates(ctx, principalUser{PrincipalID: uuid.NewString()}, spaceID, domainID, `"team" OR "recovery"`, 10, semanticOptions, false)
-	if err != nil {
-		t.Fatalf("semanticHybridCandidates() error = %v", err)
-	}
-	if semantic.lastInput.Text != override {
-		t.Fatalf("semantic SearchInput Text = %q, want override %q", semantic.lastInput.Text, override)
-	}
-}
-
 func TestIsNoSemanticSearchAvailable(t *testing.T) {
 	if !isNoSemanticSearchAvailable(status.Error(codes.FailedPrecondition, "no enabled semantic search rule is available for the domain")) {
 		t.Fatalf("expected no semantic search availability detection")
@@ -134,14 +130,21 @@ func TestIsNoSemanticSearchAvailable(t *testing.T) {
 	}
 }
 
+func setLexicalSearchQueryOverrideForTest(options *clientv1.LexicalSearchOptions, query string) {
+	setSearchOptionQueryForTest(options.ProtoReflect(), lexicalSearchQueryFieldNumber, query)
+}
+
 func setSemanticSearchQueryOverrideForTest(options *clientv1.SemanticSearchOptions, query string) {
-	message := options.ProtoReflect()
-	if field := message.Descriptor().Fields().ByNumber(semanticSearchQueryFieldNumber); field != nil {
+	setSearchOptionQueryForTest(options.ProtoReflect(), semanticSearchQueryFieldNumber, query)
+}
+
+func setSearchOptionQueryForTest(message protoreflect.Message, fieldNumber protoreflect.FieldNumber, query string) {
+	if field := message.Descriptor().Fields().ByNumber(fieldNumber); field != nil {
 		message.Set(field, protoreflect.ValueOfString(query))
 		return
 	}
 	unknown := message.GetUnknown()
-	unknown = protowire.AppendTag(unknown, protowire.Number(semanticSearchQueryFieldNumber), protowire.BytesType)
+	unknown = protowire.AppendTag(unknown, protowire.Number(fieldNumber), protowire.BytesType)
 	unknown = protowire.AppendString(unknown, query)
 	message.SetUnknown(unknown)
 }

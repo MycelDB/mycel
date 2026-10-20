@@ -88,10 +88,6 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if mode != clientv1.SearchMode_SEARCH_MODE_UNSPECIFIED && mode != clientv1.SearchMode_SEARCH_MODE_LEXICAL && mode != clientv1.SearchMode_SEARCH_MODE_HYBRID {
 		return nil, status.Error(codes.InvalidArgument, "unsupported search mode")
 	}
-	query := strings.TrimSpace(req.GetQuery())
-	if query == "" {
-		return nil, status.Error(codes.InvalidArgument, "query is required")
-	}
 	pageSize := int(req.GetPageSize())
 	if pageSize <= 0 {
 		pageSize = 20
@@ -111,12 +107,16 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if mode == clientv1.SearchMode_SEARCH_MODE_HYBRID {
-		return s.hybridSearch(ctx, principal, spaceID, domainID, query, pageSize, freshness, filters, req)
+		return s.hybridSearch(ctx, principal, spaceID, domainID, pageSize, freshness, filters, req)
+	}
+	query := effectiveLexicalSearchQuery(req)
+	if query == "" {
+		return nil, status.Error(codes.InvalidArgument, "lexical query is required")
 	}
 	return s.lexicalSearch(ctx, principal, spaceID, domainID, query, pageSize, freshness, filters, req)
 }
 
-func (s *SearchService) hybridSearch(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, pageSize int, freshness lexicalservice.Status, filters hybridsearch.Filters, req *clientv1.SearchRequest) (*clientv1.SearchResponse, error) {
+func (s *SearchService) hybridSearch(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, pageSize int, freshness lexicalservice.Status, filters hybridsearch.Filters, req *clientv1.SearchRequest) (*clientv1.SearchResponse, error) {
 	offset, err := searchPageOffset(req, searchCursorModeHybrid, freshness)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -124,6 +124,14 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	opts, err := hybridOptionsFromProto(req.GetHybrid(), s.hybridRRFRankConstant)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	lexicalQuery := effectiveLexicalSearchQuery(req)
+	semanticQuery := effectiveSemanticSearchQuery(req)
+	if (opts.Weights.Lexical > 0 || opts.RequireBoth) && lexicalQuery == "" {
+		return nil, status.Error(codes.InvalidArgument, "lexical query is required when lexical retrieval is enabled")
+	}
+	if (opts.Weights.Semantic > 0 || opts.RequireBoth) && semanticQuery == "" {
+		return nil, status.Error(codes.InvalidArgument, "semantic query is required when semantic retrieval is enabled")
 	}
 	lexicalCandidates := hybridsearch.CandidateCount(pageSize, int(req.GetLexical().GetCandidateCount()), hybridMaxCandidateCount)
 	semanticCandidates := hybridsearch.CandidateCount(pageSize, int(req.GetSemantic().GetCandidateCount()), hybridMaxCandidateCount)
@@ -133,7 +141,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	}
 	lexicalResult := lexicalindex.SearchResponse{}
 	if opts.Weights.Lexical > 0 || opts.RequireBoth {
-		lexicalResult, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: lexicalCandidates})
+		lexicalResult, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), lexicalQuery, lexicalindex.SearchOptions{PageSize: lexicalCandidates})
 		if err != nil {
 			return nil, mapLexicalError(err, "hybrid lexical search")
 		}
@@ -157,7 +165,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	}
 	if opts.Weights.Semantic > 0 || opts.RequireBoth {
 		semanticRequired := opts.RequireBoth || opts.Weights.Lexical == 0
-		semanticCandidatesOut, semanticWarnings, err := s.semanticHybridCandidates(ctx, principal, spaceID, domainID, query, semanticCandidates, req.GetSemantic(), semanticRequired)
+		semanticCandidatesOut, semanticWarnings, err := s.semanticHybridCandidates(ctx, principal, spaceID, domainID, semanticQuery, semanticCandidates, req.GetSemantic(), semanticRequired)
 		if err != nil {
 			return nil, err
 		}
@@ -270,11 +278,7 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 	if opts != nil && opts.MinScore != nil {
 		minScore = opts.GetMinScore()
 	}
-	semanticQuery := query
-	if override := strings.TrimSpace(semanticSearchQueryOverride(opts)); override != "" {
-		semanticQuery = override
-	}
-	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: semanticQuery, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID)})
+	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID)})
 	if err != nil {
 		return nil, nil, mapSemanticError(err, "hybrid semantic search")
 	}
@@ -292,17 +296,50 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 	return candidates, append([]string(nil), result.Warnings...), nil
 }
 
-const semanticSearchQueryFieldNumber protoreflect.FieldNumber = 5
+const (
+	lexicalSearchQueryFieldNumber  protoreflect.FieldNumber = 2
+	semanticSearchQueryFieldNumber protoreflect.FieldNumber = 5
+)
 
-// semanticSearchQueryOverride accepts the new SemanticSearchOptions.query field
-// from both current generated protobufs and older clients that preserve it as
-// unknown wire data during the API rollout.
+func effectiveLexicalSearchQuery(req *clientv1.SearchRequest) string {
+	if req == nil {
+		return ""
+	}
+	if override := strings.TrimSpace(lexicalSearchQueryOverride(req.GetLexical())); override != "" {
+		return override
+	}
+	return strings.TrimSpace(req.GetQuery())
+}
+
+func effectiveSemanticSearchQuery(req *clientv1.SearchRequest) string {
+	if req == nil {
+		return ""
+	}
+	if override := strings.TrimSpace(semanticSearchQueryOverride(req.GetSemantic())); override != "" {
+		return override
+	}
+	return strings.TrimSpace(req.GetQuery())
+}
+
+// The override readers accept channel-specific query fields from both current
+// generated protobufs and older clients that preserve them as unknown wire data
+// during the additive API rollout.
+func lexicalSearchQueryOverride(options *clientv1.LexicalSearchOptions) string {
+	if options == nil {
+		return ""
+	}
+	return searchOptionQuery(options.ProtoReflect(), lexicalSearchQueryFieldNumber)
+}
+
 func semanticSearchQueryOverride(options *clientv1.SemanticSearchOptions) string {
 	if options == nil {
 		return ""
 	}
-	message := options.ProtoReflect()
-	if field := message.Descriptor().Fields().ByNumber(semanticSearchQueryFieldNumber); field != nil && message.Has(field) {
+	return searchOptionQuery(options.ProtoReflect(), semanticSearchQueryFieldNumber)
+}
+
+func searchOptionQuery(message protoreflect.Message, fieldNumber protoreflect.FieldNumber) string {
+	if field := message.Descriptor().Fields().ByNumber(fieldNumber); field != nil && message.Has(field) {
 		return message.Get(field).String()
 	}
 	unknown := message.GetUnknown()
@@ -312,7 +349,7 @@ func semanticSearchQueryOverride(options *clientv1.SemanticSearchOptions) string
 			return ""
 		}
 		unknown = unknown[tagLength:]
-		if number == protowire.Number(semanticSearchQueryFieldNumber) && wireType == protowire.BytesType {
+		if number == protowire.Number(fieldNumber) && wireType == protowire.BytesType {
 			value, valueLength := protowire.ConsumeString(unknown)
 			if valueLength < 0 {
 				return ""
