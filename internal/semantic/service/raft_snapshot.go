@@ -785,7 +785,12 @@ func normalizeRestoredSemanticWork(item domainsemantic.SemanticDirtyWorkItem) do
 		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
 		item.ClaimedBy = ""
 		item.ClaimedUntil = nil
-		item.UpdatedAt = time.Now().UTC()
+		if item.UpdatedAt.IsZero() {
+			item.UpdatedAt = item.CreatedAt
+			if item.UpdatedAt.IsZero() {
+				item.UpdatedAt = time.Unix(0, 0).UTC()
+			}
+		}
 	}
 	return item
 }

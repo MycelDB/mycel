@@ -1916,14 +1916,30 @@ func (m *maintenanceManager) checkpointsPath() string {
 }
 
 func (m *maintenanceManager) appendWorkLogRecord(kind string, item domainsemantic.SemanticDirtyWorkItem) error {
-	return m.appendWorkLog(workLogRecord{Kind: kind, At: time.Now().UTC(), Item: item})
+	return m.appendWorkLog(workLogRecord{Kind: kind, At: deterministicWorkLogTime(item), Item: item})
 }
 
 func (m *maintenanceManager) appendWorkLogBatchRecord(kind string, items []domainsemantic.SemanticDirtyWorkItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return m.appendWorkLog(workLogRecord{Kind: kind, At: time.Now().UTC(), Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)})
+	at := time.Unix(0, 0).UTC()
+	for _, item := range items {
+		if candidate := deterministicWorkLogTime(item); candidate.After(at) {
+			at = candidate
+		}
+	}
+	return m.appendWorkLog(workLogRecord{Kind: kind, At: at, Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)})
+}
+
+func deterministicWorkLogTime(item domainsemantic.SemanticDirtyWorkItem) time.Time {
+	if !item.UpdatedAt.IsZero() {
+		return item.UpdatedAt.UTC()
+	}
+	if !item.CreatedAt.IsZero() {
+		return item.CreatedAt.UTC()
+	}
+	return time.Unix(0, 0).UTC()
 }
 
 func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {

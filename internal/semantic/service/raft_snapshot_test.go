@@ -1,8 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -133,6 +137,36 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 	}
 	if items[0].Status != domainsemantic.SemanticDirtyWorkStatusPending || items[0].ClaimedBy != "" || items[0].ClaimedUntil != nil {
 		t.Fatalf("restored running work not reset: %+v", items[0])
+	}
+	restoredAgain := NewModule()
+	if result := restoredAgain.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("second restored init failed: %v", result.Error)
+	}
+	if err := (RaftStateMachine{Module: restoredAgain, PartitionID: pid.Uint32(), PartitionCount: 4}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatalf("second RestoreSnapshot() error = %v", err)
+	}
+	restoredAgainMaint, err := restoredAgain.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemsAgain, err := restoredAgainMaint.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items, itemsAgain) {
+		t.Fatalf("identical snapshot produced different work state:\nfirst=%+v\nsecond=%+v", items, itemsAgain)
+	}
+	workLog := filepath.Join("work", "work-000001.ksem")
+	firstLog, err := os.ReadFile(filepath.Join(restored.maintenanceDir(spaceID), workLog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLog, err := os.ReadFile(filepath.Join(restoredAgain.maintenanceDir(spaceID), workLog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstLog, secondLog) {
+		t.Fatal("identical snapshot produced different durable work-log bytes")
 	}
 	states, err := restoredSpace.ListSemanticRuleStates(ctx)
 	if err != nil || len(states) != 1 {

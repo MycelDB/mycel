@@ -27,22 +27,25 @@ import (
 )
 
 const (
-	manifestFile                     = "manifest.ksem"
-	recordsDir                       = "records"
-	activeSegment                    = "embeddings-000001.kvec"
-	latestRecordsDir                 = "latest"
-	pendingPublicationsDir           = "pending"
-	searchIndexesDir                 = "search_indexes"
-	searchIndexStateFile             = "state.json"
-	searchIndexLatestFile            = "latest.json"
-	manifestFormat                   = "mycel-semantic-index-v1"
-	segmentMagic                     = "KEMBSEG2"
-	recordMagic                      = uint32(0x4b524543)
-	segmentVersion                   = uint16(2)
-	recordVersion                    = uint16(3)
-	flagTombstone                    = uint16(1)
-	maxPendingPublications           = 4096
-	maxPendingPublicationBytes int64 = 64 << 20
+	manifestFile                             = "manifest.ksem"
+	recordsDir                               = "records"
+	activeSegment                            = "embeddings-000001.kvec"
+	latestRecordsDir                         = "latest"
+	pendingPublicationsDir                   = "pending"
+	searchIndexesDir                         = "search_indexes"
+	searchIndexStateFile                     = "state.json"
+	searchIndexLatestFile                    = "latest.json"
+	manifestFormat                           = "mycel-semantic-index-v1"
+	segmentMagic                             = "KEMBSEG2"
+	recordMagic                              = uint32(0x4b524543)
+	segmentVersion                           = uint16(2)
+	recordVersion                            = uint16(3)
+	flagTombstone                            = uint16(1)
+	defaultMaxPendingPublications            = 4096
+	defaultMaxPendingPublicationBytes int64  = 64 << 20
+	maxRecordMetadataBytes            uint64 = 4 << 20
+	maxRecordVectorBytes              uint64 = 64 << 20
+	maxEncodedRecordBytes             uint64 = 72 << 20
 )
 
 type MycelFileBackend struct {
@@ -51,6 +54,20 @@ type MycelFileBackend struct {
 	AfterSegmentSync    func(domainsemantic.AdvancedEmbeddingRecord) error
 	AfterSegmentAppend  func(domainsemantic.AdvancedEmbeddingRecord) error
 	BeforePhysicalWrite func(domainsemantic.AdvancedEmbeddingRecord) error
+	pendingLimitCount   int
+	pendingLimitBytes   int64
+}
+
+func (b MycelFileBackend) pendingLimits() (int, int64) {
+	count := b.pendingLimitCount
+	if count <= 0 {
+		count = defaultMaxPendingPublications
+	}
+	bytes := b.pendingLimitBytes
+	if bytes <= 0 {
+		bytes = defaultMaxPendingPublicationBytes
+	}
+	return count, bytes
 }
 
 var (
@@ -190,19 +207,15 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if found {
 		source = &latest
 	}
-	if source != nil && source.Tombstone {
+	sourceWasTombstone := source != nil && source.Tombstone
+	if sourceWasTombstone {
 		if in.TargetRecordID != uuid.Nil && source.DeleteTargetRecordID != in.TargetRecordID {
 			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
 		}
-		if !deleteSourceMatches(*source, in) {
+		if !deleteKeyMatches(*source, in) {
 			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match semantic delete scope")
 		}
-		if err := b.ensureSearchIndexRecordUnlocked(ctx, *source); err != nil {
-			return *source, err
-		}
-		return *source, nil
-	}
-	if in.TargetRecordID != uuid.Nil {
+	} else if in.TargetRecordID != uuid.Nil {
 		if source == nil || source.ID != in.TargetRecordID {
 			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
 		}
@@ -218,14 +231,30 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 		if rec.SourceMode == "" {
 			rec.SourceMode = source.SourceMode
 		}
+		if rec.DeleteTargetRecordID == uuid.Nil && source.Tombstone {
+			rec.DeleteTargetRecordID = source.DeleteTargetRecordID
+		}
 		rec.SemanticConfigurationHash = source.SemanticConfigurationHash
 		rec.IntelligenceProfileID = source.IntelligenceProfileID
 		rec.VectorSpaceKey = source.VectorSpaceKey
 		rec.Dimensions = source.Dimensions
 		if rec.ModelEndpointID == uuid.Nil {
 			rec.ModelEndpointID = source.ModelEndpointID
+		}
+		if rec.ModelID == uuid.Nil {
 			rec.ModelID = source.ModelID
+		}
+		if rec.ModelEndpointCapabilityID == uuid.Nil {
 			rec.ModelEndpointCapabilityID = source.ModelEndpointCapabilityID
+		}
+		if rec.CredentialID == uuid.Nil {
+			rec.CredentialID = source.CredentialID
+		}
+		if rec.CredentialGrantID == uuid.Nil {
+			rec.CredentialGrantID = source.CredentialGrantID
+		}
+		if rec.PolicyDecisionID == uuid.Nil {
+			rec.PolicyDecisionID = source.PolicyDecisionID
 		}
 		if rec.VectorStoreID == uuid.Nil {
 			rec.VectorStoreID = source.VectorStoreID
@@ -240,6 +269,12 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
+	if sourceWasTombstone && semanticTombstoneSatisfied(*source, rec) {
+		if err := b.ensureSearchIndexRecordUnlocked(ctx, *source); err != nil {
+			return *source, err
+		}
+		return *source, nil
+	}
 	if pending, found, err := b.readPendingPublication(ctx, rec); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	} else if found {
@@ -247,7 +282,7 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 		if err != nil {
 			return recovered, err
 		}
-		if recovered.Tombstone && recovered.DeleteTargetRecordID == rec.DeleteTargetRecordID && deleteSourceMatches(recovered, in) && recovered.SourceGraphRevision == rec.SourceGraphRevision && recovered.SemanticGeneration == rec.SemanticGeneration && recovered.RebuildEpoch == rec.RebuildEpoch {
+		if semanticTombstoneSatisfied(recovered, rec) {
 			return recovered, nil
 		}
 	}
@@ -268,6 +303,38 @@ func semanticUpsertSatisfied(existing, requested domainsemantic.AdvancedEmbeddin
 		}
 	}
 	return true
+}
+
+func semanticTombstoneSatisfied(existing, requested domainsemantic.AdvancedEmbeddingRecord) bool {
+	return existing.Tombstone && requested.Tombstone &&
+		existing.SpaceID == requested.SpaceID && existing.DomainID == requested.DomainID &&
+		existing.EffectiveSemanticRuleID() == requested.EffectiveSemanticRuleID() &&
+		existing.EmbeddingBindingKey == requested.EmbeddingBindingKey &&
+		existing.SemanticIndexID == requested.SemanticIndexID && existing.NodeID == requested.NodeID &&
+		existing.TargetNodeID == requested.TargetNodeID && existing.SourceMode == requested.SourceMode &&
+		existing.SourceHash == requested.SourceHash && existing.SourceGraphRevision == requested.SourceGraphRevision &&
+		existing.SemanticGeneration == requested.SemanticGeneration && existing.SemanticConfigurationHash == requested.SemanticConfigurationHash &&
+		existing.RebuildEpoch == requested.RebuildEpoch && existing.IntelligenceProfileID == requested.IntelligenceProfileID &&
+		existing.ModelEndpointID == requested.ModelEndpointID && existing.ModelID == requested.ModelID &&
+		existing.ModelEndpointCapabilityID == requested.ModelEndpointCapabilityID && existing.CredentialID == requested.CredentialID &&
+		existing.CredentialGrantID == requested.CredentialGrantID && existing.PolicyDecisionID == requested.PolicyDecisionID &&
+		existing.VectorStoreID == requested.VectorStoreID && existing.VectorSpaceKey == requested.VectorSpaceKey &&
+		existing.Dimensions == requested.Dimensions && existing.DeleteTargetRecordID == requested.DeleteTargetRecordID &&
+		existing.DeleteReason == requested.DeleteReason
+}
+
+func deleteKeyMatches(record domainsemantic.AdvancedEmbeddingRecord, in DeleteInput) bool {
+	if record.SpaceID != in.SpaceID || record.DomainID != in.DomainID || record.NodeID != in.NodeID || record.SemanticIndexID != in.SemanticIndexID {
+		return false
+	}
+	if in.SemanticRuleID != uuid.Nil && record.EffectiveSemanticRuleID() != in.SemanticRuleID {
+		return false
+	}
+	bindingKey := strings.TrimSpace(in.EmbeddingBindingKey)
+	if bindingKey != "" {
+		return record.EmbeddingBindingKey == bindingKey
+	}
+	return record.EmbeddingBindingKey == "" && record.SourceMode == strings.TrimSpace(in.SourceMode) && record.VectorStoreID == in.VectorStoreID
 }
 
 func deleteTargetMatches(record domainsemantic.AdvancedEmbeddingRecord, in DeleteInput) bool {
@@ -759,15 +826,18 @@ func (b MycelFileBackend) readMaybeEncrypted(ctx context.Context, path string) (
 }
 
 func (b MycelFileBackend) writeMaybeEncrypted(ctx context.Context, path string, plaintext []byte) error {
-	data := plaintext
-	if b.Encryption != nil && b.Encryption.Enabled() {
-		ciphertext, err := b.Encryption.EncryptRecord(ctx, plaintext, []byte("semantic-vector-json:v1:path="+filepath.ToSlash(path)))
-		if err != nil {
-			return err
-		}
-		data = ciphertext
+	data, err := b.encodeMaybeEncrypted(ctx, path, plaintext)
+	if err != nil {
+		return err
 	}
 	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
+}
+
+func (b MycelFileBackend) encodeMaybeEncrypted(ctx context.Context, path string, plaintext []byte) ([]byte, error) {
+	if b.Encryption == nil || !b.Encryption.Enabled() {
+		return plaintext, nil
+	}
+	return b.Encryption.EncryptRecord(ctx, plaintext, []byte("semantic-vector-json:v1:path="+filepath.ToSlash(path)))
 }
 
 func latestRecordKey(record domainsemantic.AdvancedEmbeddingRecord) string {
@@ -800,15 +870,84 @@ func (b MycelFileBackend) readPendingPublication(ctx context.Context, record dom
 }
 
 func (b MycelFileBackend) writePendingPublication(ctx context.Context, pending pendingRecordPublication) error {
-	path := b.pendingRecordPath(pending.Record.Record)
-	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(pending, "", "  ")
+	path, data, err := b.encodePendingPublication(ctx, pending)
 	if err != nil {
 		return err
 	}
-	return b.writeMaybeEncrypted(ctx, path, append(raw, '\n'))
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
+		return err
+	}
+	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
+}
+
+func (b MycelFileBackend) writeNewPendingPublication(ctx context.Context, pending pendingRecordPublication) error {
+	path, data, err := b.encodePendingPublication(ctx, pending)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, fsperm.SharedDir); err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	maxCount, maxBytes := b.pendingLimits()
+	entries, readErr := directory.ReadDir(maxCount + 1)
+	closeErr := directory.Close()
+	if readErr != nil && readErr != io.EOF {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if len(entries) > maxCount {
+		return fmt.Errorf("pending semantic publication capacity exceeded")
+	}
+	count := 0
+	var bytes int64
+	existingSize := int64(0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		count++
+		bytes += info.Size()
+		if filepath.Join(dir, entry.Name()) == path {
+			existingSize = info.Size()
+		}
+	}
+	prospectiveCount := count
+	if existingSize == 0 {
+		prospectiveCount++
+	}
+	prospectiveBytes := bytes - existingSize + int64(len(data))
+	if prospectiveCount > maxCount || prospectiveBytes > maxBytes {
+		return fmt.Errorf("pending semantic publication capacity exceeded")
+	}
+	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
+}
+
+func (b MycelFileBackend) encodePendingPublication(ctx context.Context, pending pendingRecordPublication) (string, []byte, error) {
+	path := b.pendingRecordPath(pending.Record.Record)
+	raw, err := json.MarshalIndent(pending, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	data, err := b.encodeMaybeEncrypted(ctx, path, append(raw, '\n'))
+	if err != nil {
+		return "", nil, err
+	}
+	_, maxBytes := b.pendingLimits()
+	if int64(len(data)) > maxBytes {
+		return "", nil, fmt.Errorf("pending semantic publication exceeds byte capacity")
+	}
+	return path, data, nil
 }
 
 func (b MycelFileBackend) prepareAndAppendRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) (pendingRecordPublication, error) {
@@ -831,7 +970,7 @@ func (b MycelFileBackend) prepareAndAppendRecord(ctx context.Context, record dom
 		return pendingRecordPublication{}, err
 	}
 	pending := pendingRecordPublication{Record: physicalSearchRecord{Record: record, Vector: record.Vector}, Phase: "prepared", SegmentRecordID: record.ID, SegmentOffset: info.Size(), SegmentLength: int64(len(encoded)), SegmentChecksum: encodedRecordChecksum(encoded)}
-	if err := b.writePendingPublication(ctx, pending); err != nil {
+	if err := b.writeNewPendingPublication(ctx, pending); err != nil {
 		return pendingRecordPublication{}, err
 	}
 	if err := appendEncodedRecord(path, pending.SegmentOffset, encoded); err != nil {
@@ -903,7 +1042,8 @@ func (b MycelFileBackend) recoverPreparedPublicationsForSegmentLocked(ctx contex
 	if err != nil {
 		return err
 	}
-	entries, readErr := directory.ReadDir(maxPendingPublications + 1)
+	maxCount, maxBytes := b.pendingLimits()
+	entries, readErr := directory.ReadDir(maxCount + 1)
 	closeErr := directory.Close()
 	if readErr != nil && readErr != io.EOF {
 		return readErr
@@ -911,7 +1051,7 @@ func (b MycelFileBackend) recoverPreparedPublicationsForSegmentLocked(ctx contex
 	if closeErr != nil {
 		return closeErr
 	}
-	if len(entries) > maxPendingPublications {
+	if len(entries) > maxCount {
 		return fmt.Errorf("pending semantic publication recovery capacity exceeded")
 	}
 	prepared := make([]pendingRecordPublication, 0, len(entries))
@@ -925,7 +1065,7 @@ func (b MycelFileBackend) recoverPreparedPublicationsForSegmentLocked(ctx contex
 			return err
 		}
 		observedBytes += info.Size()
-		if observedBytes > maxPendingPublicationBytes {
+		if observedBytes > maxBytes {
 			return fmt.Errorf("pending semantic publication recovery byte capacity exceeded")
 		}
 		pendingPath := filepath.Join(dir, entry.Name())
@@ -968,8 +1108,12 @@ func (b MycelFileBackend) recoverPreparedPublication(ctx context.Context, pendin
 func (b MycelFileBackend) recoverPreparedPublicationLocked(ctx context.Context, pending pendingRecordPublication, path string) (pendingRecordPublication, error) {
 	record := pending.Record.Record
 	record.Vector = append([]float64(nil), pending.Record.Vector...)
-	if pending.SegmentRecordID == uuid.Nil || pending.SegmentRecordID != record.ID || pending.SegmentOffset < int64(len(segmentMagic)+4) || pending.SegmentLength <= 0 || strings.TrimSpace(pending.SegmentChecksum) == "" {
-		return pending, fmt.Errorf("pending semantic publication is missing or has mismatched segment identity")
+	if pending.SegmentRecordID == uuid.Nil || pending.SegmentRecordID != record.ID || pending.SegmentOffset < int64(len(segmentMagic)+4) || pending.SegmentLength <= 0 || uint64(pending.SegmentLength) > maxEncodedRecordBytes || strings.TrimSpace(pending.SegmentChecksum) == "" {
+		return pending, fmt.Errorf("pending semantic publication is missing, oversized, or has mismatched segment identity")
+	}
+	maxInt64 := int64(^uint64(0) >> 1)
+	if pending.SegmentOffset > maxInt64-pending.SegmentLength {
+		return pending, fmt.Errorf("pending semantic publication segment range overflows")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -978,7 +1122,7 @@ func (b MycelFileBackend) recoverPreparedPublicationLocked(ctx context.Context, 
 	end := pending.SegmentOffset + pending.SegmentLength
 	if info.Size() > pending.SegmentOffset {
 		if info.Size() >= end {
-			encoded := make([]byte, pending.SegmentLength)
+			encoded := make([]byte, int(pending.SegmentLength))
 			f, err := os.Open(path)
 			if err != nil {
 				return pending, err
@@ -1270,6 +1414,9 @@ func (b MycelFileBackend) encodeRecord(ctx context.Context, rec domainsemantic.A
 	if err != nil {
 		return nil, err
 	}
+	if rec.Dimensions < 0 || uint64(rec.Dimensions)*4 > maxRecordVectorBytes || len(rec.Vector) != rec.Dimensions {
+		return nil, fmt.Errorf("semantic vector dimensions do not match bounded vector length")
+	}
 	vector := encodeVector32(rec.Vector)
 	if b.Encryption != nil && b.Encryption.Enabled() {
 		meta, err = b.Encryption.EncryptRecord(ctx, meta, []byte("semantic-vector-record-meta:v1:id="+rec.ID.String()))
@@ -1280,6 +1427,9 @@ func (b MycelFileBackend) encodeRecord(ctx context.Context, rec domainsemantic.A
 		if err != nil {
 			return nil, err
 		}
+	}
+	if uint64(len(meta)) > maxRecordMetadataBytes || uint64(len(vector)) > maxRecordVectorBytes {
+		return nil, fmt.Errorf("semantic vector record component exceeds encoded byte limit")
 	}
 	crc := crc32.ChecksumIEEE(append(append([]byte{}, meta...), vector...))
 	var encoded bytes.Buffer
@@ -1314,6 +1464,9 @@ func (b MycelFileBackend) encodeRecord(ctx context.Context, rec domainsemantic.A
 		if err := write(); err != nil {
 			return nil, err
 		}
+	}
+	if uint64(encoded.Len()) > maxEncodedRecordBytes {
+		return nil, fmt.Errorf("semantic vector record exceeds encoded byte limit")
 	}
 	return encoded.Bytes(), nil
 }
@@ -1366,11 +1519,17 @@ func (b MycelFileBackend) readRecord(ctx context.Context, r io.Reader) (domainse
 			return domainsemantic.AdvancedEmbeddingRecord{}, err
 		}
 	}
-	meta := make([]byte, metaLen)
+	if uint64(metaLen) > maxRecordMetadataBytes || uint64(vectorLen) > maxRecordVectorBytes || uint64(metaLen)+uint64(vectorLen) > maxEncodedRecordBytes {
+		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("semantic vector record length exceeds bounded limits")
+	}
+	if uint64(dimensions)*4 > maxRecordVectorBytes {
+		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("semantic vector dimensions exceed bounded limits")
+	}
+	meta := make([]byte, int(metaLen))
 	if _, err := io.ReadFull(r, meta); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
-	vectorBytes := make([]byte, vectorLen)
+	vectorBytes := make([]byte, int(vectorLen))
 	if _, err := io.ReadFull(r, vectorBytes); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
@@ -1388,7 +1547,7 @@ func (b MycelFileBackend) readRecord(ctx context.Context, r io.Reader) (domainse
 			return domainsemantic.AdvancedEmbeddingRecord{}, err
 		}
 	}
-	if uint32(len(vectorBytes)) != dimensions*4 {
+	if uint64(len(vectorBytes)) != uint64(dimensions)*4 {
 		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("invalid semantic vector length")
 	}
 	var md recordMetadata

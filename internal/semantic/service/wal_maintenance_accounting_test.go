@@ -1,8 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -18,8 +21,9 @@ func TestReplicatedMaintenanceWorkMutationsAreDeterministic(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
 	managers := []storesemantic.MaintenanceManager{storesemantic.NewMaintenanceManager(), storesemantic.NewMaintenanceManager()}
+	locations := []string{t.TempDir(), t.TempDir()}
 	for i, manager := range managers {
-		if err := manager.Init(ctx, t.TempDir(), spaceID); err != nil {
+		if err := manager.Init(ctx, locations[i], spaceID); err != nil {
 			t.Fatalf("init manager %d: %v", i, err)
 		}
 	}
@@ -49,6 +53,17 @@ func TestReplicatedMaintenanceWorkMutationsAreDeterministic(t *testing.T) {
 		}
 		if !reflect.DeepEqual(left, right) {
 			t.Fatalf("%s diverged: left=%+v right=%+v", stage, left, right)
+		}
+		leftLog, err := os.ReadFile(filepath.Join(locations[0], "work", "work-000001.ksem"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rightLog, err := os.ReadFile(filepath.Join(locations[1], "work", "work-000001.ksem"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(leftLog, rightLog) {
+			t.Fatalf("%s durable work logs diverged", stage)
 		}
 		return left
 	}

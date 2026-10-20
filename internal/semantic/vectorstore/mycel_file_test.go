@@ -146,6 +146,67 @@ func TestMycelFileBackendDoesNotSwallowNewMutationBehindPendingPublication(t *te
 	}
 }
 
+func TestMycelFileBackendDoesNotSwallowChangedDeleteBehindPendingTombstone(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		generation uint64
+		epoch      string
+	}{
+		{name: "newer revision same generation", generation: 1, epoch: "epoch-1"},
+		{name: "new generation and epoch", generation: 2, epoch: "epoch-2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			spaceID := domainspace.SpaceID(uuid.New())
+			domainID := graph.DomainID(uuid.New())
+			ruleID := domainsemantic.SemanticRuleID(uuid.New())
+			nodeID := graph.NodeID(uuid.New())
+			storeID := domainsemantic.VectorStoreID(uuid.New())
+			backend := MycelFileBackend{GraphsDir: t.TempDir()}
+			live, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceHash: "live", SourceGraphRevision: 1, SemanticGeneration: 1, RebuildEpoch: "epoch-1", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), ModelEndpointCapabilityID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), CredentialID: domainsemantic.InferenceCredentialID(uuid.New()), CredentialGrantID: domainsemantic.CredentialGrantID(uuid.New()), PolicyDecisionID: domainsemantic.PolicyDecisionID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fail := true
+			backend.AfterSegmentSync = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+				if record.Tombstone && fail {
+					fail = false
+					return fmt.Errorf("injected pending tombstone")
+				}
+				return nil
+			}
+			baseDelete := DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, SourceMode: "self", VectorStoreID: storeID, TargetRecordID: live.ID, SourceGraphRevision: 2, SemanticGeneration: 1, RebuildEpoch: "epoch-1", Reason: "first reason"}
+			if _, err := backend.Delete(ctx, baseDelete); err == nil {
+				t.Fatal("expected first tombstone to remain pending")
+			}
+			changed := baseDelete
+			changed.SourceGraphRevision = 3
+			changed.SemanticGeneration = test.generation
+			changed.RebuildEpoch = test.epoch
+			changed.SourceMode = "projected"
+			changed.ModelEndpointID = domainsemantic.ModelEndpointID(uuid.New())
+			changed.ModelID = domainsemantic.InferenceModelID(uuid.New())
+			changed.ModelEndpointCapID = domainsemantic.ModelEndpointCapabilityID(uuid.New())
+			changed.CredentialID = domainsemantic.InferenceCredentialID(uuid.New())
+			changed.CredentialGrantID = domainsemantic.CredentialGrantID(uuid.New())
+			changed.PolicyDecisionID = domainsemantic.PolicyDecisionID(uuid.New())
+			changed.Reason = "new reason"
+			stored, err := backend.Delete(ctx, changed)
+			if err != nil || !stored.Tombstone || stored.SourceGraphRevision != 3 || stored.SemanticGeneration != test.generation || stored.RebuildEpoch != test.epoch || stored.SourceMode != "projected" || stored.ModelEndpointID != changed.ModelEndpointID || stored.ModelID != changed.ModelID || stored.ModelEndpointCapabilityID != changed.ModelEndpointCapID || stored.CredentialID != changed.CredentialID || stored.CredentialGrantID != changed.CredentialGrantID || stored.PolicyDecisionID != changed.PolicyDecisionID || stored.DeleteReason != "new reason" {
+				t.Fatalf("changed delete was swallowed: stored=%+v err=%v", stored, err)
+			}
+			latest, found, err := backend.LatestRecord(ctx, LatestRecordInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, SourceMode: "self", VectorStoreID: storeID})
+			if err != nil || !found || latest.ID != stored.ID {
+				t.Fatalf("changed tombstone is not latest: latest=%+v found=%v err=%v", latest, found, err)
+			}
+			_, observed, err := backend.readAllBounded(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID), 0)
+			if err != nil || observed != 3 {
+				t.Fatalf("changed tombstone raw history: observed=%d err=%v", observed, err)
+			}
+		})
+	}
+}
+
 func TestMycelFileBackendRecoversTornPreparedTailBeforeDifferentKeyAppend(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -270,6 +331,135 @@ func TestMycelFileBackendPreparedRecoveryHandlesValidOvertakeAndRejectsCorruptio
 		info, err := os.Stat(segment)
 		if err != nil || info.Size() != pending.SegmentOffset+pending.SegmentLength {
 			t.Fatalf("corrupt reservation was appended or truncated: info=%+v err=%v", info, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		offset int64
+	}{
+		{name: "metadata length", offset: 212},
+		{name: "vector length", offset: 216},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend, pendingRecord, pending, segment := newFixture(t)
+			f, err := os.OpenFile(segment, os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			corruptLength := make([]byte, 4)
+			binary.LittleEndian.PutUint32(corruptLength, ^uint32(0))
+			if _, err := f.WriteAt(corruptLength, pending.SegmentOffset+test.offset); err != nil {
+				_ = f.Close()
+				t.Fatal(err)
+			}
+			if err := f.Sync(); err != nil {
+				_ = f.Close()
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := backend.Upsert(ctx, pendingRecord); err == nil {
+				t.Fatalf("expected corrupt %s to fail within bounds", test.name)
+			}
+			info, err := os.Stat(segment)
+			if err != nil || info.Size() != pending.SegmentOffset+pending.SegmentLength {
+				t.Fatalf("corrupt %s changed segment: info=%+v err=%v", test.name, info, err)
+			}
+		})
+	}
+
+	t.Run("pending length overflow", func(t *testing.T) {
+		backend, pendingRecord, pending, segment := newFixture(t)
+		pending.SegmentLength = int64(^uint64(0) >> 1)
+		if err := backend.writePendingPublication(ctx, pending); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(segment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backend.Upsert(ctx, pendingRecord); err == nil {
+			t.Fatal("expected overflowing pending segment length to fail")
+		}
+		after, err := os.Stat(segment)
+		if err != nil || after.Size() != before.Size() {
+			t.Fatalf("overflowing pending length changed segment: before=%d after=%v err=%v", before.Size(), after, err)
+		}
+	})
+}
+
+func TestMycelFileBackendAdmitsPendingPublicationProspectively(t *testing.T) {
+	ctx := context.Background()
+	base := domainsemantic.AdvancedEmbeddingRecord{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.New()), DomainID: graph.DomainID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search", NodeID: graph.NodeID(uuid.New()), SourceMode: "self", SourceHash: "source", SourceGraphRevision: 1, SemanticGeneration: 1, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}, CreatedAt: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)}
+	base.SemanticIndexID = domainsemantic.SemanticIndexID(base.SemanticRuleID)
+	base.TargetNodeID = base.NodeID
+
+	t.Run("file count", func(t *testing.T) {
+		fail := true
+		backend := MycelFileBackend{GraphsDir: t.TempDir(), pendingLimitCount: 1, AfterSegmentSync: func(domainsemantic.AdvancedEmbeddingRecord) error {
+			if fail {
+				fail = false
+				return fmt.Errorf("leave first intent pending")
+			}
+			return nil
+		}}
+		if _, err := backend.Upsert(ctx, base); err == nil {
+			t.Fatal("expected first intent to remain pending")
+		}
+		second := base
+		second.ID = uuid.New()
+		second.NodeID = graph.NodeID(uuid.New())
+		second.TargetNodeID = second.NodeID
+		if _, err := backend.Upsert(ctx, second); err == nil || !strings.Contains(err.Error(), "capacity exceeded") {
+			t.Fatalf("expected prospective pending count rejection, got %v", err)
+		}
+		_, observed, err := backend.readAllBounded(ctx, base.SpaceID, base.SemanticIndexID, 0)
+		if err != nil || observed != 1 {
+			t.Fatalf("count rejection appended a frame: observed=%d err=%v", observed, err)
+		}
+	})
+
+	t.Run("aggregate byte boundary", func(t *testing.T) {
+		fail := true
+		backend := MycelFileBackend{GraphsDir: t.TempDir(), pendingLimitCount: 2, AfterSegmentSync: func(domainsemantic.AdvancedEmbeddingRecord) error {
+			if fail {
+				fail = false
+				return fmt.Errorf("leave first intent pending")
+			}
+			return nil
+		}}
+		failed, err := backend.Upsert(ctx, base)
+		if err == nil {
+			t.Fatal("expected first intent to remain pending")
+		}
+		info, err := os.Stat(backend.pendingRecordPath(failed))
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend.pendingLimitBytes = info.Size()
+		second := base
+		second.ID = uuid.New()
+		second.NodeID = graph.NodeID(uuid.New())
+		second.TargetNodeID = second.NodeID
+		if _, err := backend.Upsert(ctx, second); err == nil || (!strings.Contains(err.Error(), "capacity exceeded") && !strings.Contains(err.Error(), "byte capacity")) {
+			t.Fatalf("expected prospective pending byte rejection at exact boundary, got %v", err)
+		}
+		_, observed, err := backend.readAllBounded(ctx, base.SpaceID, base.SemanticIndexID, 0)
+		if err != nil || observed != 1 {
+			t.Fatalf("byte-boundary rejection appended a frame: observed=%d err=%v", observed, err)
+		}
+	})
+
+	t.Run("single intent bytes", func(t *testing.T) {
+		backend := MycelFileBackend{GraphsDir: t.TempDir(), pendingLimitBytes: 128}
+		if _, err := backend.Upsert(ctx, base); err == nil || !strings.Contains(err.Error(), "byte capacity") {
+			t.Fatalf("expected oversized single intent rejection, got %v", err)
+		}
+		_, observed, err := backend.readAllBounded(ctx, base.SpaceID, base.SemanticIndexID, 0)
+		if err != nil || observed != 0 {
+			t.Fatalf("byte rejection appended a frame: observed=%d err=%v", observed, err)
 		}
 	})
 }
