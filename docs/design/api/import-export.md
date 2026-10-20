@@ -415,7 +415,7 @@ Suggested mappings:
 
 Import mutations occur inside a transaction. Once committed, the transaction becomes normal durable graph state and replicates according to mesh replication rules.
 
-Export reads through the daemon's transaction graph read path. In raft mode, read-only exports route to strong committed graph reads; read-write exports stay on the transaction home node and include staged overlay data. Read-only exports do not pin an MVCC snapshot in V1.
+Export reads through the daemon's transaction graph read path. In Raft mode, read-only exports pass the strong-read barrier and use the graph snapshot pinned to the transaction's `base_revision`; read-write exports stay on the transaction home node and include staged overlay data.
 
 ## Open questions
 

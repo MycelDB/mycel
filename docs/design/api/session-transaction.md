@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented daemon-oriented Client Session and Transaction lifecycle APIs on the `refactor_daemon` branch.
+Implemented by the current daemon Client Session and Transaction APIs.
 
 The protobuf source of truth is:
 
@@ -189,6 +189,43 @@ commit = commit_transaction(tx.transaction_id)
 assert commit.operation_id == operation_id
 ```
 
+### Durable commit idempotency
+
+`CommitTransactionRequest.idempotency_key` opts a non-empty read-write graph
+transaction into durable commit idempotency. The request must also carry the
+transaction's `space_id` and `domain_id`. The key is scoped by authenticated
+principal, space, and domain; it is limited to 128 UTF-8 bytes, must not have
+leading or trailing whitespace, and must not contain secrets.
+
+Before the first attempt, a caller should persist the exact transaction ID, key,
+space ID, and domain ID and reuse all four values for an ambiguous retry. The
+first successful commit binds that key to the canonical complete staged graph
+mutation and original commit result. A matching retry returns that result with
+`CommitTransactionResponse.idempotent_replay = true`; it does not advance the
+graph revision or duplicate built-in graph-change effects, though it may repair
+an interrupted first delivery. Reusing a retained key for different mutation
+content fails with `ALREADY_EXISTS`. Empty
+transactions cannot reserve keys.
+
+`TransactionCommit.idempotency_key` echoes the key and
+`idempotency_expire_time` is the daemon's authoritative retention guarantee.
+The current storage bound is 30 days and at most 100,000 live records per domain
+store, but clients must use the returned expiration instead of assuming a fixed
+period. After expiration, reusing a key may create a new commit. Capacity
+exhaustion fails with `RESOURCE_EXHAUSTED` before graph effects are applied.
+
+The binding and graph writes are persisted atomically in direct, WAL, and Raft
+storage modes. Raft leaders replicate the binding, and graph Raft snapshot V2
+preserves live bindings, so retry lookup can recover the original result after a
+lost response, daemon restart, or leader change even when daemon-local session
+state is gone. Built-in notifications de-duplicate repaired delivery by scope
+and revision. Custom graph-change sinks must do the same because a crash after a
+sink accepts an event but before its durable delivered marker can repeat the
+sink call.
+
+`operation_id` remains correlation metadata. It does not replace the
+idempotency key.
+
 ### Revision metadata
 
 `BeginTransaction` returns revision metadata:
@@ -207,6 +244,9 @@ base_revision
 committed_revision
 operation_count
 commit_time
+operation_id
+idempotency_key                 # when durable idempotency was requested
+idempotency_expire_time         # when durable idempotency was requested
 ```
 
 The daemon is authoritative for revision values. Connectors are expected to track these fields and ensure they are used correctly. Normal application code should generally not manage revisions directly.
@@ -309,11 +349,11 @@ The exact enforcement point for delete capabilities may be graph-operation speci
 
 ## Audit and replication
 
-The current daemon implementation provides in-memory session and transaction lifecycle state. Graph/query operations do not yet attach to transaction ids; that is the next migration slice.
+Session and open-transaction lifecycle state is daemon-local and in-memory. Graph and query operations attach to transaction IDs, while committed graph state and durable idempotency records use the configured direct, WAL, or Raft storage mode.
 
 A committed read-write transaction is the natural audit and replication unit.
 
-Commit records should include:
+Commit records include:
 
 - commit id
 - session id
@@ -324,15 +364,17 @@ Commit records should include:
 - base revision
 - committed revision
 - operation count
+- operation ID
 - commit time
+- idempotency key and authoritative expiration, when requested
 
 Future mesh replication can use committed transaction metadata as part of an oplog or delta stream.
 
 ## Error model
 
-The protobuf does not define custom error messages for this draft. Implementations should use standard gRPC status codes.
+The API uses standard gRPC status codes.
 
-Suggested mappings:
+Key mappings:
 
 | Condition | gRPC status |
 | --- | --- |
@@ -345,6 +387,9 @@ Suggested mappings:
 | rollback on read-only transaction | `FAILED_PRECONDITION` |
 | nested transaction attempted | `FAILED_PRECONDITION` |
 | transaction conflict | `ABORTED` |
+| malformed idempotency key or mismatched explicit scope | `INVALID_ARGUMENT` |
+| retained idempotency key reused for a different mutation | `ALREADY_EXISTS` |
+| idempotency record capacity exhausted | `RESOURCE_EXHAUSTED` |
 | lock/resource pressure | `RESOURCE_EXHAUSTED` or `ABORTED` |
 | service unavailable | `UNAVAILABLE` |
 
@@ -375,6 +420,10 @@ The CLI now uses daemon gRPC and standard-user credentials for session and trans
 ./bin/mycel -u alice -p '<password>' transaction close '<transaction-id>'
 ```
 
+The current CLI commit command does not expose durable idempotency fields. Use
+the v0.20 Go/Rust SDK surface or call `CommitTransaction` directly when an
+ambiguous commit must be safely retryable.
+
 `session open` can resolve the default domain when `--domain-id` is omitted:
 
 ```sh
@@ -386,9 +435,10 @@ The CLI now uses daemon gRPC and standard-user credentials for session and trans
 - `SessionService` and `TransactionService` are registered on the Client API and require user bearer tokens.
 - Session ownership is tied to the authenticated user principal.
 - `OpenSession` validates that the caller can see the target space/domain through the daemon space module.
-- Session/transaction lifecycle state is in-memory and therefore reset by daemon restart.
-- Read-only transactions do not pin historical graph snapshots in V1; they perform current committed reads through graph read consistency rules.
-- Read-write transaction commit persists staged daemon `GraphService` operations first, then advances daemon lifecycle revision metadata with the graph `operation_count`.
+- Session/open-transaction lifecycle state is in-memory and therefore reset by daemon restart; durable idempotent commit lookup can still reconcile a retained result when the exact key, scope, and transaction ID are supplied.
+- Read-only transactions pin graph reads to the `base_revision` observed through the strong read path when the transaction begins.
+- Read-write graph and query operations stage mutations in the transaction overlay and see their own writes without exposing them to other transactions.
+- Commit persists staged graph operations atomically; an idempotent commit stores its canonical mutation binding and original result in the same storage transaction before daemon lifecycle finalization.
 - Closing a session closes read-only transactions and rolls back active read-write transactions.
 
 ## Open questions
