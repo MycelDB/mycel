@@ -149,6 +149,7 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	parentID := graph.NodeID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
 	storeID := domainsemantic.VectorStoreID(uuid.New())
 	globalMgr := storesemantic.NewGlobalManager()
@@ -164,7 +165,7 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindings := []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStore: "mycel-file", Enabled: true}, {Key: "summary", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}
-	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: bindings}); err != nil {
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Embeddings: bindings}); err != nil {
 		t.Fatal(err)
 	}
 	maintenanceMgr := storesemantic.NewMaintenanceManager()
@@ -173,23 +174,31 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 	}
 	backend := vectorstore.MycelFileBackend{GraphsDir: filepath.Join(root, "graphs")}
 	for _, binding := range bindings {
-		if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceGraphRevision: 4, SemanticGeneration: 1, SemanticConfigurationHash: "config", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionDelete, Reason: "selector_transition_cleanup", FirstGraphRevision: 5, LastGraphRevision: 5}); err != nil {
-			t.Fatal(err)
+		for _, selectedNodeID := range []graph.NodeID{parentID, nodeID} {
+			if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: selectedNodeID, TargetNodeID: selectedNodeID, SourceMode: "subtree", SourceGraphRevision: 4, SemanticGeneration: 1, SemanticConfigurationHash: "config", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}}); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-	result, err := (Worker{GlobalManager: globalMgr, SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: &fakeBackfillRunner{}, VectorBackend: backend, Config: WorkerConfig{MaxBatchSize: 2}}).ProcessOnce(ctx, 2)
-	if err != nil || result.Completed != 2 || result.Failed != 0 {
-		t.Fatalf("delete processing: result=%+v err=%v", result, err)
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{parentID: {ID: parentID, DomainID: domainID, Labels: []string{"Document"}}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 5, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, DeletedNodeIDs: []graph.NodeID{nodeID}, OldParentByNodeID: map[graph.NodeID]graph.NodeID{nodeID: parentID}, CommittedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	analyzed, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil || analyzed.EnqueuedItems != 4 {
+		t.Fatalf("subtree delete classification: result=%+v err=%v", analyzed, err)
+	}
+	runner := &fakeBackfillRunner{}
+	result, err := (Worker{GlobalManager: globalMgr, SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: backend, Config: WorkerConfig{MaxBatchSize: 4}}).ProcessOnce(ctx, 4)
+	if err != nil || result.Completed != 4 || result.Failed != 0 || runner.callCount() != 2 {
+		t.Fatalf("delete processing: result=%+v refresh_calls=%d err=%v", result, runner.callCount(), err)
 	}
 	for _, binding := range bindings {
 		search := func(stage string) {
 			t.Helper()
 			results, err := backend.Search(ctx, vectorstore.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), VectorStoreID: storeID, VectorSpaceKey: "test/2", Query: []float64{1, 0}, Limit: 10})
-			if err != nil || len(results) != 0 {
-				t.Fatalf("binding %q remained searchable %s delete: results=%+v err=%v", binding.Key, stage, results, err)
+			if err != nil || len(results) != 1 || results[0].NodeID != parentID {
+				t.Fatalf("binding %q did not retain only the parent %s delete: results=%+v err=%v", binding.Key, stage, results, err)
 			}
 		}
 		search("immediately after")

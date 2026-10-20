@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -399,13 +400,20 @@ func TestMycelFilePhysicalSearchIndexMissingFailsClosedAndBoundedRebuild(t *test
 	if err != nil || len(results) != 1 {
 		t.Fatalf("expected rebuilt physical index search result, results=%+v err=%v", results, err)
 	}
-	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 0}); err != nil {
-		t.Fatalf("unlimited rebuild should work: %v", err)
+	secondNodeID := graph.NodeID(uuid.New())
+	if _, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, TargetNodeID: secondNodeID, NodeID: secondNodeID, SourceHash: "second", SourceMode: "self", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v3", Dimensions: 3, Vector: []float64{0, 1, 0}, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("second upsert failed: %v", err)
 	}
-	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 0}); err != nil {
-		t.Fatalf("repeat unlimited rebuild should work: %v", err)
+	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 1, MaxBytes: 1 << 20}); err == nil || !strings.Contains(err.Error(), "record limit exceeded") {
+		t.Fatalf("expected streaming record limit failure, got %v", err)
 	}
-	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 0}); err != nil {
-		t.Fatalf("third unlimited rebuild should work: %v", err)
+	if state, err := backend.ReadSearchIndexState(ctx, key); err != nil || state.State != "degraded" {
+		t.Fatalf("record limit did not persist degraded state: state=%+v err=%v", state, err)
+	}
+	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 10, MaxBytes: 1}); err == nil || !strings.Contains(err.Error(), "byte limit exceeded") {
+		t.Fatalf("expected byte limit failure, got %v", err)
+	}
+	if state, err := backend.ReadSearchIndexState(ctx, key); err != nil || state.State != "degraded" {
+		t.Fatalf("byte limit did not persist degraded state: state=%+v err=%v", state, err)
 	}
 }

@@ -333,13 +333,13 @@ func (b MycelFileBackend) RebuildSearchIndex(ctx context.Context, key SearchInde
 			return domainsemantic.SemanticSearchIndexState{}, err
 		}
 	}
-	recs, err := b.readAll(key.SpaceID, domainsemantic.SemanticIndexID(key.SemanticRuleID))
+	recs, observedRecords, err := b.readAllBounded(ctx, key.SpaceID, domainsemantic.SemanticIndexID(key.SemanticRuleID), limit.MaxRecords)
 	if err != nil {
 		_, _ = b.writeSearchIndexState(key, "error", 0, err.Error())
 		return domainsemantic.SemanticSearchIndexState{}, err
 	}
-	if limit.MaxRecords > 0 && len(recs) > limit.MaxRecords {
-		err := fmt.Errorf("semantic search index rebuild record limit exceeded: %d > %d", len(recs), limit.MaxRecords)
+	if limit.MaxRecords > 0 && observedRecords > limit.MaxRecords {
+		err := fmt.Errorf("semantic search index rebuild record limit exceeded: %d > %d", observedRecords, limit.MaxRecords)
 		_, _ = b.writeSearchIndexState(key, "degraded", 0, err.Error())
 		return domainsemantic.SemanticSearchIndexState{}, err
 	}
@@ -520,6 +520,24 @@ func (b MycelFileBackend) writeLatestSearchIndex(file latestSearchIndexFile) err
 	return b.writeMaybeEncrypted(context.Background(), path, append(raw, '\n'))
 }
 
+func (b MycelFileBackend) ReadSearchIndexState(ctx context.Context, key SearchIndexKey) (domainsemantic.SemanticSearchIndexState, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticSearchIndexState{}, err
+	}
+	raw, err := b.readMaybeEncrypted(ctx, b.searchStatePath(key))
+	if os.IsNotExist(err) {
+		return domainsemantic.SemanticSearchIndexState{ID: domainsemantic.SearchIndexID(uuid.New()), SemanticRuleID: key.SemanticRuleID, EmbeddingBindingKey: key.EmbeddingBindingKey, State: "missing", UpdatedAt: time.Now().UTC()}, nil
+	}
+	if err != nil {
+		return domainsemantic.SemanticSearchIndexState{}, err
+	}
+	var state domainsemantic.SemanticSearchIndexState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return domainsemantic.SemanticSearchIndexState{}, err
+	}
+	return state, nil
+}
+
 func (b MycelFileBackend) writeSearchIndexState(key SearchIndexKey, state string, liveCount int64, lastErr string) (domainsemantic.SemanticSearchIndexState, error) {
 	value := domainsemantic.SemanticSearchIndexState{ID: domainsemantic.SearchIndexID(uuid.New()), SemanticRuleID: key.SemanticRuleID, EmbeddingBindingKey: key.EmbeddingBindingKey, State: state, LiveRecordCount: liveCount, LastError: lastErr, UpdatedAt: time.Now().UTC()}
 	if state == "ready" {
@@ -628,34 +646,42 @@ func (b MycelFileBackend) ensure(ctx context.Context, spaceID uuid.UUID, indexID
 }
 
 func (b MycelFileBackend) readAll(spaceID uuid.UUID, indexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	records, _, err := b.readAllBounded(context.Background(), spaceID, indexID, 0)
+	return records, err
+}
+
+func (b MycelFileBackend) readAllBounded(ctx context.Context, spaceID uuid.UUID, indexID domainsemantic.SemanticIndexID, maxRecords int) ([]domainsemantic.AdvancedEmbeddingRecord, int, error) {
 	dir := filepath.Join(b.GraphsDir, spaceID.String(), "semantic", "indexes", indexID.String())
 	if err := ensureManifest(dir, indexID, uuid.Nil); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	path := filepath.Join(dir, recordsDir, activeSegment)
 	if err := ensureSegment(path); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 	if err := readSegmentHeader(f); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := []domainsemantic.AdvancedEmbeddingRecord{}
 	for {
-		rec, err := b.readRecord(context.Background(), f)
+		rec, err := b.readRecord(ctx, f)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, len(out), err
+		}
+		if maxRecords > 0 && len(out) >= maxRecords {
+			return out, len(out) + 1, nil
 		}
 		out = append(out, rec)
 	}
-	return out, nil
+	return out, len(out), nil
 }
 
 func validateUpsert(rec domainsemantic.AdvancedEmbeddingRecord) error {

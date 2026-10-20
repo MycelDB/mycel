@@ -89,6 +89,10 @@ type SearchIndexRebuilder interface {
 	RebuildSearchIndex(ctx context.Context, key SearchIndexKey, limit RebuildLimit) (domainsemantic.SemanticSearchIndexState, error)
 }
 
+type SearchIndexStateReader interface {
+	ReadSearchIndexState(ctx context.Context, key SearchIndexKey) (domainsemantic.SemanticSearchIndexState, error)
+}
+
 type RecordLister interface {
 	ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error)
 }

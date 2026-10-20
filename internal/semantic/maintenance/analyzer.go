@@ -2,8 +2,10 @@ package maintenance
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,14 +24,17 @@ type GraphReader interface {
 }
 
 type Analyzer struct {
-	SpaceManager           storesemantic.SpaceManager
-	MaintenanceManager     storesemantic.MaintenanceManager
-	GraphReader            GraphReader
-	DirtyCooldown          time.Duration
-	MaxBatchSize           int
-	MaxReliabilityBarriers int
-	DirtyCooldownForTarget func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error)
-	SkipIndex              func(context.Context, domainsemantic.SemanticIndex) (bool, error)
+	SpaceManager                  storesemantic.SpaceManager
+	MaintenanceManager            storesemantic.MaintenanceManager
+	GraphReader                   GraphReader
+	DirtyCooldown                 time.Duration
+	MaxBatchSize                  int
+	MaxReliabilityBarriers        int
+	MaxReliabilityGapIntervals    int
+	MaxReliabilityRevisionSpan    uint64
+	MaxReliabilitySerializedBytes uint64
+	DirtyCooldownForTarget        func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error)
+	SkipIndex                     func(context.Context, domainsemantic.SemanticIndex) (bool, error)
 }
 
 type dirtyWorkBatchUpserter interface {
@@ -37,8 +42,11 @@ type dirtyWorkBatchUpserter interface {
 }
 
 const (
-	defaultDirtyWorkUpsertBatchSize = 128
-	maxReliabilityBarrierItems      = 100000
+	defaultDirtyWorkUpsertBatchSize           = 128
+	maxReliabilityBarrierItems                = 100000
+	maxReliabilityGapIntervals                = 4096
+	maxReliabilityRevisionSpan         uint64 = 1000000
+	maxReliabilitySerializedRangeBytes uint64 = 1 << 20
 )
 
 type AnalyzeInput struct {
@@ -250,17 +258,7 @@ func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsem
 	if err != nil {
 		return 0, err
 	}
-	retained := 0
-	for _, item := range existing {
-		if item.EffectiveSemanticRuleID() == rule.ID && item.EmbeddingBindingKey == binding.Key && item.Status != domainsemantic.SemanticDirtyWorkStatusComplete {
-			retained++
-		}
-	}
-	barrierLimit := a.MaxReliabilityBarriers
-	if barrierLimit <= 0 || barrierLimit > maxReliabilityBarrierItems {
-		barrierLimit = maxReliabilityBarrierItems
-	}
-	if retained >= barrierLimit || retained+len(targets) > barrierLimit {
+	if a.ruleBindingAdmissionExhausted(existing, rule.ID, binding.Key, event.GraphRevision, targets) {
 		if err := a.markRuleBindingCapacityExhausted(ctx, rule.ID, binding.Key, now); err != nil {
 			return 0, err
 		}
@@ -305,6 +303,110 @@ func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsem
 		return count, err
 	}
 	return count, nil
+}
+
+func (a Analyzer) ruleBindingAdmissionExhausted(existing []domainsemantic.SemanticDirtyWorkItem, ruleID domainsemantic.SemanticRuleID, bindingKey string, eventRevision uint64, targets map[graph.NodeID]resolvedTarget) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	byTarget := map[graph.NodeID]domainsemantic.SemanticRevisionRange{}
+	latestRevision := eventRevision
+	for _, item := range existing {
+		if item.EffectiveSemanticRuleID() != ruleID || item.EmbeddingBindingKey != bindingKey || item.Status == domainsemantic.SemanticDirtyWorkStatusComplete {
+			continue
+		}
+		first := item.FirstGraphRevision
+		if first == 0 {
+			first = item.LastGraphRevision
+		}
+		last := item.LastGraphRevision
+		if last < first {
+			last = first
+		}
+		if last > latestRevision {
+			latestRevision = last
+		}
+		byTarget[item.TargetNodeID] = domainsemantic.SemanticRevisionRange{FirstRevision: first, LastRevision: last}
+	}
+	for targetID := range targets {
+		if current, ok := byTarget[targetID]; ok {
+			if current.FirstRevision == 0 || (eventRevision > 0 && eventRevision < current.FirstRevision) {
+				current.FirstRevision = eventRevision
+			}
+			if eventRevision > current.LastRevision {
+				current.LastRevision = eventRevision
+			}
+			byTarget[targetID] = current
+			continue
+		}
+		byTarget[targetID] = domainsemantic.SemanticRevisionRange{FirstRevision: eventRevision, LastRevision: eventRevision}
+	}
+	barrierLimit := a.MaxReliabilityBarriers
+	if barrierLimit <= 0 || barrierLimit > maxReliabilityBarrierItems {
+		barrierLimit = maxReliabilityBarrierItems
+	}
+	if len(byTarget) >= barrierLimit {
+		return true
+	}
+	ranges := make([]domainsemantic.SemanticRevisionRange, 0, len(byTarget))
+	for _, revisionRange := range byTarget {
+		if revisionRange.FirstRevision > 0 {
+			ranges = append(ranges, revisionRange)
+		}
+	}
+	ranges = mergeReliabilityRanges(ranges)
+	intervalLimit := a.MaxReliabilityGapIntervals
+	if intervalLimit <= 0 || intervalLimit > maxReliabilityGapIntervals {
+		intervalLimit = maxReliabilityGapIntervals
+	}
+	if len(ranges) > intervalLimit {
+		return true
+	}
+	spanLimit := a.MaxReliabilityRevisionSpan
+	if spanLimit == 0 || spanLimit > maxReliabilityRevisionSpan {
+		spanLimit = maxReliabilityRevisionSpan
+	}
+	if len(ranges) > 0 && latestRevision >= ranges[0].FirstRevision && latestRevision-ranges[0].FirstRevision+1 >= spanLimit {
+		return true
+	}
+	serialized, err := json.Marshal(ranges)
+	if err != nil {
+		return true
+	}
+	serializedLimit := a.MaxReliabilitySerializedBytes
+	if serializedLimit == 0 || serializedLimit > maxReliabilitySerializedRangeBytes {
+		serializedLimit = maxReliabilitySerializedRangeBytes
+	}
+	return uint64(len(serialized)) >= serializedLimit
+}
+
+func mergeReliabilityRanges(ranges []domainsemantic.SemanticRevisionRange) []domainsemantic.SemanticRevisionRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].FirstRevision == ranges[j].FirstRevision {
+			return ranges[i].LastRevision < ranges[j].LastRevision
+		}
+		return ranges[i].FirstRevision < ranges[j].FirstRevision
+	})
+	merged := make([]domainsemantic.SemanticRevisionRange, 0, len(ranges))
+	for _, candidate := range ranges {
+		if len(merged) == 0 {
+			merged = append(merged, candidate)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		adjacent := last.LastRevision != ^uint64(0) && candidate.FirstRevision <= last.LastRevision+1
+		if candidate.FirstRevision <= last.LastRevision || adjacent {
+			if candidate.LastRevision > last.LastRevision {
+				last.LastRevision = candidate.LastRevision
+			}
+			continue
+		}
+		merged = append(merged, candidate)
+	}
+	return merged
 }
 
 func (a Analyzer) markRuleBindingCapacityExhausted(ctx context.Context, ruleID domainsemantic.SemanticRuleID, bindingKey string, now time.Time) error {
@@ -518,6 +620,10 @@ func (a Analyzer) resolveRuleTargets(ctx context.Context, rule domainsemantic.Se
 	switch rule.Selector.Mode {
 	case domainsemantic.SemanticTargetSelectorExplicit:
 		for _, id := range rule.Selector.NodeIDs {
+			if containsNode(event.DeletedNodeIDs, id) {
+				add(id, domainsemantic.SemanticDirtyWorkActionDelete, "node_deleted")
+				continue
+			}
 			add(id, domainsemantic.SemanticDirtyWorkActionRefresh, "explicit_selector")
 		}
 		return out
@@ -528,8 +634,15 @@ func (a Analyzer) resolveRuleTargets(ctx context.Context, rule domainsemantic.Se
 	for _, nodeID := range candidateNodeIDs(event) {
 		reason := reasonForEvent(event, nodeID)
 		if containsNode(event.DeletedNodeIDs, nodeID) {
-			if targetID, action, ok := a.deletedRuleTarget(ctx, rule, event, nodeID); ok {
-				add(targetID, action, reason)
+			// A deleted node may itself have been a selected root even when a
+			// selected ancestor also needs a subtree refresh. Preserve both facts.
+			add(nodeID, domainsemantic.SemanticDirtyWorkActionDelete, reason)
+			if rule.Source.Mode != domainsemantic.SemanticSourceSelf && rule.Source.Mode != "" {
+				if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
+					if targetID, ok := a.targetForRuleNode(ctx, rule, oldParentID); ok {
+						add(targetID, domainsemantic.SemanticDirtyWorkActionRefresh, reason)
+					}
+				}
 			}
 			continue
 		}
@@ -590,18 +703,6 @@ func (a Analyzer) targetForRuleNode(ctx context.Context, rule domainsemantic.Sem
 		parentID = parentNode.ID
 	}
 	return uuid.Nil, false
-}
-
-func (a Analyzer) deletedRuleTarget(ctx context.Context, rule domainsemantic.SemanticGenerationRule, event domainsemantic.GraphDirtyEvent, nodeID graph.NodeID) (graph.NodeID, domainsemantic.SemanticDirtyWorkAction, bool) {
-	if rule.Source.Mode == domainsemantic.SemanticSourceSelf || rule.Source.Mode == "" {
-		return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
-	}
-	if oldParentID := event.OldParentByNodeID[nodeID]; oldParentID != uuid.Nil {
-		if targetID, ok := a.targetForRuleNode(ctx, rule, oldParentID); ok {
-			return targetID, domainsemantic.SemanticDirtyWorkActionRefresh, true
-		}
-	}
-	return nodeID, domainsemantic.SemanticDirtyWorkActionDelete, true
 }
 
 func (a Analyzer) targetForNode(ctx context.Context, index domainsemantic.SemanticIndex, nodeID graph.NodeID) (graph.NodeID, bool) {

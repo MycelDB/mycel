@@ -651,6 +651,52 @@ func TestAnalyzerCancelledItemsRetainReliabilityCapacity(t *testing.T) {
 	}
 }
 
+func TestAnalyzerRejectsProspectiveReliabilityRangeCapacityBeforeAllocation(t *testing.T) {
+	tests := []struct {
+		name            string
+		existing        []uint64
+		eventRevision   uint64
+		gapIntervals    int
+		revisionSpan    uint64
+		serializedBytes uint64
+	}{
+		{name: "gap intervals", existing: []uint64{1, 3}, eventRevision: 5, gapIntervals: 2},
+		{name: "revision span", existing: []uint64{1}, eventRevision: 5, revisionSpan: 5},
+		{name: "serialized bytes", existing: []uint64{1}, eventRevision: 3, serializedBytes: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			spaceID := domainspace.SpaceID(uuid.New())
+			domainID := graph.DomainID(uuid.New())
+			nodeID := graph.NodeID(uuid.New())
+			spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+			binding := analyzerBinding("search", true)
+			rule, err := spaceMgr.UpsertSemanticRule(ctx, analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{binding}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, revision := range tt.existing {
+				if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, TargetNodeID: graph.NodeID(uuid.New()), Status: domainsemantic.SemanticDirtyWorkStatusCancelled, FirstGraphRevision: revision, LastGraphRevision: revision}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"Note"}}}}
+			if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: tt.eventRevision, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, MaxReliabilityBarriers: 10, MaxReliabilityGapIntervals: tt.gapIntervals, MaxReliabilityRevisionSpan: tt.revisionSpan, MaxReliabilitySerializedBytes: tt.serializedBytes}).AnalyzeOnce(ctx, AnalyzeInput{})
+			if err == nil || !strings.Contains(err.Error(), "capacity exhausted") {
+				t.Fatalf("expected prospective %s exhaustion, got %v", tt.name, err)
+			}
+			items, listErr := maintenanceMgr.ListDirtyWorkItems(ctx)
+			if listErr != nil || len(items) != len(tt.existing) {
+				t.Fatalf("%s exhaustion allocated a new barrier: items=%+v err=%v", tt.name, items, listErr)
+			}
+		})
+	}
+}
+
 func TestAnalyzerSemanticRuleTriggerAndCheckpointsAreBindingAware(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

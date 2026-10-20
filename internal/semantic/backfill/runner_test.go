@@ -627,6 +627,50 @@ func (e *backfillTestEnv) semanticBinding(key string, enabled bool) domainsemant
 	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStoreID: e.index.VectorStoreID, Enabled: enabled}
 }
 
+func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, _ := env.addRootWithChild(t, "root note", "child note")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	backend := &countingSearchIndexBackend{Backend: env.vector, Reader: env.vector, Rebuilder: env.vector, Lister: env.vector}
+	runner := env.runner
+	runner.VectorBackend = backend
+	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1})
+	if err != nil || result.GeneratedCount != 1 {
+		t.Fatalf("incremental refresh: result=%+v err=%v", result, err)
+	}
+	if backend.Rebuilds != 0 {
+		t.Fatalf("incremental refresh performed %d historical physical-index rebuilds", backend.Rebuilds)
+	}
+	states, err := env.spaceMgr.ListSearchIndexStates(ctx)
+	if err != nil || len(states) != 1 || states[0].State != "ready" {
+		t.Fatalf("incremental physical-index state was not mirrored: states=%+v err=%v", states, err)
+	}
+}
+
+type countingSearchIndexBackend struct {
+	vectorstore.Backend
+	Reader    vectorstore.SearchIndexStateReader
+	Rebuilder vectorstore.SearchIndexRebuilder
+	Lister    vectorstore.RecordLister
+	Rebuilds  int
+}
+
+func (b *countingSearchIndexBackend) ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	return b.Lister.ListRecords(ctx, spaceID, semanticIndexID)
+}
+
+func (b *countingSearchIndexBackend) ReadSearchIndexState(ctx context.Context, key vectorstore.SearchIndexKey) (domainsemantic.SemanticSearchIndexState, error) {
+	return b.Reader.ReadSearchIndexState(ctx, key)
+}
+
+func (b *countingSearchIndexBackend) RebuildSearchIndex(ctx context.Context, key vectorstore.SearchIndexKey, limit vectorstore.RebuildLimit) (domainsemantic.SemanticSearchIndexState, error) {
+	b.Rebuilds++
+	return b.Rebuilder.RebuildSearchIndex(ctx, key, limit)
+}
+
 func TestSearchIndexRebuildHoldsPublicationFence(t *testing.T) {
 	env := newBackfillTestEnv(t)
 	binding := env.semanticBinding("search", true)
