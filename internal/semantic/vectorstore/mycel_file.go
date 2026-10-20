@@ -324,16 +324,15 @@ func (b MycelFileBackend) RebuildSearchIndex(ctx context.Context, key SearchInde
 			continue
 		}
 		liveKey := physicalLiveKey(rec)
-		if rec.Tombstone {
-			delete(latest, liveKey)
-			continue
-		}
-		if existing, ok := latest[liveKey]; !ok || rec.CreatedAt.After(existing.CreatedAt) || (rec.CreatedAt.Equal(existing.CreatedAt) && rec.ID.String() > existing.ID.String()) {
+		if existing, ok := latest[liveKey]; !ok || semanticRecordSupersedes(rec, existing) {
 			latest[liveKey] = rec
 		}
 	}
 	file := latestSearchIndexFile{Key: key, UpdatedAt: time.Now().UTC()}
 	for _, rec := range latest {
+		if rec.Tombstone {
+			continue
+		}
 		file.Records = append(file.Records, physicalSearchRecord{Record: rec, Vector: rec.Vector})
 	}
 	sort.SliceStable(file.Records, func(i, j int) bool { return file.Records[i].Record.ID.String() < file.Records[j].Record.ID.String() })
@@ -403,7 +402,7 @@ func (b MycelFileBackend) upsertPhysicalSearchRecord(ctx context.Context, rec do
 		if physicalLiveKey(existing.Record) != liveKey {
 			continue
 		}
-		if rec.CreatedAt.After(existing.Record.CreatedAt) || rec.CreatedAt.Equal(existing.Record.CreatedAt) || rec.ID.String() > existing.Record.ID.String() {
+		if semanticRecordSupersedes(rec, existing.Record) {
 			file.Records[i] = physicalSearchRecord{Record: rec, Vector: rec.Vector}
 		}
 		updated = true
@@ -437,6 +436,10 @@ func (b MycelFileBackend) tombstonePhysicalSearchRecord(ctx context.Context, rec
 	filtered := file.Records[:0]
 	for _, existing := range file.Records {
 		remove := false
+		if sameSemanticGenerationEpoch(rec, existing.Record) && existing.Record.SourceGraphRevision > rec.SourceGraphRevision {
+			filtered = append(filtered, existing)
+			continue
+		}
 		if rec.DeleteTargetRecordID != uuid.Nil && existing.Record.ID == rec.DeleteTargetRecordID {
 			remove = true
 		} else if physicalLiveKey(existing.Record) == liveKey {
@@ -455,6 +458,17 @@ func (b MycelFileBackend) tombstonePhysicalSearchRecord(ctx context.Context, rec
 	}
 	_, err = b.writeSearchIndexState(key, "ready", int64(len(file.Records)), "")
 	return err
+}
+
+func semanticRecordSupersedes(candidate, current domainsemantic.AdvancedEmbeddingRecord) bool {
+	if sameSemanticGenerationEpoch(candidate, current) && candidate.SourceGraphRevision != current.SourceGraphRevision {
+		return candidate.SourceGraphRevision > current.SourceGraphRevision
+	}
+	return candidate.CreatedAt.After(current.CreatedAt) || (candidate.CreatedAt.Equal(current.CreatedAt) && candidate.ID.String() > current.ID.String())
+}
+
+func sameSemanticGenerationEpoch(left, right domainsemantic.AdvancedEmbeddingRecord) bool {
+	return left.SemanticGeneration == right.SemanticGeneration && left.RebuildEpoch == right.RebuildEpoch
 }
 
 func (b MycelFileBackend) readLatestSearchIndex(key SearchIndexKey) (latestSearchIndexFile, error) {

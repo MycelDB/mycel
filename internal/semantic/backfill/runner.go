@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,6 +31,13 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	}
 	if in.SemanticGeneration == 0 {
 		in.SemanticGeneration = 1
+	}
+	if in.PinSourceGraphRevision {
+		pinner, ok := r.GraphReader.(RevisionPinnedGraphSourceReader)
+		if !ok {
+			return Result{}, fmt.Errorf("graph reader does not support revision-pinned semantic reads")
+		}
+		r.GraphReader = pinner.AtGraphRevision(in.SourceGraphRevision)
 	}
 	rules, err := r.SpaceManager.ListSemanticRules(ctx)
 	if err != nil {
@@ -231,8 +239,11 @@ func (r Runner) reconcileRuleBinding(ctx context.Context, rule domainsemantic.Se
 		if record.EffectiveSemanticRuleID() != rule.ID || record.EmbeddingBindingKey != binding.Key || record.VectorStoreID != vectorStoreID || record.SemanticGeneration != in.SemanticGeneration {
 			continue
 		}
+		if in.PinSourceGraphRevision && record.SourceGraphRevision > in.SourceGraphRevision {
+			continue
+		}
 		current, ok := latest[record.NodeID]
-		if !ok || record.CreatedAt.After(current.CreatedAt) || (record.CreatedAt.Equal(current.CreatedAt) && record.ID.String() > current.ID.String()) {
+		if !ok || ruleRecordSupersedes(record, current) {
 			latest[record.NodeID] = record
 		}
 	}
@@ -244,6 +255,9 @@ func (r Runner) reconcileRuleBinding(ctx context.Context, rule domainsemantic.Se
 			continue
 		}
 		release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: nodeID, SourceHash: record.SourceHash, SemanticConfigurationHash: record.SemanticConfigurationHash})
+		if errors.Is(err, ErrSupersededPublication) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -287,6 +301,9 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 	if strings.TrimSpace(source.Text) == "" || len(source.Text) < rule.Source.MinimumTextLength {
 		if latest != nil && !latest.Tombstone {
 			release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: root.ID, SourceHash: source.Hash, SemanticConfigurationHash: latest.SemanticConfigurationHash})
+			if errors.Is(err, ErrSupersededPublication) {
+				return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "newer semantic publication already exists"}, nil
+			}
 			if err != nil {
 				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 			}
@@ -314,6 +331,9 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 	}
 	configurationHash := domainsemantic.SemanticRecordConfigurationHash(rule, binding, resp.EndpointID, resp.ModelID, resp.CapabilityID, vectorSpaceKey, len(resp.Vector))
 	release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: root.ID, SourceHash: source.Hash, SemanticConfigurationHash: configurationHash})
+	if errors.Is(err, ErrSupersededPublication) {
+		return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "newer semantic publication already exists"}, nil
+	}
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
@@ -595,11 +615,18 @@ func latestCurrentRuleBindingRecord(records []domainsemantic.AdvancedEmbeddingRe
 		if rec.NodeID != nodeID || rec.EffectiveSemanticRuleID() != rule.ID || rec.EmbeddingBindingKey != binding.Key || rec.SourceMode != sourceMode || rec.VectorStoreID != vectorStoreID {
 			continue
 		}
-		if latest == nil || rec.CreatedAt.After(latest.CreatedAt) || (rec.CreatedAt.Equal(latest.CreatedAt) && rec.ID.String() > latest.ID.String()) {
+		if latest == nil || ruleRecordSupersedes(rec, *latest) {
 			latest = &rec
 		}
 	}
 	return latest
+}
+
+func ruleRecordSupersedes(candidate, current domainsemantic.AdvancedEmbeddingRecord) bool {
+	if candidate.SemanticGeneration == current.SemanticGeneration && candidate.RebuildEpoch == current.RebuildEpoch && candidate.SourceGraphRevision != current.SourceGraphRevision {
+		return candidate.SourceGraphRevision > current.SourceGraphRevision
+	}
+	return candidate.CreatedAt.After(current.CreatedAt) || (candidate.CreatedAt.Equal(current.CreatedAt) && candidate.ID.String() > current.ID.String())
 }
 
 func (r Runner) listRuleVectorRecords(ctx context.Context, rule domainsemantic.SemanticGenerationRule) ([]domainsemantic.AdvancedEmbeddingRecord, error) {

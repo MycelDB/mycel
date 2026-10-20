@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -110,6 +111,37 @@ func TestStaleSemanticWorkAndGenerationPublicationAreRejected(t *testing.T) {
 	}
 }
 
+func TestSemanticPublicationRejectsOlderSameEpochRecord(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	mgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 2, RebuildEpoch: "epoch", RebuildState: "running"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.localVectorBackend().Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, TargetNodeID: nodeID, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}, SourceGraphRevision: 11, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: "config"}); err != nil {
+		t.Fatal(err)
+	}
+	publication := semanticbackfill.Publication{Input: semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 2, RebuildEpoch: "epoch"}, NodeID: nodeID}
+	release, err := module.acquireSemanticPublication(ctx, publication)
+	if release != nil {
+		release()
+	}
+	if !errors.Is(err, semanticbackfill.ErrSupersededPublication) {
+		t.Fatalf("older publication error = %v", err)
+	}
+}
+
 func TestMarkRuleConfigurationChangedRotatesGenerationAndRequiresRebuild(t *testing.T) {
 	ctx := context.Background()
 	runtime := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
@@ -154,6 +186,7 @@ func TestReliabilityStatusRotatesOnlyWhenSelectedRouteChanges(t *testing.T) {
 	domainID := graph.DomainID(uuid.New())
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
 	profileID := domainsemantic.IntelligenceProfileID(uuid.New())
+	unusedProfileID := domainsemantic.IntelligenceProfileID(uuid.New())
 	endpointID := domainsemantic.ModelEndpointID(uuid.New())
 	modelID := domainsemantic.InferenceModelID(uuid.New())
 	capabilityID := domainsemantic.ModelEndpointCapabilityID(uuid.New())
@@ -164,6 +197,9 @@ func TestReliabilityStatusRotatesOnlyWhenSelectedRouteChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: profileID, SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, EndpointRefs: []string{endpointID.String()}, ModelRefs: []string{modelID.String()}, CapabilityRefs: []string{capabilityID.String()}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: unusedProfileID, SpaceID: spaceID, Key: "unused", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	global := module.GlobalManager()
@@ -179,7 +215,7 @@ func TestReliabilityStatusRotatesOnlyWhenSelectedRouteChanges(t *testing.T) {
 	if _, err := global.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: profileID, VectorStoreID: storeID, Enabled: true}}}); err != nil {
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: profileID, IntelligenceProfile: "unused", VectorStoreID: storeID, Enabled: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildState: "completed"}}}); err != nil {
@@ -195,6 +231,9 @@ func TestReliabilityStatusRotatesOnlyWhenSelectedRouteChanges(t *testing.T) {
 	presentationOnly, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
 	if err != nil || presentationOnly.SemanticGeneration != 1 || presentationOnly.RebuildRequired {
 		t.Fatalf("presentation-only route change rotated generation: %+v err=%v", presentationOnly, err)
+	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: unusedProfileID, SpaceID: spaceID, Key: "unused", Operation: domainsemantic.OperationEmbeddings, RequiredFeatures: []string{"changed-but-unused"}, Enabled: true}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := global.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: domainsemantic.ModelEndpointID(uuid.New()), Key: "unrelated-route", Name: "unrelated-route", ConnectorType: domainsemantic.ConnectorCustomHTTP, NetworkClass: domainsemantic.NetworkClassPrivateNetwork, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -236,6 +275,17 @@ func TestRebuildSemanticRuleCompletesAtNonzeroPinnedRevision(t *testing.T) {
 	}
 	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 2, RebuildState: "required"}}}); err != nil {
 		t.Fatal(err)
+	}
+	maintenanceMgr, err := module.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: graph.NodeID(uuid.New()), FirstGraphRevision: 5, LastGraphRevision: 5, Status: domainsemantic.SemanticDirtyWorkStatusCancelled}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil || before.UnresolvedGapCount != 1 {
+		t.Fatalf("cancelled work did not remain a reliability gap: status=%+v err=%v", before, err)
 	}
 	result, err := module.RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 2})
 	if err != nil {

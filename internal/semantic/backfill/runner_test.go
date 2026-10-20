@@ -349,6 +349,127 @@ func (f *fakeConnector) Embed(ctx context.Context, in connectors.EmbedInput) (co
 	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated", EndpointID: f.endpointID, ModelID: f.modelID, CapabilityID: f.capID}, nil
 }
 
+type revisionPinningGraphSource struct {
+	live      GraphSourceReader
+	snapshots map[uint64]GraphSourceReader
+	pinned    []uint64
+}
+
+func (s *revisionPinningGraphSource) AtGraphRevision(revision uint64) GraphSourceReader {
+	s.pinned = append(s.pinned, revision)
+	return s.snapshots[revision]
+}
+
+func (s *revisionPinningGraphSource) ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error) {
+	return s.live.ListNodes(ctx, domainID)
+}
+
+func (s *revisionPinningGraphSource) ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error) {
+	return s.live.ListEdges(ctx, domainID)
+}
+
+func TestRunnerReadsPinnedWorkRevisionInsteadOfCurrentGraph(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("revision eleven")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	snapshot := &memoryGraphSource{domainID: env.domainID, nodes: []graph.Node{{ID: root.ID, DomainID: env.domainID, Labels: []string{"Note"}, Content: "revision ten"}}}
+	pinner := &revisionPinningGraphSource{live: env.graph, snapshots: map[uint64]GraphSourceReader{10: snapshot}}
+	env.runner.GraphReader = pinner
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Force: true, SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinner.pinned) != 1 || pinner.pinned[0] != 10 {
+		t.Fatalf("pinned revisions = %v, want [10]", pinner.pinned)
+	}
+	if result.GeneratedCount != 1 || len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "revision ten") || strings.Contains(env.connector.calls[0], "revision eleven") {
+		t.Fatalf("worker embedded the wrong graph snapshot: result=%+v calls=%v", result, env.connector.calls)
+	}
+}
+
+func TestRunnerDoesNotOverwriteDeltaWhenBaselinePublicationFinishesLater(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("baseline revision ten")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	publicationStarted := make(chan Publication, 1)
+	releaseBaseline := make(chan struct{})
+	env.runner.AcquirePublication = func(_ context.Context, publication Publication) (func(), error) {
+		publicationStarted <- publication
+		<-releaseBaseline
+		return nil, ErrSupersededPublication
+	}
+	resultDone := make(chan Result, 1)
+	errorDone := make(chan error, 1)
+	go func() {
+		result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Force: true, SourceGraphRevision: 10, SemanticGeneration: 2, RebuildEpoch: "epoch"})
+		resultDone <- result
+		errorDone <- err
+	}()
+	publication := <-publicationStarted
+	binding := rule.Embeddings[0]
+	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, TargetNodeID: root.ID, SourceGraphRevision: 11, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: publication.SemanticConfigurationHash, ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{0, 1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseBaseline)
+	result := <-resultDone
+	if err := <-errorDone; err != nil {
+		t.Fatal(err)
+	}
+	if result.FailedCount != 0 || result.SkippedCount != 1 || result.GeneratedCount != 0 {
+		t.Fatalf("late baseline was not skipped: %+v", result)
+	}
+	records, err := env.vector.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].SourceGraphRevision != 11 {
+		t.Fatalf("late baseline displaced delta: %+v", records)
+	}
+}
+
+func TestPinnedReconciliationDoesNotDeletePostPinDelta(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	binding := rule.Embeddings[0]
+	nodeID := graph.NodeID(uuid.New())
+	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: nodeID, TargetNodeID: nodeID, SourceGraphRevision: 11, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: "config", ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{1, 0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.runner.reconcileRuleBinding(ctx, rule, binding, binding.VectorStoreID, nil, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 2, RebuildEpoch: "epoch"}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := env.vector.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Tombstone {
+		t.Fatalf("pinned reconciliation deleted post-pin delta: %+v", records)
+	}
+}
+
+func TestRunnerTreatsRevisionZeroAsExplicitPinnedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	env.graph.AddNode("created after empty revision")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	empty := &memoryGraphSource{domainID: env.domainID}
+	pinner := &revisionPinningGraphSource{live: env.graph, snapshots: map[uint64]GraphSourceReader{0: empty}}
+	env.runner.GraphReader = pinner
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Force: true, SourceGraphRevision: 0, PinSourceGraphRevision: true, SemanticGeneration: 1, RebuildEpoch: "epoch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinner.pinned) != 1 || pinner.pinned[0] != 0 || result.SelectedCount != 0 || len(env.connector.calls) != 0 {
+		t.Fatalf("revision-zero pin read live graph state: pinned=%v result=%+v calls=%v", pinner.pinned, result, env.connector.calls)
+	}
+}
+
 func TestRunnerPaginatesSemanticRuleBackfillWithoutTruncation(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)

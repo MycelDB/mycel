@@ -20,19 +20,19 @@ The configuration identity binds rule selector/projection, embedding binding, st
 
 Configured route IDs are not provider-observed route evidence. `actual_route_known` remains false unless a connector supplies independent provider response metadata.
 
-Workers validate the claimed work generation immediately before execution and again before publishing an embedding. A superseded work item or semantic generation cannot publish. Publication fences are scoped by space and rule, so an unrelated rule's provider call does not serialize semantic maintenance globally. Reliability transitions compare generation, rebuild epoch, and expected state before committing; stale completion or failure cannot replace newer state. Tombstones retain revision and generation provenance.
+Workers read the immutable graph snapshot named by the work item's source revision, validate the claimed generation immediately before execution, and validate again before publishing an embedding. Within one generation and rebuild epoch, a lower source revision cannot replace or tombstone a higher source revision. A superseded work item or semantic generation cannot publish. Publication fences are scoped by space and rule, so an unrelated rule's provider call does not serialize semantic maintenance globally. Reliability transitions compare generation, rebuild epoch, and expected state before committing; stale completion or failure cannot replace newer state. Tombstones retain revision and generation provenance.
 
 ## Analyzer and freshness frontiers
 
 `analyzed_through_graph_revision` means that dirty graph events through the revision were examined and required work was classified. It is not freshness.
 
-`fresh_through_graph_revision` is the highest contiguous analyzed revision before any unresolved required work. Pending, retryable, and permanent failures remain gaps. Explicit terminal completion, cancellation/skip, delete, or a validated newer coalesced outcome can resolve work.
+`fresh_through_graph_revision` is the highest contiguous analyzed revision before any unresolved required work. Pending, retryable, permanent-failure, and operator-cancelled required work remain gaps. Explicit terminal completion, policy skip, delete, or a validated newer coalesced outcome can resolve work. A pinned rebuild may supersede cancelled work only through its covered target revision.
 
 Diagnostics expose independent limits for retained work barriers, disjoint gap intervals, revision span, and serialized range state. Capacity exhaustion is fail-closed and requires a rebuild; it never advances freshness. Reliability state, checkpoints, work, and capacity evidence use the existing semantic WAL/Raft snapshot path.
 
 ## Rebuild
 
-A rebuild pins the latest observed graph revision, rebuilds eligible records at that target, and performs bounded analyze/process catch-up. Public freshness remains zero while rebuild state is `running`; an internal candidate frontier is used only to prove completion. The rebuild completes only when no required gap remains and that candidate frontier reaches the latest observed revision. Configuration changes mark the current generation stale and require this explicit operation. Compatible rebuilds retain the generation and use a new rebuild epoch.
+A rebuild explicitly pins the latest observed graph revision—including revision zero for an empty domain—rebuilds eligible records at that target, and performs bounded analyze/process catch-up. Public freshness remains zero while rebuild state is `running`; an internal candidate frontier is used only to prove completion. The rebuild completes only when no required gap remains and that candidate frontier reaches the latest observed revision. Configuration changes mark the current generation stale and require this explicit operation. Compatible rebuilds retain the generation and use a new rebuild epoch.
 
 ## Direct semantic filtering and pagination
 

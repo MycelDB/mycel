@@ -1044,7 +1044,7 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			}
 		}
 	}
-	if in.SourceGraphRevision == 0 && domainID != uuid.Nil {
+	if !in.PinSourceGraphRevision && in.SourceGraphRevision == 0 && domainID != uuid.Nil {
 		m.mu.Lock()
 		revisions := m.graphRevisions
 		m.mu.Unlock()
@@ -1058,19 +1058,15 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			}
 		}
 	}
+	if domainID != uuid.Nil {
+		in.PinSourceGraphRevision = true
+	}
 	if in.SemanticGeneration == 0 {
 		in.SemanticGeneration = 1
 	}
 	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
 	if err != nil {
 		return semanticbackfill.Result{}, err
-	}
-	if in.SourceGraphRevision > 0 {
-		if reader, ok := runner.GraphReader.(semanticGraphReader); ok {
-			pinned := int64(in.SourceGraphRevision)
-			reader.baseRevision = &pinned
-			runner.GraphReader = reader
-		}
 	}
 	result, err := runner.Run(ctx, in)
 	if err != nil {
@@ -1162,6 +1158,12 @@ type semanticGraphReader struct {
 	revisions    GraphRevisionReader
 	spaceID      domainspace.SpaceID
 	baseRevision *int64
+}
+
+func (r semanticGraphReader) AtGraphRevision(revision uint64) semanticbackfill.GraphSourceReader {
+	pinned := int64(revision)
+	r.baseRevision = &pinned
+	return r
 }
 
 func (r semanticGraphReader) GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error) {

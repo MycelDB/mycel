@@ -862,7 +862,7 @@ func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWo
 			}
 			rebuildEpoch = resolvedEpoch
 		}
-		result, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch, WorkItemID: item.ID, WorkItemGeneration: item.Generation})
+		result, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true, SourceGraphRevision: item.LastGraphRevision, PinSourceGraphRevision: true, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch, WorkItemID: item.ID, WorkItemGeneration: item.Generation})
 		if err != nil {
 			return err
 		}

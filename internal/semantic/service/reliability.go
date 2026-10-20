@@ -27,13 +27,23 @@ const (
 
 func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr storesemantic.SpaceManager, binding domainsemantic.SemanticEmbeddingBinding) (string, error) {
 	binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+	if binding.IntelligenceProfileID != uuid.Nil {
+		binding.IntelligenceProfile = ""
+	}
+	if binding.VectorStoreID != uuid.Nil {
+		binding.VectorStore = ""
+	}
 	profiles, err := spaceMgr.ListIntelligenceProfiles(ctx)
 	if err != nil {
 		return "", err
 	}
 	selectedProfiles := make([]domainsemantic.IntelligenceProfile, 0, 1)
 	for _, profile := range profiles {
-		if (binding.IntelligenceProfileID != uuid.Nil && profile.ID == binding.IntelligenceProfileID) || (binding.IntelligenceProfile != "" && profile.Key == binding.IntelligenceProfile) {
+		matches := binding.IntelligenceProfileID != uuid.Nil && profile.ID == binding.IntelligenceProfileID
+		if binding.IntelligenceProfileID == uuid.Nil {
+			matches = binding.IntelligenceProfile != "" && profile.Key == binding.IntelligenceProfile
+		}
+		if matches {
 			profile = canonicalReliabilityProfile(profile)
 			selectedProfiles = append(selectedProfiles, profile)
 		}
@@ -317,7 +327,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 		if item.EffectiveSemanticRuleID() != rule.ID || strings.TrimSpace(item.EmbeddingBindingKey) != binding.Key {
 			continue
 		}
-		if item.Status == domainsemantic.SemanticDirtyWorkStatusComplete || item.Status == domainsemantic.SemanticDirtyWorkStatusCancelled {
+		if item.Status == domainsemantic.SemanticDirtyWorkStatusComplete {
 			continue
 		}
 		retained++
@@ -485,6 +495,18 @@ func (m *Module) authorizeSemanticPublication(ctx context.Context, publication s
 	if generation != in.SemanticGeneration || epoch != in.RebuildEpoch {
 		return fmt.Errorf("stale semantic generation completion rejected")
 	}
+	records, err := m.ListVectorRecords(ctx, in.SpaceID, domainsemantic.SemanticIndexID(in.SemanticRuleID))
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.EffectiveSemanticRuleID() != in.SemanticRuleID || record.EmbeddingBindingKey != in.EmbeddingBindingKey || record.NodeID != publication.NodeID || record.SemanticGeneration != in.SemanticGeneration || record.RebuildEpoch != in.RebuildEpoch {
+			continue
+		}
+		if record.SourceGraphRevision > in.SourceGraphRevision {
+			return semanticbackfill.ErrSupersededPublication
+		}
+	}
 	return nil
 }
 
@@ -622,6 +644,9 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	}); err != nil {
 		return RebuildResult{Backfill: backfill}, err
 	}
+	if err := m.supersedeCancelledWorkThrough(ctx, in, rebuild.PinnedTargetRevision); err != nil {
+		return m.failRebuild(ctx, in, rebuild, backfill, err)
+	}
 	for iteration := 0; iteration < in.MaxCatchupIterations; iteration++ {
 		if _, err := m.AnalyzeDirtyWork(ctx, AnalyzeInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Limit: in.MaintenanceBatchLimit}); err != nil {
 			return m.failRebuild(ctx, in, rebuild, backfill, err)
@@ -661,7 +686,7 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 }
 
 func semanticBackfillInput(in RebuildInput, rebuild domainsemantic.SemanticReliabilityState) semanticbackfill.Input {
-	return semanticbackfill.Input{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Force: true, Limit: in.BackfillLimit, Reconcile: true, ContinueOnError: false, SourceGraphRevision: rebuild.PinnedTargetRevision, SemanticGeneration: rebuild.SemanticGeneration, RebuildEpoch: rebuild.RebuildEpoch}
+	return semanticbackfill.Input{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Force: true, Limit: in.BackfillLimit, Reconcile: true, ContinueOnError: false, SourceGraphRevision: rebuild.PinnedTargetRevision, PinSourceGraphRevision: true, SemanticGeneration: rebuild.SemanticGeneration, RebuildEpoch: rebuild.RebuildEpoch}
 }
 
 func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.Result) {
@@ -679,6 +704,34 @@ func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.R
 	total.Records = append(total.Records, page.Records...)
 	total.Skipped = append(total.Skipped, page.Skipped...)
 	total.Failures = append(total.Failures, page.Failures...)
+}
+
+func (m *Module) supersedeCancelledWorkThrough(ctx context.Context, in RebuildInput, revision uint64) error {
+	unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+	defer unlockFence()
+	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
+	if err != nil {
+		return err
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, item := range items {
+		if item.EffectiveSemanticRuleID() != in.SemanticRuleID || item.EmbeddingBindingKey != in.EmbeddingBindingKey || item.Status != domainsemantic.SemanticDirtyWorkStatusCancelled || item.LastGraphRevision > revision {
+			continue
+		}
+		item.Status = domainsemantic.SemanticDirtyWorkStatusComplete
+		item.CompletedAt = &now
+		item.LastError = ""
+		item.LastErrorCategory = "superseded_by_rebuild"
+		item.UpdatedAt = now
+		if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, item); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Module) failRebuild(ctx context.Context, in RebuildInput, rebuild domainsemantic.SemanticReliabilityState, backfill semanticbackfill.Result, cause error) (RebuildResult, error) {

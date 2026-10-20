@@ -42,6 +42,45 @@ func TestMycelFileBackendPersistsSemanticReliabilityProvenance(t *testing.T) {
 	}
 }
 
+func TestMycelFileBackendKeepsHighestSourceRevisionWithinGenerationEpoch(t *testing.T) {
+	ctx := context.Background()
+	backend := MycelFileBackend{GraphsDir: t.TempDir()}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	base := domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: nodeID, TargetNodeID: nodeID, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: "config", ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2}
+	newer := base
+	newer.SourceGraphRevision = 11
+	newer.Vector = []float64{0, 1}
+	newer.CreatedAt = time.Now().UTC()
+	storedNewer, err := backend.Upsert(ctx, newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := base
+	older.SourceGraphRevision = 10
+	older.Vector = []float64{1, 0}
+	older.CreatedAt = newer.CreatedAt.Add(time.Second)
+	if _, err := backend.Upsert(ctx, older); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Delete(ctx, DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, VectorStoreID: storeID, TargetRecordID: storedNewer.ID, SourceGraphRevision: 9, SemanticGeneration: 2, RebuildEpoch: "epoch", CreatedAt: newer.CreatedAt.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.RebuildSearchIndex(ctx, SearchIndexKey{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "test/2"}, RebuildLimit{}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), VectorStoreID: storeID, VectorSpaceKey: "test/2", Query: []float64{0, 1}, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Record.SourceGraphRevision != 11 || results[0].Record.ID != storedNewer.ID {
+		t.Fatalf("older publication displaced newer revision: %+v", results)
+	}
+}
+
 func TestMycelFileVectorBackendEncryptionHidesRecordMetadata(t *testing.T) {
 	ctx := context.Background()
 	enc := testEncryptionService(t)

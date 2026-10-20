@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
@@ -15,6 +16,12 @@ type GraphSourceReader interface {
 	ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error)
 	ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error)
 }
+
+type RevisionPinnedGraphSourceReader interface {
+	AtGraphRevision(revision uint64) GraphSourceReader
+}
+
+var ErrSupersededPublication = errors.New("newer semantic publication already exists")
 
 type Runner struct {
 	GraphReader        GraphSourceReader
@@ -30,21 +37,22 @@ type ConnectorService interface {
 }
 
 type Input struct {
-	SpaceID             domainspace.SpaceID
-	SemanticRuleID      domainsemantic.SemanticRuleID
-	EmbeddingBindingKey string
-	SemanticIndexID     domainsemantic.SemanticIndexID // transitional fallback until API/CLI adapters are rule-native
-	NodeIDs             []graph.NodeID
-	Force               bool
-	Limit               int
-	Offset              int
-	Reconcile           bool
-	ContinueOnError     bool
-	SourceGraphRevision uint64
-	SemanticGeneration  uint64
-	RebuildEpoch        string
-	WorkItemID          domainsemantic.SemanticDirtyWorkItemID
-	WorkItemGeneration  int
+	SpaceID                domainspace.SpaceID
+	SemanticRuleID         domainsemantic.SemanticRuleID
+	EmbeddingBindingKey    string
+	SemanticIndexID        domainsemantic.SemanticIndexID // transitional fallback until API/CLI adapters are rule-native
+	NodeIDs                []graph.NodeID
+	Force                  bool
+	Limit                  int
+	Offset                 int
+	Reconcile              bool
+	ContinueOnError        bool
+	SourceGraphRevision    uint64
+	PinSourceGraphRevision bool
+	SemanticGeneration     uint64
+	RebuildEpoch           string
+	WorkItemID             domainsemantic.SemanticDirtyWorkItemID
+	WorkItemGeneration     int
 }
 
 type Publication struct {
