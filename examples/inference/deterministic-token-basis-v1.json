@@ -1,0 +1,60 @@
+{
+  "name": "deterministic-token-basis-v1",
+  "version": "2026-10",
+  "source": "examples/inference/deterministic-token-basis-v1.json",
+  "model_endpoints": [
+    {
+      "key": "mycel-fixture",
+      "name": "Mycel deterministic fixture connector",
+      "connector_type": "fake",
+      "network_class": "local",
+      "privacy_class": "local_only",
+      "auth_modes": ["none"],
+      "operations": ["embeddings"],
+      "enabled": true,
+      "metadata": {
+        "fixture_only": true
+      }
+    }
+  ],
+  "models": [
+    {
+      "key": "mycel/token-basis-v1-8",
+      "kind": "embedding",
+      "model_name": "mycel-token-basis-v1",
+      "dimensions": 8,
+      "vector_space_key": "mycel/token-basis-v1/8",
+      "connector_types": ["fake"],
+      "input_modalities": ["text"],
+      "output_modalities": ["embedding"],
+      "metadata": {
+        "fixture_only": true,
+        "mycel_fixture": {
+          "strategy": "token-basis-v1"
+        }
+      }
+    }
+  ],
+  "vector_stores": [
+    {
+      "key": "mycel-file",
+      "name": "Mycel File Vector Store",
+      "type": "mycel-file",
+      "privacy_class": "local_only",
+      "enabled": true
+    }
+  ],
+  "model_endpoint_capabilities": [
+    {
+      "model_endpoint": "mycel-fixture",
+      "model": "mycel/token-basis-v1-8",
+      "operation": "embeddings",
+      "enabled": true,
+      "metadata": {
+        "fixture_only": true,
+        "batching_mode": "single",
+        "max_batch_items": 1
+      }
+    }
+  ]
+}

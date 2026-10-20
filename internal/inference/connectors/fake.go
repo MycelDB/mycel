@@ -17,6 +17,8 @@ type FakeConnector struct {
 	EmbedHits       int
 	ChatHits        int
 	LastChatRequest ChatRequest
+	fixtureAttempts map[string]int
+	fixtureStats    map[string]FakeFixtureStat
 }
 
 func (f *FakeConnector) Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error) {
@@ -30,6 +32,13 @@ func (f *FakeConnector) Embed(ctx context.Context, req EmbeddingRequest) (Embedd
 	f.mu.Unlock()
 	if err != nil {
 		return EmbeddingResponse{ProviderRequestID: "fake"}, err
+	}
+	fixture, configured, fixtureErr := f.selectFakeFixture(req)
+	if fixtureErr != nil {
+		return EmbeddingResponse{ProviderRequestID: "fake-fixture"}, fixtureErr
+	}
+	if configured {
+		return f.executeFakeFixture(ctx, req, fixture)
 	}
 	if len(vector) == 0 {
 		vector = []float64{1, 0, 0}
