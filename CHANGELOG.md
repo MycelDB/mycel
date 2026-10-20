@@ -29,7 +29,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Compatibility
 
-- Use matching `mycel-api`, Go SDK, and Rust SDK v0.20.0 bindings for durable commit idempotency fields and diagnostics. Existing commits without idempotency keys remain supported.
+- Use `mycel-api`, Go SDK, and Rust SDK v0.20.1 for durable commit idempotency fields, diagnostics, and corrected repeatable-read contract documentation. The v0.20.1 API/SDK patch is wire-compatible with v0.20.0. Existing commits without idempotency keys remain supported.
 - Graph Raft snapshots advance to version 2 to retain idempotency state; version 1 remains readable. Older daemons are not expected to read version 2 snapshots, so downgrade requires a compatible pre-upgrade snapshot or rebuild procedure.
 - Query compatibility remains governed by the documented QRX0/QRX4 gates. Continuation cursors are accepted only when their source-safe plan family, request, schema, revision, and read view remain compatible.
 
