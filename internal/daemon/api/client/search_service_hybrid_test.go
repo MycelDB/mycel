@@ -14,6 +14,8 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func TestHybridOptionsFromProtoDefaultsAndNormalizes(t *testing.T) {
@@ -112,7 +114,9 @@ func TestSemanticHybridCandidatesUsesSemanticQueryOverride(t *testing.T) {
 		spaces:   fakeHybridSpaceManager{domain: graph.Domain{ID: domainID, SpaceID: spaceID, SemanticMode: graph.DomainSemanticModeNormal}},
 	}
 	override := "how can a team recover calmly"
-	_, _, err := service.semanticHybridCandidates(ctx, principalUser{PrincipalID: uuid.NewString()}, spaceID, domainID, `"team" OR "recovery"`, 10, &clientv1.SemanticSearchOptions{Query: &override}, false)
+	semanticOptions := &clientv1.SemanticSearchOptions{}
+	setSemanticSearchQueryOverrideForTest(semanticOptions, override)
+	_, _, err := service.semanticHybridCandidates(ctx, principalUser{PrincipalID: uuid.NewString()}, spaceID, domainID, `"team" OR "recovery"`, 10, semanticOptions, false)
 	if err != nil {
 		t.Fatalf("semanticHybridCandidates() error = %v", err)
 	}
@@ -128,6 +132,18 @@ func TestIsNoSemanticSearchAvailable(t *testing.T) {
 	if isNoSemanticSearchAvailable(status.Error(codes.Internal, "no enabled semantic search rule is available for the domain")) {
 		t.Fatalf("internal error should not be treated as safe semantic unavailability")
 	}
+}
+
+func setSemanticSearchQueryOverrideForTest(options *clientv1.SemanticSearchOptions, query string) {
+	message := options.ProtoReflect()
+	if field := message.Descriptor().Fields().ByNumber(semanticSearchQueryFieldNumber); field != nil {
+		message.Set(field, protoreflect.ValueOfString(query))
+		return
+	}
+	unknown := message.GetUnknown()
+	unknown = protowire.AppendTag(unknown, protowire.Number(semanticSearchQueryFieldNumber), protowire.BytesType)
+	unknown = protowire.AppendString(unknown, query)
+	message.SetUnknown(unknown)
 }
 
 type fakeHybridSemanticManager struct {

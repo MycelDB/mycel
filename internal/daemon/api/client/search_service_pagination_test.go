@@ -84,12 +84,14 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 		fixture.graphs.nodes[id] = node
 	}
 	semanticQuery := "how does raft recover"
+	semanticOptions := &clientv1.SemanticSearchOptions{}
+	setSemanticSearchQueryOverrideForTest(semanticOptions, semanticQuery)
 	request := &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
 		Query: "raft", PageSize: 2, AllowStale: true,
 		Filters:  &clientv1.SearchFilters{NodeLabels: []string{"Note"}, Properties: []*clientv1.PropertyFilter{{Path: "status", Operator: clientv1.FilterOperator_FILTER_OPERATOR_EQUALS, Values: []string{"open"}}}},
 		Hybrid:   &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0},
-		Semantic: &clientv1.SemanticSearchOptions{Query: &semanticQuery},
+		Semantic: semanticOptions,
 	}
 	seen := map[string]bool{}
 	var firstToken string
@@ -137,7 +139,8 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 	mismatch = *request
 	mismatch.PageToken = firstToken
 	changedSemanticQuery := "how does raft fail"
-	mismatch.Semantic = &clientv1.SemanticSearchOptions{Query: &changedSemanticQuery}
+	mismatch.Semantic = &clientv1.SemanticSearchOptions{}
+	setSemanticSearchQueryOverrideForTest(mismatch.Semantic, changedSemanticQuery)
 	if _, err := fixture.service.Search(fixture.ctx, &mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("semantic-query-mismatched cursor error = %v, want InvalidArgument", err)
 	}

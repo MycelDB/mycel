@@ -21,7 +21,9 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
@@ -269,7 +271,7 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 		minScore = opts.GetMinScore()
 	}
 	semanticQuery := query
-	if override := strings.TrimSpace(opts.GetQuery()); override != "" {
+	if override := strings.TrimSpace(semanticSearchQueryOverride(opts)); override != "" {
 		semanticQuery = override
 	}
 	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: semanticQuery, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID)})
@@ -288,6 +290,42 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 		candidates = append(candidates, hybridsearch.Candidate{NodeID: item.NodeID.String(), Semantic: &hybridsearch.Source{RawScore: item.Score, Rank: i + 1}})
 	}
 	return candidates, append([]string(nil), result.Warnings...), nil
+}
+
+const semanticSearchQueryFieldNumber protoreflect.FieldNumber = 5
+
+// semanticSearchQueryOverride accepts the new SemanticSearchOptions.query field
+// from both current generated protobufs and older clients that preserve it as
+// unknown wire data during the API rollout.
+func semanticSearchQueryOverride(options *clientv1.SemanticSearchOptions) string {
+	if options == nil {
+		return ""
+	}
+	message := options.ProtoReflect()
+	if field := message.Descriptor().Fields().ByNumber(semanticSearchQueryFieldNumber); field != nil && message.Has(field) {
+		return message.Get(field).String()
+	}
+	unknown := message.GetUnknown()
+	for len(unknown) > 0 {
+		number, wireType, tagLength := protowire.ConsumeTag(unknown)
+		if tagLength < 0 {
+			return ""
+		}
+		unknown = unknown[tagLength:]
+		if number == protowire.Number(semanticSearchQueryFieldNumber) && wireType == protowire.BytesType {
+			value, valueLength := protowire.ConsumeString(unknown)
+			if valueLength < 0 {
+				return ""
+			}
+			return value
+		}
+		valueLength := protowire.ConsumeFieldValue(number, wireType, unknown)
+		if valueLength < 0 {
+			return ""
+		}
+		unknown = unknown[valueLength:]
+	}
+	return ""
 }
 
 func (s *SearchService) semanticSearchEnabled(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID) (bool, error) {
