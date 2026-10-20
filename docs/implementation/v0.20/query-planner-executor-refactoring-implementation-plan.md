@@ -2,9 +2,9 @@
 
 ## Status
 
-In progress pending QRX11 CI and integration. This plan tracks [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX10 are merged into the `improved_querying` integration branch. QRX11 is implemented and independently reviewed on `feat/query-refactor-qrx11-adapter-cleanup`: all accepted plans have one native execution owner, the daemon-local planner/executor and GQL-to-protobuf execution bridge are removed, and QueryService is a thin transport/context adapter. See the [QRX11 adapter-cleanup notes](query-planner-executor-qrx11-adapter-cleanup.md).
+Completed and shipped in v0.20.0 for [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX0 through QRX11 were integrated through PRs #216–#228, aggregate corrections were accepted through PR #229, and the complete implementation was promoted to `develop` through PR #230. All accepted plans have one native execution owner, the daemon-local planner/executor and GQL-to-protobuf execution bridge are removed, and QueryService is a thin transport/context adapter. See the [QRX11 adapter-cleanup notes](query-planner-executor-qrx11-adapter-cleanup.md).
 
-The work must be delivered as independently reviewable tranches. Every tranche must leave mycel buildable, tested, and usable. The migration must not use a big-bang replacement of query execution.
+The work was delivered as independently reviewable tranches. Every tranche left mycel buildable, tested, and usable; the migration did not use a big-bang replacement of query execution.
 
 ## Summary
 
@@ -896,7 +896,7 @@ Move remaining GQL execution behavior behind the query application boundary so t
 
 ## QRX11: Adapter cleanup and legacy removal
 
-Status: implemented and independently reviewed on `feat/query-refactor-qrx11-adapter-cleanup`; CI and integration remain pending. See the [QRX11 adapter-cleanup notes](query-planner-executor-qrx11-adapter-cleanup.md).
+Status: completed, independently reviewed, integrated, and promoted to `develop` for v0.20.0. See the [QRX11 adapter-cleanup notes](query-planner-executor-qrx11-adapter-cleanup.md).
 
 ### Objective
 

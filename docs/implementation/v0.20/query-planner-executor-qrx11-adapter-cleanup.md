@@ -2,7 +2,7 @@
 
 ## Status
 
-Merged into `improved_querying` through PR #228 for [mycel#213](https://github.com/MycelDB/mycel/issues/213). Post-QRX0–QRX11 aggregate-review corrections are implemented and independently accepted on the follow-up branch; CI/SonarCloud, integration-branch merge, and promotion to `develop` remain separately gated.
+Completed and shipped in v0.20.0 for [mycel#213](https://github.com/MycelDB/mycel/issues/213). QRX11 merged into `improved_querying` through PR #228, post-QRX0–QRX11 aggregate-review corrections merged through PR #229, and the complete implementation passed CI/SonarCloud and was promoted to `develop` through PR #230.
 
 ## Scope
 
@@ -69,7 +69,7 @@ QRX11 coverage includes:
 - dependency cancellation and fail-closed error mapping;
 - source-relative import and adapter-ownership checks.
 
-The merge gate additionally requires focused race tests, `make test`, `make build`, `make docs-check`, daemon-only/public-surface checks, `git diff --check`, independent exact-head review, CI, and SonarCloud. Broad daemon-client race runs can still expose the known pre-existing consensus waiter race in `consensus.Group.completeWaiter` versus `Propose`; query-only and non-Raft daemon query race suites are the attribution gate for this tranche.
+Final validation included focused race tests, `make test`, `make build`, `make docs-check`, daemon-only/public-surface checks, `git diff --check`, independent exact-head review, CI, and SonarCloud. Broad daemon-client race runs can still expose the known pre-existing consensus waiter race in `consensus.Group.completeWaiter` versus `Propose`; query-only and non-Raft daemon query race suites were the attribution gate for this tranche.
 
 ## Aggregate review resolution
 
