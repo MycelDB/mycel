@@ -268,7 +268,11 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 	if opts != nil && opts.MinScore != nil {
 		minScore = opts.GetMinScore()
 	}
-	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID)})
+	semanticQuery := query
+	if override := strings.TrimSpace(opts.GetQuery()); override != "" {
+		semanticQuery = override
+	}
+	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: semanticQuery, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID)})
 	if err != nil {
 		return nil, nil, mapSemanticError(err, "hybrid semantic search")
 	}

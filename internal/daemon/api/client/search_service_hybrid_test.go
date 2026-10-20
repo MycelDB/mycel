@@ -91,8 +91,33 @@ func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 	if semantic.lastInput.MinScore != minScore {
 		t.Fatalf("semantic SearchInput MinScore = %v, want %v", semantic.lastInput.MinScore, minScore)
 	}
+	if semantic.lastInput.Text != "team recovery" {
+		t.Fatalf("semantic SearchInput Text = %q, want lexical-query fallback", semantic.lastInput.Text)
+	}
 	if len(candidates) != 1 || candidates[0].NodeID != highNodeID.String() {
 		t.Fatalf("candidates = %#v, want only high-scoring semantic candidate %s", candidates, highNodeID)
+	}
+}
+
+func TestSemanticHybridCandidatesUsesSemanticQueryOverride(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	semantic := &fakeHybridSemanticManager{
+		rules: []domainsemantic.SemanticGenerationRule{{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "notes", Enabled: true, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), Enabled: true}}}},
+	}
+	service := &SearchService{
+		semantic: semantic,
+		spaces:   fakeHybridSpaceManager{domain: graph.Domain{ID: domainID, SpaceID: spaceID, SemanticMode: graph.DomainSemanticModeNormal}},
+	}
+	override := "how can a team recover calmly"
+	_, _, err := service.semanticHybridCandidates(ctx, principalUser{PrincipalID: uuid.NewString()}, spaceID, domainID, `"team" OR "recovery"`, 10, &clientv1.SemanticSearchOptions{Query: &override}, false)
+	if err != nil {
+		t.Fatalf("semanticHybridCandidates() error = %v", err)
+	}
+	if semantic.lastInput.Text != override {
+		t.Fatalf("semantic SearchInput Text = %q, want override %q", semantic.lastInput.Text, override)
 	}
 }
 
