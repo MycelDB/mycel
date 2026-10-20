@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -40,6 +41,47 @@ func TestMycelFileBackendPersistsSemanticReliabilityProvenance(t *testing.T) {
 	got := reloaded[0]
 	if got.ID != record.ID || got.SourceGraphRevision != 41 || got.SemanticGeneration != 7 || got.SemanticConfigurationHash != "sha256:configuration" || got.RebuildEpoch != "epoch-7" {
 		t.Fatalf("provenance did not round-trip: %+v", got)
+	}
+}
+
+func TestMycelFileBackendRecoversPreparedAppendWithoutDuplicateFrame(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	failures := 0
+	backend := MycelFileBackend{GraphsDir: t.TempDir()}
+	backend.AfterSegmentSync = func(domainsemantic.AdvancedEmbeddingRecord) error {
+		if failures < 2 {
+			failures++
+			return fmt.Errorf("injected segment-sync failure")
+		}
+		return nil
+	}
+	input := domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceGraphRevision: 1, SemanticGeneration: 1, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}}
+	if _, err := backend.Upsert(ctx, input); err == nil {
+		t.Fatal("expected failure after synced refresh frame")
+	}
+	stored, err := backend.Upsert(ctx, input)
+	if err != nil {
+		t.Fatalf("refresh recovery failed: %v", err)
+	}
+	_, observed, err := backend.readAllBounded(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID), 0)
+	if err != nil || observed != 1 {
+		t.Fatalf("refresh recovery duplicated raw frame: observed=%d err=%v", observed, err)
+	}
+	deleteInput := DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, SourceMode: "self", VectorStoreID: storeID, TargetRecordID: stored.ID, SourceGraphRevision: 2, SemanticGeneration: 1}
+	if _, err := backend.Delete(ctx, deleteInput); err == nil {
+		t.Fatal("expected failure after synced tombstone frame")
+	}
+	if _, err := backend.Delete(ctx, deleteInput); err != nil {
+		t.Fatalf("delete recovery failed: %v", err)
+	}
+	_, observed, err = backend.readAllBounded(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID), 0)
+	if err != nil || observed != 2 {
+		t.Fatalf("delete recovery duplicated raw frame: observed=%d err=%v", observed, err)
 	}
 }
 

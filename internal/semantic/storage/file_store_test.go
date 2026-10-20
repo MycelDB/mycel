@@ -1052,6 +1052,51 @@ func TestMaintenanceHistoryCompactionBoundsEventsWorkAndRestartState(t *testing.
 	}
 }
 
+func TestMaintenanceWorkLogCheckpointsRetryChurnWithoutAnalyzer(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	manager := NewMaintenanceManager()
+	if err := manager.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	item, err := manager.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: graph.NodeID(uuid.New())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 64; i++ {
+		claimed, err := manager.ClaimReadyWork(ctx, ClaimReadyWorkInput{Limit: 1, Now: time.Now().UTC().Add(time.Duration(i) * time.Second)})
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("claim %d: claimed=%+v err=%v", i, claimed, err)
+		}
+		if err := manager.FailWork(ctx, item.ID, WorkFailure{Retryable: true, Generation: claimed[0].Generation, FailedAt: time.Now().UTC(), Message: "retry"}); err != nil {
+			t.Fatalf("fail %d: %v", i, err)
+		}
+	}
+	concrete := manager.(*maintenanceManager)
+	concrete.mu.Lock()
+	concrete.workLogRecords = maxWorkLogMutationRecords
+	concrete.mu.Unlock()
+	claimed, err := manager.ClaimReadyWork(ctx, ClaimReadyWorkInput{Limit: 1, Now: time.Now().UTC().Add(24 * time.Hour)})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("threshold claim: claimed=%+v err=%v", claimed, err)
+	}
+	info, err := os.Stat(filepath.Join(root, workStateDirName, workEventsFileName))
+	if err != nil || info.Size() > maxWorkLogBytes {
+		t.Fatalf("work log was not bounded by checkpoint: size=%v err=%v", info, err)
+	}
+	restarted := NewMaintenanceManager()
+	if err := restarted.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := restarted.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].ID != item.ID || items[0].Status != domainsemantic.SemanticDirtyWorkStatusRunning || items[0].Attempts != 65 {
+		t.Fatalf("checkpoint replay lost retry state: items=%+v err=%v", items, err)
+	}
+}
+
 func TestMaintenanceWorkNormalizesLegacyIndexIDToRuleID(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

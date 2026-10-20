@@ -737,10 +737,10 @@ func TestIncrementalRefreshResumesPendingAppendBeforeLatestPublication(t *testin
 	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
 	failures := 0
 	backend := env.vector
-	backend.AfterSegmentAppend = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+	backend.AfterSegmentSync = func(record domainsemantic.AdvancedEmbeddingRecord) error {
 		if !record.Tombstone && failures == 0 {
 			failures++
-			return fmt.Errorf("injected post-append latest-view failure")
+			return fmt.Errorf("injected post-sync intent-promotion failure")
 		}
 		return nil
 	}

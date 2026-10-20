@@ -1,6 +1,7 @@
 package vectorstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/myceldb/mycel/internal/encryption"
@@ -43,8 +45,24 @@ const (
 type MycelFileBackend struct {
 	GraphsDir           string
 	Encryption          *encryption.Service
+	AfterSegmentSync    func(domainsemantic.AdvancedEmbeddingRecord) error
 	AfterSegmentAppend  func(domainsemantic.AdvancedEmbeddingRecord) error
 	BeforePhysicalWrite func(domainsemantic.AdvancedEmbeddingRecord) error
+}
+
+var (
+	semanticSegmentLocks     [256]sync.Mutex
+	semanticPublicationLocks [256]sync.Mutex
+)
+
+func semanticSegmentLock(path string) *sync.Mutex {
+	digest := sha256.Sum256([]byte(path))
+	return &semanticSegmentLocks[digest[0]]
+}
+
+func semanticPublicationLock(path string) *sync.Mutex {
+	digest := sha256.Sum256([]byte(path))
+	return &semanticPublicationLocks[digest[0]]
 }
 
 type indexManifest struct {
@@ -58,8 +76,12 @@ type indexManifest struct {
 }
 
 type pendingRecordPublication struct {
-	Record physicalSearchRecord `json:"record"`
-	Phase  string               `json:"phase"`
+	Record          physicalSearchRecord                     `json:"record"`
+	Phase           string                                   `json:"phase"`
+	SegmentRecordID domainsemantic.AdvancedEmbeddingRecordID `json:"segment_record_id,omitempty"`
+	SegmentOffset   int64                                    `json:"segment_offset,omitempty"`
+	SegmentLength   int64                                    `json:"segment_length,omitempty"`
+	SegmentChecksum string                                   `json:"segment_checksum,omitempty"`
 }
 
 type physicalSearchRecord struct {
@@ -118,30 +140,17 @@ func (b MycelFileBackend) Upsert(ctx context.Context, rec domainsemantic.Advance
 		rec.TargetNodeID = rec.NodeID
 	}
 	rec.EmbeddingBindingKey = strings.TrimSpace(rec.EmbeddingBindingKey)
+	publicationLock := semanticPublicationLock(b.pendingRecordPath(rec))
+	publicationLock.Lock()
+	defer publicationLock.Unlock()
 	if pending, found, err := b.readPendingPublication(ctx, rec); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	} else if found {
 		return b.completePendingPublication(ctx, pending)
 	}
-	if err := b.writePendingPublication(ctx, pendingRecordPublication{Record: physicalSearchRecord{Record: rec, Vector: rec.Vector}, Phase: "prepared"}); err != nil {
-		return domainsemantic.AdvancedEmbeddingRecord{}, err
-	}
-	path, err := b.ensure(ctx, rec.SpaceID, rec.SemanticIndexID, rec.VectorStoreID)
+	pending, err := b.prepareAndAppendRecord(ctx, rec)
 	if err != nil {
 		return rec, err
-	}
-	if err := b.appendRecord(ctx, path, rec); err != nil {
-		return rec, err
-	}
-	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
-	pending := pendingRecordPublication{Record: physicalSearchRecord{Record: rec, Vector: rec.Vector}, Phase: "appended"}
-	if err := b.writePendingPublication(ctx, pending); err != nil {
-		return rec, err
-	}
-	if b.AfterSegmentAppend != nil {
-		if err := b.AfterSegmentAppend(rec); err != nil {
-			return rec, err
-		}
 	}
 	return b.completePendingPublication(ctx, pending)
 }
@@ -153,6 +162,9 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if in.SpaceID == uuid.Nil || in.DomainID == uuid.Nil || in.SemanticIndexID == uuid.Nil || in.NodeID == uuid.Nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("space_id, domain_id, semantic_index_id, and node_id are required")
 	}
+	publicationLock := semanticPublicationLock(b.pendingRecordPath(latestRecordProbe(LatestRecordInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: in.SourceMode, VectorStoreID: in.VectorStoreID})))
+	publicationLock.Lock()
+	defer publicationLock.Unlock()
 	latest, found, err := b.LatestRecord(ctx, LatestRecordInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: in.SourceMode, VectorStoreID: in.VectorStoreID})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
@@ -160,6 +172,18 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	var source *domainsemantic.AdvancedEmbeddingRecord
 	if found {
 		source = &latest
+	}
+	if source != nil && source.Tombstone {
+		if in.TargetRecordID != uuid.Nil && source.DeleteTargetRecordID != in.TargetRecordID {
+			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
+		}
+		if !deleteSourceMatches(*source, in) {
+			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match semantic delete scope")
+		}
+		if err := b.ensureSearchIndexRecordUnlocked(ctx, *source); err != nil {
+			return *source, err
+		}
+		return *source, nil
 	}
 	if in.TargetRecordID != uuid.Nil {
 		if source == nil || source.ID != in.TargetRecordID {
@@ -170,12 +194,6 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 		}
 	} else if source != nil && !deleteSourceMatches(*source, in) {
 		source = nil
-	}
-	if source != nil && source.Tombstone {
-		if err := b.EnsureSearchIndexRecord(ctx, *source); err != nil {
-			return *source, err
-		}
-		return *source, nil
 	}
 	rec := domainsemantic.AdvancedEmbeddingRecord{ID: newID(), SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: in.SemanticIndexID, TargetNodeID: in.NodeID, NodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), ModelEndpointID: in.ModelEndpointID, ModelID: in.ModelID, ModelEndpointCapabilityID: in.ModelEndpointCapID, CredentialID: in.CredentialID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID, VectorStoreID: in.VectorStoreID, Tombstone: true, DeleteTargetRecordID: in.TargetRecordID, DeleteReason: strings.TrimSpace(in.Reason), SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch, CreatedAt: in.CreatedAt}
 	if source != nil {
@@ -210,25 +228,9 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	} else if found {
 		return b.completePendingPublication(ctx, pending)
 	}
-	if err := b.writePendingPublication(ctx, pendingRecordPublication{Record: physicalSearchRecord{Record: rec, Vector: rec.Vector}, Phase: "prepared"}); err != nil {
-		return domainsemantic.AdvancedEmbeddingRecord{}, err
-	}
-	path, err := b.ensure(ctx, rec.SpaceID, rec.SemanticIndexID, rec.VectorStoreID)
+	pending, err := b.prepareAndAppendRecord(ctx, rec)
 	if err != nil {
 		return rec, err
-	}
-	if err := b.appendRecord(ctx, path, rec); err != nil {
-		return rec, err
-	}
-	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
-	pending := pendingRecordPublication{Record: physicalSearchRecord{Record: rec, Vector: rec.Vector}, Phase: "appended"}
-	if err := b.writePendingPublication(ctx, pending); err != nil {
-		return rec, err
-	}
-	if b.AfterSegmentAppend != nil {
-		if err := b.AfterSegmentAppend(rec); err != nil {
-			return rec, err
-		}
 	}
 	return b.completePendingPublication(ctx, pending)
 }
@@ -323,6 +325,13 @@ func (b MycelFileBackend) LatestRecord(ctx context.Context, in LatestRecordInput
 }
 
 func (b MycelFileBackend) EnsureSearchIndexRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	publicationLock := semanticPublicationLock(b.pendingRecordPath(record))
+	publicationLock.Lock()
+	defer publicationLock.Unlock()
+	return b.ensureSearchIndexRecordUnlocked(ctx, record)
+}
+
+func (b MycelFileBackend) ensureSearchIndexRecordUnlocked(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -766,20 +775,54 @@ func (b MycelFileBackend) writePendingPublication(ctx context.Context, pending p
 	return b.writeMaybeEncrypted(ctx, path, append(raw, '\n'))
 }
 
+func (b MycelFileBackend) prepareAndAppendRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) (pendingRecordPublication, error) {
+	path, err := b.ensure(ctx, record.SpaceID, record.SemanticIndexID, record.VectorStoreID)
+	if err != nil {
+		return pendingRecordPublication{}, err
+	}
+	lock := semanticSegmentLock(path)
+	lock.Lock()
+	defer lock.Unlock()
+	encoded, err := b.encodeRecord(ctx, record)
+	if err != nil {
+		return pendingRecordPublication{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return pendingRecordPublication{}, err
+	}
+	pending := pendingRecordPublication{Record: physicalSearchRecord{Record: record, Vector: record.Vector}, Phase: "prepared", SegmentRecordID: record.ID, SegmentOffset: info.Size(), SegmentLength: int64(len(encoded)), SegmentChecksum: encodedRecordChecksum(encoded)}
+	if err := b.writePendingPublication(ctx, pending); err != nil {
+		return pendingRecordPublication{}, err
+	}
+	if err := appendEncodedRecord(path, pending.SegmentOffset, encoded); err != nil {
+		return pendingRecordPublication{}, err
+	}
+	_ = b.touchManifest(record.SpaceID, record.SemanticIndexID)
+	if b.AfterSegmentSync != nil {
+		if err := b.AfterSegmentSync(record); err != nil {
+			return pendingRecordPublication{}, err
+		}
+	}
+	pending.Phase = "appended"
+	if err := b.writePendingPublication(ctx, pending); err != nil {
+		return pendingRecordPublication{}, err
+	}
+	if b.AfterSegmentAppend != nil {
+		if err := b.AfterSegmentAppend(record); err != nil {
+			return pendingRecordPublication{}, err
+		}
+	}
+	return pending, nil
+}
+
 func (b MycelFileBackend) completePendingPublication(ctx context.Context, pending pendingRecordPublication) (domainsemantic.AdvancedEmbeddingRecord, error) {
 	record := pending.Record.Record
 	record.Vector = append([]float64(nil), pending.Record.Vector...)
 	if pending.Phase == "prepared" {
-		path, err := b.ensure(ctx, record.SpaceID, record.SemanticIndexID, record.VectorStoreID)
+		var err error
+		pending, err = b.recoverPreparedPublication(ctx, pending)
 		if err != nil {
-			return record, err
-		}
-		if err := b.appendRecord(ctx, path, record); err != nil {
-			return record, err
-		}
-		_ = b.touchManifest(record.SpaceID, record.SemanticIndexID)
-		pending.Phase = "appended"
-		if err := b.writePendingPublication(ctx, pending); err != nil {
 			return record, err
 		}
 	} else if pending.Phase != "appended" {
@@ -810,6 +853,113 @@ func (b MycelFileBackend) completePendingPublication(ctx context.Context, pendin
 		return record, err
 	}
 	return record, nil
+}
+
+func (b MycelFileBackend) recoverPreparedPublication(ctx context.Context, pending pendingRecordPublication) (pendingRecordPublication, error) {
+	record := pending.Record.Record
+	record.Vector = append([]float64(nil), pending.Record.Vector...)
+	path, err := b.ensure(ctx, record.SpaceID, record.SemanticIndexID, record.VectorStoreID)
+	if err != nil {
+		return pending, err
+	}
+	lock := semanticSegmentLock(path)
+	lock.Lock()
+	defer lock.Unlock()
+	if pending.SegmentRecordID == uuid.Nil || pending.SegmentRecordID != record.ID || pending.SegmentOffset < int64(len(segmentMagic)+4) || pending.SegmentLength <= 0 || strings.TrimSpace(pending.SegmentChecksum) == "" {
+		return pending, fmt.Errorf("pending semantic publication is missing or has mismatched segment identity")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return pending, err
+	}
+	end := pending.SegmentOffset + pending.SegmentLength
+	if info.Size() >= end {
+		encoded := make([]byte, pending.SegmentLength)
+		f, err := os.Open(path)
+		if err != nil {
+			return pending, err
+		}
+		_, readErr := f.ReadAt(encoded, pending.SegmentOffset)
+		closeErr := f.Close()
+		if readErr != nil {
+			return pending, readErr
+		}
+		if closeErr != nil {
+			return pending, closeErr
+		}
+		if encodedRecordChecksum(encoded) == pending.SegmentChecksum {
+			pending.Phase = "appended"
+			if err := b.writePendingPublication(ctx, pending); err != nil {
+				return pending, err
+			}
+			return pending, nil
+		}
+		// Another complete append may have occupied the reservation after an
+		// earlier prepared append failed. Reserve the current tail instead of
+		// damaging later valid records.
+		pending.SegmentOffset = info.Size()
+	} else if info.Size() > pending.SegmentOffset {
+		// A torn frame can only be the tail because all in-process appends are
+		// serialized and failed writes truncate before releasing the lock.
+		if err := os.Truncate(path, pending.SegmentOffset); err != nil {
+			return pending, err
+		}
+	} else if info.Size() < pending.SegmentOffset {
+		return pending, fmt.Errorf("semantic segment is shorter than pending publication offset")
+	}
+	encoded, err := b.encodeRecord(ctx, record)
+	if err != nil {
+		return pending, err
+	}
+	pending.SegmentLength = int64(len(encoded))
+	pending.SegmentChecksum = encodedRecordChecksum(encoded)
+	if err := b.writePendingPublication(ctx, pending); err != nil {
+		return pending, err
+	}
+	if err := appendEncodedRecord(path, pending.SegmentOffset, encoded); err != nil {
+		return pending, err
+	}
+	_ = b.touchManifest(record.SpaceID, record.SemanticIndexID)
+	pending.Phase = "appended"
+	if err := b.writePendingPublication(ctx, pending); err != nil {
+		return pending, err
+	}
+	return pending, nil
+}
+
+func encodedRecordChecksum(encoded []byte) string {
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func appendEncodedRecord(path string, offset int64, encoded []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, fsperm.PrivateFile)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() != offset {
+		return fmt.Errorf("semantic segment offset changed: expected %d, got %d", offset, info.Size())
+	}
+	n, writeErr := f.WriteAt(encoded, offset)
+	if writeErr != nil || n != len(encoded) {
+		_ = f.Truncate(offset)
+		_ = f.Sync()
+		if writeErr != nil {
+			return writeErr
+		}
+		return io.ErrShortWrite
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Truncate(offset)
+		_ = f.Sync()
+		return err
+	}
+	return nil
 }
 
 func (b MycelFileBackend) latestRecordPath(record domainsemantic.AdvancedEmbeddingRecord) string {
@@ -989,7 +1139,7 @@ func validateUpsert(rec domainsemantic.AdvancedEmbeddingRecord) error {
 	return nil
 }
 
-func (b MycelFileBackend) appendRecord(ctx context.Context, path string, rec domainsemantic.AdvancedEmbeddingRecord) error {
+func (b MycelFileBackend) encodeRecord(ctx context.Context, rec domainsemantic.AdvancedEmbeddingRecord) ([]byte, error) {
 	if rec.SemanticRuleID == uuid.Nil {
 		rec.SemanticRuleID = domainsemantic.SemanticRuleID(rec.SemanticIndexID)
 	}
@@ -998,58 +1148,54 @@ func (b MycelFileBackend) appendRecord(ctx context.Context, path string, rec dom
 	}
 	meta, err := json.Marshal(recordMetadata{SemanticRuleID: uuidText(rec.SemanticRuleID), EmbeddingBindingKey: rec.EmbeddingBindingKey, TargetNodeID: uuidText(rec.TargetNodeID), IntelligenceProfileID: uuidText(rec.IntelligenceProfileID), SourceMode: rec.SourceMode, SourceHash: rec.SourceHash, SourceGraphRevision: rec.SourceGraphRevision, SemanticGeneration: rec.SemanticGeneration, SemanticConfigurationHash: rec.SemanticConfigurationHash, RebuildEpoch: rec.RebuildEpoch, VectorSpaceKey: rec.VectorSpaceKey, DeleteTargetRecordID: uuidText(rec.DeleteTargetRecordID), DeleteReason: rec.DeleteReason})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	vector := encodeVector32(rec.Vector)
 	if b.Encryption != nil && b.Encryption.Enabled() {
 		meta, err = b.Encryption.EncryptRecord(ctx, meta, []byte("semantic-vector-record-meta:v1:id="+rec.ID.String()))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		vector, err = b.Encryption.EncryptRecord(ctx, vector, []byte("semantic-vector-record-vector:v1:id="+rec.ID.String()))
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	crc := crc32.ChecksumIEEE(append(append([]byte{}, meta...), vector...))
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+	var encoded bytes.Buffer
 	flags := uint16(0)
 	if rec.Tombstone {
 		flags |= flagTombstone
 	}
 	for _, write := range []func() error{
-		func() error { return binary.Write(f, binary.LittleEndian, recordMagic) },
-		func() error { return binary.Write(f, binary.LittleEndian, recordVersion) },
-		func() error { return binary.Write(f, binary.LittleEndian, flags) },
-		func() error { _, err := f.Write(rec.ID[:]); return err },
-		func() error { _, err := f.Write(rec.SpaceID[:]); return err },
-		func() error { _, err := f.Write(rec.DomainID[:]); return err },
-		func() error { _, err := f.Write(rec.SemanticIndexID[:]); return err },
-		func() error { _, err := f.Write(rec.NodeID[:]); return err },
-		func() error { _, err := f.Write(rec.ModelEndpointID[:]); return err },
-		func() error { _, err := f.Write(rec.ModelID[:]); return err },
-		func() error { _, err := f.Write(rec.ModelEndpointCapabilityID[:]); return err },
-		func() error { _, err := f.Write(rec.VectorStoreID[:]); return err },
-		func() error { _, err := f.Write(rec.CredentialID[:]); return err },
-		func() error { _, err := f.Write(rec.CredentialGrantID[:]); return err },
-		func() error { _, err := f.Write(rec.PolicyDecisionID[:]); return err },
-		func() error { return binary.Write(f, binary.LittleEndian, rec.CreatedAt.UnixNano()) },
-		func() error { return binary.Write(f, binary.LittleEndian, uint32(rec.Dimensions)) },
-		func() error { return binary.Write(f, binary.LittleEndian, uint32(len(meta))) },
-		func() error { return binary.Write(f, binary.LittleEndian, uint32(len(vector))) },
-		func() error { return binary.Write(f, binary.LittleEndian, crc) },
-		func() error { _, err := f.Write(meta); return err },
-		func() error { _, err := f.Write(vector); return err },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, recordMagic) },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, recordVersion) },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, flags) },
+		func() error { _, err := encoded.Write(rec.ID[:]); return err },
+		func() error { _, err := encoded.Write(rec.SpaceID[:]); return err },
+		func() error { _, err := encoded.Write(rec.DomainID[:]); return err },
+		func() error { _, err := encoded.Write(rec.SemanticIndexID[:]); return err },
+		func() error { _, err := encoded.Write(rec.NodeID[:]); return err },
+		func() error { _, err := encoded.Write(rec.ModelEndpointID[:]); return err },
+		func() error { _, err := encoded.Write(rec.ModelID[:]); return err },
+		func() error { _, err := encoded.Write(rec.ModelEndpointCapabilityID[:]); return err },
+		func() error { _, err := encoded.Write(rec.VectorStoreID[:]); return err },
+		func() error { _, err := encoded.Write(rec.CredentialID[:]); return err },
+		func() error { _, err := encoded.Write(rec.CredentialGrantID[:]); return err },
+		func() error { _, err := encoded.Write(rec.PolicyDecisionID[:]); return err },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, rec.CreatedAt.UnixNano()) },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, uint32(rec.Dimensions)) },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, uint32(len(meta))) },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, uint32(len(vector))) },
+		func() error { return binary.Write(&encoded, binary.LittleEndian, crc) },
+		func() error { _, err := encoded.Write(meta); return err },
+		func() error { _, err := encoded.Write(vector); return err },
 	} {
 		if err := write(); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return f.Sync()
+	return encoded.Bytes(), nil
 }
 
 func (b MycelFileBackend) readRecord(ctx context.Context, r io.Reader) (domainsemantic.AdvancedEmbeddingRecord, error) {

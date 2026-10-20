@@ -190,7 +190,7 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 	}
 	runner := &fakeBackfillRunner{}
 	injectedFailures := 0
-	backend.AfterSegmentAppend = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+	backend.AfterSegmentSync = func(record domainsemantic.AdvancedEmbeddingRecord) error {
 		if record.Tombstone && injectedFailures == 0 {
 			injectedFailures++
 			return errors.New("vector store temporarily unavailable during tombstone publication")

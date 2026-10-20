@@ -22,37 +22,40 @@ import (
 )
 
 const (
-	inferenceDirName             = "inference"
-	secretsDirName               = "secrets"
-	credentialsDirName           = "credentials"
-	packagesFileName             = "packages.json"
-	modelEndpointsFileName       = "model_endpoints.json"
-	modelsFileName               = "models.json"
-	modelEndpointCapsFileName    = "model_endpoint_capabilities.json"
-	vectorStoresFileName         = "vector_stores.json"
-	secretsFileName              = "secrets.json"
-	credentialsFileName          = "credentials.json"
-	semanticRulesFileName        = "rules.json"
-	semanticIndexesFileName      = "indexes.json"
-	intelligenceProfilesFileName = "intelligence_profiles.json"
-	credentialGrantsFileName     = "credential_grants.json"
-	inferencePoliciesFileName    = "inference_policies.json"
-	dirtyQueueFileName           = "dirty_queue.json"
-	ruleStateFileName            = "rule_state.json"
-	searchIndexStateFileName     = "search_index_state.json"
-	indexStateFileName           = "index_state.json"
-	policyDecisionsFileName      = "policy_decisions.json"
-	maintenanceDirName           = "maintenance"
-	graphDirtyEventsDirName      = "dirty"
-	graphDirtyEventsFileName     = "graph-dirty-000001.ksem"
-	workStateDirName             = "work"
-	workStateFileName            = "state.json"
-	workEventsFileName           = "work-000001.ksem"
-	checkpointsFileName          = "checkpoints.json"
-	maxRetainedDirtyEvents       = 100000
-	maxRetainedDirtyWorkItems    = 100000
-	defaultVectorStoreKey        = "mycel-file"
-	defaultVectorStoreName       = "Mycel embedded file vector store"
+	inferenceDirName                   = "inference"
+	secretsDirName                     = "secrets"
+	credentialsDirName                 = "credentials"
+	packagesFileName                   = "packages.json"
+	modelEndpointsFileName             = "model_endpoints.json"
+	modelsFileName                     = "models.json"
+	modelEndpointCapsFileName          = "model_endpoint_capabilities.json"
+	vectorStoresFileName               = "vector_stores.json"
+	secretsFileName                    = "secrets.json"
+	credentialsFileName                = "credentials.json"
+	semanticRulesFileName              = "rules.json"
+	semanticIndexesFileName            = "indexes.json"
+	intelligenceProfilesFileName       = "intelligence_profiles.json"
+	credentialGrantsFileName           = "credential_grants.json"
+	inferencePoliciesFileName          = "inference_policies.json"
+	dirtyQueueFileName                 = "dirty_queue.json"
+	ruleStateFileName                  = "rule_state.json"
+	searchIndexStateFileName           = "search_index_state.json"
+	indexStateFileName                 = "index_state.json"
+	policyDecisionsFileName            = "policy_decisions.json"
+	maintenanceDirName                 = "maintenance"
+	graphDirtyEventsDirName            = "dirty"
+	graphDirtyEventsFileName           = "graph-dirty-000001.ksem"
+	workStateDirName                   = "work"
+	workStateFileName                  = "state.json"
+	workEventsFileName                 = "work-000001.ksem"
+	checkpointsFileName                = "checkpoints.json"
+	maxRetainedDirtyEvents             = 100000
+	maxRetainedDirtyWorkItems          = 100000
+	maxWorkLogMutationRecords          = 4096
+	maxWorkLogBytes              int64 = 8 << 20
+	maxWorkLogCheckpointBytes          = 256 << 20
+	defaultVectorStoreKey              = "mycel-file"
+	defaultVectorStoreName             = "Mycel embedded file vector store"
 )
 
 type packagesState struct {
@@ -619,6 +622,7 @@ type maintenanceManager struct {
 	dirtyEventByTxnID    map[uuid.UUID]int
 	checkpointByConsumer map[string]int
 	workItemByKey        map[dirtyWorkKey]int
+	workLogRecords       int
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -1142,11 +1146,12 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	// The append-only work event log is the durable mutation stream for dirty
 	// work. Replay it on every load so state.json can act as a compacted
 	// snapshot without becoming more authoritative than later log records.
-	rebuilt, err := readWorkItemsFromLog(m.workEventsPath())
+	rebuilt, workLogRecords, err := readWorkItemsFromLog(m.workEventsPath())
 	if err != nil {
 		return err
 	}
-	if len(rebuilt) > 0 {
+	m.workLogRecords = workLogRecords
+	if workLogRecords > 0 {
 		m.dirtyQueue = dirtyQueueState{Items: rebuilt}
 		persistRebuiltWork = true
 	}
@@ -1160,7 +1165,18 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	}
 	m.rebuildMaintenanceIndexesLocked()
 	if persistRebuiltWork {
-		return persistJSON(m.workStatePath(), m.dirtyQueue)
+		if err := persistJSON(m.workStatePath(), m.dirtyQueue); err != nil {
+			return err
+		}
+	}
+	workLogSize := int64(0)
+	if info, err := os.Stat(m.workEventsPath()); err == nil {
+		workLogSize = info.Size()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if (m.workLogRecords == 0 && len(m.dirtyQueue.Items) > 0) || m.workLogRecords >= maxWorkLogMutationRecords || workLogSize > maxWorkLogBytes {
+		return m.rewriteWorkLogLocked(m.dirtyQueue.Items)
 	}
 	return nil
 }
@@ -1571,19 +1587,10 @@ func (m *maintenanceManager) CompactHistory(ctx context.Context, in CompactHisto
 		eventBytes = append(eventBytes, raw...)
 		eventBytes = append(eventBytes, '\n')
 	}
-	workBytes := make([]byte, 0)
-	for _, item := range retainedWork {
-		raw, err := json.Marshal(workLogRecord{Kind: "upsert", At: time.Now().UTC(), Item: item})
-		if err != nil {
-			return err
-		}
-		workBytes = append(workBytes, raw...)
-		workBytes = append(workBytes, '\n')
-	}
 	if err := filestore.WriteFileAtomic(m.graphDirtyEventsPath(), eventBytes, fsperm.PrivateFile); err != nil {
 		return err
 	}
-	if err := filestore.WriteFileAtomic(m.workEventsPath(), workBytes, fsperm.PrivateFile); err != nil {
+	if err := m.rewriteWorkLogLocked(retainedWork); err != nil {
 		return err
 	}
 	if err := persistJSON(m.workStatePath(), dirtyQueueState{Items: retainedWork}); err != nil {
@@ -1914,15 +1921,72 @@ func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {
 	if err != nil {
 		return err
 	}
+	raw = append(raw, '\n')
+	currentBytes := int64(0)
+	if info, err := os.Stat(m.workEventsPath()); err == nil {
+		currentBytes = info.Size()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if m.workLogRecords >= maxWorkLogMutationRecords || currentBytes+int64(len(raw)) > maxWorkLogBytes {
+		prospective := applyWorkLogRecord(m.dirtyQueue.Items, record)
+		return m.rewriteWorkLogLocked(prospective)
+	}
 	f, err := os.OpenFile(m.workEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if _, err := f.Write(append(raw, '\n')); err != nil {
+	if _, err := f.Write(raw); err != nil {
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	m.workLogRecords++
+	return nil
+}
+
+func (m *maintenanceManager) rewriteWorkLogLocked(items []domainsemantic.SemanticDirtyWorkItem) error {
+	record := workLogRecord{Kind: "checkpoint", Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if len(raw) > maxWorkLogCheckpointBytes {
+		return fmt.Errorf("semantic dirty-work checkpoint exceeds hard byte capacity")
+	}
+	if err := filestore.WriteFileAtomic(m.workEventsPath(), raw, fsperm.PrivateFile); err != nil {
+		return err
+	}
+	m.workLogRecords = 1
+	return nil
+}
+
+func applyWorkLogRecord(existing []domainsemantic.SemanticDirtyWorkItem, record workLogRecord) []domainsemantic.SemanticDirtyWorkItem {
+	items := append([]domainsemantic.SemanticDirtyWorkItem(nil), existing...)
+	index := make(map[uuid.UUID]int, len(items))
+	for i, item := range items {
+		index[item.ID] = i
+	}
+	loggedItems := []domainsemantic.SemanticDirtyWorkItem{record.Item}
+	if len(record.Items) > 0 {
+		loggedItems = record.Items
+	}
+	for _, item := range loggedItems {
+		item = normalizeDirtyWorkItem(item)
+		if item.ID == uuid.Nil {
+			continue
+		}
+		if pos, ok := index[item.ID]; ok {
+			items[pos] = item
+			continue
+		}
+		index[item.ID] = len(items)
+		items = append(items, item)
+	}
+	return items
 }
 
 func (m *spaceManager) path(name string) string { return filepath.Join(m.location, name) }
@@ -1949,42 +2013,32 @@ func readGraphDirtyEvents(path string) ([]domainsemantic.GraphDirtyEvent, error)
 	return out, nil
 }
 
-func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, int, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []domainsemantic.SemanticDirtyWorkItem{}, nil
+			return []domainsemantic.SemanticDirtyWorkItem{}, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	items := []domainsemantic.SemanticDirtyWorkItem{}
-	index := map[uuid.UUID]int{}
+	records := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		var record workLogRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		loggedItems := []domainsemantic.SemanticDirtyWorkItem{record.Item}
-		if record.Kind == "upsert_batch" {
-			loggedItems = record.Items
+		records++
+		if record.Kind == "checkpoint" {
+			items = append([]domainsemantic.SemanticDirtyWorkItem(nil), record.Items...)
+			continue
 		}
-		for _, item := range loggedItems {
-			item = normalizeDirtyWorkItem(item)
-			if item.ID == uuid.Nil {
-				continue
-			}
-			if pos, ok := index[item.ID]; ok {
-				items[pos] = item
-				continue
-			}
-			index[item.ID] = len(items)
-			items = append(items, item)
-		}
+		items = applyWorkLogRecord(items, record)
 	}
-	return items, nil
+	return items, records, nil
 }
 
 func mergeTxnIDs(a, b []uuid.UUID) []uuid.UUID {
