@@ -321,10 +321,98 @@ func TestMycelFilePhysicalSearchIndexRuleBindingLatestLive(t *testing.T) {
 	if len(results) != 1 || results[0].Record.ID != latestRec.ID || results[0].Record.ID == oldRec.ID || results[0].SemanticRuleID != ruleID || results[0].EmbeddingBindingKey != "search" {
 		t.Fatalf("expected latest live rule/binding result, got %+v", results)
 	}
-	latestPath := filepath.Join(graphsDir, spaceID.String(), "semantic", searchIndexesDir, ruleID.String(), "search", searchIndexLatestFile)
+	latestPath := backend.searchLatestPath(SearchIndexKey{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
 	if _, err := os.Stat(latestPath); err != nil {
 		t.Fatalf("expected latest-live index file: %v", err)
 	}
+}
+
+func TestMycelFileOrderingIgnoresFutureWallClockAcrossGenerationAndEpoch(t *testing.T) {
+	ctx := context.Background()
+	backend := MycelFileBackend{GraphsDir: filepath.Join(t.TempDir(), "graphs")}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	endpointID := domainsemantic.ModelEndpointID(uuid.New())
+	modelID := domainsemantic.InferenceModelID(uuid.New())
+	future := time.Now().UTC().Add(24 * time.Hour)
+	upsert := func(generation uint64, epoch string, revision uint64, created time.Time, vector []float64) domainsemantic.AdvancedEmbeddingRecord {
+		t.Helper()
+		record, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceGraphRevision: revision, SemanticGeneration: generation, RebuildEpoch: epoch, SemanticConfigurationHash: "config", ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v2", Dimensions: 2, Vector: vector, CreatedAt: created})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	upsert(1, "generation-one", 100, future, []float64{1, 0})
+	upsert(2, "old-epoch", 10, future, []float64{0, 1})
+	current := upsert(2, "current-epoch", 11, future.Add(-48*time.Hour), []float64{1, 1})
+	assertCurrent := func(stage string) {
+		results, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v2", Query: []float64{1, 1}, Limit: 10})
+		if err != nil || len(results) != 1 || results[0].Record.ID != current.ID {
+			t.Fatalf("%s retained stale clock-ordered record: results=%+v err=%v", stage, results, err)
+		}
+	}
+	assertCurrent("incremental publication")
+	key := SearchIndexKey{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", VectorStoreID: storeID, VectorSpaceKey: "v2"}
+	if _, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 10, MaxBytes: 1 << 20, SemanticGeneration: 2, RebuildEpoch: "current-epoch"}); err != nil {
+		t.Fatal(err)
+	}
+	assertCurrent("bounded reconstruction")
+	latest, found, err := backend.LatestRecord(ctx, LatestRecordInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, SourceMode: "self", VectorStoreID: storeID})
+	if err != nil || !found || latest.ID != current.ID {
+		t.Fatalf("keyed latest retained stale clock-ordered record: latest=%+v found=%v err=%v", latest, found, err)
+	}
+}
+
+func TestMycelFileBindingPathEncodingIsCollisionFree(t *testing.T) {
+	ctx := context.Background()
+	backend := MycelFileBackend{GraphsDir: filepath.Join(t.TempDir(), "graphs")}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	endpointID := domainsemantic.ModelEndpointID(uuid.New())
+	modelID := domainsemantic.InferenceModelID(uuid.New())
+	bindings := []string{"a/b", "a_b"}
+	vectors := [][]float64{{1, 0}, {0, 1}}
+	records := make([]domainsemantic.AdvancedEmbeddingRecord, 2)
+	for i, binding := range bindings {
+		record, err := backend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceGraphRevision: 1, SemanticGeneration: 1, SemanticConfigurationHash: "config-" + binding, ModelEndpointID: endpointID, ModelID: modelID, VectorStoreID: storeID, VectorSpaceKey: "v2", Dimensions: 2, Vector: vectors[i]})
+		if err != nil {
+			t.Fatal(err)
+		}
+		records[i] = record
+	}
+	if backend.searchIndexDir(SearchIndexKey{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindings[0]}) == backend.searchIndexDir(SearchIndexKey{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindings[1]}) {
+		t.Fatal("distinct binding keys collided in physical namespace")
+	}
+	search := func(binding string, query []float64, wantID domainsemantic.AdvancedEmbeddingRecordID) {
+		t.Helper()
+		results, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: binding, VectorStoreID: storeID, VectorSpaceKey: "v2", Query: query, Limit: 10})
+		if err != nil || len(results) != 1 || results[0].Record.ID != wantID || results[0].Record.EmbeddingBindingKey != binding {
+			t.Fatalf("binding %q isolation: results=%+v err=%v", binding, results, err)
+		}
+	}
+	search(bindings[0], vectors[0], records[0].ID)
+	search(bindings[1], vectors[1], records[1].ID)
+	if _, err := backend.Delete(ctx, DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindings[0], SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, SourceMode: "self", VectorStoreID: storeID, TargetRecordID: records[0].ID, TargetGeneration: 1, Reason: "test", SourceGraphRevision: 1, SemanticGeneration: 1}); err != nil {
+		t.Fatal(err)
+	}
+	state0, err0 := backend.ReadSearchIndexState(ctx, SearchIndexKey{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindings[0]})
+	state1, err1 := backend.ReadSearchIndexState(ctx, SearchIndexKey{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindings[1]})
+	if err0 != nil || err1 != nil || state0.LiveRecordCount != 0 || state1.LiveRecordCount != 1 {
+		t.Fatalf("binding states collided: state0=%+v err0=%v state1=%+v err1=%v", state0, err0, state1, err1)
+	}
+	search(bindings[1], vectors[1], records[1].ID)
+	key := SearchIndexKey{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindings[1], VectorStoreID: storeID, VectorSpaceKey: "v2"}
+	if state, err := backend.RebuildSearchIndex(ctx, key, RebuildLimit{MaxRecords: 10, MaxBytes: 1 << 20, SemanticGeneration: 1}); err != nil || state.State != "ready" {
+		t.Fatalf("binding reconstruction state=%+v err=%v", state, err)
+	}
+	search(bindings[1], vectors[1], records[1].ID)
 }
 
 func TestMycelFilePhysicalSearchIndexBindingIsolationAndTombstone(t *testing.T) {

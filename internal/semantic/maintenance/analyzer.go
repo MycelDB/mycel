@@ -78,10 +78,16 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 		return AnalyzeResult{}, err
 	}
 	if len(rules) > 0 {
+		if err := a.compactRuleHistory(ctx, rules); err != nil {
+			return AnalyzeResult{}, err
+		}
 		return a.analyzeRules(ctx, rules, in, now)
 	}
 	indexes, err := a.SpaceManager.ListSemanticIndexes(ctx)
 	if err != nil {
+		return AnalyzeResult{}, err
+	}
+	if err := a.compactIndexHistory(ctx, indexes); err != nil {
 		return AnalyzeResult{}, err
 	}
 	states, err := a.SpaceManager.ListIndexStates(ctx)
@@ -155,6 +161,9 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 		if _, err := a.SpaceManager.UpsertIndexState(ctx, state); err != nil {
 			return result, err
 		}
+	}
+	if err := a.compactIndexHistory(ctx, indexes); err != nil {
+		return result, err
 	}
 	return result, nil
 }
@@ -246,7 +255,45 @@ func (a Analyzer) analyzeRules(ctx context.Context, rules []domainsemantic.Seman
 			return result, err
 		}
 	}
+	if err := a.compactRuleHistory(ctx, rules); err != nil {
+		return result, err
+	}
 	return result, nil
+}
+
+func (a Analyzer) compactRuleHistory(ctx context.Context, rules []domainsemantic.SemanticGenerationRule) error {
+	consumers := make([]storesemantic.MaintenanceConsumerFrontier, 0)
+	for _, rule := range rules {
+		rule = domainsemantic.NormalizeSemanticGenerationRule(rule)
+		if !rule.Enabled {
+			continue
+		}
+		for _, binding := range enabledRuleBindings(rule, "") {
+			consumer := analyzerRuleBindingConsumer(rule.ID, binding.Key)
+			checkpoint, err := a.MaintenanceManager.GetCheckpoint(ctx, consumer)
+			if err != nil {
+				return err
+			}
+			consumers = append(consumers, storesemantic.MaintenanceConsumerFrontier{Consumer: consumer, DomainID: rule.DomainID, LastGraphRevision: checkpoint.LastGraphRevision})
+		}
+	}
+	return a.MaintenanceManager.CompactHistory(ctx, storesemantic.CompactHistoryInput{Consumers: consumers, MaxRetainedEvents: 100000, MaxRetainedCompletedWork: 1024})
+}
+
+func (a Analyzer) compactIndexHistory(ctx context.Context, indexes []domainsemantic.SemanticIndex) error {
+	consumers := make([]storesemantic.MaintenanceConsumerFrontier, 0)
+	for _, index := range indexes {
+		if !index.Enabled {
+			continue
+		}
+		consumer := analyzerConsumer(index.ID)
+		checkpoint, err := a.MaintenanceManager.GetCheckpoint(ctx, consumer)
+		if err != nil {
+			return err
+		}
+		consumers = append(consumers, storesemantic.MaintenanceConsumerFrontier{Consumer: consumer, DomainID: index.DomainID, LastGraphRevision: checkpoint.LastGraphRevision})
+	}
+	return a.MaintenanceManager.CompactHistory(ctx, storesemantic.CompactHistoryInput{Consumers: consumers, MaxRetainedEvents: 100000, MaxRetainedCompletedWork: 1024})
 }
 
 func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, event domainsemantic.GraphDirtyEvent, now time.Time) (int, error) {

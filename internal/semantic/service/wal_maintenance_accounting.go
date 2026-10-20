@@ -105,6 +105,10 @@ func applyMaintenanceMutation(ctx context.Context, mgr storesemantic.Maintenance
 			}
 		}
 		return nil
+	case "history.compact":
+		var v storesemantic.CompactHistoryInput
+		_ = json.Unmarshal(r.Payload, &v)
+		return mgr.CompactHistory(ctx, v)
 	case "work.complete":
 
 		var v struct {
@@ -163,6 +167,14 @@ func (w *walMaintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domai
 	}
 	return w.inner.ListDirtyWorkItems(ctx)
 }
+func (w *walMaintenanceManager) CompactHistory(ctx context.Context, in storesemantic.CompactHistoryInput) error {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "history.compact", SpaceID: w.spaceID, Payload: payload})
+}
+
 func (w *walMaintenanceManager) ClaimReadyWork(ctx context.Context, in storesemantic.ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {
 	leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/graph/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -108,6 +109,18 @@ type ClaimReadyWorkInput struct {
 }
 
 // WorkResult marks a claimed work item complete.
+type MaintenanceConsumerFrontier struct {
+	Consumer          string
+	DomainID          graph.DomainID
+	LastGraphRevision uint64
+}
+
+type CompactHistoryInput struct {
+	Consumers                []MaintenanceConsumerFrontier
+	MaxRetainedEvents        int
+	MaxRetainedCompletedWork int
+}
+
 type WorkResult struct {
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 	Generation  int       `json:"generation,omitempty"`
@@ -133,6 +146,7 @@ type MaintenanceManager interface {
 	SaveCheckpoint(ctx context.Context, checkpoint MaintenanceCheckpoint) error
 	UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error)
 	ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error)
+	CompactHistory(ctx context.Context, in CompactHistoryInput) error
 	ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error)
 	CompleteWork(ctx context.Context, id uuid.UUID, result WorkResult) error
 	FailWork(ctx context.Context, id uuid.UUID, failure WorkFailure) error

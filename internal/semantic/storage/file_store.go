@@ -49,6 +49,8 @@ const (
 	workStateFileName            = "state.json"
 	workEventsFileName           = "work-000001.ksem"
 	checkpointsFileName          = "checkpoints.json"
+	maxRetainedDirtyEvents       = 100000
+	maxRetainedDirtyWorkItems    = 100000
 	defaultVectorStoreKey        = "mycel-file"
 	defaultVectorStoreName       = "Mycel embedded file vector store"
 )
@@ -1234,6 +1236,11 @@ func (m *maintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Context
 		timing.Total = time.Since(traceStart)
 		return m.dirtyEvents[idx], timing, nil
 	}
+	if len(m.dirtyEvents) >= maxRetainedDirtyEvents {
+		timing.Deduplicate = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, fmt.Errorf("semantic dirty-event retention capacity exhausted; analysis required")
+	}
 	timing.Deduplicate = time.Since(stepStart)
 	if event.ID == uuid.Nil {
 		event.ID = newID()
@@ -1357,6 +1364,11 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	normalized := normalizeDirtyWorkItem(item)
+	key := dirtyWorkKey{semanticRuleID: normalized.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(normalized.EmbeddingBindingKey), targetNodeID: normalized.TargetNodeID}
+	if _, exists := m.workItemByKey[key]; !exists && len(m.dirtyQueue.Items) >= maxRetainedDirtyWorkItems {
+		return domainsemantic.SemanticDirtyWorkItem{}, fmt.Errorf("semantic dirty-work retention capacity exhausted; analysis required")
+	}
 	originalItems := append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...)
 	originalIndex := cloneDirtyWorkIndex(m.workItemByKey)
 	updated := m.upsertDirtyWorkItemLocked(item, time.Now().UTC())
@@ -1382,6 +1394,18 @@ func (m *maintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []d
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	newKeys := map[dirtyWorkKey]struct{}{}
+	for _, item := range items {
+		normalized := normalizeDirtyWorkItem(item)
+		key := dirtyWorkKey{semanticRuleID: normalized.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(normalized.EmbeddingBindingKey), targetNodeID: normalized.TargetNodeID}
+		if _, exists := m.workItemByKey[key]; exists {
+			continue
+		}
+		newKeys[key] = struct{}{}
+	}
+	if len(m.dirtyQueue.Items)+len(newKeys) > maxRetainedDirtyWorkItems {
+		return nil, fmt.Errorf("semantic dirty-work retention capacity exhausted; analysis required")
+	}
 	originalItems := append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...)
 	originalIndex := cloneDirtyWorkIndex(m.workItemByKey)
 	now := time.Now().UTC()
@@ -1468,6 +1492,108 @@ func (m *maintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domainse
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...), nil
+}
+
+func (m *maintenanceManager) CompactHistory(ctx context.Context, in CompactHistoryInput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	maxEvents := in.MaxRetainedEvents
+	if maxEvents <= 0 || maxEvents > maxRetainedDirtyEvents {
+		maxEvents = maxRetainedDirtyEvents
+	}
+	maxCompleted := in.MaxRetainedCompletedWork
+	if maxCompleted < 0 {
+		maxCompleted = 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	frontierByDomain := map[graphmodel.DomainID]uint64{}
+	for _, consumer := range in.Consumers {
+		if consumer.DomainID == uuid.Nil {
+			continue
+		}
+		frontier, ok := frontierByDomain[consumer.DomainID]
+		if !ok || consumer.LastGraphRevision < frontier {
+			frontierByDomain[consumer.DomainID] = consumer.LastGraphRevision
+		}
+	}
+	latestByDomain := map[graphmodel.DomainID]domainsemantic.GraphDirtyEventID{}
+	for _, event := range m.dirtyEvents {
+		for _, domainID := range event.DomainIDs {
+			latestByDomain[domainID] = event.ID
+		}
+	}
+	retainedEvents := make([]domainsemantic.GraphDirtyEvent, 0, min(len(m.dirtyEvents), maxEvents))
+	for _, event := range m.dirtyEvents {
+		processed := true
+		keepLatest := false
+		for _, domainID := range event.DomainIDs {
+			if latestByDomain[domainID] == event.ID {
+				keepLatest = true
+			}
+			if frontier, ok := frontierByDomain[domainID]; ok && event.GraphRevision > frontier {
+				processed = false
+			}
+		}
+		if !processed || keepLatest {
+			retainedEvents = append(retainedEvents, event)
+		}
+	}
+	if len(retainedEvents) > maxEvents {
+		return fmt.Errorf("semantic dirty-event retention capacity exhausted; analysis required")
+	}
+	completedToDrop := 0
+	for _, item := range m.dirtyQueue.Items {
+		if item.Status == domainsemantic.SemanticDirtyWorkStatusComplete {
+			completedToDrop++
+		}
+	}
+	if completedToDrop > maxCompleted {
+		completedToDrop -= maxCompleted
+	} else {
+		completedToDrop = 0
+	}
+	retainedWork := make([]domainsemantic.SemanticDirtyWorkItem, 0, len(m.dirtyQueue.Items)-completedToDrop)
+	for _, item := range m.dirtyQueue.Items {
+		if item.Status == domainsemantic.SemanticDirtyWorkStatusComplete && completedToDrop > 0 {
+			completedToDrop--
+			continue
+		}
+		retainedWork = append(retainedWork, item)
+	}
+	eventBytes := make([]byte, 0)
+	for _, event := range retainedEvents {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		eventBytes = append(eventBytes, raw...)
+		eventBytes = append(eventBytes, '\n')
+	}
+	workBytes := make([]byte, 0)
+	for _, item := range retainedWork {
+		raw, err := json.Marshal(workLogRecord{Kind: "upsert", At: time.Now().UTC(), Item: item})
+		if err != nil {
+			return err
+		}
+		workBytes = append(workBytes, raw...)
+		workBytes = append(workBytes, '\n')
+	}
+	if err := filestore.WriteFileAtomic(m.graphDirtyEventsPath(), eventBytes, fsperm.PrivateFile); err != nil {
+		return err
+	}
+	if err := filestore.WriteFileAtomic(m.workEventsPath(), workBytes, fsperm.PrivateFile); err != nil {
+		return err
+	}
+	if err := persistJSON(m.workStatePath(), dirtyQueueState{Items: retainedWork}); err != nil {
+		return err
+	}
+	m.dirtyEvents = retainedEvents
+	m.dirtyQueue = dirtyQueueState{Items: retainedWork}
+	m.rebuildDirtyEventIndexLocked()
+	m.rebuildWorkItemIndexLocked()
+	return nil
 }
 
 func (m *maintenanceManager) ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {

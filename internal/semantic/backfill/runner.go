@@ -308,7 +308,7 @@ func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domain
 	}
 	defer release()
 	key := vectorstore.SearchIndexKey{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: vectorStoreID}
-	state, err := rebuilder.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{MaxRecords: 100000, MaxBytes: 256 << 20})
+	state, err := rebuilder.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{MaxRecords: 100000, MaxBytes: 256 << 20, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch})
 	if err != nil {
 		failed := domainsemantic.SemanticSearchIndexState{SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, State: "error", LastError: err.Error(), UpdatedAt: time.Now().UTC()}
 		if _, upsertErr := r.SpaceManager.UpsertSearchIndexState(ctx, failed); upsertErr != nil {

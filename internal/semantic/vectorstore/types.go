@@ -67,8 +67,10 @@ type SearchIndexKey struct {
 }
 
 type RebuildLimit struct {
-	MaxRecords int
-	MaxBytes   int64
+	MaxRecords         int
+	MaxBytes           int64
+	SemanticGeneration uint64
+	RebuildEpoch       string
 }
 
 type LatestRecordInput struct {

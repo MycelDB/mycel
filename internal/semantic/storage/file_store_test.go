@@ -1003,6 +1003,55 @@ func TestMaintenanceWorkCoalescesByRuleBindingAndTarget(t *testing.T) {
 	}
 }
 
+func TestMaintenanceHistoryCompactionBoundsEventsWorkAndRestartState(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainA := graph.DomainID(uuid.New())
+	domainB := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 128; i++ {
+		domainID := domainA
+		if i%2 == 0 {
+			domainID = domainB
+		}
+		if _, err := mgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: uint64(i), SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{graph.NodeID(uuid.New())}, CommittedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: graph.NodeID(uuid.New()), Status: domainsemantic.SemanticDirtyWorkStatusComplete, FirstGraphRevision: uint64(i), LastGraphRevision: uint64(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := CompactHistoryInput{Consumers: []MaintenanceConsumerFrontier{{Consumer: "a", DomainID: domainA, LastGraphRevision: 127}, {Consumer: "b", DomainID: domainB, LastGraphRevision: 128}}, MaxRetainedEvents: 16, MaxRetainedCompletedWork: 8}
+	if err := mgr.CompactHistory(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	events, err := mgr.ListGraphDirtyEvents(ctx)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("expected one latest event per domain: events=%+v err=%v", events, err)
+	}
+	items, err := mgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 8 {
+		t.Fatalf("completed work retention not bounded: items=%d err=%v", len(items), err)
+	}
+	restarted := NewMaintenanceManager()
+	if err := restarted.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	events, err = restarted.ListGraphDirtyEvents(ctx)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("compacted events did not survive restart: events=%+v err=%v", events, err)
+	}
+	items, err = restarted.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 8 {
+		t.Fatalf("compacted work did not survive restart: items=%d err=%v", len(items), err)
+	}
+}
+
 func TestMaintenanceWorkNormalizesLegacyIndexIDToRuleID(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

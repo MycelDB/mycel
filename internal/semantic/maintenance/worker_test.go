@@ -190,7 +190,7 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 	}
 	runner := &fakeBackfillRunner{}
 	injectedFailures := 0
-	backend.BeforePhysicalWrite = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+	backend.AfterSegmentAppend = func(record domainsemantic.AdvancedEmbeddingRecord) error {
 		if record.Tombstone && injectedFailures == 0 {
 			injectedFailures++
 			return errors.New("vector store temporarily unavailable during tombstone publication")
@@ -219,6 +219,19 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 	}
 	if instrumentedBackend.HistoricalLists != 0 {
 		t.Fatalf("ordinary delete performed %d historical record scans", instrumentedBackend.HistoricalLists)
+	}
+	history, err := backend.ListRecords(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID))
+	if err != nil || len(history) != 6 {
+		t.Fatalf("delete retry duplicated append history: records=%+v err=%v", history, err)
+	}
+	tombstones := 0
+	for _, record := range history {
+		if record.Tombstone {
+			tombstones++
+		}
+	}
+	if tombstones != 2 {
+		t.Fatalf("expected one tombstone per binding, got %d in %+v", tombstones, history)
 	}
 	for _, binding := range bindings {
 		search := func(stage string) {

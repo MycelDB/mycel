@@ -728,6 +728,50 @@ func TestIncrementalRefreshRepairsPartialPhysicalPublicationOnRetry(t *testing.T
 	}
 }
 
+func TestIncrementalRefreshResumesPendingAppendBeforeLatestPublication(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("pending publication source")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	failures := 0
+	backend := env.vector
+	backend.AfterSegmentAppend = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+		if !record.Tombstone && failures == 0 {
+			failures++
+			return fmt.Errorf("injected post-append latest-view failure")
+		}
+		return nil
+	}
+	runner := env.runner
+	runner.VectorBackend = backend
+	input := Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1}
+	first, err := runner.Run(ctx, input)
+	if err == nil || first.FailedCount != 1 {
+		t.Fatalf("expected pending publication failure: result=%+v err=%v", first, err)
+	}
+	firstHistory, err := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(firstHistory) != 1 {
+		t.Fatalf("expected exactly one durable append before retry: history=%+v err=%v", firstHistory, err)
+	}
+	second, err := runner.Run(ctx, input)
+	if err != nil || second.FailedCount != 0 || second.SkippedCount != 1 {
+		t.Fatalf("pending publication retry did not repair: result=%+v err=%v", second, err)
+	}
+	secondHistory, err := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(secondHistory) != 1 || secondHistory[0].ID != firstHistory[0].ID {
+		t.Fatalf("retry appended a second history record: history=%+v err=%v", secondHistory, err)
+	}
+	if len(env.connector.calls) != 1 {
+		t.Fatalf("retry reinvoked provider for pending durable record: calls=%v", env.connector.calls)
+	}
+	results, err := backend.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Query: []float64{1, 0, 0}, Limit: 10})
+	if err != nil || len(results) != 1 || results[0].NodeID != root.ID {
+		t.Fatalf("pending publication was not repaired: results=%+v err=%v", results, err)
+	}
+}
+
 func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)
