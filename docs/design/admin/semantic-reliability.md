@@ -16,11 +16,11 @@ A semantic record persists:
 - configured intelligence profile, endpoint, model, capability, vector-space key, and dimensions;
 - rebuild epoch when produced by a rebuild.
 
-The configuration identity binds rule selector/projection, embedding binding, storage/ranking semantics, and the concrete resolved route/vector shape. Display-only changes do not rotate it. Projection, binding, route, model, capability, vector-space, dimension, or physical ranking changes do. Legacy records without this identity are stale and are not returned.
+The configuration identity binds rule selector/projection, embedding binding, storage/ranking semantics, and the effective resolved profile/endpoint/model/capability/vector-store shape. Unrelated catalog entries, display-only fields, ownership, and timestamps do not rotate it. Projection, binding, selected route, model, capability, vector-space, dimension, or physical ranking changes do. Legacy records without this identity are stale and are not returned.
 
 Configured route IDs are not provider-observed route evidence. `actual_route_known` remains false unless a connector supplies independent provider response metadata.
 
-Workers validate the claimed work generation immediately before execution and again before publishing an embedding. A superseded work item or semantic generation cannot publish. Tombstones retain revision and generation provenance.
+Workers validate the claimed work generation immediately before execution and again before publishing an embedding. A superseded work item or semantic generation cannot publish. Publication fences are scoped by space and rule, so an unrelated rule's provider call does not serialize semantic maintenance globally. Reliability transitions compare generation, rebuild epoch, and expected state before committing; stale completion or failure cannot replace newer state. Tombstones retain revision and generation provenance.
 
 ## Analyzer and freshness frontiers
 
@@ -32,7 +32,7 @@ Diagnostics expose independent limits for retained work barriers, disjoint gap i
 
 ## Rebuild
 
-A rebuild pins the latest observed graph revision, rebuilds eligible records at that target, and performs bounded analyze/process catch-up. It completes only when no required gap remains and freshness reaches the latest observed revision. Configuration changes mark the current generation stale and require this explicit operation. Compatible rebuilds retain the generation and use a new rebuild epoch.
+A rebuild pins the latest observed graph revision, rebuilds eligible records at that target, and performs bounded analyze/process catch-up. Public freshness remains zero while rebuild state is `running`; an internal candidate frontier is used only to prove completion. The rebuild completes only when no required gap remains and that candidate frontier reaches the latest observed revision. Configuration changes mark the current generation stale and require this explicit operation. Compatible rebuilds retain the generation and use a new rebuild epoch.
 
 ## Direct semantic filtering and pagination
 
@@ -42,10 +42,10 @@ A rebuild pins the latest observed graph revision, rebuilds eligible records at 
 - exact node IDs;
 - top-level payload property equality, inequality, existence, and missing predicates.
 
-Missing differs from a present null value. Unsupported operators, malformed UUIDs, oversized filters, and invalid values fail explicitly. Graph visibility is authorized before property evaluation or diagnostic counting. The current execution mode is `authorized_candidate_post_filter`: bounded semantic candidates are authorized and filtered before minimum-score enforcement and page truncation. No lexical or hybrid fallback is used.
+Missing differs from a present null value. Unsupported operators, malformed UUIDs, oversized filters, and invalid values fail explicitly. Graph visibility is authorized before property evaluation or diagnostic counting. The current execution mode is `authorized_candidate_post_filter`: bounded semantic candidates are authorized and filtered before minimum-score enforcement and page truncation. If the bounded raw semantic scan cannot prove exhaustive hard-filter eligibility, the request fails with `ResourceExhausted`; it never returns a silently incomplete page. No lexical or hybrid fallback is used.
 
 Continuation tokens are opaque and integrity protected. They bind principal, normalized request and filters, graph revision, semantic generation/configuration view, ranking version, candidate fingerprint, and offset. Any mismatch or changed view fails closed rather than restarting pagination.
 
 ## Confidentiality
 
-Public provenance excludes credentials, raw vectors, projected text, provider bodies, and source-content digests. `opaque_source_version` is the authorization-scoped record identity, not a digest of low-entropy source text. Filter diagnostics count only authorized candidates.
+Public provenance excludes credentials, raw vectors, projected text, provider bodies, and source-content digests. `opaque_source_version` is the authorization-scoped record identity, not a digest of low-entropy source text. Filter diagnostics count only authorized candidates. Admin maintenance failures and per-node backfill diagnostics are mapped to bounded semantic categories before crossing the API boundary.

@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -256,7 +258,7 @@ func mapBackfillResponse(res semanticbackfill.Result) *adminv1.BackfillSemanticR
 		out.Skipped = append(out.Skipped, &adminv1.BackfillSkipped{NodeId: uuid.UUID(skipped.NodeID).String(), Reason: skipped.Reason})
 	}
 	for _, failure := range res.Failures {
-		out.Failures = append(out.Failures, &adminv1.BackfillFailure{NodeId: uuid.UUID(failure.NodeID).String(), Error: failure.Error})
+		out.Failures = append(out.Failures, &adminv1.BackfillFailure{NodeId: uuid.UUID(failure.NodeID).String(), Error: sanitizeSemanticBackfillError(failure.Error)})
 	}
 	return out
 }
@@ -265,5 +267,41 @@ func mapAdminSemanticMaintenanceError(err error, action string) error {
 	if err == nil {
 		return nil
 	}
-	return mapAdminInferenceError(err, action)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.Error(codes.Unavailable, "semantic maintenance request did not complete")
+	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return status.Error(st.Code(), "semantic maintenance request failed")
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "not found"):
+		return status.Error(codes.NotFound, "semantic maintenance resource not found")
+	case strings.Contains(lower, "required") || strings.Contains(lower, "invalid"):
+		return status.Error(codes.InvalidArgument, "semantic maintenance request is invalid")
+	case strings.Contains(lower, "already running") || strings.Contains(lower, "stale semantic"):
+		return status.Error(codes.FailedPrecondition, "semantic maintenance state changed")
+	case strings.Contains(lower, "capacity") || strings.Contains(lower, "exhausted"):
+		return status.Error(codes.ResourceExhausted, "semantic maintenance capacity exhausted")
+	default:
+		return status.Errorf(codes.Internal, "%s failed", action)
+	}
+}
+
+func sanitizeSemanticBackfillError(value string) string {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline"):
+		return "semantic provider timeout"
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "429"):
+		return "semantic provider rate limited"
+	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy"):
+		return "semantic provider authorization failed"
+	case strings.Contains(lower, "configuration") || strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "invalid"):
+		return "semantic configuration failed"
+	case strings.Contains(lower, "vector"):
+		return "semantic vector store failed"
+	default:
+		return "semantic backfill failed"
+	}
 }

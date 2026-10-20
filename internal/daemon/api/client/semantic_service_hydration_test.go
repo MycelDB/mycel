@@ -16,7 +16,19 @@ import (
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestSemanticCandidateBoundFailsClosedForTruncatedFilteredScan(t *testing.T) {
+	err := semanticCandidateBoundError(true, semanticsearch.Result{CandidateScanTruncated: true}, 0)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("candidate bound error code = %s, want %s", status.Code(err), codes.ResourceExhausted)
+	}
+	if err := semanticCandidateBoundError(false, semanticsearch.Result{CandidateScanTruncated: true}, 0); err != nil {
+		t.Fatalf("unfiltered scan should not consume the hard-filter truncation signal: %v", err)
+	}
+}
 
 func TestSemanticResultProvenanceDoesNotRelabelConfiguredRouteAsActual(t *testing.T) {
 	item := semanticsearch.SearchResult{ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), ModelEndpointCapabilityID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), SourceGraphRevision: 7, SemanticGeneration: 2, SemanticConfigurationHash: "sha256:configuration", RecordID: domainsemantic.AdvancedEmbeddingRecordID(uuid.New()), Dimensions: 8, VectorSpaceKey: "fixture/8", CreatedAt: time.Now().UTC()}

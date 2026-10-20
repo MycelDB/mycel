@@ -158,8 +158,8 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 		matched := recordIDsForResult(item)
 		out = append(out, &clientv1.SemanticSearchResult{SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, RecordId: item.RecordID.String(), NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: matched, Snippet: semanticSnippet(nodePayloadText(node)), Provenance: mapSemanticResultProvenance(item)})
 	}
-	if len(result.Results) >= semanticMaxCandidateExamination || examinedAuthorizedCandidates > semanticMaxPaginationRecords {
-		return nil, status.Error(codes.ResourceExhausted, "direct semantic candidate examination exceeded the bounded pagination window")
+	if err := semanticCandidateBoundError(normalizedFilter != nil, result, examinedAuthorizedCandidates); err != nil {
+		return nil, err
 	}
 	finalGraphRevision, err := s.semanticGraphRevision(ctx, spaceID, domainID)
 	if err != nil {
@@ -527,6 +527,13 @@ func parseSemanticRuleID(raw string) (domainsemantic.SemanticRuleID, error) {
 		return uuid.Nil, status.Error(codes.InvalidArgument, "semantic_rule_id must be a UUID")
 	}
 	return domainsemantic.SemanticRuleID(id), nil
+}
+
+func semanticCandidateBoundError(hasHardFilter bool, result semanticsearch.Result, examinedAuthorizedCandidates int) error {
+	if (hasHardFilter && result.CandidateScanTruncated) || len(result.Results) >= semanticMaxCandidateExamination || examinedAuthorizedCandidates > semanticMaxPaginationRecords {
+		return status.Error(codes.ResourceExhausted, "direct semantic candidate examination exceeded the bounded pagination window")
+	}
+	return nil
 }
 
 func parseIdentityPrincipalID(raw string) (identity.PrincipalID, error) {

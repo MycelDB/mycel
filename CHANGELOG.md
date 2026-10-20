@@ -14,7 +14,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Changed
 
-- Semantic search now rejects legacy or incompatible records without matching configuration/route provenance and never relabels configured route IDs as provider-observed route evidence (#238).
+- Semantic search now rejects legacy or incompatible records without matching configuration/route provenance, fails closed when a bounded hard-filter scan cannot prove completeness, and never relabels configured route IDs as provider-observed route evidence (#238).
+- Semantic rebuild and publication transitions now use rule-scoped fencing and guarded generation/epoch/state changes, preserving cross-rule concurrency while rejecting stale completion and failure updates (#238).
 - Inference now rejects empty, non-finite, and declared-dimension-mismatched embedding responses before publication; the historical unconfigured fake connector response remains unchanged (#237).
 
 ## [v0.20.0] - 2026-10-19

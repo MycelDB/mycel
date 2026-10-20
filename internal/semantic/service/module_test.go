@@ -492,7 +492,7 @@ func TestSyncSemanticDirtyCountsRefreshesRuleAndIndexState(t *testing.T) {
 	if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), TargetNodeID: graph.NodeID(uuid.New()), Action: domainsemantic.SemanticDirtyWorkActionRefresh, Status: domainsemantic.SemanticDirtyWorkStatusComplete}); err != nil {
 		t.Fatalf("seed completed work: %v", err)
 	}
-	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+	if err := NewModule().syncSemanticDirtyCounts(ctx, spaceID, mgr, maintenanceMgr); err != nil {
 		t.Fatalf("syncSemanticDirtyCounts() error = %v", err)
 	}
 	ruleStates, err := mgr.ListSemanticRuleStates(ctx)

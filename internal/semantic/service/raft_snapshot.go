@@ -470,6 +470,12 @@ func semanticSnapshotRequiringRebuild(space semanticSpaceSnapshot) semanticSpace
 		space.SearchIndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
 		space.SearchIndexStates[i].UpdatedAt = now
 	}
+	for i := range space.IndexStates {
+		space.IndexStates[i].State = "missing"
+		space.IndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
+		space.IndexStates[i].RecordCount = 0
+		space.IndexStates[i].UpdatedAt = now
+	}
 	return space
 }
 

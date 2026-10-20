@@ -28,6 +28,9 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	if r.GraphReader == nil || r.GlobalManager == nil || r.SpaceManager == nil || r.Connector == nil || r.VectorBackend == nil {
 		return Result{}, fmt.Errorf("graph reader, managers, connector, and vector backend are required")
 	}
+	if in.SemanticGeneration == 0 {
+		in.SemanticGeneration = 1
+	}
 	rules, err := r.SpaceManager.ListSemanticRules(ctx)
 	if err != nil {
 		return Result{}, err

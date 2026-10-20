@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +43,8 @@ type semanticGateContextKey struct{}
 
 type Module struct {
 	mu                   sync.Mutex
-	publicationMu        sync.Mutex
+	publicationFencesMu  sync.Mutex
+	publicationFences    map[string]*semanticPublicationFence
 	dataDir              string
 	encryption           *encryption.Service
 	global               storesemantic.GlobalManager
@@ -686,8 +688,6 @@ func (m *Module) CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 }
 
 func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput, mutate func(domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem) (MaintenanceWorkItem, error) {
-	m.publicationMu.Lock()
-	defer m.publicationMu.Unlock()
 	if in.WorkItemID == uuid.Nil {
 		return MaintenanceWorkItem{}, fmt.Errorf("work_item_id is required")
 	}
@@ -702,6 +702,25 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 	for _, item := range items {
 		if item.ID != in.WorkItemID {
 			continue
+		}
+		unlockFence := m.lockSemanticPublication(item.SpaceID, item.EffectiveSemanticRuleID())
+		defer unlockFence()
+		// Reload after acquiring the rule fence so cancellation cannot overwrite a
+		// worker completion observed in the first read.
+		current, reloadErr := maintenanceMgr.ListDirtyWorkItems(ctx)
+		if reloadErr != nil {
+			return MaintenanceWorkItem{}, reloadErr
+		}
+		found := false
+		for _, candidate := range current {
+			if candidate.ID == item.ID {
+				item = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			return MaintenanceWorkItem{}, fmt.Errorf("semantic maintenance work item %s not found", in.WorkItemID)
 		}
 		item = mutate(item)
 		updated, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, item)
@@ -796,8 +815,6 @@ func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, d
 }
 
 func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error) {
-	m.publicationMu.Lock()
-	defer m.publicationMu.Unlock()
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
@@ -815,7 +832,42 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	analyzer := semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}
+	rules, err := mgr.ListSemanticRules(ctx)
+	if err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	if len(rules) == 0 {
+		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	}
+	if in.SemanticRuleID != uuid.Nil {
+		unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+		defer unlockFence()
+		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	}
+	sort.Slice(rules, func(i, j int) bool { return rules[i].ID.String() < rules[j].ID.String() })
+	result := semanticmaintenance.AnalyzeResult{}
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		limit := in.Limit
+		if limit > 0 {
+			limit -= result.ProcessedEvents
+			if limit <= 0 {
+				break
+			}
+		}
+		unlockFence := m.lockSemanticPublication(in.SpaceID, rule.ID)
+		current, analyzeErr := analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: rule.ID, EmbeddingBindingKey: in.EmbeddingBindingKey, Limit: limit})
+		unlockFence()
+		result.ProcessedEvents += current.ProcessedEvents
+		result.EnqueuedItems += current.EnqueuedItems
+		if analyzeErr != nil {
+			return result, analyzeErr
+		}
+	}
+	return result, nil
 }
 
 func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {
@@ -875,13 +927,13 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return res, err
 	}
-	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+	if err := m.syncSemanticDirtyCounts(ctx, in.SpaceID, mgr, maintenanceMgr); err != nil {
 		return res, err
 	}
 	return res, nil
 }
 
-func syncSemanticDirtyCounts(ctx context.Context, mgr storesemantic.SpaceManager, maintenanceMgr storesemantic.MaintenanceManager) error {
+func (m *Module) syncSemanticDirtyCounts(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager, maintenanceMgr storesemantic.MaintenanceManager) error {
 	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
 	if err != nil {
 		return err
@@ -910,10 +962,24 @@ func syncSemanticDirtyCounts(ctx context.Context, mgr storesemantic.SpaceManager
 		return err
 	}
 	for _, state := range ruleStates {
+		unlockFence := m.lockSemanticPublication(spaceID, state.SemanticRuleID)
+		current, reloadErr := mgr.ListSemanticRuleStates(ctx)
+		if reloadErr != nil {
+			unlockFence()
+			return reloadErr
+		}
+		for _, candidate := range current {
+			if candidate.SemanticRuleID == state.SemanticRuleID {
+				state = candidate
+				break
+			}
+		}
 		state.DirtyCount = pendingRule[state.SemanticRuleID]
 		state.UpdatedAt = now
-		if _, err := mgr.UpsertSemanticRuleState(ctx, state); err != nil {
-			return err
+		_, upsertErr := mgr.UpsertSemanticRuleState(ctx, state)
+		unlockFence()
+		if upsertErr != nil {
+			return upsertErr
 		}
 	}
 	indexStates, err := mgr.ListIndexStates(ctx)
@@ -1024,7 +1090,9 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			if in.RebuildEpoch != "" {
 				reliability.RebuildEpoch = in.RebuildEpoch
 			}
-			if saveErr := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, reliability); saveErr != nil {
+			if saveErr := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, status.SemanticGeneration, status.Rebuild.RebuildEpoch, "", func(current *domainsemantic.SemanticReliabilityState) {
+				*current = reliability
+			}); saveErr != nil {
 				return result, saveErr
 			}
 		}

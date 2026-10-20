@@ -132,28 +132,29 @@ type ReliabilityStatusInput struct {
 }
 
 type ReliabilityStatus struct {
-	SpaceID                       domainspace.SpaceID
-	SemanticRuleID                domainsemantic.SemanticRuleID
-	EmbeddingBindingKey           string
-	LatestObservedGraphRevision   uint64
-	AnalyzedThroughGraphRevision  uint64
-	FreshThroughGraphRevision     uint64
-	UnresolvedGapCount            uint64
-	OldestUnresolvedGraphRevision uint64
-	ConfiguredFrontierLimit       uint64
-	ConfiguredGapIntervalLimit    uint64
-	ConfiguredRevisionSpanLimit   uint64
-	ConfiguredSerializedByteLimit uint64
-	RetainedWorkItemCount         uint64
-	RetainedGapIntervalCount      uint64
-	RetainedRevisionSpan          uint64
-	RetainedSerializedBytes       uint64
-	SemanticGeneration            uint64
-	CapacityState                 string
-	Degraded                      bool
-	DegradedReason                string
-	RebuildRequired               bool
-	Rebuild                       domainsemantic.SemanticReliabilityState
+	SpaceID                            domainspace.SpaceID
+	SemanticRuleID                     domainsemantic.SemanticRuleID
+	EmbeddingBindingKey                string
+	LatestObservedGraphRevision        uint64
+	AnalyzedThroughGraphRevision       uint64
+	FreshThroughGraphRevision          uint64
+	candidateFreshThroughGraphRevision uint64
+	UnresolvedGapCount                 uint64
+	OldestUnresolvedGraphRevision      uint64
+	ConfiguredFrontierLimit            uint64
+	ConfiguredGapIntervalLimit         uint64
+	ConfiguredRevisionSpanLimit        uint64
+	ConfiguredSerializedByteLimit      uint64
+	RetainedWorkItemCount              uint64
+	RetainedGapIntervalCount           uint64
+	RetainedRevisionSpan               uint64
+	RetainedSerializedBytes            uint64
+	SemanticGeneration                 uint64
+	CapacityState                      string
+	Degraded                           bool
+	DegradedReason                     string
+	RebuildRequired                    bool
+	Rebuild                            domainsemantic.SemanticReliabilityState
 }
 
 type RebuildInput struct {

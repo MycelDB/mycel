@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,32 +26,71 @@ const (
 )
 
 func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr storesemantic.SpaceManager, binding domainsemantic.SemanticEmbeddingBinding) (string, error) {
+	binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
 	profiles, err := spaceMgr.ListIntelligenceProfiles(ctx)
 	if err != nil {
 		return "", err
 	}
 	selectedProfiles := make([]domainsemantic.IntelligenceProfile, 0, 1)
 	for _, profile := range profiles {
-		if (binding.IntelligenceProfileID != uuid.Nil && profile.ID == binding.IntelligenceProfileID) || (strings.TrimSpace(binding.IntelligenceProfile) != "" && profile.Key == strings.TrimSpace(binding.IntelligenceProfile)) {
-			selectedProfiles = append(selectedProfiles, domainsemantic.NormalizeIntelligenceProfile(profile))
+		if (binding.IntelligenceProfileID != uuid.Nil && profile.ID == binding.IntelligenceProfileID) || (binding.IntelligenceProfile != "" && profile.Key == binding.IntelligenceProfile) {
+			profile = canonicalReliabilityProfile(profile)
+			selectedProfiles = append(selectedProfiles, profile)
 		}
 	}
+	var endpointRefs, modelRefs, capabilityRefs []string
+	for _, profile := range selectedProfiles {
+		endpointRefs = append(endpointRefs, profile.EndpointRefs...)
+		modelRefs = append(modelRefs, profile.ModelRefs...)
+		capabilityRefs = append(capabilityRefs, profile.CapabilityRefs...)
+	}
 	global := m.GlobalManager()
-	endpoints, err := global.ListModelEndpoints(ctx)
+	allEndpoints, err := global.ListModelEndpoints(ctx)
 	if err != nil {
 		return "", err
 	}
-	models, err := global.ListModels(ctx)
+	endpoints := make([]domainsemantic.ModelEndpoint, 0)
+	for _, endpoint := range allEndpoints {
+		if len(selectedProfiles) > 0 && reliabilityRefMatches(endpointRefs, endpoint.ID, endpoint.Key) {
+			endpoint.Name, endpoint.CreatedAt, endpoint.UpdatedAt = "", time.Time{}, time.Time{}
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	allModels, err := global.ListModels(ctx)
 	if err != nil {
 		return "", err
 	}
-	capabilities, err := global.ListModelEndpointCapabilities(ctx)
+	models := make([]domainsemantic.InferenceModel, 0)
+	for _, model := range allModels {
+		if len(selectedProfiles) > 0 && reliabilityRefMatches(modelRefs, model.ID, model.Key) {
+			model.CreatedAt, model.UpdatedAt = time.Time{}, time.Time{}
+			models = append(models, model)
+		}
+	}
+	allCapabilities, err := global.ListModelEndpointCapabilities(ctx)
 	if err != nil {
 		return "", err
 	}
-	stores, err := global.ListVectorStores(ctx)
+	capabilities := make([]domainsemantic.ModelEndpointCapability, 0)
+	for _, capability := range allCapabilities {
+		if len(selectedProfiles) == 0 || capability.Operation != selectedProfiles[0].Operation || !reliabilityRefMatches(capabilityRefs, capability.ID, "") || !containsEndpointID(endpoints, capability.ModelEndpointID) || !containsModelID(models, capability.ModelID) {
+			continue
+		}
+		capability.CreatedAt, capability.UpdatedAt = time.Time{}, time.Time{}
+		capabilities = append(capabilities, capability)
+	}
+	endpoints = slicesMatchingCapabilitiesEndpoints(endpoints, capabilities)
+	models = slicesMatchingCapabilitiesModels(models, capabilities)
+	allStores, err := global.ListVectorStores(ctx)
 	if err != nil {
 		return "", err
+	}
+	stores := make([]domainsemantic.VectorStoreBackend, 0, 1)
+	for _, store := range allStores {
+		if (binding.VectorStoreID != uuid.Nil && store.ID == binding.VectorStoreID) || (binding.VectorStoreID == uuid.Nil && binding.VectorStore != "" && store.Key == binding.VectorStore) {
+			store.Name, store.CreatedAt, store.UpdatedAt = "", time.Time{}, time.Time{}
+			stores = append(stores, store)
+		}
 	}
 	sort.Slice(selectedProfiles, func(i, j int) bool { return selectedProfiles[i].ID.String() < selectedProfiles[j].ID.String() })
 	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].ID.String() < endpoints[j].ID.String() })
@@ -64,7 +104,7 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 		Models       []domainsemantic.InferenceModel          `json:"models"`
 		Capabilities []domainsemantic.ModelEndpointCapability `json:"capabilities"`
 		VectorStores []domainsemantic.VectorStoreBackend      `json:"vector_stores"`
-	}{Binding: domainsemantic.NormalizeSemanticEmbeddingBinding(binding), Profiles: selectedProfiles, Endpoints: endpoints, Models: models, Capabilities: capabilities, VectorStores: stores})
+	}{Binding: binding, Profiles: selectedProfiles, Endpoints: endpoints, Models: models, Capabilities: capabilities, VectorStores: stores})
 	if err != nil {
 		return "", err
 	}
@@ -72,15 +112,117 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 	return hex.EncodeToString(digest[:]), nil
 }
 
+func canonicalReliabilityProfile(profile domainsemantic.IntelligenceProfile) domainsemantic.IntelligenceProfile {
+	profile = domainsemantic.NormalizeIntelligenceProfile(profile)
+	profile.DisplayName, profile.Description, profile.CreatedBy = "", "", ""
+	profile.CreatedAt, profile.UpdatedAt = time.Time{}, time.Time{}
+	sort.Strings(profile.DomainIDs)
+	sort.Strings(profile.CapabilityRefs)
+	sort.Strings(profile.EndpointRefs)
+	sort.Strings(profile.ModelRefs)
+	sort.Strings(profile.RequiredFeatures)
+	profile.PrivacyRequirement.AllowedPrivacyClasses = append([]domainsemantic.PrivacyClass(nil), profile.PrivacyRequirement.AllowedPrivacyClasses...)
+	sort.Slice(profile.PrivacyRequirement.AllowedPrivacyClasses, func(i, j int) bool {
+		return profile.PrivacyRequirement.AllowedPrivacyClasses[i] < profile.PrivacyRequirement.AllowedPrivacyClasses[j]
+	})
+	return profile
+}
+
+func reliabilityRefMatches[T ~[16]byte](refs []string, id T, key string) bool {
+	if len(refs) == 0 {
+		return true
+	}
+	idText := uuid.UUID(id).String()
+	for _, ref := range refs {
+		if strings.EqualFold(strings.TrimSpace(ref), strings.TrimSpace(key)) || strings.EqualFold(strings.TrimSpace(ref), idText) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEndpointID(items []domainsemantic.ModelEndpoint, id domainsemantic.ModelEndpointID) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func containsModelID(items []domainsemantic.InferenceModel, id domainsemantic.InferenceModelID) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func slicesMatchingCapabilitiesEndpoints(items []domainsemantic.ModelEndpoint, capabilities []domainsemantic.ModelEndpointCapability) []domainsemantic.ModelEndpoint {
+	out := make([]domainsemantic.ModelEndpoint, 0, len(items))
+	for _, item := range items {
+		for _, capability := range capabilities {
+			if capability.ModelEndpointID == item.ID {
+				out = append(out, item)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func slicesMatchingCapabilitiesModels(items []domainsemantic.InferenceModel, capabilities []domainsemantic.ModelEndpointCapability) []domainsemantic.InferenceModel {
+	out := make([]domainsemantic.InferenceModel, 0, len(items))
+	for _, item := range items {
+		for _, capability := range capabilities {
+			if capability.ModelID == item.ID {
+				out = append(out, item)
+				break
+			}
+		}
+	}
+	return out
+}
+
+type semanticPublicationFence struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (m *Module) lockSemanticPublication(spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) func() {
+	key := spaceID.String() + "/" + ruleID.String()
+	m.publicationFencesMu.Lock()
+	if m.publicationFences == nil {
+		m.publicationFences = map[string]*semanticPublicationFence{}
+	}
+	fence := m.publicationFences[key]
+	if fence == nil {
+		fence = &semanticPublicationFence{}
+		m.publicationFences[key] = fence
+	}
+	fence.refs++
+	m.publicationFencesMu.Unlock()
+	fence.mu.Lock()
+	return func() {
+		fence.mu.Unlock()
+		m.publicationFencesMu.Lock()
+		fence.refs--
+		if fence.refs == 0 && m.publicationFences[key] == fence {
+			delete(m.publicationFences, key)
+		}
+		m.publicationFencesMu.Unlock()
+	}
+}
+
 func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusInput) (ReliabilityStatus, error) {
 	if in.SpaceID == uuid.Nil || in.SemanticRuleID == uuid.Nil || strings.TrimSpace(in.EmbeddingBindingKey) == "" {
 		return ReliabilityStatus{}, fmt.Errorf("space_id, semantic_rule_id, and embedding_binding_key are required")
 	}
 	// Status evaluation can durably rotate generations or mark frontier
-	// exhaustion. Serialize those decisions with worker publication and rule
-	// transitions so an authorized stale publication cannot race the update.
-	m.publicationMu.Lock()
-	defer m.publicationMu.Unlock()
+	// exhaustion. Serialize those decisions with publication and rule transitions.
+	unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+	defer unlockFence()
 	spaceMgr, err := m.SpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return ReliabilityStatus{}, err
@@ -207,6 +349,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	if oldestGap > 0 && fresh >= oldestGap {
 		fresh = oldestGap - 1
 	}
+	candidateFresh := fresh
 	if reliability.RebuildState == "required" || reliability.RebuildState == "running" {
 		fresh = 0
 	}
@@ -229,6 +372,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 		reliability.CapacityReason = reliability.RebuildErrorSanitized
 		reliability.FreshThrough = 0
 		fresh = 0
+		candidateFresh = 0
 		if newlyExhausted {
 			if err := m.saveReliabilityState(ctx, in.SpaceID, rule.ID, reliability); err != nil {
 				return ReliabilityStatus{}, err
@@ -250,7 +394,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	}
 	return ReliabilityStatus{
 		SpaceID: in.SpaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key,
-		LatestObservedGraphRevision: latest, AnalyzedThroughGraphRevision: checkpoint.LastGraphRevision, FreshThroughGraphRevision: fresh,
+		LatestObservedGraphRevision: latest, AnalyzedThroughGraphRevision: checkpoint.LastGraphRevision, FreshThroughGraphRevision: fresh, candidateFreshThroughGraphRevision: candidateFresh,
 		UnresolvedGapCount: gapCount, OldestUnresolvedGraphRevision: oldestGap, ConfiguredFrontierLimit: semanticReliabilityFrontierLimit,
 		ConfiguredGapIntervalLimit: semanticReliabilityGapIntervalLimit, ConfiguredRevisionSpanLimit: semanticReliabilityRevisionSpanLimit, ConfiguredSerializedByteLimit: semanticReliabilitySerializedByteLimit,
 		RetainedWorkItemCount: retained, RetainedGapIntervalCount: uint64(len(unresolved)), RetainedRevisionSpan: span, RetainedSerializedBytes: serializedBytes, SemanticGeneration: generation, CapacityState: capacityState, Degraded: degraded,
@@ -299,29 +443,30 @@ func (m *Module) authorizeSemanticWorkItem(ctx context.Context, expected domains
 }
 
 func (m *Module) acquireSemanticWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (func(), error) {
-	m.publicationMu.Lock()
+	unlockFence := m.lockSemanticPublication(item.SpaceID, item.EffectiveSemanticRuleID())
 	if err := m.authorizeSemanticWorkItem(ctx, item); err != nil {
-		m.publicationMu.Unlock()
+		unlockFence()
 		return nil, err
 	}
-	return m.publicationMu.Unlock, nil
+	return unlockFence, nil
 }
 
 func (m *Module) acquireSemanticPublication(ctx context.Context, publication semanticbackfill.Publication) (func(), error) {
-	// Maintenance workers hold publicationMu from the claimed-generation check
-	// through durable completion. Rebuild publications acquire it per mutation.
+	// Maintenance workers already hold their rule-scoped fence through durable
+	// completion. Rebuild publications acquire the same fence per mutation.
 	locked := publication.Input.WorkItemID == uuid.Nil
+	var unlockFence func()
 	if locked {
-		m.publicationMu.Lock()
+		unlockFence = m.lockSemanticPublication(publication.Input.SpaceID, publication.Input.SemanticRuleID)
 	}
 	if err := m.authorizeSemanticPublication(ctx, publication); err != nil {
 		if locked {
-			m.publicationMu.Unlock()
+			unlockFence()
 		}
 		return nil, err
 	}
 	if locked {
-		return m.publicationMu.Unlock, nil
+		return unlockFence, nil
 	}
 	return func() {}, nil
 }
@@ -368,8 +513,8 @@ func (m *Module) semanticGenerationForWork(ctx context.Context, item domainseman
 }
 
 func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error {
-	m.publicationMu.Lock()
-	defer m.publicationMu.Unlock()
+	unlockFence := m.lockSemanticPublication(spaceID, rule.ID)
+	defer unlockFence()
 	states, err := m.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return err
@@ -437,14 +582,16 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	if err != nil {
 		return RebuildResult{}, err
 	}
+	if status.Rebuild.RebuildState == "running" {
+		return RebuildResult{}, fmt.Errorf("semantic rebuild is already running")
+	}
 	now := time.Now().UTC()
-	epoch := uuid.NewString()
 	generation := status.SemanticGeneration
 	if generation == 0 {
 		generation = 1
 	}
-	rebuild := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: in.EmbeddingBindingKey, ResolvedConfigurationHash: status.Rebuild.ResolvedConfigurationHash, SemanticGeneration: generation, RebuildEpoch: epoch, RebuildState: "running", PinnedTargetRevision: status.LatestObservedGraphRevision, RebuildStartedAt: &now}
-	if err := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, rebuild); err != nil {
+	rebuild := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: in.EmbeddingBindingKey, ResolvedConfigurationHash: status.Rebuild.ResolvedConfigurationHash, SemanticGeneration: generation, RebuildEpoch: uuid.NewString(), RebuildState: "running", PinnedTargetRevision: status.LatestObservedGraphRevision, RebuildStartedAt: &now}
+	if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, generation, status.Rebuild.RebuildEpoch, "", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild }); err != nil {
 		return RebuildResult{}, err
 	}
 	backfill := semanticbackfill.Result{}
@@ -455,17 +602,10 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 		page, runErr := m.BackfillIndex(ctx, pageInput)
 		mergeBackfillResult(&backfill, page)
 		if runErr != nil || page.FailedCount > 0 {
-			message := "semantic rebuild backfill failed"
 			if runErr != nil {
-				message = sanitizeMaintenanceError(runErr.Error())
+				return m.failRebuild(ctx, in, rebuild, backfill, runErr)
 			}
-			rebuild.RebuildState = "failed"
-			rebuild.RebuildErrorSanitized = message
-			_ = m.saveReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, rebuild)
-			if runErr != nil {
-				return RebuildResult{Backfill: backfill}, runErr
-			}
-			return RebuildResult{Backfill: backfill}, fmt.Errorf("semantic rebuild backfill reported %d failures", page.FailedCount)
+			return m.failRebuild(ctx, in, rebuild, backfill, fmt.Errorf("semantic rebuild backfill reported %d failures", page.FailedCount))
 		}
 		if page.NextOffset == 0 {
 			break
@@ -476,7 +616,10 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 		offset = page.NextOffset
 	}
 	rebuild.BaselineFreshThrough = rebuild.PinnedTargetRevision
-	if err := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, rebuild); err != nil {
+	if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) {
+		current.BaselineFreshThrough = rebuild.BaselineFreshThrough
+		current.PinnedTargetRevision = rebuild.PinnedTargetRevision
+	}); err != nil {
 		return RebuildResult{Backfill: backfill}, err
 	}
 	for iteration := 0; iteration < in.MaxCatchupIterations; iteration++ {
@@ -490,23 +633,27 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 		if err != nil {
 			return m.failRebuild(ctx, in, rebuild, backfill, err)
 		}
-		if status.UnresolvedGapCount == 0 && status.FreshThroughGraphRevision >= status.LatestObservedGraphRevision {
+		if status.UnresolvedGapCount == 0 && status.candidateFreshThroughGraphRevision >= status.LatestObservedGraphRevision {
 			completed := time.Now().UTC()
 			rebuild.RebuildState = "completed"
 			rebuild.DeltaCatchupRevision = status.LatestObservedGraphRevision
-			rebuild.BaselineFreshThrough = status.FreshThroughGraphRevision
+			rebuild.BaselineFreshThrough = status.candidateFreshThroughGraphRevision
 			rebuild.RebuildCompletedAt = &completed
 			rebuild.LatestObserved = status.LatestObservedGraphRevision
 			rebuild.AnalyzedThrough = status.AnalyzedThroughGraphRevision
-			rebuild.FreshThrough = status.FreshThroughGraphRevision
+			rebuild.FreshThrough = status.candidateFreshThroughGraphRevision
 			rebuild.UnresolvedRanges = nil
 			rebuild.CapacityState = "ok"
 			rebuild.CapacityReason = ""
-			if err := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, rebuild); err != nil {
+			if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild }); err != nil {
 				return RebuildResult{Backfill: backfill}, err
 			}
+			status.FreshThroughGraphRevision = status.candidateFreshThroughGraphRevision
 			status.Rebuild = rebuild
 			status.SemanticGeneration = generation
+			status.Degraded = false
+			status.DegradedReason = ""
+			status.RebuildRequired = false
 			return RebuildResult{Reliability: status, Backfill: backfill}, nil
 		}
 	}
@@ -537,8 +684,48 @@ func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.R
 func (m *Module) failRebuild(ctx context.Context, in RebuildInput, rebuild domainsemantic.SemanticReliabilityState, backfill semanticbackfill.Result, cause error) (RebuildResult, error) {
 	rebuild.RebuildState = "failed"
 	rebuild.RebuildErrorSanitized = sanitizeMaintenanceError(cause.Error())
-	_ = m.saveReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, rebuild)
+	_ = m.transitionReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild })
 	return RebuildResult{Backfill: backfill}, cause
+}
+
+func (m *Module) transitionReliabilityState(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID, bindingKey string, expectedGeneration uint64, expectedEpoch, expectedState string, mutate func(*domainsemantic.SemanticReliabilityState)) error {
+	unlockFence := m.lockSemanticPublication(spaceID, ruleID)
+	defer unlockFence()
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	states, err := mgr.ListSemanticRuleStates(ctx)
+	if err != nil {
+		return err
+	}
+	state := domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{}}
+	for _, candidate := range states {
+		if candidate.SemanticRuleID == ruleID {
+			state = candidate
+			break
+		}
+	}
+	if state.ReliabilityByBinding == nil {
+		state.ReliabilityByBinding = map[string]domainsemantic.SemanticReliabilityState{}
+	}
+	current := state.ReliabilityByBinding[bindingKey]
+	generation := current.SemanticGeneration
+	if generation == 0 {
+		generation = 1
+	}
+	if expectedGeneration == 0 {
+		expectedGeneration = 1
+	}
+	if generation != expectedGeneration || current.RebuildEpoch != expectedEpoch || (expectedState != "" && current.RebuildState != expectedState) {
+		return fmt.Errorf("stale semantic reliability transition rejected")
+	}
+	mutate(&current)
+	current.EmbeddingBindingKey = bindingKey
+	state.ReliabilityByBinding[bindingKey] = current
+	state.UpdatedAt = time.Now().UTC()
+	_, err = mgr.UpsertSemanticRuleState(ctx, state)
+	return err
 }
 
 func (m *Module) saveReliabilityState(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID, reliability domainsemantic.SemanticReliabilityState) error {

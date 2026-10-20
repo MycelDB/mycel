@@ -14,6 +14,58 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func TestRuleScopedPublicationFencesDoNotSerializeIndependentRules(t *testing.T) {
+	module := NewModule()
+	spaceID := domainspace.SpaceID(uuid.New())
+	unlockFirst := module.lockSemanticPublication(spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+	acquiredSecond := make(chan struct{}, 1)
+	go func() {
+		unlockSecond := module.lockSemanticPublication(spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+		acquiredSecond <- struct{}{}
+		unlockSecond()
+	}()
+	select {
+	case <-acquiredSecond:
+	case <-time.After(time.Second):
+		unlockFirst()
+		t.Fatal("independent semantic rules were serialized by publication fencing")
+	}
+	unlockFirst()
+	module.publicationFencesMu.Lock()
+	defer module.publicationFencesMu.Unlock()
+	if len(module.publicationFences) != 0 {
+		t.Fatalf("released publication fences retained %d entries", len(module.publicationFences))
+	}
+}
+
+func TestReliabilityTransitionRejectsNewerGenerationState(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	spaceMgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 3, RebuildEpoch: "new", RebuildState: "required"}}}); err != nil {
+		t.Fatal(err)
+	}
+	err = module.transitionReliabilityState(ctx, spaceID, ruleID, "search", 2, "old", "running", func(state *domainsemantic.SemanticReliabilityState) { state.RebuildState = "completed" })
+	if err == nil || err.Error() != "stale semantic reliability transition rejected" {
+		t.Fatalf("stale transition error = %v", err)
+	}
+	states, err := spaceMgr.ListSemanticRuleStates(ctx)
+	if err != nil || len(states) != 1 {
+		t.Fatalf("list states: count=%d err=%v", len(states), err)
+	}
+	if got := states[0].ReliabilityByBinding["search"]; got.SemanticGeneration != 3 || got.RebuildEpoch != "new" || got.RebuildState != "required" {
+		t.Fatalf("stale transition overwrote newer state: %+v", got)
+	}
+}
+
 func TestStaleSemanticWorkAndGenerationPublicationAreRejected(t *testing.T) {
 	ctx := context.Background()
 	runtime := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
@@ -92,7 +144,7 @@ func TestMarkRuleConfigurationChangedRotatesGenerationAndRequiresRebuild(t *test
 	}
 }
 
-func TestReliabilityStatusRotatesGenerationWhenResolvedCatalogChanges(t *testing.T) {
+func TestReliabilityStatusRotatesOnlyWhenSelectedRouteChanges(t *testing.T) {
 	ctx := context.Background()
 	module := NewModule()
 	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
@@ -101,33 +153,110 @@ func TestReliabilityStatusRotatesGenerationWhenResolvedCatalogChanges(t *testing
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	profileID := domainsemantic.IntelligenceProfileID(uuid.New())
+	endpointID := domainsemantic.ModelEndpointID(uuid.New())
+	modelID := domainsemantic.InferenceModelID(uuid.New())
+	capabilityID := domainsemantic.ModelEndpointCapabilityID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	now := time.Now().UTC()
 	spaceMgr, err := module.SpaceManager(ctx, spaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStore: "mycel-file", Enabled: true}}}); err != nil {
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: profileID, SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, EndpointRefs: []string{endpointID.String()}, ModelRefs: []string{modelID.String()}, CapabilityRefs: []string{capabilityID.String()}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	global := module.GlobalManager()
+	if _, err := global.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: endpointID, Key: "selected-route", Name: "selected-route", ConnectorType: domainsemantic.ConnectorCustomHTTP, NetworkClass: domainsemantic.NetworkClassPrivateNetwork, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := global.UpsertModel(ctx, domainsemantic.InferenceModel{ID: modelID, Key: "selected-model", Kind: domainsemantic.ModelKindEmbedding, ModelName: "selected-model", Dimensions: 8, VectorSpaceKey: "selected/8", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := global.UpsertModelEndpointCapability(ctx, domainsemantic.ModelEndpointCapability{ID: capabilityID, ModelEndpointID: endpointID, ModelID: modelID, Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := global.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: profileID, VectorStoreID: storeID, Enabled: true}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildState: "completed"}}}); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
-	if err != nil {
+	if err != nil || initial.Rebuild.ResolvedConfigurationHash == "" {
+		t.Fatalf("unexpected initial status: %+v err=%v", initial, err)
+	}
+	if _, err := global.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: endpointID, Key: "selected-route", Name: "renamed selected route", ConnectorType: domainsemantic.ConnectorCustomHTTP, NetworkClass: domainsemantic.NetworkClassPrivateNetwork, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	if initial.SemanticGeneration != 1 || initial.Rebuild.ResolvedConfigurationHash == "" {
-		t.Fatalf("unexpected initial status: %+v", initial)
+	presentationOnly, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil || presentationOnly.SemanticGeneration != 1 || presentationOnly.RebuildRequired {
+		t.Fatalf("presentation-only route change rotated generation: %+v err=%v", presentationOnly, err)
 	}
-	now := time.Now().UTC()
-	if _, err := module.GlobalManager().UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: domainsemantic.ModelEndpointID(uuid.New()), Key: "new-route", Name: "new-route", ConnectorType: domainsemantic.ConnectorCustomHTTP, NetworkClass: domainsemantic.NetworkClassPrivateNetwork, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := global.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: domainsemantic.ModelEndpointID(uuid.New()), Key: "unrelated-route", Name: "unrelated-route", ConnectorType: domainsemantic.ConnectorCustomHTTP, NetworkClass: domainsemantic.NetworkClassPrivateNetwork, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil || unchanged.SemanticGeneration != 1 || unchanged.RebuildRequired {
+		t.Fatalf("unrelated catalog change rotated generation: %+v err=%v", unchanged, err)
+	}
+	selectedModel := domainsemantic.InferenceModel{ID: modelID, Key: "selected-model", Kind: domainsemantic.ModelKindEmbedding, ModelName: "selected-model", Dimensions: 16, VectorSpaceKey: "selected/16", CreatedAt: now, UpdatedAt: now.Add(time.Second)}
+	if _, err := global.UpsertModel(ctx, selectedModel); err != nil {
 		t.Fatal(err)
 	}
 	changed, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil || changed.SemanticGeneration != 2 || !changed.RebuildRequired || changed.Rebuild.RebuildState != "required" {
+		t.Fatalf("selected route change did not require rebuild: %+v err=%v", changed, err)
+	}
+}
+
+func TestRebuildSemanticRuleCompletesAtNonzeroPinnedRevision(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule(Config{GraphReader: &recordingGraphReader{}, GraphRevisionReader: fixedGraphRevisionReader{revision: 5}})
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	now := time.Now().UTC()
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	spaceMgr, err := module.SpaceManager(ctx, spaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed.SemanticGeneration != 2 || !changed.RebuildRequired || changed.Rebuild.RebuildState != "required" || changed.FreshThroughGraphRevision != 0 {
-		t.Fatalf("resolved catalog change did not require a new generation: %+v", changed)
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 2, RebuildState: "required"}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := module.RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 2})
+	if err != nil {
+		t.Fatalf("RebuildSemanticRule() error = %v", err)
+	}
+	if result.Reliability.Rebuild.RebuildState != "completed" || result.Reliability.FreshThroughGraphRevision != 5 || result.Reliability.Rebuild.PinnedTargetRevision != 5 {
+		t.Fatalf("unexpected rebuild result: %+v", result)
+	}
+	states, err := spaceMgr.ListSemanticRuleStates(ctx)
+	if err != nil || len(states) != 1 {
+		t.Fatalf("list rule states: count=%d err=%v", len(states), err)
+	}
+	running := states[0].ReliabilityByBinding["search"]
+	running.RebuildState = "running"
+	states[0].ReliabilityByBinding["search"] = running
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, states[0]); err != nil {
+		t.Fatal(err)
+	}
+	_, err = module.RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err == nil || err.Error() != "semantic rebuild is already running" {
+		t.Fatalf("concurrent rebuild error = %v", err)
 	}
 }
 
