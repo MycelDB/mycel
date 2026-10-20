@@ -6,6 +6,14 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Added the opt-in, credential-free `token-basis-v1` fake embedding strategy with exact normalized vectors, finite scripted delays/errors/refusals/wrong-dimension outcomes, bounded concurrency-safe attempt accounting, and explicit process-reset semantics (#237).
+
+### Changed
+
+- Inference now rejects empty, non-finite, and declared-dimension-mismatched embedding responses before publication; the historical unconfigured fake connector response remains unchanged (#237).
+
 ## [v0.20.0] - 2026-10-19
 
 ### Added
