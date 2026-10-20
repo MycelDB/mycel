@@ -6,6 +6,33 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.20.0] - 2026-10-19
+
+### Added
+
+- Added durable graph transaction commit idempotency using principal/space/domain-scoped keys, canonical mutation binding, original-result replay, bounded retention/capacity, delivery repair, runtime diagnostics, and Raft snapshot preservation (#220).
+- Added the transport-neutral logical query model, shared binder, rule-based physical planner, real physical-plan Explain output, and bounded pull-operator runtime used by structured queries and GQL (#213).
+- Added native indexed, semantic, traversal, broad, mutation, and script execution with finite work/memory budgets, transaction-overlay visibility, rollback journals, lifecycle revalidation, and request/view-bound cursors (#213).
+
+### Changed
+
+- Replaced subsystem-to-subsystem service coupling with neutral model/runtime contracts and consumer-owned narrow ports for graph, blob, inference, semantic, and automation composition (#195, #196, #197, #198, #199).
+- Moved query execution ownership out of the daemon transport adapter so each accepted plan has one native executor while generated protobuf and gRPC dependencies remain at the API boundary (#213).
+- Made lexical and hybrid pagination candidate-aware and request-bound, with bounded filtering/hydration and compatible legacy lexical continuation where the source plan remains safe (#206).
+- Reused each unique query term's live document frequency during BM25 scoring, removing broad-term quadratic posting-list rescans without changing ranking semantics (#214).
+
+### Fixed
+
+- Made lexical indexing and operator rebuilds domain-revision-aware, revision-pinned, monotonic, and restart-replayable without blocking graph/Raft writes (#205).
+- Hardened query execution against unbounded scans, stale or cross-request cursors, partial mutation results, overlay accounting gaps, traversal cycles, and failed-statement write leakage (#213).
+- Preserved cancellation-safe committed automation finalization and bounded transaction finalization state while preventing writes after rollback or close (#213).
+
+### Compatibility
+
+- Use matching `mycel-api`, Go SDK, and Rust SDK v0.20.0 bindings for durable commit idempotency fields and diagnostics. Existing commits without idempotency keys remain supported.
+- Graph Raft snapshots advance to version 2 to retain idempotency state; version 1 remains readable. Older daemons are not expected to read version 2 snapshots, so downgrade requires a compatible pre-upgrade snapshot or rebuild procedure.
+- Query compatibility remains governed by the documented QRX0/QRX4 gates. Continuation cursors are accepted only when their source-safe plan family, request, schema, revision, and read view remain compatible.
+
 ## [v0.19.4] - 2026-10-13
 
 ### Fixed
