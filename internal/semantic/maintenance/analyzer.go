@@ -1040,29 +1040,25 @@ func (w Worker) deleteVector(ctx context.Context, item domainsemantic.SemanticDi
 			if err != nil {
 				return err
 			}
-			lister, ok := backend.(vectorstore.RecordLister)
+			latestStore, ok := backend.(vectorstore.LatestRecordStore)
 			if !ok {
-				return fmt.Errorf("vector backend does not support exact delete record lookup")
+				return fmt.Errorf("vector backend does not support exact latest-record lookup")
 			}
-			records, err := lister.ListRecords(ctx, item.SpaceID, domainsemantic.SemanticIndexID(rule.ID))
+			sourceMode := strings.TrimSpace(string(rule.Source.Mode))
+			if sourceMode == "" {
+				sourceMode = string(domainsemantic.SemanticSourceSelf)
+			}
+			source, found, err := latestStore.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, SourceMode: sourceMode, VectorStoreID: vectorStoreID})
 			if err != nil {
 				return err
 			}
-			var source *domainsemantic.AdvancedEmbeddingRecord
-			for i := range records {
-				record := records[i]
-				if record.EffectiveSemanticRuleID() != rule.ID || record.EmbeddingBindingKey != binding.Key || record.NodeID != item.TargetNodeID || record.VectorStoreID != vectorStoreID || record.SemanticGeneration != generation || record.RebuildEpoch != rebuildEpoch {
-					continue
-				}
-				if source == nil || semanticMaintenanceRecordSupersedes(record, *source) {
-					copy := record
-					source = &copy
-				}
-			}
-			if source == nil || source.Tombstone {
+			if !found {
 				return nil
 			}
-			_, err = backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, SourceMode: source.SourceMode, VectorStoreID: vectorStoreID, TargetRecordID: source.ID, Reason: item.Reason, ModelEndpointID: source.ModelEndpointID, ModelID: source.ModelID, ModelEndpointCapID: source.ModelEndpointCapabilityID, CredentialID: source.CredentialID, CredentialGrantID: source.CredentialGrantID, PolicyDecisionID: source.PolicyDecisionID, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch})
+			if source.Tombstone {
+				return latestStore.EnsureSearchIndexRecord(ctx, source)
+			}
+			_, err = backend.Delete(ctx, vectorstore.DeleteInput{SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: item.TargetNodeID, SourceMode: source.SourceMode, VectorStoreID: vectorStoreID, TargetRecordID: source.ID, TargetGeneration: source.SemanticGeneration, TargetRebuildEpoch: source.RebuildEpoch, Reason: item.Reason, ModelEndpointID: source.ModelEndpointID, ModelID: source.ModelID, ModelEndpointCapID: source.ModelEndpointCapabilityID, CredentialID: source.CredentialID, CredentialGrantID: source.CredentialGrantID, PolicyDecisionID: source.PolicyDecisionID, SourceGraphRevision: item.LastGraphRevision, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch})
 			return err
 		}
 		return fmt.Errorf("semantic binding %q not found", item.EmbeddingBindingKey)
@@ -1087,13 +1083,6 @@ func (w Worker) resolveBindingVectorStore(ctx context.Context, binding domainsem
 		}
 	}
 	return uuid.Nil, fmt.Errorf("enabled vector store %q not found", binding.VectorStore)
-}
-
-func semanticMaintenanceRecordSupersedes(candidate, current domainsemantic.AdvancedEmbeddingRecord) bool {
-	if candidate.SourceGraphRevision != current.SourceGraphRevision {
-		return candidate.SourceGraphRevision > current.SourceGraphRevision
-	}
-	return candidate.CreatedAt.After(current.CreatedAt) || (candidate.CreatedAt.Equal(current.CreatedAt) && candidate.ID.String() > current.ID.String())
 }
 
 func (w Worker) effectiveConfig(limit int) WorkerConfig {

@@ -189,9 +189,36 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 		t.Fatalf("subtree delete classification: result=%+v err=%v", analyzed, err)
 	}
 	runner := &fakeBackfillRunner{}
-	result, err := (Worker{GlobalManager: globalMgr, SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: backend, Config: WorkerConfig{MaxBatchSize: 4}}).ProcessOnce(ctx, 4)
-	if err != nil || result.Completed != 4 || result.Failed != 0 || runner.callCount() != 2 {
-		t.Fatalf("delete processing: result=%+v refresh_calls=%d err=%v", result, runner.callCount(), err)
+	injectedFailures := 0
+	backend.BeforePhysicalWrite = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+		if record.Tombstone && injectedFailures == 0 {
+			injectedFailures++
+			return errors.New("vector store temporarily unavailable during tombstone publication")
+		}
+		return nil
+	}
+	instrumentedBackend := &countingLatestRecordBackend{Backend: backend, Latest: backend, Lister: backend}
+	worker := Worker{GlobalManager: globalMgr, SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: instrumentedBackend, Config: WorkerConfig{MaxBatchSize: 4, RetryBaseDelay: time.Nanosecond, RetryMaxDelay: time.Nanosecond}}
+	first, err := worker.ProcessOnce(ctx, 4)
+	if err != nil || first.Completed != 3 || first.Failed != 1 {
+		t.Fatalf("first delete processing: result=%+v err=%v", first, err)
+	}
+	time.Sleep(time.Millisecond)
+	result, err := worker.ProcessOnce(ctx, 4)
+	if err != nil || result.Completed != 1 || result.Failed != 0 || runner.callCount() != 2 {
+		t.Fatalf("delete retry processing: result=%+v refresh_calls=%d err=%v", result, runner.callCount(), err)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 4 {
+		t.Fatalf("list completed subtree work: items=%+v err=%v", items, err)
+	}
+	for _, item := range items {
+		if item.Status != domainsemantic.SemanticDirtyWorkStatusComplete {
+			t.Fatalf("physical repair left freshness barrier unresolved: %+v", item)
+		}
+	}
+	if instrumentedBackend.HistoricalLists != 0 {
+		t.Fatalf("ordinary delete performed %d historical record scans", instrumentedBackend.HistoricalLists)
 	}
 	for _, binding := range bindings {
 		search := func(stage string) {
@@ -208,6 +235,26 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 		}
 		search("after physical index reconstruction following")
 	}
+}
+
+type countingLatestRecordBackend struct {
+	vectorstore.Backend
+	Latest          vectorstore.LatestRecordStore
+	Lister          vectorstore.RecordLister
+	HistoricalLists int
+}
+
+func (b *countingLatestRecordBackend) LatestRecord(ctx context.Context, in vectorstore.LatestRecordInput) (domainsemantic.AdvancedEmbeddingRecord, bool, error) {
+	return b.Latest.LatestRecord(ctx, in)
+}
+
+func (b *countingLatestRecordBackend) EnsureSearchIndexRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	return b.Latest.EnsureSearchIndexRecord(ctx, record)
+}
+
+func (b *countingLatestRecordBackend) ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	b.HistoricalLists++
+	return b.Lister.ListRecords(ctx, spaceID, semanticIndexID)
 }
 
 func newWorkerManagers(t *testing.T, ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, indexID domainsemantic.SemanticIndexID) (storesemantic.SpaceManager, storesemantic.MaintenanceManager) {

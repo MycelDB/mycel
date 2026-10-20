@@ -15,6 +15,7 @@ import (
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -495,15 +496,12 @@ func (m *Module) authorizeSemanticPublication(ctx context.Context, publication s
 	if generation != in.SemanticGeneration || epoch != in.RebuildEpoch {
 		return fmt.Errorf("stale semantic generation completion rejected")
 	}
-	records, err := m.ListVectorRecords(ctx, in.SpaceID, domainsemantic.SemanticIndexID(in.SemanticRuleID))
-	if err != nil {
-		return err
-	}
-	for _, record := range records {
-		if record.EffectiveSemanticRuleID() != in.SemanticRuleID || record.EmbeddingBindingKey != in.EmbeddingBindingKey || record.NodeID != publication.NodeID || record.SemanticGeneration != in.SemanticGeneration || record.RebuildEpoch != in.RebuildEpoch {
-			continue
+	if publication.NodeID != uuid.Nil {
+		record, found, err := m.localVectorBackend().LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(in.SemanticRuleID), NodeID: publication.NodeID})
+		if err != nil {
+			return err
 		}
-		if record.SourceGraphRevision > in.SourceGraphRevision {
+		if found && record.SemanticGeneration == in.SemanticGeneration && record.RebuildEpoch == in.RebuildEpoch && record.SourceGraphRevision > in.SourceGraphRevision {
 			return semanticbackfill.ErrSupersededPublication
 		}
 	}

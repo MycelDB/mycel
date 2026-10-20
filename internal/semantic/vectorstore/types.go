@@ -41,6 +41,8 @@ type DeleteInput struct {
 	NodeID              graph.NodeID
 	VectorStoreID       domainsemantic.VectorStoreID
 	TargetRecordID      domainsemantic.AdvancedEmbeddingRecordID
+	TargetGeneration    uint64
+	TargetRebuildEpoch  string
 	SourceMode          string
 	Reason              string
 	ModelEndpointID     domainsemantic.ModelEndpointID
@@ -69,6 +71,17 @@ type RebuildLimit struct {
 	MaxBytes   int64
 }
 
+type LatestRecordInput struct {
+	SpaceID             domainspace.SpaceID
+	DomainID            graph.DomainID
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+	SemanticIndexID     domainsemantic.SemanticIndexID
+	NodeID              graph.NodeID
+	SourceMode          string
+	VectorStoreID       domainsemantic.VectorStoreID
+}
+
 type VerifyDeletedInput struct {
 	SpaceID         domainspace.SpaceID
 	DomainID        graph.DomainID
@@ -93,8 +106,17 @@ type SearchIndexStateReader interface {
 	ReadSearchIndexState(ctx context.Context, key SearchIndexKey) (domainsemantic.SemanticSearchIndexState, error)
 }
 
+type LatestRecordStore interface {
+	LatestRecord(ctx context.Context, in LatestRecordInput) (domainsemantic.AdvancedEmbeddingRecord, bool, error)
+	EnsureSearchIndexRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error
+}
+
 type RecordLister interface {
 	ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error)
+}
+
+type BoundedRecordLister interface {
+	ListRecordsBounded(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID, limit RebuildLimit) ([]domainsemantic.AdvancedEmbeddingRecord, error)
 }
 
 func newID() uuid.UUID {

@@ -2,6 +2,7 @@ package vectorstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,7 @@ const (
 	manifestFile          = "manifest.ksem"
 	recordsDir            = "records"
 	activeSegment         = "embeddings-000001.kvec"
+	latestRecordsDir      = "latest"
 	searchIndexesDir      = "search_indexes"
 	searchIndexStateFile  = "state.json"
 	searchIndexLatestFile = "latest.json"
@@ -39,8 +41,9 @@ const (
 )
 
 type MycelFileBackend struct {
-	GraphsDir  string
-	Encryption *encryption.Service
+	GraphsDir           string
+	Encryption          *encryption.Service
+	BeforePhysicalWrite func(domainsemantic.AdvancedEmbeddingRecord) error
 }
 
 type indexManifest struct {
@@ -117,7 +120,16 @@ func (b MycelFileBackend) Upsert(ctx context.Context, rec domainsemantic.Advance
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
 	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
+	if err := b.upsertLatestRecord(ctx, rec); err != nil {
+		return rec, err
+	}
 	if rec.SemanticRuleID != uuid.Nil && strings.TrimSpace(rec.EmbeddingBindingKey) != "" {
+		if b.BeforePhysicalWrite != nil {
+			if err := b.BeforePhysicalWrite(rec); err != nil {
+				_, _ = b.writeSearchIndexState(searchIndexKeyFromRecord(rec), "degraded", 0, err.Error())
+				return rec, err
+			}
+		}
 		if err := b.upsertPhysicalSearchRecord(ctx, rec); err != nil {
 			_, _ = b.writeSearchIndexState(searchIndexKeyFromRecord(rec), "degraded", 0, err.Error())
 			return rec, err
@@ -133,26 +145,29 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if in.SpaceID == uuid.Nil || in.DomainID == uuid.Nil || in.SemanticIndexID == uuid.Nil || in.NodeID == uuid.Nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("space_id, domain_id, semantic_index_id, and node_id are required")
 	}
-	recs, err := b.readAll(in.SpaceID, in.SemanticIndexID)
+	latest, found, err := b.LatestRecord(ctx, LatestRecordInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: in.SourceMode, VectorStoreID: in.VectorStoreID})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
 	var source *domainsemantic.AdvancedEmbeddingRecord
-	for i := range recs {
-		existing := &recs[i]
-		if in.TargetRecordID != uuid.Nil && existing.ID == in.TargetRecordID {
-			if !deleteSourceMatches(*existing, in) {
-				return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match semantic delete scope")
-			}
-			source = existing
-			break
-		}
-		if in.TargetRecordID == uuid.Nil && deleteSourceMatches(*existing, in) && !existing.Tombstone && (source == nil || semanticRecordSupersedes(*existing, *source)) {
-			source = existing
-		}
+	if found {
+		source = &latest
 	}
-	if in.TargetRecordID != uuid.Nil && source == nil {
-		return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
+	if in.TargetRecordID != uuid.Nil {
+		if source == nil || source.ID != in.TargetRecordID {
+			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record not found")
+		}
+		if !deleteTargetMatches(*source, in) {
+			return domainsemantic.AdvancedEmbeddingRecord{}, fmt.Errorf("target record does not match semantic delete scope")
+		}
+	} else if source != nil && !deleteSourceMatches(*source, in) {
+		source = nil
+	}
+	if source != nil && source.Tombstone {
+		if err := b.EnsureSearchIndexRecord(ctx, *source); err != nil {
+			return *source, err
+		}
+		return *source, nil
 	}
 	rec := domainsemantic.AdvancedEmbeddingRecord{ID: newID(), SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: in.SemanticIndexID, TargetNodeID: in.NodeID, NodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), ModelEndpointID: in.ModelEndpointID, ModelID: in.ModelID, ModelEndpointCapabilityID: in.ModelEndpointCapID, CredentialID: in.CredentialID, CredentialGrantID: in.CredentialGrantID, PolicyDecisionID: in.PolicyDecisionID, VectorStoreID: in.VectorStoreID, Tombstone: true, DeleteTargetRecordID: in.TargetRecordID, DeleteReason: strings.TrimSpace(in.Reason), SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch, CreatedAt: in.CreatedAt}
 	if source != nil {
@@ -190,13 +205,44 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	}
 	_ = b.touchManifest(rec.SpaceID, rec.SemanticIndexID)
+	if err := b.upsertLatestRecord(ctx, rec); err != nil {
+		return rec, err
+	}
 	if rec.SemanticRuleID != uuid.Nil && strings.TrimSpace(rec.EmbeddingBindingKey) != "" {
+		if b.BeforePhysicalWrite != nil {
+			if err := b.BeforePhysicalWrite(rec); err != nil {
+				_, _ = b.writeSearchIndexState(searchIndexKeyFromRecord(rec), "degraded", 0, err.Error())
+				return rec, err
+			}
+		}
 		if err := b.tombstonePhysicalSearchRecord(ctx, rec); err != nil {
 			_, _ = b.writeSearchIndexState(searchIndexKeyFromRecord(rec), "degraded", 0, err.Error())
 			return rec, err
 		}
 	}
 	return rec, nil
+}
+
+func deleteTargetMatches(record domainsemantic.AdvancedEmbeddingRecord, in DeleteInput) bool {
+	if record.DomainID != in.DomainID || record.NodeID != in.NodeID {
+		return false
+	}
+	if in.SemanticRuleID != uuid.Nil && record.EffectiveSemanticRuleID() != in.SemanticRuleID {
+		return false
+	}
+	if bindingKey := strings.TrimSpace(in.EmbeddingBindingKey); bindingKey != "" && record.EmbeddingBindingKey != bindingKey {
+		return false
+	}
+	if in.VectorStoreID != uuid.Nil && record.VectorStoreID != in.VectorStoreID {
+		return false
+	}
+	if in.TargetGeneration > 0 && record.SemanticGeneration != in.TargetGeneration {
+		return false
+	}
+	if in.TargetRebuildEpoch != "" && record.RebuildEpoch != in.TargetRebuildEpoch {
+		return false
+	}
+	return true
 }
 
 func deleteSourceMatches(record domainsemantic.AdvancedEmbeddingRecord, in DeleteInput) bool {
@@ -226,6 +272,52 @@ func (b MycelFileBackend) ListRecords(ctx context.Context, spaceID uuid.UUID, se
 		return nil, err
 	}
 	return b.readAll(spaceID, semanticIndexID)
+}
+
+func (b MycelFileBackend) ListRecordsBounded(ctx context.Context, spaceID uuid.UUID, semanticIndexID domainsemantic.SemanticIndexID, limit RebuildLimit) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	if limit.MaxBytes > 0 {
+		path := filepath.Join(b.GraphsDir, spaceID.String(), "semantic", "indexes", semanticIndexID.String(), recordsDir, activeSegment)
+		if info, err := os.Stat(path); err == nil && info.Size() > limit.MaxBytes {
+			return nil, fmt.Errorf("semantic record listing byte limit exceeded: %d > %d", info.Size(), limit.MaxBytes)
+		}
+	}
+	records, observed, err := b.readAllBounded(ctx, spaceID, semanticIndexID, limit.MaxRecords)
+	if err != nil {
+		return nil, err
+	}
+	if limit.MaxRecords > 0 && observed > limit.MaxRecords {
+		return nil, fmt.Errorf("semantic record listing record limit exceeded: %d > %d", observed, limit.MaxRecords)
+	}
+	return records, nil
+}
+
+func (b MycelFileBackend) LatestRecord(ctx context.Context, in LatestRecordInput) (domainsemantic.AdvancedEmbeddingRecord, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, false, err
+	}
+	entry, found, err := b.readLatestRecord(ctx, in)
+	if err != nil || !found {
+		return domainsemantic.AdvancedEmbeddingRecord{}, found, err
+	}
+	record := entry.Record
+	record.Vector = append([]float64(nil), entry.Vector...)
+	return record, true, nil
+}
+
+func (b MycelFileBackend) EnsureSearchIndexRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.BeforePhysicalWrite != nil {
+		if err := b.BeforePhysicalWrite(record); err != nil {
+			_, _ = b.writeSearchIndexState(searchIndexKeyFromRecord(record), "degraded", 0, err.Error())
+			return err
+		}
+	}
+	if record.Tombstone {
+		return b.tombstonePhysicalSearchRecord(ctx, record)
+	}
+	return b.upsertPhysicalSearchRecord(ctx, record)
 }
 
 func (b MycelFileBackend) PurgeIndex(ctx context.Context, spaceID uuid.UUID, semanticIndexID domainsemantic.SemanticIndexID) error {
@@ -343,14 +435,25 @@ func (b MycelFileBackend) RebuildSearchIndex(ctx context.Context, key SearchInde
 		_, _ = b.writeSearchIndexState(key, "degraded", 0, err.Error())
 		return domainsemantic.SemanticSearchIndexState{}, err
 	}
+	latestRecords := map[string]domainsemantic.AdvancedEmbeddingRecord{}
 	latest := map[string]domainsemantic.AdvancedEmbeddingRecord{}
 	for _, rec := range recs {
+		recordKey := latestRecordKey(rec)
+		if existing, ok := latestRecords[recordKey]; !ok || semanticRecordSupersedes(rec, existing) {
+			latestRecords[recordKey] = rec
+		}
 		if !recordMatchesSearchIndexKey(rec, key) {
 			continue
 		}
 		liveKey := physicalLiveKey(rec)
 		if existing, ok := latest[liveKey]; !ok || semanticRecordSupersedes(rec, existing) {
 			latest[liveKey] = rec
+		}
+	}
+	for _, record := range latestRecords {
+		if err := b.writeLatestRecord(ctx, record); err != nil {
+			_, _ = b.writeSearchIndexState(key, "error", 0, err.Error())
+			return domainsemantic.SemanticSearchIndexState{}, err
 		}
 	}
 	file := latestSearchIndexFile{Key: key, UpdatedAt: time.Now().UTC()}
@@ -576,6 +679,66 @@ func (b MycelFileBackend) writeMaybeEncrypted(ctx context.Context, path string, 
 		data = ciphertext
 	}
 	return filestore.WriteFileAtomic(path, data, fsperm.PrivateFile)
+}
+
+func latestRecordKey(record domainsemantic.AdvancedEmbeddingRecord) string {
+	bindingKey := strings.TrimSpace(record.EmbeddingBindingKey)
+	if bindingKey != "" {
+		return strings.Join([]string{record.EffectiveSemanticRuleID().String(), bindingKey, record.NodeID.String()}, "|")
+	}
+	return strings.Join([]string{record.DomainID.String(), record.EffectiveSemanticRuleID().String(), record.NodeID.String(), strings.TrimSpace(record.SourceMode), record.VectorStoreID.String()}, "|")
+}
+
+func (b MycelFileBackend) latestRecordPath(record domainsemantic.AdvancedEmbeddingRecord) string {
+	digest := sha256.Sum256([]byte(latestRecordKey(record)))
+	return filepath.Join(b.GraphsDir, record.SpaceID.String(), "semantic", "indexes", record.SemanticIndexID.String(), recordsDir, latestRecordsDir, fmt.Sprintf("%x.json", digest[:]))
+}
+
+func latestRecordProbe(in LatestRecordInput) domainsemantic.AdvancedEmbeddingRecord {
+	ruleID := in.SemanticRuleID
+	if ruleID == uuid.Nil {
+		ruleID = domainsemantic.SemanticRuleID(in.SemanticIndexID)
+	}
+	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: ruleID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, TargetNodeID: in.NodeID, SourceMode: strings.TrimSpace(in.SourceMode), VectorStoreID: in.VectorStoreID}
+}
+
+func (b MycelFileBackend) readLatestRecord(ctx context.Context, in LatestRecordInput) (physicalSearchRecord, bool, error) {
+	probe := latestRecordProbe(in)
+	raw, err := b.readMaybeEncrypted(ctx, b.latestRecordPath(probe))
+	if os.IsNotExist(err) {
+		return physicalSearchRecord{}, false, nil
+	}
+	if err != nil {
+		return physicalSearchRecord{}, false, err
+	}
+	var entry physicalSearchRecord
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return physicalSearchRecord{}, false, err
+	}
+	return entry, true, nil
+}
+
+func (b MycelFileBackend) writeLatestRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	path := b.latestRecordPath(record)
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.SharedDir); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(physicalSearchRecord{Record: record, Vector: record.Vector}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return b.writeMaybeEncrypted(ctx, path, append(raw, '\n'))
+}
+
+func (b MycelFileBackend) upsertLatestRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	current, found, err := b.readLatestRecord(ctx, LatestRecordInput{SpaceID: record.SpaceID, DomainID: record.DomainID, SemanticRuleID: record.EffectiveSemanticRuleID(), EmbeddingBindingKey: record.EmbeddingBindingKey, SemanticIndexID: record.SemanticIndexID, NodeID: record.NodeID, SourceMode: record.SourceMode, VectorStoreID: record.VectorStoreID})
+	if err != nil {
+		return err
+	}
+	if found && !semanticRecordSupersedes(record, current.Record) {
+		return nil
+	}
+	return b.writeLatestRecord(ctx, record)
 }
 
 func (b MycelFileBackend) searchIndexDir(key SearchIndexKey) string {

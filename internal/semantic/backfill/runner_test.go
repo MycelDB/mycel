@@ -456,6 +456,69 @@ func TestPinnedReconciliationDoesNotDeletePostPinDelta(t *testing.T) {
 	}
 }
 
+func TestCompatibleRebuildReconcilesPriorEpochRecord(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	binding := rule.Embeddings[0]
+	nodeID := graph.NodeID(uuid.New())
+	old, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "subtree", SourceGraphRevision: 9, SemanticGeneration: 2, RebuildEpoch: "old-epoch", SemanticConfigurationHash: "config", ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{1, 0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.runner.reconcileRuleBinding(ctx, rule, binding, binding.VectorStoreID, nil, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 2, RebuildEpoch: "new-epoch"}); err != nil {
+		t.Fatal(err)
+	}
+	assertRuleNodeAbsentImmediatelyAndAfterRebuild(t, ctx, env, rule, binding, nodeID)
+	records, err := env.vector.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(records) != 2 || !records[1].Tombstone || records[1].DeleteTargetRecordID != old.ID || records[1].RebuildEpoch != "new-epoch" {
+		t.Fatalf("prior-epoch reconciliation provenance mismatch: records=%+v err=%v", records, err)
+	}
+}
+
+func TestCompatibleRebuildTombstonesPriorEpochRecordBelowMinimumText(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("x")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	rule.Source.MinimumTextLength = 10
+	var err error
+	rule, err = env.spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := rule.Embeddings[0]
+	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, TargetNodeID: root.ID, SourceMode: "subtree", SourceGraphRevision: 9, SemanticGeneration: 2, RebuildEpoch: "old-epoch", SemanticConfigurationHash: "config", ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{1, 0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, Force: true, SourceGraphRevision: 10, SemanticGeneration: 2, RebuildEpoch: "new-epoch"})
+	if err != nil || result.FailedCount != 0 {
+		t.Fatalf("below-minimum compatible rebuild: result=%+v err=%v", result, err)
+	}
+	assertRuleNodeAbsentImmediatelyAndAfterRebuild(t, ctx, env, rule, binding, root.ID)
+}
+
+func assertRuleNodeAbsentImmediatelyAndAfterRebuild(t *testing.T, ctx context.Context, env *backfillTestEnv, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, nodeID graph.NodeID) {
+	t.Helper()
+	search := func(stage string) {
+		results, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Query: []float64{1, 0, 0}, Limit: 10})
+		if err != nil {
+			t.Fatalf("%s search: %v", stage, err)
+		}
+		for _, result := range results {
+			if result.NodeID == nodeID {
+				t.Fatalf("node %s remained searchable %s", nodeID, stage)
+			}
+		}
+	}
+	search("immediately after tombstone")
+	if _, err := env.vector.RebuildSearchIndex(ctx, vectorstore.SearchIndexKey{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding"}, vectorstore.RebuildLimit{MaxRecords: 100, MaxBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	search("after physical reconstruction")
+}
+
 func TestRunnerTreatsRevisionZeroAsExplicitPinnedSnapshot(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)
@@ -627,6 +690,44 @@ func (e *backfillTestEnv) semanticBinding(key string, enabled bool) domainsemant
 	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStoreID: e.index.VectorStoreID, Enabled: enabled}
 }
 
+func TestIncrementalRefreshRepairsPartialPhysicalPublicationOnRetry(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("repairable source")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	failures := 0
+	backend := env.vector
+	backend.BeforePhysicalWrite = func(domainsemantic.AdvancedEmbeddingRecord) error {
+		if failures == 0 {
+			failures++
+			return fmt.Errorf("injected physical publication failure")
+		}
+		return nil
+	}
+	runner := env.runner
+	runner.VectorBackend = backend
+	input := Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1}
+	first, err := runner.Run(ctx, input)
+	if err == nil || first.FailedCount != 1 {
+		t.Fatalf("expected first publication to fail after durable append: result=%+v err=%v", first, err)
+	}
+	second, err := runner.Run(ctx, input)
+	if err != nil || second.FailedCount != 0 || second.SkippedCount != 1 {
+		t.Fatalf("retry did not repair current physical record: result=%+v err=%v", second, err)
+	}
+	results, err := backend.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Query: []float64{1, 0, 0}, Limit: 10})
+	if err != nil || len(results) != 1 || results[0].NodeID != root.ID {
+		records, _ := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+		latest, found, latestErr := backend.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: "subtree", VectorStoreID: binding.VectorStoreID})
+		t.Fatalf("repaired physical record not searchable: results=%+v err=%v records=%+v latest=%+v found=%v latestErr=%v", results, err, records, latest, found, latestErr)
+	}
+	if len(env.connector.calls) != 1 {
+		t.Fatalf("retry re-invoked provider instead of repairing durable record: calls=%v", env.connector.calls)
+	}
+}
+
 func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)
@@ -634,15 +735,15 @@ func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T)
 	env.graph.nodes[0].Labels = []string{"Note"}
 	binding := env.semanticBinding("search", true)
 	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
-	backend := &countingSearchIndexBackend{Backend: env.vector, Reader: env.vector, Rebuilder: env.vector, Lister: env.vector}
+	backend := &countingSearchIndexBackend{Backend: env.vector, Reader: env.vector, Rebuilder: env.vector, Latest: env.vector, Lister: env.vector}
 	runner := env.runner
 	runner.VectorBackend = backend
 	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1})
 	if err != nil || result.GeneratedCount != 1 {
 		t.Fatalf("incremental refresh: result=%+v err=%v", result, err)
 	}
-	if backend.Rebuilds != 0 {
-		t.Fatalf("incremental refresh performed %d historical physical-index rebuilds", backend.Rebuilds)
+	if backend.Rebuilds != 0 || backend.HistoricalLists != 0 {
+		t.Fatalf("incremental refresh performed historical work: rebuilds=%d lists=%d", backend.Rebuilds, backend.HistoricalLists)
 	}
 	states, err := env.spaceMgr.ListSearchIndexStates(ctx)
 	if err != nil || len(states) != 1 || states[0].State != "ready" {
@@ -652,14 +753,25 @@ func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T)
 
 type countingSearchIndexBackend struct {
 	vectorstore.Backend
-	Reader    vectorstore.SearchIndexStateReader
-	Rebuilder vectorstore.SearchIndexRebuilder
-	Lister    vectorstore.RecordLister
-	Rebuilds  int
+	Reader          vectorstore.SearchIndexStateReader
+	Rebuilder       vectorstore.SearchIndexRebuilder
+	Latest          vectorstore.LatestRecordStore
+	Lister          vectorstore.BoundedRecordLister
+	Rebuilds        int
+	HistoricalLists int
 }
 
-func (b *countingSearchIndexBackend) ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
-	return b.Lister.ListRecords(ctx, spaceID, semanticIndexID)
+func (b *countingSearchIndexBackend) LatestRecord(ctx context.Context, in vectorstore.LatestRecordInput) (domainsemantic.AdvancedEmbeddingRecord, bool, error) {
+	return b.Latest.LatestRecord(ctx, in)
+}
+
+func (b *countingSearchIndexBackend) EnsureSearchIndexRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	return b.Latest.EnsureSearchIndexRecord(ctx, record)
+}
+
+func (b *countingSearchIndexBackend) ListRecordsBounded(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID, limit vectorstore.RebuildLimit) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	b.HistoricalLists++
+	return b.Lister.ListRecordsBounded(ctx, spaceID, semanticIndexID, limit)
 }
 
 func (b *countingSearchIndexBackend) ReadSearchIndexState(ctx context.Context, key vectorstore.SearchIndexKey) (domainsemantic.SemanticSearchIndexState, error) {
