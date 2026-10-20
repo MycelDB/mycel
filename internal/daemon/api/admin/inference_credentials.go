@@ -31,36 +31,50 @@ func (s *AdminInferenceService) CreateCredential(ctx context.Context, req *admin
 	if ownerID == "" {
 		return nil, status.Error(codes.InvalidArgument, "owner_id is required")
 	}
+	authType := domainsemantic.AuthMode(firstNonEmptyAdmin(req.GetAuthType(), string(domainsemantic.AuthModeAPIKey)))
+	if authType != domainsemantic.AuthModeAPIKey && authType != domainsemantic.AuthModeNone {
+		return nil, status.Error(codes.InvalidArgument, "auth_type must be api_key or none")
+	}
 	secretValue := strings.TrimSpace(req.GetSecretValue())
-	if secretValue == "" {
+	if authType == domainsemantic.AuthModeAPIKey && secretValue == "" {
 		return nil, status.Error(codes.InvalidArgument, "api key is required")
 	}
-	ciphertext, err := s.semantic.EncryptSecret(ctx, secretValue)
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
+	if authType == domainsemantic.AuthModeNone && secretValue != "" {
+		return nil, status.Error(codes.InvalidArgument, "secret_value must be empty when auth_type is none")
 	}
-	secret := domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: ciphertext, SecretSuffix: secretSuffix(secretValue)}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 	mgr := s.semantic.GlobalManager()
-	storedSecret, err := mgr.UpsertSecret(ctx, secret)
-	if err != nil {
-		return nil, mapAdminInferenceError(err, "upsert secret")
+	storedSecret := domainsemantic.Secret{}
+	if authType == domainsemantic.AuthModeAPIKey {
+		ciphertext, err := s.semantic.EncryptSecret(ctx, secretValue)
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "encrypt secret: %v", err)
+		}
+		secret := domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: ciphertext, SecretSuffix: secretSuffix(secretValue)}
+		storedSecret, err = mgr.UpsertSecret(ctx, secret)
+		if err != nil {
+			return nil, mapAdminInferenceError(err, "upsert secret")
+		}
+		if err := s.syncInferenceSecret(ctx, storedSecret); err != nil {
+			return nil, mapAdminInferenceError(err, "sync inference secret")
+		}
 	}
-	if err := s.syncInferenceSecret(ctx, storedSecret); err != nil {
-		return nil, mapAdminInferenceError(err, "sync inference secret")
-	}
-	credential, err := mgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{Key: req.GetKey(), Name: firstNonEmptyAdmin(req.GetDisplayName(), req.GetKey()), ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, AuthType: domainsemantic.AuthMode(firstNonEmptyAdmin(req.GetAuthType(), string(domainsemantic.AuthModeAPIKey))), SecretRef: storedSecret.ID, SecretSuffix: storedSecret.SecretSuffix, Status: domainsemantic.CredentialStatusActive, IsDefault: req.GetIsDefault()})
+	credential, err := mgr.UpsertCredential(ctx, domainsemantic.InferenceCredential{Key: req.GetKey(), Name: firstNonEmptyAdmin(req.GetDisplayName(), req.GetKey()), ModelEndpointID: endpointID, OwnerType: domainsemantic.CredentialOwnerType(ownerType), OwnerID: ownerID, AuthType: authType, SecretRef: storedSecret.ID, SecretSuffix: storedSecret.SecretSuffix, Status: domainsemantic.CredentialStatusActive, IsDefault: req.GetIsDefault()})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert credential")
 	}
 	if err := s.syncIntelligenceCredential(ctx, credential); err != nil {
 		return nil, mapAdminInferenceError(err, "sync inference credential")
 	}
-	return &adminv1.AdminIntelligenceAccessCredentialServiceCreateCredentialResponse{Secret: mapSecret(storedSecret), Credential: mapCredential(credential)}, nil
+	response := &adminv1.AdminIntelligenceAccessCredentialServiceCreateCredentialResponse{Credential: mapCredential(credential)}
+	if storedSecret.ID != uuid.Nil {
+		response.Secret = mapSecret(storedSecret)
+	}
+	return response, nil
 }
 
 func (s *AdminInferenceService) ListCredentials(ctx context.Context, req *adminv1.AdminIntelligenceAccessCredentialServiceListCredentialsRequest) (*adminv1.AdminIntelligenceAccessCredentialServiceListCredentialsResponse, error) {

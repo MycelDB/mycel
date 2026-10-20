@@ -125,7 +125,10 @@ func mapSecret(in domainsemantic.Secret) *adminv1.Secret {
 }
 
 func mapCredential(in domainsemantic.InferenceCredential) *adminv1.IntelligenceCredential {
-	out := &adminv1.IntelligenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretId: in.SecretRef.String(), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+	out := &adminv1.IntelligenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+	if in.SecretRef != uuid.Nil {
+		out.SecretId = in.SecretRef.String()
+	}
 	if in.LastUsedAt != nil {
 		out.LastUsedTime = timestamppb.New(*in.LastUsedAt)
 	}
