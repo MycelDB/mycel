@@ -386,12 +386,12 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 			return err
 		}
 		for _, v := range space.DirtyEvents {
-			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, v); err != nil {
+			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, normalizeRestoredSemanticDirtyEvent(v)); err != nil {
 				return err
 			}
 		}
 		for _, v := range space.Checkpoints {
-			if err := maintMgr.SaveCheckpoint(ctx, v); err != nil {
+			if err := maintMgr.SaveCheckpoint(ctx, normalizeRestoredSemanticCheckpoint(v)); err != nil {
 				return err
 			}
 		}
@@ -418,7 +418,6 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 }
 
 func semanticSnapshotRequiringRebuild(space semanticSpaceSnapshot) semanticSpaceSnapshot {
-	now := time.Now().UTC()
 	stateIndex := map[domainsemantic.SemanticRuleID]int{}
 	for i := range space.RuleStates {
 		stateIndex[space.RuleStates[i].SemanticRuleID] = i
@@ -463,18 +462,24 @@ func semanticSnapshotRequiringRebuild(space semanticSpaceSnapshot) semanticSpace
 		}
 		state.State = "stale"
 		state.LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
-		state.UpdatedAt = now
+		if state.UpdatedAt.IsZero() {
+			state.UpdatedAt = deterministicSemanticRestoreEpoch()
+		}
 	}
 	for i := range space.SearchIndexStates {
 		space.SearchIndexStates[i].State = "missing"
 		space.SearchIndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
-		space.SearchIndexStates[i].UpdatedAt = now
+		if space.SearchIndexStates[i].UpdatedAt.IsZero() {
+			space.SearchIndexStates[i].UpdatedAt = deterministicSemanticRestoreEpoch()
+		}
 	}
 	for i := range space.IndexStates {
 		space.IndexStates[i].State = "missing"
 		space.IndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
 		space.IndexStates[i].RecordCount = 0
-		space.IndexStates[i].UpdatedAt = now
+		if space.IndexStates[i].UpdatedAt.IsZero() {
+			space.IndexStates[i].UpdatedAt = deterministicSemanticRestoreEpoch()
+		}
 	}
 	return space
 }
@@ -600,12 +605,12 @@ func validateSemanticPartitionSnapshotByApply(ctx context.Context, spaces []sema
 			return err
 		}
 		for _, v := range space.DirtyEvents {
-			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, v); err != nil {
+			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, normalizeRestoredSemanticDirtyEvent(v)); err != nil {
 				return err
 			}
 		}
 		for _, v := range space.Checkpoints {
-			if err := maintMgr.SaveCheckpoint(ctx, v); err != nil {
+			if err := maintMgr.SaveCheckpoint(ctx, normalizeRestoredSemanticCheckpoint(v)); err != nil {
 				return err
 			}
 		}
@@ -780,19 +785,40 @@ func (m *Module) deleteInferenceProjectionPartitionDirs(partitionID, partitionCo
 	return nil
 }
 
+func normalizeRestoredSemanticDirtyEvent(event domainsemantic.GraphDirtyEvent) domainsemantic.GraphDirtyEvent {
+	if event.CommittedAt.IsZero() {
+		event.CommittedAt = deterministicSemanticRestoreEpoch()
+	}
+	return event
+}
+
+func normalizeRestoredSemanticCheckpoint(checkpoint storesemantic.MaintenanceCheckpoint) storesemantic.MaintenanceCheckpoint {
+	if checkpoint.UpdatedAt.IsZero() {
+		checkpoint.UpdatedAt = deterministicSemanticRestoreEpoch()
+	}
+	return checkpoint
+}
+
 func normalizeRestoredSemanticWork(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = item.UpdatedAt
+		if item.CreatedAt.IsZero() {
+			item.CreatedAt = deterministicSemanticRestoreEpoch()
+		}
+	}
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = item.CreatedAt
+	}
 	if item.Status == domainsemantic.SemanticDirtyWorkStatusRunning {
 		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
 		item.ClaimedBy = ""
 		item.ClaimedUntil = nil
-		if item.UpdatedAt.IsZero() {
-			item.UpdatedAt = item.CreatedAt
-			if item.UpdatedAt.IsZero() {
-				item.UpdatedAt = time.Unix(0, 0).UTC()
-			}
-		}
 	}
 	return item
+}
+
+func deterministicSemanticRestoreEpoch() time.Time {
+	return time.Unix(0, 0).UTC()
 }
 
 type semanticMaintenanceCheckpointFile struct {
