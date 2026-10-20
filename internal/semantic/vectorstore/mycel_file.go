@@ -27,19 +27,22 @@ import (
 )
 
 const (
-	manifestFile          = "manifest.ksem"
-	recordsDir            = "records"
-	activeSegment         = "embeddings-000001.kvec"
-	latestRecordsDir      = "latest"
-	searchIndexesDir      = "search_indexes"
-	searchIndexStateFile  = "state.json"
-	searchIndexLatestFile = "latest.json"
-	manifestFormat        = "mycel-semantic-index-v1"
-	segmentMagic          = "KEMBSEG2"
-	recordMagic           = uint32(0x4b524543)
-	segmentVersion        = uint16(2)
-	recordVersion         = uint16(3)
-	flagTombstone         = uint16(1)
+	manifestFile                     = "manifest.ksem"
+	recordsDir                       = "records"
+	activeSegment                    = "embeddings-000001.kvec"
+	latestRecordsDir                 = "latest"
+	pendingPublicationsDir           = "pending"
+	searchIndexesDir                 = "search_indexes"
+	searchIndexStateFile             = "state.json"
+	searchIndexLatestFile            = "latest.json"
+	manifestFormat                   = "mycel-semantic-index-v1"
+	segmentMagic                     = "KEMBSEG2"
+	recordMagic                      = uint32(0x4b524543)
+	segmentVersion                   = uint16(2)
+	recordVersion                    = uint16(3)
+	flagTombstone                    = uint16(1)
+	maxPendingPublications           = 4096
+	maxPendingPublicationBytes int64 = 64 << 20
 )
 
 type MycelFileBackend struct {
@@ -146,7 +149,13 @@ func (b MycelFileBackend) Upsert(ctx context.Context, rec domainsemantic.Advance
 	if pending, found, err := b.readPendingPublication(ctx, rec); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	} else if found {
-		return b.completePendingPublication(ctx, pending)
+		recovered, err := b.completePendingPublication(ctx, pending)
+		if err != nil {
+			return recovered, err
+		}
+		if semanticUpsertSatisfied(recovered, rec) {
+			return recovered, nil
+		}
 	}
 	pending, err := b.prepareAndAppendRecord(ctx, rec)
 	if err != nil {
@@ -165,6 +174,14 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	publicationLock := semanticPublicationLock(b.pendingRecordPath(latestRecordProbe(LatestRecordInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: in.SourceMode, VectorStoreID: in.VectorStoreID})))
 	publicationLock.Lock()
 	defer publicationLock.Unlock()
+	probe := latestRecordProbe(LatestRecordInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: in.SourceMode, VectorStoreID: in.VectorStoreID})
+	if pending, found, err := b.readPendingPublication(ctx, probe); err != nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, err
+	} else if found {
+		if _, err := b.completePendingPublication(ctx, pending); err != nil {
+			return domainsemantic.AdvancedEmbeddingRecord{}, err
+		}
+	}
 	latest, found, err := b.LatestRecord(ctx, LatestRecordInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, NodeID: in.NodeID, SourceMode: in.SourceMode, VectorStoreID: in.VectorStoreID})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
@@ -226,13 +243,31 @@ func (b MycelFileBackend) Delete(ctx context.Context, in DeleteInput) (domainsem
 	if pending, found, err := b.readPendingPublication(ctx, rec); err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, err
 	} else if found {
-		return b.completePendingPublication(ctx, pending)
+		recovered, err := b.completePendingPublication(ctx, pending)
+		if err != nil {
+			return recovered, err
+		}
+		if recovered.Tombstone && recovered.DeleteTargetRecordID == rec.DeleteTargetRecordID && deleteSourceMatches(recovered, in) && recovered.SourceGraphRevision == rec.SourceGraphRevision && recovered.SemanticGeneration == rec.SemanticGeneration && recovered.RebuildEpoch == rec.RebuildEpoch {
+			return recovered, nil
+		}
 	}
 	pending, err := b.prepareAndAppendRecord(ctx, rec)
 	if err != nil {
 		return rec, err
 	}
 	return b.completePendingPublication(ctx, pending)
+}
+
+func semanticUpsertSatisfied(existing, requested domainsemantic.AdvancedEmbeddingRecord) bool {
+	if existing.Tombstone || existing.SpaceID != requested.SpaceID || existing.DomainID != requested.DomainID || existing.EffectiveSemanticRuleID() != requested.EffectiveSemanticRuleID() || existing.EmbeddingBindingKey != requested.EmbeddingBindingKey || existing.SemanticIndexID != requested.SemanticIndexID || existing.NodeID != requested.NodeID || existing.TargetNodeID != requested.TargetNodeID || existing.SourceMode != requested.SourceMode || existing.SourceHash != requested.SourceHash || existing.SourceGraphRevision != requested.SourceGraphRevision || existing.SemanticGeneration != requested.SemanticGeneration || existing.SemanticConfigurationHash != requested.SemanticConfigurationHash || existing.RebuildEpoch != requested.RebuildEpoch || existing.IntelligenceProfileID != requested.IntelligenceProfileID || existing.ModelEndpointID != requested.ModelEndpointID || existing.ModelID != requested.ModelID || existing.ModelEndpointCapabilityID != requested.ModelEndpointCapabilityID || existing.CredentialID != requested.CredentialID || existing.CredentialGrantID != requested.CredentialGrantID || existing.PolicyDecisionID != requested.PolicyDecisionID || existing.VectorStoreID != requested.VectorStoreID || existing.VectorSpaceKey != requested.VectorSpaceKey || existing.Dimensions != requested.Dimensions || len(existing.Vector) != len(requested.Vector) {
+		return false
+	}
+	for i := range existing.Vector {
+		if math.Float64bits(existing.Vector[i]) != math.Float64bits(requested.Vector[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func deleteTargetMatches(record domainsemantic.AdvancedEmbeddingRecord, in DeleteInput) bool {
@@ -744,7 +779,8 @@ func latestRecordKey(record domainsemantic.AdvancedEmbeddingRecord) string {
 }
 
 func (b MycelFileBackend) pendingRecordPath(record domainsemantic.AdvancedEmbeddingRecord) string {
-	return b.latestRecordPath(record) + ".pending"
+	digest := sha256.Sum256([]byte(latestRecordKey(record)))
+	return filepath.Join(b.GraphsDir, record.SpaceID.String(), "semantic", "indexes", record.SemanticIndexID.String(), recordsDir, latestRecordsDir, pendingPublicationsDir, fmt.Sprintf("%x.json", digest[:]))
 }
 
 func (b MycelFileBackend) readPendingPublication(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) (pendingRecordPublication, bool, error) {
@@ -783,6 +819,9 @@ func (b MycelFileBackend) prepareAndAppendRecord(ctx context.Context, record dom
 	lock := semanticSegmentLock(path)
 	lock.Lock()
 	defer lock.Unlock()
+	if err := b.recoverPreparedPublicationsForSegmentLocked(ctx, record, path); err != nil {
+		return pendingRecordPublication{}, err
+	}
 	encoded, err := b.encodeRecord(ctx, record)
 	if err != nil {
 		return pendingRecordPublication{}, err
@@ -855,9 +894,67 @@ func (b MycelFileBackend) completePendingPublication(ctx context.Context, pendin
 	return record, nil
 }
 
+func (b MycelFileBackend) recoverPreparedPublicationsForSegmentLocked(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord, path string) error {
+	dir := filepath.Dir(b.pendingRecordPath(record))
+	directory, err := os.Open(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	entries, readErr := directory.ReadDir(maxPendingPublications + 1)
+	closeErr := directory.Close()
+	if readErr != nil && readErr != io.EOF {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if len(entries) > maxPendingPublications {
+		return fmt.Errorf("pending semantic publication recovery capacity exceeded")
+	}
+	prepared := make([]pendingRecordPublication, 0, len(entries))
+	var observedBytes int64
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		observedBytes += info.Size()
+		if observedBytes > maxPendingPublicationBytes {
+			return fmt.Errorf("pending semantic publication recovery byte capacity exceeded")
+		}
+		pendingPath := filepath.Join(dir, entry.Name())
+		raw, err := b.readMaybeEncrypted(ctx, pendingPath)
+		if err != nil {
+			return err
+		}
+		var pending pendingRecordPublication
+		if err := json.Unmarshal(raw, &pending); err != nil {
+			return err
+		}
+		if pending.Phase == "prepared" {
+			prepared = append(prepared, pending)
+		}
+	}
+	sort.Slice(prepared, func(i, j int) bool { return prepared[i].SegmentOffset < prepared[j].SegmentOffset })
+	for _, pending := range prepared {
+		if pending.Record.Record.SpaceID != record.SpaceID || pending.Record.Record.SemanticIndexID != record.SemanticIndexID {
+			return fmt.Errorf("pending semantic publication belongs to a different segment")
+		}
+		if _, err := b.recoverPreparedPublicationLocked(ctx, pending, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (b MycelFileBackend) recoverPreparedPublication(ctx context.Context, pending pendingRecordPublication) (pendingRecordPublication, error) {
 	record := pending.Record.Record
-	record.Vector = append([]float64(nil), pending.Record.Vector...)
 	path, err := b.ensure(ctx, record.SpaceID, record.SemanticIndexID, record.VectorStoreID)
 	if err != nil {
 		return pending, err
@@ -865,6 +962,12 @@ func (b MycelFileBackend) recoverPreparedPublication(ctx context.Context, pendin
 	lock := semanticSegmentLock(path)
 	lock.Lock()
 	defer lock.Unlock()
+	return b.recoverPreparedPublicationLocked(ctx, pending, path)
+}
+
+func (b MycelFileBackend) recoverPreparedPublicationLocked(ctx context.Context, pending pendingRecordPublication, path string) (pendingRecordPublication, error) {
+	record := pending.Record.Record
+	record.Vector = append([]float64(nil), pending.Record.Vector...)
 	if pending.SegmentRecordID == uuid.Nil || pending.SegmentRecordID != record.ID || pending.SegmentOffset < int64(len(segmentMagic)+4) || pending.SegmentLength <= 0 || strings.TrimSpace(pending.SegmentChecksum) == "" {
 		return pending, fmt.Errorf("pending semantic publication is missing or has mismatched segment identity")
 	}
@@ -873,36 +976,53 @@ func (b MycelFileBackend) recoverPreparedPublication(ctx context.Context, pendin
 		return pending, err
 	}
 	end := pending.SegmentOffset + pending.SegmentLength
-	if info.Size() >= end {
-		encoded := make([]byte, pending.SegmentLength)
+	if info.Size() > pending.SegmentOffset {
+		if info.Size() >= end {
+			encoded := make([]byte, pending.SegmentLength)
+			f, err := os.Open(path)
+			if err != nil {
+				return pending, err
+			}
+			_, readErr := f.ReadAt(encoded, pending.SegmentOffset)
+			closeErr := f.Close()
+			if readErr != nil {
+				return pending, readErr
+			}
+			if closeErr != nil {
+				return pending, closeErr
+			}
+			if encodedRecordChecksum(encoded) == pending.SegmentChecksum {
+				pending.Phase = "appended"
+				if err := b.writePendingPublication(ctx, pending); err != nil {
+					return pending, err
+				}
+				return pending, nil
+			}
+		}
+		// A valid different frame may have occupied an abandoned reservation,
+		// including one shorter than the original frame. Invalid bytes shorter
+		// than the reservation are a recoverable torn tail; longer invalid bytes
+		// fail closed because a later frame may already follow them.
 		f, err := os.Open(path)
 		if err != nil {
 			return pending, err
 		}
-		_, readErr := f.ReadAt(encoded, pending.SegmentOffset)
+		occupant, occupantErr := b.readRecord(ctx, io.NewSectionReader(f, pending.SegmentOffset, info.Size()-pending.SegmentOffset))
 		closeErr := f.Close()
-		if readErr != nil {
-			return pending, readErr
-		}
 		if closeErr != nil {
 			return pending, closeErr
 		}
-		if encodedRecordChecksum(encoded) == pending.SegmentChecksum {
-			pending.Phase = "appended"
-			if err := b.writePendingPublication(ctx, pending); err != nil {
+		if occupantErr == nil {
+			if occupant.ID == pending.SegmentRecordID {
+				return pending, fmt.Errorf("semantic segment reservation checksum mismatch for record %s", occupant.ID)
+			}
+			pending.SegmentOffset = info.Size()
+		} else if info.Size() < end {
+			if err := os.Truncate(path, pending.SegmentOffset); err != nil {
 				return pending, err
 			}
-			return pending, nil
-		}
-		// Another complete append may have occupied the reservation after an
-		// earlier prepared append failed. Reserve the current tail instead of
-		// damaging later valid records.
-		pending.SegmentOffset = info.Size()
-	} else if info.Size() > pending.SegmentOffset {
-		// A torn frame can only be the tail because all in-process appends are
-		// serialized and failed writes truncate before releasing the lock.
-		if err := os.Truncate(path, pending.SegmentOffset); err != nil {
-			return pending, err
+		} else {
+			return pending, fmt.Errorf("semantic segment reservation checksum mismatch: %w", occupantErr)
 		}
 	} else if info.Size() < pending.SegmentOffset {
 		return pending, fmt.Errorf("semantic segment is shorter than pending publication offset")

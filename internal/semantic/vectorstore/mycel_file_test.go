@@ -85,6 +85,195 @@ func TestMycelFileBackendRecoversPreparedAppendWithoutDuplicateFrame(t *testing.
 	}
 }
 
+func TestMycelFileBackendDoesNotSwallowNewMutationBehindPendingPublication(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	base := domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: graph.NodeID(uuid.New()), SourceMode: "self", SemanticGeneration: 1, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2}
+	base.TargetNodeID = base.NodeID
+	fail := true
+	backend := MycelFileBackend{GraphsDir: t.TempDir(), AfterSegmentSync: func(domainsemantic.AdvancedEmbeddingRecord) error {
+		if fail {
+			fail = false
+			return fmt.Errorf("injected pending refresh")
+		}
+		return nil
+	}}
+	first := base
+	first.SourceHash, first.SourceGraphRevision, first.Vector = "first", 1, []float64{1, 0}
+	failed, err := backend.Upsert(ctx, first)
+	if err == nil {
+		t.Fatal("expected first refresh to remain pending")
+	}
+	second := base
+	second.SourceHash, second.SourceGraphRevision, second.Vector = "second", 2, []float64{0, 1}
+	stored, err := backend.Upsert(ctx, second)
+	if err != nil || stored.SourceHash != "second" {
+		t.Fatalf("newer refresh was swallowed: stored=%+v err=%v", stored, err)
+	}
+	latest, found, err := backend.LatestRecord(ctx, LatestRecordInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: base.NodeID, SourceMode: "self", VectorStoreID: storeID})
+	if err != nil || !found || latest.ID != stored.ID || latest.SourceGraphRevision != 2 {
+		t.Fatalf("latest refresh mismatch: latest=%+v found=%v err=%v", latest, found, err)
+	}
+	_, observed, err := backend.readAllBounded(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID), 0)
+	if err != nil || observed != 2 || failed.ID == stored.ID {
+		t.Fatalf("changed refresh history mismatch: observed=%d first=%s second=%s err=%v", observed, failed.ID, stored.ID, err)
+	}
+
+	deleteNode := graph.NodeID(uuid.New())
+	pendingRefresh := base
+	pendingRefresh.NodeID, pendingRefresh.TargetNodeID = deleteNode, deleteNode
+	pendingRefresh.SourceHash, pendingRefresh.SourceGraphRevision, pendingRefresh.Vector = "delete-me", 3, []float64{1, 0}
+	fail = true
+	pendingRecord, err := backend.Upsert(ctx, pendingRefresh)
+	if err == nil {
+		t.Fatal("expected delete target refresh to remain pending")
+	}
+	deleted, err := backend.Delete(ctx, DeleteInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: deleteNode, SourceMode: "self", VectorStoreID: storeID, TargetRecordID: pendingRecord.ID, SourceGraphRevision: 4, SemanticGeneration: 1})
+	if err != nil || !deleted.Tombstone || deleted.DeleteTargetRecordID != pendingRecord.ID {
+		t.Fatalf("delete behind pending refresh was swallowed: deleted=%+v err=%v", deleted, err)
+	}
+	results, err := backend.Search(ctx, SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), VectorStoreID: storeID, VectorSpaceKey: "test/2", Query: []float64{1, 0}, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range results {
+		if result.NodeID == deleteNode {
+			t.Fatalf("delete target remained searchable: %+v", results)
+		}
+	}
+}
+
+func TestMycelFileBackendRecoversTornPreparedTailBeforeDifferentKeyAppend(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	fail := true
+	backend := MycelFileBackend{GraphsDir: t.TempDir(), AfterSegmentSync: func(domainsemantic.AdvancedEmbeddingRecord) error {
+		if fail {
+			fail = false
+			return fmt.Errorf("injected crash before intent promotion")
+		}
+		return nil
+	}}
+	makeRecord := func(nodeID graph.NodeID, hash string) domainsemantic.AdvancedEmbeddingRecord {
+		return domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "self", SourceHash: hash, SourceGraphRevision: 1, SemanticGeneration: 1, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: storeID, VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}}
+	}
+	first := makeRecord(graph.NodeID(uuid.New()), "first")
+	failed, err := backend.Upsert(ctx, first)
+	if err == nil {
+		t.Fatal("expected first append failure")
+	}
+	pending, found, err := backend.readPendingPublication(ctx, failed)
+	if err != nil || !found {
+		t.Fatalf("read pending: found=%v err=%v", found, err)
+	}
+	segment := filepath.Join(backend.GraphsDir, spaceID.String(), "semantic", "indexes", ruleID.String(), recordsDir, activeSegment)
+	if err := os.Truncate(segment, pending.SegmentOffset+pending.SegmentLength/2); err != nil {
+		t.Fatal(err)
+	}
+	second := makeRecord(graph.NodeID(uuid.New()), "second")
+	if _, err := backend.Upsert(ctx, second); err != nil {
+		t.Fatalf("different-key append did not recover torn predecessor: %v", err)
+	}
+	records, observed, err := backend.readAllBounded(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID), 0)
+	if err != nil || observed != 2 || len(records) != 2 {
+		t.Fatalf("torn-tail recovery left corrupt or duplicate segment: records=%+v observed=%d err=%v", records, observed, err)
+	}
+}
+
+func TestMycelFileBackendPreparedRecoveryHandlesValidOvertakeAndRejectsCorruption(t *testing.T) {
+	ctx := context.Background()
+	newFixture := func(t *testing.T) (MycelFileBackend, domainsemantic.AdvancedEmbeddingRecord, pendingRecordPublication, string) {
+		t.Helper()
+		fail := true
+		backend := MycelFileBackend{GraphsDir: t.TempDir(), AfterSegmentSync: func(domainsemantic.AdvancedEmbeddingRecord) error {
+			if fail {
+				fail = false
+				return fmt.Errorf("injected pending append")
+			}
+			return nil
+		}}
+		ruleID := domainsemantic.SemanticRuleID(uuid.New())
+		record := domainsemantic.AdvancedEmbeddingRecord{SpaceID: domainspace.SpaceID(uuid.New()), DomainID: graph.DomainID(uuid.New()), SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), EmbeddingBindingKey: "search", NodeID: graph.NodeID(uuid.New()), SourceMode: "self", SourceHash: "pending", SourceGraphRevision: 1, SemanticGeneration: 1, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), VectorSpaceKey: "test/2", Dimensions: 2, Vector: []float64{1, 0}}
+		record.TargetNodeID = record.NodeID
+		failed, err := backend.Upsert(ctx, record)
+		if err == nil {
+			t.Fatal("expected pending append")
+		}
+		pending, found, err := backend.readPendingPublication(ctx, failed)
+		if err != nil || !found {
+			t.Fatalf("pending intent: found=%v err=%v", found, err)
+		}
+		segment := filepath.Join(backend.GraphsDir, record.SpaceID.String(), "semantic", "indexes", ruleID.String(), recordsDir, activeSegment)
+		return backend, failed, pending, segment
+	}
+
+	t.Run("valid different frame", func(t *testing.T) {
+		backend, pendingRecord, pending, segment := newFixture(t)
+		occupant := pendingRecord
+		occupant.ID = uuid.New()
+		occupant.NodeID = graph.NodeID(uuid.New())
+		occupant.TargetNodeID = occupant.NodeID
+		occupant.SourceHash = "occupant"
+		occupant.CreatedAt = time.Now().UTC()
+		encoded, err := backend.encodeRecord(ctx, occupant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(segment, pending.SegmentOffset); err != nil {
+			t.Fatal(err)
+		}
+		if err := appendEncodedRecord(segment, pending.SegmentOffset, encoded); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backend.Upsert(ctx, pendingRecord); err != nil {
+			t.Fatalf("valid occupant recovery failed: %v", err)
+		}
+		records, observed, err := backend.readAllBounded(ctx, pendingRecord.SpaceID, pendingRecord.SemanticIndexID, 0)
+		if err != nil || observed != 2 || len(records) != 2 {
+			t.Fatalf("valid occupant recovery: records=%+v observed=%d err=%v", records, observed, err)
+		}
+	})
+
+	t.Run("corrupted reservation", func(t *testing.T) {
+		backend, pendingRecord, pending, segment := newFixture(t)
+		f, err := os.OpenFile(segment, os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		corruptAt := pending.SegmentOffset + pending.SegmentLength - 1
+		original := []byte{0}
+		if _, err := f.ReadAt(original, corruptAt); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		original[0] ^= 0xff
+		if _, err := f.WriteAt(original, corruptAt); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backend.Upsert(ctx, pendingRecord); err == nil {
+			t.Fatal("expected checksum-corrupted reservation to fail closed")
+		}
+		info, err := os.Stat(segment)
+		if err != nil || info.Size() != pending.SegmentOffset+pending.SegmentLength {
+			t.Fatalf("corrupt reservation was appended or truncated: info=%+v err=%v", info, err)
+		}
+	})
+}
+
 func TestMycelFileBackendKeepsHighestSourceRevisionWithinGenerationEpoch(t *testing.T) {
 	ctx := context.Background()
 	backend := MycelFileBackend{GraphsDir: t.TempDir()}

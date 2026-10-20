@@ -613,16 +613,18 @@ type dirtyWorkKey struct {
 }
 
 type maintenanceManager struct {
-	mu                   sync.RWMutex
-	location             string
-	spaceID              domainspace.SpaceID
-	dirtyQueue           dirtyQueueState
-	checkpoints          maintenanceCheckpointState
-	dirtyEvents          []domainsemantic.GraphDirtyEvent
-	dirtyEventByTxnID    map[uuid.UUID]int
-	checkpointByConsumer map[string]int
-	workItemByKey        map[dirtyWorkKey]int
-	workLogRecords       int
+	mu                         sync.RWMutex
+	location                   string
+	spaceID                    domainspace.SpaceID
+	dirtyQueue                 dirtyQueueState
+	checkpoints                maintenanceCheckpointState
+	dirtyEvents                []domainsemantic.GraphDirtyEvent
+	dirtyEventByTxnID          map[uuid.UUID]int
+	checkpointByConsumer       map[string]int
+	workItemByKey              map[dirtyWorkKey]int
+	workLogRecords             int
+	workLogMutationRecordLimit int
+	workLogByteLimit           int64
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -1129,6 +1131,12 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	defer m.mu.Unlock()
 	m.location = location
 	m.spaceID = spaceID
+	if m.workLogMutationRecordLimit <= 0 {
+		m.workLogMutationRecordLimit = maxWorkLogMutationRecords
+	}
+	if m.workLogByteLimit <= 0 {
+		m.workLogByteLimit = maxWorkLogBytes
+	}
 	if err := os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
@@ -1175,7 +1183,7 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if (m.workLogRecords == 0 && len(m.dirtyQueue.Items) > 0) || m.workLogRecords >= maxWorkLogMutationRecords || workLogSize > maxWorkLogBytes {
+	if (m.workLogRecords == 0 && len(m.dirtyQueue.Items) > 0) || m.workLogRecords >= m.workLogMutationRecordLimit || workLogSize > m.workLogByteLimit {
 		return m.rewriteWorkLogLocked(m.dirtyQueue.Items)
 	}
 	return nil
@@ -1468,7 +1476,9 @@ func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.Seman
 		item.CompletedAt = nil
 		item.FailedAt = nil
 	}
-	item.UpdatedAt = now
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = now
+	}
 	key := dirtyWorkKey{semanticRuleID: item.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(item.EmbeddingBindingKey), targetNodeID: item.TargetNodeID}
 	if idx, ok := m.workItemByKey[key]; ok && idx >= 0 && idx < len(m.dirtyQueue.Items) {
 		existing := m.dirtyQueue.Items[idx]
@@ -1928,7 +1938,7 @@ func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if m.workLogRecords >= maxWorkLogMutationRecords || currentBytes+int64(len(raw)) > maxWorkLogBytes {
+	if m.workLogRecords >= m.workLogMutationRecordLimit || currentBytes+int64(len(raw)) > m.workLogByteLimit {
 		prospective := applyWorkLogRecord(m.dirtyQueue.Items, record)
 		return m.rewriteWorkLogLocked(prospective)
 	}

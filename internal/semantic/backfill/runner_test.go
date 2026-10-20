@@ -772,6 +772,46 @@ func TestIncrementalRefreshResumesPendingAppendBeforeLatestPublication(t *testin
 	}
 }
 
+func TestIncrementalRefreshPublishesChangedSourceBehindPendingAppend(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("first pending source")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	fail := true
+	backend := env.vector
+	backend.AfterSegmentSync = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+		if !record.Tombstone && fail {
+			fail = false
+			return fmt.Errorf("injected pending source")
+		}
+		return nil
+	}
+	runner := env.runner
+	runner.VectorBackend = backend
+	first, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SourceGraphRevision: 1, SemanticGeneration: 1})
+	if err == nil || first.FailedCount != 1 {
+		t.Fatalf("expected first source to remain pending: result=%+v err=%v", first, err)
+	}
+	env.graph.UpdateNode(root.ID, "second newer source")
+	second, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SourceGraphRevision: 2, SemanticGeneration: 1})
+	if err != nil || second.GeneratedCount != 1 || second.FailedCount != 0 {
+		t.Fatalf("newer source was not published: result=%+v err=%v", second, err)
+	}
+	if len(env.connector.calls) != 2 || !strings.Contains(env.connector.calls[1], "second newer source") {
+		t.Fatalf("provider calls do not contain changed source: %+v", env.connector.calls)
+	}
+	latest, found, err := backend.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: "subtree", VectorStoreID: binding.VectorStoreID})
+	if err != nil || !found || latest.SourceGraphRevision != 2 {
+		t.Fatalf("newer publication did not become latest: latest=%+v found=%v err=%v", latest, found, err)
+	}
+	history, err := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(history) != 2 {
+		t.Fatalf("changed source history=%+v err=%v", history, err)
+	}
+}
+
 func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)

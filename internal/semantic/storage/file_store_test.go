@@ -1062,6 +1062,8 @@ func TestMaintenanceWorkLogCheckpointsRetryChurnWithoutAnalyzer(t *testing.T) {
 	if err := manager.Init(ctx, root, spaceID); err != nil {
 		t.Fatal(err)
 	}
+	concrete := manager.(*maintenanceManager)
+	concrete.workLogMutationRecordLimit = 16
 	item, err := manager.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: graph.NodeID(uuid.New())})
 	if err != nil {
 		t.Fatal(err)
@@ -1075,10 +1077,6 @@ func TestMaintenanceWorkLogCheckpointsRetryChurnWithoutAnalyzer(t *testing.T) {
 			t.Fatalf("fail %d: %v", i, err)
 		}
 	}
-	concrete := manager.(*maintenanceManager)
-	concrete.mu.Lock()
-	concrete.workLogRecords = maxWorkLogMutationRecords
-	concrete.mu.Unlock()
 	claimed, err := manager.ClaimReadyWork(ctx, ClaimReadyWorkInput{Limit: 1, Now: time.Now().UTC().Add(24 * time.Hour)})
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("threshold claim: claimed=%+v err=%v", claimed, err)
