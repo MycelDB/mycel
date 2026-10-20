@@ -46,7 +46,7 @@ type InferenceInvoker interface {
 // condition evaluation. Real graph managers satisfy this interface implicitly.
 type GraphRuntime interface {
 	actions.Graphs
-	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
+	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
 	ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error)
 	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string) error
