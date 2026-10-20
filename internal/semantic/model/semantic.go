@@ -823,22 +823,23 @@ type SemanticRevisionRange struct {
 }
 
 type SemanticReliabilityState struct {
-	EmbeddingBindingKey   string                  `json:"embedding_binding_key"`
-	SemanticGeneration    uint64                  `json:"semantic_generation,omitempty"`
-	BaselineFreshThrough  uint64                  `json:"baseline_fresh_through,omitempty"`
-	RebuildEpoch          string                  `json:"rebuild_epoch,omitempty"`
-	RebuildState          string                  `json:"rebuild_state,omitempty"`
-	PinnedTargetRevision  uint64                  `json:"pinned_target_revision,omitempty"`
-	DeltaCatchupRevision  uint64                  `json:"delta_catchup_revision,omitempty"`
-	RebuildStartedAt      *time.Time              `json:"rebuild_started_at,omitempty"`
-	RebuildCompletedAt    *time.Time              `json:"rebuild_completed_at,omitempty"`
-	RebuildErrorSanitized string                  `json:"rebuild_error_sanitized,omitempty"`
-	LatestObserved        uint64                  `json:"latest_observed,omitempty"`
-	AnalyzedThrough       uint64                  `json:"analyzed_through,omitempty"`
-	FreshThrough          uint64                  `json:"fresh_through,omitempty"`
-	UnresolvedRanges      []SemanticRevisionRange `json:"unresolved_ranges,omitempty"`
-	CapacityState         string                  `json:"capacity_state,omitempty"`
-	CapacityReason        string                  `json:"capacity_reason,omitempty"`
+	EmbeddingBindingKey       string                  `json:"embedding_binding_key"`
+	ResolvedConfigurationHash string                  `json:"resolved_configuration_hash,omitempty"`
+	SemanticGeneration        uint64                  `json:"semantic_generation,omitempty"`
+	BaselineFreshThrough      uint64                  `json:"baseline_fresh_through,omitempty"`
+	RebuildEpoch              string                  `json:"rebuild_epoch,omitempty"`
+	RebuildState              string                  `json:"rebuild_state,omitempty"`
+	PinnedTargetRevision      uint64                  `json:"pinned_target_revision,omitempty"`
+	DeltaCatchupRevision      uint64                  `json:"delta_catchup_revision,omitempty"`
+	RebuildStartedAt          *time.Time              `json:"rebuild_started_at,omitempty"`
+	RebuildCompletedAt        *time.Time              `json:"rebuild_completed_at,omitempty"`
+	RebuildErrorSanitized     string                  `json:"rebuild_error_sanitized,omitempty"`
+	LatestObserved            uint64                  `json:"latest_observed,omitempty"`
+	AnalyzedThrough           uint64                  `json:"analyzed_through,omitempty"`
+	FreshThrough              uint64                  `json:"fresh_through,omitempty"`
+	UnresolvedRanges          []SemanticRevisionRange `json:"unresolved_ranges,omitempty"`
+	CapacityState             string                  `json:"capacity_state,omitempty"`
+	CapacityReason            string                  `json:"capacity_reason,omitempty"`
 }
 
 type SemanticSearchIndexState struct {

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -22,10 +24,63 @@ const (
 	semanticReliabilitySerializedByteLimit = 1 << 20
 )
 
+func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr storesemantic.SpaceManager, binding domainsemantic.SemanticEmbeddingBinding) (string, error) {
+	profiles, err := spaceMgr.ListIntelligenceProfiles(ctx)
+	if err != nil {
+		return "", err
+	}
+	selectedProfiles := make([]domainsemantic.IntelligenceProfile, 0, 1)
+	for _, profile := range profiles {
+		if (binding.IntelligenceProfileID != uuid.Nil && profile.ID == binding.IntelligenceProfileID) || (strings.TrimSpace(binding.IntelligenceProfile) != "" && profile.Key == strings.TrimSpace(binding.IntelligenceProfile)) {
+			selectedProfiles = append(selectedProfiles, domainsemantic.NormalizeIntelligenceProfile(profile))
+		}
+	}
+	global := m.GlobalManager()
+	endpoints, err := global.ListModelEndpoints(ctx)
+	if err != nil {
+		return "", err
+	}
+	models, err := global.ListModels(ctx)
+	if err != nil {
+		return "", err
+	}
+	capabilities, err := global.ListModelEndpointCapabilities(ctx)
+	if err != nil {
+		return "", err
+	}
+	stores, err := global.ListVectorStores(ctx)
+	if err != nil {
+		return "", err
+	}
+	sort.Slice(selectedProfiles, func(i, j int) bool { return selectedProfiles[i].ID.String() < selectedProfiles[j].ID.String() })
+	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].ID.String() < endpoints[j].ID.String() })
+	sort.Slice(models, func(i, j int) bool { return models[i].ID.String() < models[j].ID.String() })
+	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i].ID.String() < capabilities[j].ID.String() })
+	sort.Slice(stores, func(i, j int) bool { return stores[i].ID.String() < stores[j].ID.String() })
+	payload, err := json.Marshal(struct {
+		Binding      domainsemantic.SemanticEmbeddingBinding  `json:"binding"`
+		Profiles     []domainsemantic.IntelligenceProfile     `json:"profiles"`
+		Endpoints    []domainsemantic.ModelEndpoint           `json:"endpoints"`
+		Models       []domainsemantic.InferenceModel          `json:"models"`
+		Capabilities []domainsemantic.ModelEndpointCapability `json:"capabilities"`
+		VectorStores []domainsemantic.VectorStoreBackend      `json:"vector_stores"`
+	}{Binding: domainsemantic.NormalizeSemanticEmbeddingBinding(binding), Profiles: selectedProfiles, Endpoints: endpoints, Models: models, Capabilities: capabilities, VectorStores: stores})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusInput) (ReliabilityStatus, error) {
 	if in.SpaceID == uuid.Nil || in.SemanticRuleID == uuid.Nil || strings.TrimSpace(in.EmbeddingBindingKey) == "" {
 		return ReliabilityStatus{}, fmt.Errorf("space_id, semantic_rule_id, and embedding_binding_key are required")
 	}
+	// Status evaluation can durably rotate generations or mark frontier
+	// exhaustion. Serialize those decisions with worker publication and rule
+	// transitions so an authorized stale publication cannot race the update.
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
 	spaceMgr, err := m.SpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return ReliabilityStatus{}, err
@@ -63,6 +118,30 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 				reliability = saved
 			}
 			break
+		}
+	}
+	resolvedHash, err := m.resolvedBindingConfigurationHash(ctx, spaceMgr, binding)
+	if err != nil {
+		return ReliabilityStatus{}, err
+	}
+	if reliability.ResolvedConfigurationHash == "" {
+		reliability.ResolvedConfigurationHash = resolvedHash
+		if err := m.saveReliabilityState(ctx, in.SpaceID, rule.ID, reliability); err != nil {
+			return ReliabilityStatus{}, err
+		}
+	} else if reliability.ResolvedConfigurationHash != resolvedHash {
+		if reliability.SemanticGeneration == 0 {
+			reliability.SemanticGeneration = 1
+		}
+		reliability.SemanticGeneration++
+		reliability.ResolvedConfigurationHash = resolvedHash
+		reliability.BaselineFreshThrough = 0
+		reliability.FreshThrough = 0
+		reliability.RebuildEpoch = ""
+		reliability.RebuildState = "required"
+		reliability.RebuildErrorSanitized = "resolved semantic route changed; rebuild required"
+		if err := m.saveReliabilityState(ctx, in.SpaceID, rule.ID, reliability); err != nil {
+			return ReliabilityStatus{}, err
 		}
 	}
 	latest := checkpoint.LastGraphRevision
@@ -128,7 +207,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	if oldestGap > 0 && fresh >= oldestGap {
 		fresh = oldestGap - 1
 	}
-	if reliability.RebuildState == "required" {
+	if reliability.RebuildState == "required" || reliability.RebuildState == "running" {
 		fresh = 0
 	}
 	span := uint64(0)
@@ -142,18 +221,29 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 		capacityState = "ok"
 	}
 	if retained >= semanticReliabilityFrontierLimit || gapIntervalOverflow || span >= semanticReliabilityRevisionSpanLimit || serializedBytes >= semanticReliabilitySerializedByteLimit {
+		newlyExhausted := reliability.CapacityState != "exhausted" || reliability.RebuildState != "required"
 		capacityState = "exhausted"
+		reliability.CapacityState = capacityState
 		reliability.RebuildState = "required"
 		reliability.RebuildErrorSanitized = "semantic reliability frontier capacity exhausted; rebuild required"
 		reliability.CapacityReason = reliability.RebuildErrorSanitized
+		reliability.FreshThrough = 0
 		fresh = 0
+		if newlyExhausted {
+			if err := m.saveReliabilityState(ctx, in.SpaceID, rule.ID, reliability); err != nil {
+				return ReliabilityStatus{}, err
+			}
+		}
 	}
 	if reliability.SemanticGeneration == 0 {
 		generation = 1
 	}
-	degraded := degradedReason != "" || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || capacityState == "exhausted"
-	if degradedReason == "" && (reliability.RebuildState == "failed" || reliability.RebuildState == "required") {
+	degraded := degradedReason != "" || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running" || capacityState == "exhausted"
+	if degradedReason == "" && (reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running") {
 		degradedReason = reliability.RebuildErrorSanitized
+		if degradedReason == "" && reliability.RebuildState == "running" {
+			degradedReason = "semantic rebuild in progress"
+		}
 	}
 	if degradedReason == "" && capacityState == "exhausted" {
 		degradedReason = "semantic reliability frontier capacity exhausted"
@@ -164,7 +254,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 		UnresolvedGapCount: gapCount, OldestUnresolvedGraphRevision: oldestGap, ConfiguredFrontierLimit: semanticReliabilityFrontierLimit,
 		ConfiguredGapIntervalLimit: semanticReliabilityGapIntervalLimit, ConfiguredRevisionSpanLimit: semanticReliabilityRevisionSpanLimit, ConfiguredSerializedByteLimit: semanticReliabilitySerializedByteLimit,
 		RetainedWorkItemCount: retained, RetainedGapIntervalCount: uint64(len(unresolved)), RetainedRevisionSpan: span, RetainedSerializedBytes: serializedBytes, SemanticGeneration: generation, CapacityState: capacityState, Degraded: degraded,
-		DegradedReason: degradedReason, RebuildRequired: gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required", Rebuild: reliability,
+		DegradedReason: degradedReason, RebuildRequired: gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running", Rebuild: reliability,
 	}, nil
 }
 
@@ -206,6 +296,34 @@ func (m *Module) authorizeSemanticWorkItem(ctx context.Context, expected domains
 		}
 	}
 	return fmt.Errorf("stale semantic work completion rejected")
+}
+
+func (m *Module) acquireSemanticWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (func(), error) {
+	m.publicationMu.Lock()
+	if err := m.authorizeSemanticWorkItem(ctx, item); err != nil {
+		m.publicationMu.Unlock()
+		return nil, err
+	}
+	return m.publicationMu.Unlock, nil
+}
+
+func (m *Module) acquireSemanticPublication(ctx context.Context, publication semanticbackfill.Publication) (func(), error) {
+	// Maintenance workers hold publicationMu from the claimed-generation check
+	// through durable completion. Rebuild publications acquire it per mutation.
+	locked := publication.Input.WorkItemID == uuid.Nil
+	if locked {
+		m.publicationMu.Lock()
+	}
+	if err := m.authorizeSemanticPublication(ctx, publication); err != nil {
+		if locked {
+			m.publicationMu.Unlock()
+		}
+		return nil, err
+	}
+	if locked {
+		return m.publicationMu.Unlock, nil
+	}
+	return func() {}, nil
 }
 
 func (m *Module) authorizeSemanticPublication(ctx context.Context, publication semanticbackfill.Publication) error {
@@ -250,6 +368,8 @@ func (m *Module) semanticGenerationForWork(ctx context.Context, item domainseman
 }
 
 func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
 	states, err := m.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return err
@@ -323,23 +443,37 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	if generation == 0 {
 		generation = 1
 	}
-	rebuild := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticGeneration: generation, RebuildEpoch: epoch, RebuildState: "running", PinnedTargetRevision: status.LatestObservedGraphRevision, RebuildStartedAt: &now}
+	rebuild := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: in.EmbeddingBindingKey, ResolvedConfigurationHash: status.Rebuild.ResolvedConfigurationHash, SemanticGeneration: generation, RebuildEpoch: epoch, RebuildState: "running", PinnedTargetRevision: status.LatestObservedGraphRevision, RebuildStartedAt: &now}
 	if err := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, rebuild); err != nil {
 		return RebuildResult{}, err
 	}
-	backfill, err := m.BackfillIndex(ctx, semanticBackfillInput(in, rebuild))
-	if err != nil || backfill.FailedCount > 0 {
-		message := "semantic rebuild backfill failed"
-		if err != nil {
-			message = sanitizeMaintenanceError(err.Error())
+	backfill := semanticbackfill.Result{}
+	offset := 0
+	for {
+		pageInput := semanticBackfillInput(in, rebuild)
+		pageInput.Offset = offset
+		page, runErr := m.BackfillIndex(ctx, pageInput)
+		mergeBackfillResult(&backfill, page)
+		if runErr != nil || page.FailedCount > 0 {
+			message := "semantic rebuild backfill failed"
+			if runErr != nil {
+				message = sanitizeMaintenanceError(runErr.Error())
+			}
+			rebuild.RebuildState = "failed"
+			rebuild.RebuildErrorSanitized = message
+			_ = m.saveReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, rebuild)
+			if runErr != nil {
+				return RebuildResult{Backfill: backfill}, runErr
+			}
+			return RebuildResult{Backfill: backfill}, fmt.Errorf("semantic rebuild backfill reported %d failures", page.FailedCount)
 		}
-		rebuild.RebuildState = "failed"
-		rebuild.RebuildErrorSanitized = message
-		_ = m.saveReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, rebuild)
-		if err != nil {
-			return RebuildResult{Backfill: backfill}, err
+		if page.NextOffset == 0 {
+			break
 		}
-		return RebuildResult{Backfill: backfill}, fmt.Errorf("semantic rebuild backfill reported %d failures", backfill.FailedCount)
+		if page.NextOffset <= offset {
+			return m.failRebuild(ctx, in, rebuild, backfill, fmt.Errorf("semantic rebuild backfill did not advance"))
+		}
+		offset = page.NextOffset
 	}
 	rebuild.BaselineFreshThrough = rebuild.PinnedTargetRevision
 	if err := m.saveReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, rebuild); err != nil {
@@ -380,7 +514,24 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 }
 
 func semanticBackfillInput(in RebuildInput, rebuild domainsemantic.SemanticReliabilityState) semanticbackfill.Input {
-	return semanticbackfill.Input{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Force: true, Limit: in.BackfillLimit, ContinueOnError: false, SourceGraphRevision: rebuild.PinnedTargetRevision, SemanticGeneration: rebuild.SemanticGeneration, RebuildEpoch: rebuild.RebuildEpoch}
+	return semanticbackfill.Input{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Force: true, Limit: in.BackfillLimit, Reconcile: true, ContinueOnError: false, SourceGraphRevision: rebuild.PinnedTargetRevision, SemanticGeneration: rebuild.SemanticGeneration, RebuildEpoch: rebuild.RebuildEpoch}
+}
+
+func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.Result) {
+	if total.SemanticRuleID == uuid.Nil {
+		total.SemanticRuleID = page.SemanticRuleID
+		total.EmbeddingBindingKey = page.EmbeddingBindingKey
+		total.SemanticIndexID = page.SemanticIndexID
+	}
+	total.SelectedCount += page.SelectedCount
+	total.GeneratedCount += page.GeneratedCount
+	total.SkippedCount += page.SkippedCount
+	total.FailedCount += page.FailedCount
+	total.TotalSelectedCount = page.TotalSelectedCount
+	total.NextOffset = page.NextOffset
+	total.Records = append(total.Records, page.Records...)
+	total.Skipped = append(total.Skipped, page.Skipped...)
+	total.Failures = append(total.Failures, page.Failures...)
 }
 
 func (m *Module) failRebuild(ctx context.Context, in RebuildInput, rebuild domainsemantic.SemanticReliabilityState, backfill semanticbackfill.Result, cause error) (RebuildResult, error) {

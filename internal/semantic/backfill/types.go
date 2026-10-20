@@ -17,12 +17,12 @@ type GraphSourceReader interface {
 }
 
 type Runner struct {
-	GraphReader          GraphSourceReader
-	GlobalManager        storesemantic.GlobalManager
-	SpaceManager         storesemantic.SpaceManager
-	Connector            ConnectorService
-	VectorBackend        vectorstore.Backend
-	AuthorizePublication func(context.Context, Publication) error
+	GraphReader        GraphSourceReader
+	GlobalManager      storesemantic.GlobalManager
+	SpaceManager       storesemantic.SpaceManager
+	Connector          ConnectorService
+	VectorBackend      vectorstore.Backend
+	AcquirePublication func(context.Context, Publication) (func(), error)
 }
 
 type ConnectorService interface {
@@ -37,6 +37,8 @@ type Input struct {
 	NodeIDs             []graph.NodeID
 	Force               bool
 	Limit               int
+	Offset              int
+	Reconcile           bool
 	ContinueOnError     bool
 	SourceGraphRevision uint64
 	SemanticGeneration  uint64
@@ -60,6 +62,8 @@ type Result struct {
 	GeneratedCount      int                                      `json:"generated_count"`
 	SkippedCount        int                                      `json:"skipped_count"`
 	FailedCount         int                                      `json:"failed_count"`
+	TotalSelectedCount  int                                      `json:"total_selected_count,omitempty"`
+	NextOffset          int                                      `json:"next_offset,omitempty"`
 	Records             []domainsemantic.AdvancedEmbeddingRecord `json:"records,omitempty"`
 	Skipped             []Skipped                                `json:"skipped,omitempty"`
 	Failures            []Failure                                `json:"failures,omitempty"`

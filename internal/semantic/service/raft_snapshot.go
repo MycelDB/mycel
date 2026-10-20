@@ -331,6 +331,7 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 		m.logSnapshotProjectionError("partition-cache", err)
 	}
 	for _, space := range spaces {
+		space = semanticSnapshotRequiringRebuild(space)
 		spaceMgr := storesemantic.NewSpaceManager()
 		if err := spaceMgr.Init(ctx, m.spaceSemanticDir(space.SpaceID), space.SpaceID); err != nil {
 			return err
@@ -414,6 +415,62 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 		}
 	}
 	return nil
+}
+
+func semanticSnapshotRequiringRebuild(space semanticSpaceSnapshot) semanticSpaceSnapshot {
+	now := time.Now().UTC()
+	stateIndex := map[domainsemantic.SemanticRuleID]int{}
+	for i := range space.RuleStates {
+		stateIndex[space.RuleStates[i].SemanticRuleID] = i
+	}
+	for _, rule := range space.Rules {
+		idx, ok := stateIndex[rule.ID]
+		if !ok {
+			space.RuleStates = append(space.RuleStates, domainsemantic.SemanticRuleState{SemanticRuleID: rule.ID, ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{}})
+			idx = len(space.RuleStates) - 1
+			stateIndex[rule.ID] = idx
+		}
+		state := &space.RuleStates[idx]
+		if state.ReliabilityByBinding == nil {
+			state.ReliabilityByBinding = map[string]domainsemantic.SemanticReliabilityState{}
+		}
+		for _, rawBinding := range rule.Embeddings {
+			binding := domainsemantic.NormalizeSemanticEmbeddingBinding(rawBinding)
+			if !binding.Enabled {
+				continue
+			}
+			if _, ok := state.ReliabilityByBinding[binding.Key]; !ok {
+				state.ReliabilityByBinding[binding.Key] = domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: binding.Key, SemanticGeneration: 1}
+			}
+		}
+	}
+	for i := range space.RuleStates {
+		state := &space.RuleStates[i]
+		if state.ReliabilityByBinding == nil {
+			state.ReliabilityByBinding = map[string]domainsemantic.SemanticReliabilityState{}
+		}
+		for key, reliability := range state.ReliabilityByBinding {
+			reliability.EmbeddingBindingKey = key
+			if reliability.SemanticGeneration == 0 {
+				reliability.SemanticGeneration = 1
+			}
+			reliability.BaselineFreshThrough = 0
+			reliability.FreshThrough = 0
+			reliability.RebuildState = "required"
+			reliability.RebuildCompletedAt = nil
+			reliability.RebuildErrorSanitized = "derived semantic vectors omitted from raft snapshot; rebuild required"
+			state.ReliabilityByBinding[key] = reliability
+		}
+		state.State = "stale"
+		state.LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
+		state.UpdatedAt = now
+	}
+	for i := range space.SearchIndexStates {
+		space.SearchIndexStates[i].State = "missing"
+		space.SearchIndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
+		space.SearchIndexStates[i].UpdatedAt = now
+	}
+	return space
 }
 
 func (m *Module) logSnapshotProjectionError(scope string, err error) {

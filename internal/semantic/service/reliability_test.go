@@ -92,6 +92,45 @@ func TestMarkRuleConfigurationChangedRotatesGenerationAndRequiresRebuild(t *test
 	}
 }
 
+func TestReliabilityStatusRotatesGenerationWhenResolvedCatalogChanges(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	spaceMgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStore: "mycel-file", Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildState: "completed"}}}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.SemanticGeneration != 1 || initial.Rebuild.ResolvedConfigurationHash == "" {
+		t.Fatalf("unexpected initial status: %+v", initial)
+	}
+	now := time.Now().UTC()
+	if _, err := module.GlobalManager().UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{ID: domainsemantic.ModelEndpointID(uuid.New()), Key: "new-route", Name: "new-route", ConnectorType: domainsemantic.ConnectorCustomHTTP, NetworkClass: domainsemantic.NetworkClassPrivateNetwork, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.SemanticGeneration != 2 || !changed.RebuildRequired || changed.Rebuild.RebuildState != "required" || changed.FreshThroughGraphRevision != 0 {
+		t.Fatalf("resolved catalog change did not require a new generation: %+v", changed)
+	}
+}
+
 func TestReliabilityStatusKeepsAnalyzedAndFreshFrontiersDistinctAcrossReload(t *testing.T) {
 	ctx := context.Background()
 	runtime := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})

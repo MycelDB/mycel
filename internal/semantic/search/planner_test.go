@@ -115,8 +115,28 @@ func TestPlannerSkipsBindingWhenProfileResolutionFails(t *testing.T) {
 	if len(result.Results) != 1 || result.Results[0].EmbeddingBindingKey != "search" {
 		t.Fatalf("expected only allowed binding result, got %+v", result.Results)
 	}
-	if !strings.Contains(strings.Join(result.Warnings, "\n"), "policy denies semantic binding") {
-		t.Fatalf("expected denied binding warning, got %+v", result.Warnings)
+	warnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(warnings, "embedding_failed") || strings.Contains(warnings, "policy denies semantic binding") {
+		t.Fatalf("expected sanitized binding warning, got %+v", result.Warnings)
+	}
+}
+
+func TestPlannerRejectsBindingThatRequiresRebuild(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "stale", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: rule.ID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildState: "required"}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if err != nil || len(result.Results) != 0 {
+		t.Fatalf("expected rebuild-required binding to return no records, result=%+v err=%v", result, err)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "requires rebuild") {
+		t.Fatalf("expected rebuild warning, got %+v", result.Warnings)
 	}
 }
 
@@ -217,7 +237,7 @@ func (e *searchEnv) record(ruleID domainsemantic.SemanticRuleID, bindingKey stri
 		}
 		break
 	}
-	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SemanticConfigurationHash: configurationHash, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
+	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SemanticGeneration: 1, SemanticConfigurationHash: configurationHash, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
 }
 
 type fakeSearchConnector struct {

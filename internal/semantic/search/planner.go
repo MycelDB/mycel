@@ -12,12 +12,15 @@ import (
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 )
 
-const maxPerBindingLimit = 100
+const maxPerBindingLimit = 100000
 
 type selectedBinding struct {
-	rule        domainsemantic.SemanticGenerationRule
-	binding     domainsemantic.SemanticEmbeddingBinding
-	vectorStore domainsemantic.VectorStoreBackend
+	rule               domainsemantic.SemanticGenerationRule
+	binding            domainsemantic.SemanticEmbeddingBinding
+	vectorStore        domainsemantic.VectorStoreBackend
+	semanticGeneration uint64
+	rebuildEpoch       string
+	rebuildRequired    bool
 }
 
 func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
@@ -51,16 +54,24 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 	perBindingLimit := perBindingLimit(in.Limit)
 	successfulSearches := 0
 	for _, item := range selected {
+		if item.rebuildRequired {
+			addWarning(&res, Warning{Code: "semantic_generation_stale", Message: fmt.Sprintf("rule %s binding %q requires rebuild", item.rule.Key, item.binding.Key), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key})
+			successfulSearches++
+			res.Groups = append(res.Groups, GroupSummary{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexIDs: []domainsemantic.SemanticIndexID{domainsemantic.SemanticIndexID(item.rule.ID)}, SemanticRuleIDs: []domainsemantic.SemanticRuleID{item.rule.ID}})
+			continue
+		}
 		profileRef, profileID := bindingProfile(item.binding)
 		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), ActorPrincipalID: in.ActorPrincipalID, OnBehalfOfPrincipalID: item.rule.OwnerPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
 		if err != nil {
-			addWarning(&res, Warning{Code: embeddingWarningCode(err), Message: fmt.Sprintf("rule %s binding %q skipped: %v", item.rule.Key, item.binding.Key, err), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
+			code := embeddingWarningCode(err)
+			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
 		vectorSpaceKey := vectorSpaceForModel(query.ModelID, models)
 		results, err := p.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: item.rule.SpaceID, DomainID: item.rule.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), VectorStoreID: item.vectorStore.ID, VectorSpaceKey: vectorSpaceKey, Query: query.Vector, Limit: perBindingLimit, MinScore: in.MinScore})
 		if err != nil {
-			addWarning(&res, Warning{Code: searchIndexWarningCode(err), Message: fmt.Sprintf("rule %s binding %q search skipped: %v", item.rule.Key, item.binding.Key, err), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
+			code := searchIndexWarningCode(err)
+			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q search skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
 		successfulSearches++
@@ -69,7 +80,7 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		staleConfiguration := false
 		for _, result := range results {
 			rec := result.Record
-			if rec.SemanticConfigurationHash == "" || rec.SemanticConfigurationHash != configurationHash {
+			if rec.SemanticGeneration != item.semanticGeneration || rec.RebuildEpoch != item.rebuildEpoch || rec.SemanticConfigurationHash == "" || rec.SemanticConfigurationHash != configurationHash {
 				staleConfiguration = true
 				continue
 			}
@@ -105,6 +116,14 @@ func (p Planner) selectRuleBindings(ctx context.Context, in Input, vectorStores 
 	if err != nil {
 		return nil, nil, err
 	}
+	states, err := p.SpaceManager.ListSemanticRuleStates(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	stateByRule := make(map[domainsemantic.SemanticRuleID]domainsemantic.SemanticRuleState, len(states))
+	for _, state := range states {
+		stateByRule[state.SemanticRuleID] = state
+	}
 	wantedRules := map[domainsemantic.SemanticRuleID]bool{}
 	for _, id := range in.SemanticRuleIDs {
 		if id != uuid.Nil {
@@ -138,6 +157,16 @@ func (p Planner) selectRuleBindings(ctx context.Context, in Input, vectorStores 
 			if !binding.Enabled {
 				continue
 			}
+			reliability := domainsemantic.SemanticReliabilityState{SemanticGeneration: 1}
+			if state, ok := stateByRule[rule.ID]; ok {
+				if saved, ok := state.ReliabilityByBinding[binding.Key]; ok {
+					reliability = saved
+					if reliability.SemanticGeneration == 0 {
+						reliability.SemanticGeneration = 1
+					}
+				}
+			}
+			rebuildRequired := reliability.RebuildState == "required" || reliability.RebuildState == "running" || reliability.RebuildState == "failed"
 			if wantedBinding != "" && binding.Key != wantedBinding {
 				continue
 			}
@@ -158,7 +187,7 @@ func (p Planner) selectRuleBindings(ctx context.Context, in Input, vectorStores 
 				warnings = append(warnings, Warning{Code: "vector_store_unsupported", Message: fmt.Sprintf("rule %s binding %q skipped: unsupported vector store type %s", rule.Key, binding.Key, store.Type), SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key})
 				continue
 			}
-			out = append(out, selectedBinding{rule: rule, binding: binding, vectorStore: store})
+			out = append(out, selectedBinding{rule: rule, binding: binding, vectorStore: store, semanticGeneration: reliability.SemanticGeneration, rebuildEpoch: reliability.RebuildEpoch, rebuildRequired: rebuildRequired})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {

@@ -136,7 +136,7 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 		t.Fatalf("rule states=%#v err=%v want one", states, err)
 	}
 	gotReliability := states[0].ReliabilityByBinding["search"]
-	if gotReliability.SemanticGeneration != 3 || gotReliability.FreshThrough != 8 || gotReliability.CapacityState != "exhausted" || len(gotReliability.UnresolvedRanges) != 1 {
+	if gotReliability.SemanticGeneration != 3 || gotReliability.FreshThrough != 0 || gotReliability.RebuildState != "required" || gotReliability.CapacityState != "exhausted" || len(gotReliability.UnresolvedRanges) != 1 {
 		t.Fatalf("restored reliability state mismatch: %+v", gotReliability)
 	}
 	if restored.raftCommandApplied("semantic-maintenance-" + spaceID.String() + "-stale-post-snapshot") {

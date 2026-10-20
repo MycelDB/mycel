@@ -112,17 +112,9 @@ func (a Analyzer) AnalyzeOnce(ctx context.Context, in AnalyzeInput) (AnalyzeResu
 		}
 		checkpointRevision := maxUint64(state.GraphDirtyCheckpointRevision, checkpoint.LastGraphRevision)
 		for _, event := range events {
-			if event.GraphRevision <= checkpointRevision {
-				continue
-			}
-			if !eventTouchesDomain(event, index.DomainID) {
-				state.GraphDirtyCheckpointRevision = event.GraphRevision
-				checkpoint.LastGraphRevision = event.GraphRevision
-				checkpoint.LastGraphDirtyEventID = event.ID
-				checkpoint.UpdatedAt = now
-				if err := a.MaintenanceManager.SaveCheckpoint(ctx, checkpoint); err != nil {
-					return result, err
-				}
+			// Graph revisions are domain-local. Events for another domain must not
+			// advance this index's checkpoint or they can skip later local events.
+			if !eventTouchesDomain(event, index.DomainID) || event.GraphRevision <= checkpointRevision {
 				continue
 			}
 			count, err := a.enqueueForEvent(ctx, index, event, now)
@@ -196,10 +188,12 @@ func (a Analyzer) analyzeRules(ctx context.Context, rules []domainsemantic.Seman
 			}
 			checkpointRevision := checkpoint.LastGraphRevision
 			for _, event := range events {
-				if event.GraphRevision <= checkpointRevision {
+				// Graph revisions are domain-local. Ignore foreign-domain events
+				// without moving this rule binding's local revision frontier.
+				if !eventTouchesDomain(event, rule.DomainID) || event.GraphRevision <= checkpointRevision {
 					continue
 				}
-				if !eventTouchesDomain(event, rule.DomainID) || !a.eventMatchesRuleTrigger(ctx, rule, event) {
+				if !a.eventMatchesRuleTrigger(ctx, rule, event) {
 					checkpoint.LastGraphRevision = event.GraphRevision
 					checkpoint.LastGraphDirtyEventID = event.ID
 					checkpoint.UpdatedAt = now
@@ -210,10 +204,12 @@ func (a Analyzer) analyzeRules(ctx context.Context, rules []domainsemantic.Seman
 				}
 				count, err := a.enqueueRuleBindingForEvent(ctx, rule, binding, event, now)
 				if err != nil {
-					state.State = "failed"
-					state.LastError = err.Error()
-					state.UpdatedAt = now
-					_, _ = a.SpaceManager.UpsertSemanticRuleState(ctx, state)
+					if !strings.Contains(err.Error(), "frontier capacity exhausted") {
+						state.State = "failed"
+						state.LastError = "semantic maintenance analysis failed"
+						state.UpdatedAt = now
+						_, _ = a.SpaceManager.UpsertSemanticRuleState(ctx, state)
+					}
 					return result, err
 				}
 				result.EnqueuedItems += count
@@ -260,6 +256,9 @@ func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsem
 		}
 	}
 	if retained >= maxReliabilityBarrierItems || retained+len(targets) > maxReliabilityBarrierItems {
+		if err := a.markRuleBindingCapacityExhausted(ctx, rule.ID, binding.Key, now); err != nil {
+			return 0, err
+		}
 		return 0, fmt.Errorf("semantic reliability frontier capacity exhausted; rebuild required")
 	}
 	batchSize := a.MaxBatchSize
@@ -301,6 +300,39 @@ func (a Analyzer) enqueueRuleBindingForEvent(ctx context.Context, rule domainsem
 		return count, err
 	}
 	return count, nil
+}
+
+func (a Analyzer) markRuleBindingCapacityExhausted(ctx context.Context, ruleID domainsemantic.SemanticRuleID, bindingKey string, now time.Time) error {
+	states, err := a.SpaceManager.ListSemanticRuleStates(ctx)
+	if err != nil {
+		return err
+	}
+	state := domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "failed"}
+	for _, candidate := range states {
+		if candidate.SemanticRuleID == ruleID {
+			state = candidate
+			break
+		}
+	}
+	if state.ReliabilityByBinding == nil {
+		state.ReliabilityByBinding = map[string]domainsemantic.SemanticReliabilityState{}
+	}
+	reliability := state.ReliabilityByBinding[bindingKey]
+	reliability.EmbeddingBindingKey = bindingKey
+	if reliability.SemanticGeneration == 0 {
+		reliability.SemanticGeneration = 1
+	}
+	reliability.CapacityState = "exhausted"
+	reliability.CapacityReason = "semantic reliability frontier capacity exhausted; rebuild required"
+	reliability.RebuildState = "required"
+	reliability.RebuildErrorSanitized = reliability.CapacityReason
+	reliability.FreshThrough = 0
+	state.ReliabilityByBinding[bindingKey] = reliability
+	state.State = "failed"
+	state.LastError = reliability.CapacityReason
+	state.UpdatedAt = now
+	_, err = a.SpaceManager.UpsertSemanticRuleState(ctx, state)
+	return err
 }
 
 func (a Analyzer) enqueueForEvent(ctx context.Context, index domainsemantic.SemanticIndex, event domainsemantic.GraphDirtyEvent, now time.Time) (int, error) {
@@ -480,9 +512,7 @@ func (a Analyzer) resolveRuleTargets(ctx context.Context, rule domainsemantic.Se
 		}
 		return out
 	case domainsemantic.SemanticTargetSelectorGQL:
-		// GQL execution needs a graph transaction/session context and is wired in a
-		// later analyzer follow-up. SGR3 validation already prevents unsafe GQL
-		// selectors from being stored.
+		// Validation rejects this mode until analyzer execution is implemented.
 		return out
 	}
 	for _, nodeID := range candidateNodeIDs(event) {
@@ -690,6 +720,7 @@ type Worker struct {
 	SkipWorkItem       func(context.Context, domainsemantic.SemanticDirtyWorkItem) (bool, error)
 	ResolveGeneration  func(context.Context, domainsemantic.SemanticDirtyWorkItem) (uint64, string, error)
 	AuthorizeWorkItem  func(context.Context, domainsemantic.SemanticDirtyWorkItem) error
+	AcquireWorkItem    func(context.Context, domainsemantic.SemanticDirtyWorkItem) (func(), error)
 	ClassifyFailure    func(error, domainsemantic.SemanticDirtyWorkItem, WorkerConfig, time.Time) storesemantic.WorkFailure
 	Logger             *slog.Logger
 }
@@ -764,6 +795,15 @@ func (w Worker) ProcessOnce(ctx context.Context, limit int) (WorkerResult, error
 
 func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem, cfg WorkerConfig) (WorkerResult, error) {
 	result := WorkerResult{Processed: 1}
+	release := func() {}
+	if w.AcquireWorkItem != nil {
+		var err error
+		release, err = w.AcquireWorkItem(ctx, item)
+		if err != nil {
+			return result, err
+		}
+	}
+	defer release()
 	if w.SkipWorkItem != nil {
 		skip, err := w.SkipWorkItem(ctx, item)
 		if err != nil {
@@ -947,7 +987,10 @@ func DefaultClassifyFailure(err error, item domainsemantic.SemanticDirtyWorkItem
 	case strings.Contains(lower, "vector"):
 		category = "vector_store_error"
 	}
-	failure := storesemantic.WorkFailure{FailedAt: now, Category: category, Message: message, Retryable: retryable}
+	// Provider and connector errors may contain echoed request content, secrets,
+	// or response bodies. Persist only an allowlisted category diagnostic.
+	safeMessage := "semantic maintenance failed (" + category + ")"
+	failure := storesemantic.WorkFailure{FailedAt: now, Category: category, Message: safeMessage, Retryable: retryable}
 	if retryable {
 		delay := backoffDelay(item.Attempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)
 		next := now.Add(delay)

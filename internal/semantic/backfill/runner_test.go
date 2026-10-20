@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -346,6 +347,41 @@ func (f *fakeConnector) Embed(ctx context.Context, in connectors.EmbedInput) (co
 	f.calls = append(f.calls, in.Input)
 	f.inputs = append(f.inputs, in)
 	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated", EndpointID: f.endpointID, ModelID: f.modelID, CapabilityID: f.capID}, nil
+}
+
+func TestRunnerPaginatesSemanticRuleBackfillWithoutTruncation(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	roots := make([]graph.Node, 0, 3)
+	for i := 0; i < 3; i++ {
+		root, _ := env.addRootWithChild(t, fmt.Sprintf("root %d", i), fmt.Sprintf("child %d", i))
+		roots = append(roots, root)
+		env.graph.nodes[len(env.graph.nodes)-2].Labels = []string{"Note"}
+		env.graph.nodes[len(env.graph.nodes)-1].Labels = []string{"Note"}
+	}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	seen := map[graph.NodeID]struct{}{}
+	offset := 0
+	for {
+		result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Limit: 1, Offset: offset, Force: true, SourceGraphRevision: 7, SemanticGeneration: 2, RebuildEpoch: "epoch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.TotalSelectedCount != 3 || result.SelectedCount != 1 || len(result.Records) != 1 {
+			t.Fatalf("unexpected page at offset %d: %+v", offset, result)
+		}
+		seen[result.Records[0].NodeID] = struct{}{}
+		if result.NextOffset == 0 {
+			break
+		}
+		if result.NextOffset <= offset {
+			t.Fatalf("pagination did not advance: %+v", result)
+		}
+		offset = result.NextOffset
+	}
+	if len(seen) != len(roots) {
+		t.Fatalf("backfill pagination missed roots: got %d want %d", len(seen), len(roots))
+	}
 }
 
 func TestRunnerBackfillsSemanticRuleBinding(t *testing.T) {

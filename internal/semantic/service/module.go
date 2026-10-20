@@ -42,6 +42,7 @@ type semanticGateContextKey struct{}
 
 type Module struct {
 	mu                   sync.Mutex
+	publicationMu        sync.Mutex
 	dataDir              string
 	encryption           *encryption.Service
 	global               storesemantic.GlobalManager
@@ -685,6 +686,8 @@ func (m *Module) CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 }
 
 func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput, mutate func(domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem) (MaintenanceWorkItem, error) {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
 	if in.WorkItemID == uuid.Nil {
 		return MaintenanceWorkItem{}, fmt.Errorf("work_item_id is required")
 	}
@@ -722,11 +725,29 @@ func toMaintenanceWorkItem(item domainsemantic.SemanticDirtyWorkItem) Maintenanc
 }
 
 func sanitizeMaintenanceError(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) > 500 {
-		return value[:500]
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.Contains(lower, "capacity exhausted"):
+		return "semantic reliability frontier capacity exhausted; rebuild required"
+	case strings.Contains(lower, "catch-up iteration limit"):
+		return "semantic rebuild catch-up iteration limit reached"
+	case strings.Contains(lower, "stale semantic"):
+		return "stale semantic work rejected"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline"):
+		return "semantic provider timeout"
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "429"):
+		return "semantic provider rate limited"
+	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy"):
+		return "semantic provider authorization failed"
+	case strings.Contains(lower, "configuration") || strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "invalid"):
+		return "semantic configuration failed"
+	case strings.Contains(lower, "vector"):
+		return "semantic vector store failed"
+	case lower == "":
+		return ""
+	default:
+		return "semantic maintenance failed"
 	}
-	return value
 }
 
 func firstNonEmpty(values ...string) string {
@@ -775,6 +796,8 @@ func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, d
 }
 
 func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error) {
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
@@ -848,7 +871,7 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem, ResolveGeneration: m.semanticGenerationForWork, AuthorizeWorkItem: m.authorizeSemanticWorkItem}.ProcessOnce(ctx, in.Limit)
+	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem, ResolveGeneration: m.semanticGenerationForWork, AuthorizeWorkItem: m.authorizeSemanticWorkItem, AcquireWorkItem: m.acquireSemanticWorkItem}.ProcessOnce(ctx, in.Limit)
 	if err != nil {
 		return res, err
 	}
@@ -976,11 +999,18 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
+	if in.SourceGraphRevision > 0 {
+		if reader, ok := runner.GraphReader.(semanticGraphReader); ok {
+			pinned := int64(in.SourceGraphRevision)
+			reader.baseRevision = &pinned
+			runner.GraphReader = reader
+		}
+	}
 	result, err := runner.Run(ctx, in)
 	if err != nil {
 		return result, err
 	}
-	if in.SemanticRuleID != uuid.Nil && result.FailedCount == 0 && in.SourceGraphRevision > 0 {
+	if in.SemanticRuleID != uuid.Nil && result.FailedCount == 0 && result.NextOffset == 0 && in.SourceGraphRevision > 0 && strings.TrimSpace(in.RebuildEpoch) == "" {
 		status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
 		if statusErr == nil {
 			reliability := status.Rebuild
@@ -1056,13 +1086,14 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 		return semanticbackfill.Runner{}, err
 	}
 	global := m.GlobalManager()
-	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend(), AuthorizePublication: m.authorizeSemanticPublication}, nil
+	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend(), AcquirePublication: m.acquireSemanticPublication}, nil
 }
 
 type semanticGraphReader struct {
-	reader    GraphReader
-	revisions GraphRevisionReader
-	spaceID   domainspace.SpaceID
+	reader       GraphReader
+	revisions    GraphRevisionReader
+	spaceID      domainspace.SpaceID
+	baseRevision *int64
 }
 
 func (r semanticGraphReader) GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error) {
@@ -1111,7 +1142,9 @@ func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.Domai
 
 func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (sessionmodel.GraphTransaction, error) {
 	baseRevision := int64(0)
-	if r.revisions != nil {
+	if r.baseRevision != nil {
+		baseRevision = *r.baseRevision
+	} else if r.revisions != nil {
 		rev, err := r.revisions.CurrentDomainRevision(ctx, r.spaceID.String(), domainID.String())
 		if err != nil {
 			return sessionmodel.GraphTransaction{}, err

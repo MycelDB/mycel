@@ -72,6 +72,43 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	}
 }
 
+func TestAnalyzerForeignDomainEventDoesNotAdvanceLocalCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	localDomainID := graph.DomainID(uuid.New())
+	foreignDomainID := graph.DomainID(uuid.New())
+	localNodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: localDomainID, Key: "local", Name: "local", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 100, SpaceID: spaceID, DomainIDs: []graph.DomainID{foreignDomainID}, UpdatedNodeIDs: []graph.NodeID{graph.NodeID(uuid.New())}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	analyzer := Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: fakeGraphReader{nodes: map[graph.NodeID]graph.Node{localNodeID: {ID: localNodeID, DomainID: localDomainID, Content: "local"}}}}
+	if _, err := analyzer.AnalyzeOnce(ctx, AnalyzeInput{}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := maintenanceMgr.GetCheckpoint(ctx, analyzerConsumer(index.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.LastGraphRevision != 0 {
+		t.Fatalf("foreign domain advanced local checkpoint to %d", checkpoint.LastGraphRevision)
+	}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{localDomainID}, UpdatedNodeIDs: []graph.NodeID{localNodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := analyzer.AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EnqueuedItems != 1 {
+		t.Fatalf("local revision was skipped after foreign event: %+v", result)
+	}
+}
+
 func TestAnalyzerResolvesSubtreeTargetsAndCooldown(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
