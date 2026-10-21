@@ -877,20 +877,30 @@ func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing
 	}
 	setter := mgr.(SemanticRuleEnabledManager)
 	updatedAt := created.UpdatedAt.Add(time.Second)
-	updated, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, false, updatedAt)
+	desired := created
+	desired.Enabled = false
+	desired.UpdatedAt = updatedAt
+	updated, err := setter.SetSemanticRuleEnabled(ctx, created, desired)
 	if err != nil {
 		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
 	}
 	if updated.Enabled || !updated.UpdatedAt.Equal(updatedAt) || updated.ID != created.ID || !updated.CreatedAt.Equal(created.CreatedAt) {
 		t.Fatalf("updated rule=%+v", updated)
 	}
-	if replayed, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, false, updatedAt); err != nil || replayed.Enabled || !replayed.UpdatedAt.Equal(updatedAt) {
+	if replayed, err := setter.SetSemanticRuleEnabled(ctx, created, desired); err != nil || replayed.Enabled || !replayed.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("idempotent replay=%+v err=%v", replayed, err)
 	}
-	if _, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, true, updatedAt.Add(time.Second)); !errors.Is(err, ErrConflict) {
+	staleDesired := created
+	staleDesired.UpdatedAt = updatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created, staleDesired); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale conditional update error=%v, want ErrConflict", err)
 	}
-	if _, err := setter.SetSemanticRuleEnabled(ctx, domainsemantic.SemanticRuleID(uuid.New()), updatedAt, true, updatedAt.Add(time.Second)); !errors.Is(err, ErrNotFound) {
+	missing := desired
+	missing.ID = domainsemantic.SemanticRuleID(uuid.New())
+	missing.UpdatedAt = updatedAt
+	missingDesired := missing
+	missingDesired.UpdatedAt = updatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, missing, missingDesired); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("replacement identity update error=%v, want ErrNotFound", err)
 	}
 	reopened := NewSpaceManager()
@@ -900,6 +910,48 @@ func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing
 	rules, err := reopened.ListSemanticRules(ctx)
 	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("reopened rules=%+v err=%v", rules, err)
+	}
+}
+
+func TestSpaceManagerSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	dir := t.TempDir()
+	writer := NewSpaceManager()
+	if err := writer.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := writer.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "same-timestamp-rule", DisplayName: "before", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := NewSpaceManager()
+	if err := stale.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	concurrent := created
+	concurrent.DisplayName = "concurrent"
+	concurrent.UpdatedAt = created.UpdatedAt
+	if _, err := writer.UpsertSemanticRule(ctx, concurrent); err != nil {
+		t.Fatal(err)
+	}
+	desired := created
+	desired.Enabled = false
+	desired.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	if _, err := stale.(SemanticRuleEnabledManager).SetSemanticRuleEnabled(ctx, created, desired); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-timestamp concurrent update error=%v, want ErrConflict", err)
+	}
+	verified := NewSpaceManager()
+	if err := verified.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := verified.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].DisplayName != "concurrent" || !rules[0].Enabled {
+		t.Fatalf("rules after rejected stale mutation=%+v err=%v", rules, err)
 	}
 }
 
@@ -934,7 +986,10 @@ func TestSpaceManagerSetSemanticRuleEnabledReloadsAcrossManagers(t *testing.T) {
 		t.Fatal(err)
 	}
 	setter := stale.(SemanticRuleEnabledManager)
-	if _, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, false, created.UpdatedAt.Add(time.Second)); !errors.Is(err, ErrNotFound) {
+	desired := created
+	desired.Enabled = false
+	desired.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created, desired); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("stale cross-manager update error=%v, want ErrNotFound", err)
 	}
 	verified := NewSpaceManager()

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -21,11 +20,11 @@ const (
 )
 
 type semanticMutationRecord struct {
-	Kind                          string              `json:"kind"`
-	SpaceID                       domainspace.SpaceID `json:"space_id,omitempty"`
-	Payload                       json.RawMessage     `json:"payload,omitempty"`
-	Flag                          bool                `json:"flag,omitempty"`
-	ExpectedSemanticRuleUpdatedAt *time.Time          `json:"expected_semantic_rule_updated_at,omitempty"`
+	Kind                 string                                 `json:"kind"`
+	SpaceID              domainspace.SpaceID                    `json:"space_id,omitempty"`
+	Payload              json.RawMessage                        `json:"payload,omitempty"`
+	Flag                 bool                                   `json:"flag,omitempty"`
+	ExpectedSemanticRule *domainsemantic.SemanticGenerationRule `json:"expected_semantic_rule,omitempty"`
 }
 
 type semanticCommandRejection struct{ err error }
@@ -283,12 +282,12 @@ func applySemanticSpaceMutation(ctx context.Context, s storesemantic.SpaceManage
 		if err := json.Unmarshal(r.Payload, &v); err != nil {
 			return err
 		}
-		if r.ExpectedSemanticRuleUpdatedAt != nil {
+		if r.ExpectedSemanticRule != nil {
 			setter, ok := s.(storesemantic.SemanticRuleEnabledManager)
 			if !ok {
 				return errors.New("semantic rule enabled-state storage mutation is unavailable")
 			}
-			_, err := setter.SetSemanticRuleEnabled(ctx, v.ID, *r.ExpectedSemanticRuleUpdatedAt, v.Enabled, v.UpdatedAt)
+			_, err := setter.SetSemanticRuleEnabled(ctx, *r.ExpectedSemanticRule, v)
 			return err
 		}
 		_, err := s.UpsertSemanticRule(ctx, v)

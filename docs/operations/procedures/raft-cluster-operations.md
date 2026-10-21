@@ -123,7 +123,7 @@ Downgrade guidance:
 
 ## Semantic rule control upgrade gate
 
-Semantic rule enable/disable operations use the versioned `semantic.space.conditional-mutation.v2` partition record. Do not issue these operations during a mixed-version rolling interval. Before proposing the record, a supporting daemon probes every configured voting peer through the authenticated backend and requires an affirmative capability response. An older, unreachable, missing-address, or nonaffirming peer causes the operation to fail with `FailedPrecondition`; no conditional record is proposed.
+Semantic rule enable/disable operations use the versioned `semantic.space.conditional-mutation.v2` partition record. Do not issue these operations during a mixed-version rolling interval. Before proposing the record, a supporting daemon probes every configured voting peer through the authenticated backend and requires an affirmative capability response. Each peer probe has a two-second upper bound and also honors an earlier caller deadline. An older, unreachable, missing-address, timed-out, or nonaffirming peer causes the operation to fail with `FailedPrecondition`; no conditional record is proposed.
 
 For an upgrade, finish replacing every voting member, wait for all system and partition groups to regain leaders and healthy applied progress, and only then resume semantic rule enable/disable operations. Do not bypass the gate by removing a healthy voter, editing Raft logs, or calling the backend capability operation manually. A downgrade to a daemon that does not support the v2 record requires stopping these operations before the first older member starts.
 

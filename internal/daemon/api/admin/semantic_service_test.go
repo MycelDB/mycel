@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -43,7 +42,10 @@ func (m *semanticRuleResponseManager) SetSemanticRuleEnabled(ctx context.Context
 		}
 	}
 	setter := m.space.(storesemantic.SemanticRuleEnabledManager)
-	_, err := setter.SetSemanticRuleEnabled(ctx, in.Rule.ID, in.ExpectedUpdatedAt, in.Enabled, in.UpdatedAt)
+	desired := in.Rule
+	desired.Enabled = in.Enabled
+	desired.UpdatedAt = in.UpdatedAt
+	_, err := setter.SetSemanticRuleEnabled(ctx, in.Rule, desired)
 	return err
 }
 
@@ -103,10 +105,14 @@ func TestSetSemanticRuleEnabledReturnsExactConditionalMutation(t *testing.T) {
 	}
 }
 
-func TestSetSemanticRuleEnabledMapsConcurrentUpdateConflict(t *testing.T) {
+func TestSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(t *testing.T) {
 	ctx, spaceID, space, created, global := newSemanticRuleServiceTest(t)
 	manager := &semanticRuleResponseManager{space: space, global: global, beforeSet: func() error {
-		return fmt.Errorf("%w: concurrent semantic rule update", storesemantic.ErrConflict)
+		concurrent := created
+		concurrent.DisplayName = "concurrent"
+		concurrent.UpdatedAt = created.UpdatedAt
+		_, err := space.UpsertSemanticRule(ctx, concurrent)
+		return err
 	}}
 	service := NewAdminSemanticService(manager, nil, &scopedSemanticAuthorizer{})
 	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: "operator"})
@@ -115,6 +121,10 @@ func TestSetSemanticRuleEnabledMapsConcurrentUpdateConflict(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("SetSemanticRuleEnabled() code=%v err=%v; want FailedPrecondition", status.Code(err), err)
+	}
+	rules, listErr := space.ListSemanticRules(ctx)
+	if listErr != nil || len(rules) != 1 || rules[0].DisplayName != "concurrent" || !rules[0].Enabled {
+		t.Fatalf("concurrent rule=%+v err=%v", rules, listErr)
 	}
 }
 

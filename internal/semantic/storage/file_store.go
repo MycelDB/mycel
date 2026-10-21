@@ -788,18 +788,40 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 	return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
 }
 
-func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, id domainsemantic.SemanticRuleID, expectedUpdatedAt time.Time, enabled bool, updatedAt time.Time) (domainsemantic.SemanticGenerationRule, error) {
+func semanticRuleStateEqual(left, right domainsemantic.SemanticGenerationRule) (bool, error) {
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		return false, err
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		return false, err
+	}
+	return string(leftJSON) == string(rightJSON), nil
+}
+
+func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected domainsemantic.SemanticGenerationRule, desired domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err
 	}
-	if id == uuid.Nil {
-		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic_rule_id is required", ErrInvalidInput)
+	if expected.ID == uuid.Nil || desired.ID != expected.ID {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: matching semantic_rule_id values are required", ErrInvalidInput)
 	}
-	if expectedUpdatedAt.IsZero() || updatedAt.IsZero() || !updatedAt.After(expectedUpdatedAt) {
+	expected.UpdatedAt = expected.UpdatedAt.UTC()
+	desired.UpdatedAt = desired.UpdatedAt.UTC()
+	if expected.UpdatedAt.IsZero() || desired.UpdatedAt.IsZero() || !desired.UpdatedAt.After(expected.UpdatedAt) {
 		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule timestamps must advance", ErrInvalidInput)
 	}
-	expectedUpdatedAt = expectedUpdatedAt.UTC()
-	updatedAt = updatedAt.UTC()
+	candidate := expected
+	candidate.Enabled = desired.Enabled
+	candidate.UpdatedAt = desired.UpdatedAt
+	equal, err := semanticRuleStateEqual(candidate, desired)
+	if err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if !equal {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: enabled-state mutation changed fields other than enabled and updated_at", ErrInvalidInput)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var latest semanticRulesState
@@ -808,24 +830,29 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, id domainsema
 	}
 	m.rules = latest
 	for i, rule := range m.rules.Rules {
-		if rule.ID != id {
+		if rule.ID != expected.ID {
 			continue
 		}
-		if rule.Enabled == enabled && rule.UpdatedAt.Equal(updatedAt) {
-			return rule, nil
-		}
-		if !rule.UpdatedAt.Equal(expectedUpdatedAt) {
-			return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule changed since it was read", ErrConflict)
-		}
-		previous := rule
-		rule.Enabled = enabled
-		rule.UpdatedAt = updatedAt
-		m.rules.Rules[i] = rule
-		if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
-			m.rules.Rules[i] = previous
+		equal, err := semanticRuleStateEqual(rule, desired)
+		if err != nil {
 			return domainsemantic.SemanticGenerationRule{}, err
 		}
-		return rule, nil
+		if equal {
+			return rule, nil
+		}
+		equal, err = semanticRuleStateEqual(rule, expected)
+		if err != nil {
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
+		if !equal {
+			return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule changed since it was read", ErrConflict)
+		}
+		m.rules.Rules[i] = desired
+		if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
+			m.rules.Rules[i] = rule
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
+		return desired, nil
 	}
 	return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule not found", ErrNotFound)
 }

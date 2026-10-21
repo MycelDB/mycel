@@ -712,6 +712,19 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	}
 }
 
+func storedSemanticRule(t *testing.T, m *Module, ctx context.Context, spaceID domainspace.SpaceID) domainsemantic.SemanticGenerationRule {
+	t.Helper()
+	manager, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 {
+		t.Fatalf("stored semantic rules=%+v err=%v", rules, err)
+	}
+	return rules[0]
+}
+
 func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
@@ -741,6 +754,7 @@ func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	created = storedSemanticRule(t, m, ctx, spaceID)
 	updatedAt := created.UpdatedAt.Add(time.Second)
 	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
 		t.Fatal(err)
@@ -748,10 +762,11 @@ func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
 	staleRule := created
 	staleRule.Enabled = true
 	staleRule.UpdatedAt = updatedAt.Add(time.Second)
-	expected := created.UpdatedAt.UTC()
+	expected := created
+	expected.UpdatedAt = expected.UpdatedAt.UTC()
 	payload, err := json.Marshal(semanticMutationRecord{
 		Kind: "semantic_rule.upsert", SpaceID: spaceID, Payload: raw(staleRule),
-		ExpectedSemanticRuleUpdatedAt: &expected,
+		ExpectedSemanticRule: &expected,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -825,6 +840,7 @@ func TestSemanticRuleEnabledWALRejectionDoesNotBlockLaterMutation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	created = storedSemanticRule(t, m, ctx, spaceID)
 	updatedAt := created.UpdatedAt.Add(time.Second)
 	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
 		t.Fatal(err)
@@ -893,6 +909,7 @@ func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	created = storedSemanticRule(t, m, ctx, spaceID)
 	updatedAt := created.UpdatedAt.Add(time.Second)
 	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
 		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
@@ -1314,12 +1331,25 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertSemanticRule() error = %v", err)
 	}
+	currentRules, err := modules[leaderNode].baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRules, err := currentRules.ListSemanticRules(ctx)
+	if err != nil || len(storedRules) != 1 {
+		t.Fatalf("stored semantic rules=%+v err=%v", storedRules, err)
+	}
+	created = storedRules[0]
 	updatedAt := created.UpdatedAt.Add(time.Second)
 	unsupportedNode := consensus.NodeID(1)
 	if unsupportedNode == leaderNode {
 		unsupportedNode = 2
 	}
-	modules[leaderNode].conditionalRuleSupportProbe = func(_ context.Context, nodeID consensus.NodeID, _ domainspace.SpaceID) error {
+	probeHadDeadline := false
+	modules[leaderNode].conditionalRuleSupportProbe = func(probeCtx context.Context, nodeID consensus.NodeID, _ domainspace.SpaceID) error {
+		if _, ok := probeCtx.Deadline(); ok {
+			probeHadDeadline = true
+		}
 		if nodeID == unsupportedNode {
 			return errors.New("conditional mutation capability unsupported")
 		}
@@ -1332,6 +1362,9 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	_, commitBeforeBlockedMutation, _ := leaderGroup.Progress()
 	if err := modules[leaderNode].SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); !errors.Is(err, storesemantic.ErrConflict) {
 		t.Fatalf("mixed-version SetSemanticRuleEnabled() error=%v, want fail-closed ErrConflict", err)
+	}
+	if !probeHadDeadline {
+		t.Fatal("conditional mutation capability probe did not receive a bounded context")
 	}
 	_, commitAfterBlockedMutation, _ := leaderGroup.Progress()
 	if commitAfterBlockedMutation != commitBeforeBlockedMutation {

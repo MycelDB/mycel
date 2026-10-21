@@ -15,13 +15,14 @@ func (m *Module) SetSemanticRuleEnabled(ctx context.Context, in SemanticRuleEnab
 	if in.ExpectedUpdatedAt.IsZero() || !in.Rule.UpdatedAt.Equal(in.ExpectedUpdatedAt) || in.UpdatedAt.IsZero() || !in.UpdatedAt.After(in.ExpectedUpdatedAt) {
 		return fmt.Errorf("%w: semantic rule timestamps must advance from the expected version", storesemantic.ErrInvalidInput)
 	}
-	expectedUpdatedAt := in.ExpectedUpdatedAt.UTC()
-	rule := in.Rule
+	expectedRule := in.Rule
+	expectedRule.UpdatedAt = in.ExpectedUpdatedAt.UTC()
+	rule := expectedRule
 	rule.Enabled = in.Enabled
 	rule.UpdatedAt = in.UpdatedAt.UTC()
 	record := semanticMutationRecord{
 		Kind: "semantic_rule.upsert", SpaceID: rule.SpaceID, Payload: raw(rule),
-		ExpectedSemanticRuleUpdatedAt: &expectedUpdatedAt,
+		ExpectedSemanticRule: &expectedRule,
 	}
 	if err := m.requireConditionalRuleMutationSupport(ctx, rule.SpaceID); err != nil {
 		return err

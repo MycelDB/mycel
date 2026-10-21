@@ -39,7 +39,7 @@ type GlobalManager interface {
 // SemanticRuleEnabledManager applies an ID-qualified, conditional enabled-state
 // mutation without permitting key-based identity replacement.
 type SemanticRuleEnabledManager interface {
-	SetSemanticRuleEnabled(ctx context.Context, id domainsemantic.SemanticRuleID, expectedUpdatedAt time.Time, enabled bool, updatedAt time.Time) (domainsemantic.SemanticGenerationRule, error)
+	SetSemanticRuleEnabled(ctx context.Context, expected domainsemantic.SemanticGenerationRule, desired domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error)
 }
 
 // CredentialLifecycleManager applies conditional credential/secret lifecycle

@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/backend"
@@ -64,6 +66,8 @@ func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs 
 	m.raftBackendAuthToken = token
 }
 
+const conditionalRuleSupportProbeTimeout = 2 * time.Second
+
 func (m *Module) requireConditionalRuleMutationSupport(ctx context.Context, spaceID domainspace.SpaceID) error {
 	if m.raftGroups == nil {
 		return nil
@@ -73,28 +77,38 @@ func (m *Module) requireConditionalRuleMutationSupport(ctx context.Context, spac
 		if nodeID == local {
 			continue
 		}
-		if m.conditionalRuleSupportProbe != nil {
-			if err := m.conditionalRuleSupportProbe(ctx, nodeID, spaceID); err != nil {
-				return fmt.Errorf("%w: conditional semantic rule mutation v2 support not confirmed for node %d: %v", storesemantic.ErrConflict, nodeID, err)
-			}
-			continue
-		}
-		idx := int(nodeID) - 1
-		if idx < 0 || idx >= len(m.raftNodeAddrs) || strings.TrimSpace(m.raftNodeAddrs[idx]) == "" {
-			return fmt.Errorf("%w: conditional semantic rule mutation v2 support cannot be confirmed for node %d", storesemantic.ErrConflict, nodeID)
-		}
-		payload, err := json.Marshal(raftSemanticReadRequest{Op: "conditional_rule_mutation_v2", SpaceID: spaceID})
-		if err != nil {
-			return err
-		}
-		raw, err := (backend.Client{AuthToken: m.raftBackendAuthToken}).ExecuteRaftSemanticRead(ctx, m.raftNodeAddrs[idx], spaceID.String(), payload)
+		probeCtx, cancel := context.WithTimeout(ctx, conditionalRuleSupportProbeTimeout)
+		err := m.probeConditionalRuleMutationSupport(probeCtx, nodeID, spaceID)
+		cancel()
 		if err != nil {
 			return fmt.Errorf("%w: conditional semantic rule mutation v2 support not confirmed for node %d: %v", storesemantic.ErrConflict, nodeID, err)
 		}
-		var capability raftSemanticCapabilityResponse
-		if err := json.Unmarshal(raw, &capability); err != nil || !capability.ConditionalRuleMutationV2 {
-			return fmt.Errorf("%w: conditional semantic rule mutation v2 support not confirmed for node %d", storesemantic.ErrConflict, nodeID)
-		}
+	}
+	return nil
+}
+
+func (m *Module) probeConditionalRuleMutationSupport(ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID) error {
+	if m.conditionalRuleSupportProbe != nil {
+		return m.conditionalRuleSupportProbe(ctx, nodeID, spaceID)
+	}
+	idx := int(nodeID) - 1
+	if idx < 0 || idx >= len(m.raftNodeAddrs) || strings.TrimSpace(m.raftNodeAddrs[idx]) == "" {
+		return errors.New("backend address is not configured")
+	}
+	payload, err := json.Marshal(raftSemanticReadRequest{Op: "conditional_rule_mutation_v2", SpaceID: spaceID})
+	if err != nil {
+		return err
+	}
+	raw, err := (backend.Client{AuthToken: m.raftBackendAuthToken}).ExecuteRaftSemanticRead(ctx, m.raftNodeAddrs[idx], spaceID.String(), payload)
+	if err != nil {
+		return err
+	}
+	var capability raftSemanticCapabilityResponse
+	if err := json.Unmarshal(raw, &capability); err != nil {
+		return err
+	}
+	if !capability.ConditionalRuleMutationV2 {
+		return errors.New("peer did not affirm conditional semantic rule mutation v2 support")
 	}
 	return nil
 }
