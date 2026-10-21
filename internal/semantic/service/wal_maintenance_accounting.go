@@ -41,7 +41,7 @@ func (m *Module) commitMaintenanceMutation(ctx context.Context, rec maintenanceM
 	}
 	m.globalMutationMu.Lock()
 	defer m.globalMutationMu.Unlock()
-	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+	if err := m.retrySemanticWALFailureLocked(ctx); err != nil {
 		return err
 	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
@@ -51,10 +51,7 @@ func (m *Module) commitMaintenanceMutation(ctx context.Context, rec maintenanceM
 	if err := m.wal.Sync(ctx, lsn); err != nil {
 		return err
 	}
-	if err := m.applySemanticMaintenance(ctx, wal.Record{Payload: p}); err != nil {
-		return err
-	}
-	return m.markSemanticWALApplied(ctx, lsn)
+	return m.applyAndMarkSemanticWALLocked(ctx, lsn, wal.Record{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
 }
 func (m *Module) markSemanticWALApplied(ctx context.Context, lsn wal.LSN) error {
 	if m.walProgress != nil {
@@ -285,6 +282,12 @@ func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Cont
 		}
 		return e, timing, nil
 	}
+	w.module.globalMutationMu.Lock()
+	defer w.module.globalMutationMu.Unlock()
+	if err := w.module.retrySemanticWALFailureLocked(ctx); err != nil {
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
 	stepStart = time.Now()
 	lsn, err := w.module.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: mutationPayload})
 	if err != nil {
@@ -300,8 +303,10 @@ func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Cont
 		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
 	timing.WALSync = time.Since(stepStart)
+	record := wal.Record{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: mutationPayload}
 	stepStart = time.Now()
-	if err := w.module.applySemanticMaintenance(ctx, wal.Record{Payload: mutationPayload}); err != nil {
+	if err := w.module.applySemanticMaintenance(ctx, record); err != nil {
+		w.module.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
 		timing.WALApply = time.Since(stepStart)
 		timing.Total = time.Since(traceStart)
 		return domainsemantic.GraphDirtyEvent{}, timing, err
@@ -309,6 +314,7 @@ func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Cont
 	timing.WALApply = time.Since(stepStart)
 	stepStart = time.Now()
 	if err := w.module.markSemanticWALApplied(ctx, lsn); err != nil {
+		w.module.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
 		timing.WALMark = time.Since(stepStart)
 		timing.Total = time.Since(traceStart)
 		return domainsemantic.GraphDirtyEvent{}, timing, err

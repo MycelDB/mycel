@@ -69,6 +69,7 @@ type Module struct {
 	wal                              *wal.Manager
 	walProgress                      wal.AppliedLSNStore
 	walWaiter                        *wal.ApplyWaiter
+	semanticWALFailure               *semanticWALApplyFailure
 	writeAllowed                     func() error
 	raftGroups                       *consensus.MultiGroup
 	raftPartitionCount               uint32

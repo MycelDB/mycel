@@ -1,6 +1,7 @@
 package filestore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -39,9 +40,11 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
 	}
-	return nil
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
 }

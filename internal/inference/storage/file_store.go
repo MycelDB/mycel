@@ -357,6 +357,11 @@ func (m *globalManager) DeleteSecret(ctx context.Context, id domaininference.Sec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	for _, credential := range m.credentials.Credentials {
+		if credential.SecretID == id {
+			return fmt.Errorf("%w: secret is referenced by credential %s", ErrInvalidInput, credential.ID)
+		}
+	}
 	m.secrets.Secrets = deleteByID(m.secrets.Secrets, id, func(v domaininference.Secret) uuid.UUID { return v.ID })
 	return m.writeJSON(ctx, m.secretsPath(), m.secrets)
 }

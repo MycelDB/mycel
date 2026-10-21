@@ -239,6 +239,11 @@ func (m *globalManager) recoverCredentialLifecycleLocked(ctx context.Context) (b
 
 func (m *globalManager) clearCredentialLifecycleIntentLocked() error {
 	path := m.path(credentialLifecycleIntentFileName)
+	if m.persistFailureHook != nil {
+		if err := m.persistFailureHook("remove", path); err != nil {
+			return err
+		}
+	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

@@ -39,6 +39,13 @@ type GlobalManager interface {
 // CredentialLifecycleManager applies conditional credential/secret lifecycle
 // changes while holding one storage lock. The enclosing WAL/Raft record provides
 // crash replay; this contract prevents concurrently visible partial state.
+// CredentialLifecyclePersistenceFaultInjector is a narrow deterministic test
+// seam for write/remove persistence-boundary failure injection. Production
+// composition does not configure it.
+type CredentialLifecyclePersistenceFaultInjector interface {
+	SetCredentialLifecyclePersistenceFaultInjector(func(operation, path string) error)
+}
+
 type CredentialLifecycleManager interface {
 	RecoverCredentialLifecycle(ctx context.Context) (bool, error)
 	CreateCredentialLifecycle(ctx context.Context, credential domainsemantic.InferenceCredential, secret *domainsemantic.Secret) (domainsemantic.InferenceCredential, *domainsemantic.Secret, error)

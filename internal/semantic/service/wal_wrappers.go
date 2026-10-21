@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -33,6 +34,54 @@ type walSpaceManager struct {
 	spaceID domainspace.SpaceID
 }
 
+type semanticWALApplyFailure struct {
+	LSN    wal.LSN
+	Record wal.Record
+}
+
+func (m *Module) applySemanticWALRecord(ctx context.Context, record wal.Record) error {
+	switch record.Type {
+	case recordTypeSemanticGlobal:
+		return m.applySemanticGlobal(ctx, record)
+	case recordTypeSemanticSpace:
+		return m.applySemanticSpace(ctx, record)
+	case recordTypeSemanticMaintenance:
+		return m.applySemanticMaintenance(ctx, record)
+	default:
+		return fmt.Errorf("unsupported semantic WAL record type %s", record.Type)
+	}
+}
+
+// retrySemanticWALFailureLocked must run under globalMutationMu. The semantic
+// subsystem has one applied-LSN frontier, so no newer record may append or mark
+// progress until the exact failed record applies and marks successfully.
+func (m *Module) retrySemanticWALFailureLocked(ctx context.Context) error {
+	if m.semanticWALFailure == nil {
+		return m.recoverCredentialLifecycle(ctx)
+	}
+	failed := *m.semanticWALFailure
+	if err := m.applySemanticWALRecord(ctx, failed.Record); err != nil {
+		return err
+	}
+	if err := m.markSemanticWALApplied(ctx, failed.LSN); err != nil {
+		return err
+	}
+	m.semanticWALFailure = nil
+	return nil
+}
+
+func (m *Module) applyAndMarkSemanticWALLocked(ctx context.Context, lsn wal.LSN, record wal.Record) error {
+	if err := m.applySemanticWALRecord(ctx, record); err != nil {
+		m.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
+		return err
+	}
+	if err := m.markSemanticWALApplied(ctx, lsn); err != nil {
+		m.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
+		return err
+	}
+	return nil
+}
+
 func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType, rec semanticMutationRecord) error {
 	payload, err := json.Marshal(rec)
 	if err != nil {
@@ -59,7 +108,7 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 	// record cannot advance past an unresolved credential lifecycle intent.
 	m.globalMutationMu.Lock()
 	defer m.globalMutationMu.Unlock()
-	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+	if err := m.retrySemanticWALFailureLocked(ctx); err != nil {
 		return err
 	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: typ, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
@@ -69,23 +118,8 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 	if err := m.wal.Sync(ctx, lsn); err != nil {
 		return err
 	}
-	if typ == recordTypeSemanticGlobal {
-		err = m.applySemanticGlobal(ctx, wal.Record{Payload: payload})
-	} else {
-		err = m.applySemanticSpace(ctx, wal.Record{Payload: payload})
-	}
-	if err != nil {
-		return err
-	}
-	if m.walProgress != nil {
-		if err := m.walProgress.SetAppliedLSN(ctx, lsn); err != nil {
-			return err
-		}
-	}
-	if m.walWaiter != nil {
-		m.walWaiter.SetApplied(lsn)
-	}
-	return nil
+	record := wal.Record{Type: typ, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload}
+	return m.applyAndMarkSemanticWALLocked(ctx, lsn, record)
 }
 
 func (m *Module) applySemanticGlobal(ctx context.Context, rec wal.Record) error {

@@ -139,16 +139,16 @@ type policyDecisionsState struct {
 }
 
 type globalManager struct {
-	mu           sync.RWMutex
-	metaDir      string
-	packages     packagesState
-	endpoints    modelEndpointsState
-	models       modelsState
-	capabilities modelEndpointCapabilitiesState
-	vectorStores vectorStoresState
-	secrets      secretsState
-	credentials  credentialsState
-	persistHook  func(path string, value any) error
+	mu                 sync.RWMutex
+	metaDir            string
+	packages           packagesState
+	endpoints          modelEndpointsState
+	models             modelsState
+	capabilities       modelEndpointCapabilitiesState
+	vectorStores       vectorStoresState
+	secrets            secretsState
+	credentials        credentialsState
+	persistFailureHook func(operation, path string) error
 }
 
 func (m *globalManager) Init(ctx context.Context, metaDir string) error {
@@ -606,10 +606,18 @@ func (m *globalManager) path(name string) string {
 }
 
 func (m *globalManager) persistLocked(path string, v any) error {
-	if m.persistHook != nil {
-		return m.persistHook(path, v)
+	if m.persistFailureHook != nil {
+		if err := m.persistFailureHook("write", path); err != nil {
+			return err
+		}
 	}
 	return persistJSON(path, v)
+}
+
+func (m *globalManager) SetCredentialLifecyclePersistenceFaultInjector(inject func(operation, path string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.persistFailureHook = inject
 }
 
 type spaceManager struct {

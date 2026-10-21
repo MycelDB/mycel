@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
@@ -38,7 +40,11 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if s.Module == nil {
 		return nil
 	}
-	return s.Module.applySemanticRaftCommand(ctx, cmd, s.PartitionCount)
+	err := s.Module.applySemanticRaftCommand(ctx, cmd, s.PartitionCount)
+	if err != nil && !errors.Is(err, storesemantic.ErrInvalidInput) && !errors.Is(err, storesemantic.ErrConflict) && !errors.Is(err, storesemantic.ErrNotFound) {
+		return consensus.NewFatalApplyError(err)
+	}
+	return err
 }
 
 func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionCount uint32) {

@@ -391,17 +391,6 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingSecrets, err := projector.ListDerivedSecrets(ctx)
-	if err != nil {
-		return err
-	}
-	for _, existing := range existingSecrets {
-		if _, ok := secretIDs[existing.ID.String()]; !ok {
-			if err := projector.DeleteDerivedSecret(ctx, existing.ID); err != nil {
-				return err
-			}
-		}
-	}
 	credentials, err := m.globalBase.ListCredentials(ctx)
 	if err != nil {
 		return err
@@ -420,6 +409,19 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 	for _, existing := range existingCredentials {
 		if _, ok := credentialIDs[existing.ID.String()]; !ok {
 			if err := projector.DeleteDerivedCredential(ctx, existing.ID); err != nil {
+				return err
+			}
+		}
+	}
+	// Delete stale secrets only after every stale credential is gone. This keeps
+	// derived SecretRef relationships valid throughout recovery publication.
+	existingSecrets, err := projector.ListDerivedSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, existing := range existingSecrets {
+		if _, ok := secretIDs[existing.ID.String()]; !ok {
+			if err := projector.DeleteDerivedSecret(ctx, existing.ID); err != nil {
 				return err
 			}
 		}
