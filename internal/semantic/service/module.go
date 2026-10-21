@@ -77,6 +77,7 @@ type Module struct {
 	raftLocalNode                    consensus.NodeID
 	raftNodeAddrs                    []string
 	raftBackendAuthToken             string
+	conditionalRuleSupportProbe      func(context.Context, consensus.NodeID, domainspace.SpaceID) error
 	raftAppliedCommands              map[string]struct{}
 	raftAppliedCommandsPersistHook   func(stage string)
 }

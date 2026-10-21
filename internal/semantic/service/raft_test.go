@@ -1185,6 +1185,11 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	peers := []consensus.NodeID{1, 2, 3}
 	partitionCount := uint32(4)
 	modules := map[consensus.NodeID]*Module{}
+	defer func() {
+		for _, module := range modules {
+			module.conditionalRuleSupportProbe = nil
+		}
+	}()
 	routers := map[consensus.NodeID]*consensus.LocalMessageRouter{1: consensus.NewLocalMessageRouter(), 2: consensus.NewLocalMessageRouter(), 3: consensus.NewLocalMessageRouter()}
 	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { r, ok := routers[nodeID]; return r, ok })}
 	groupsByNode := map[consensus.NodeID]*consensus.MultiGroup{}
@@ -1310,6 +1315,31 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 		t.Fatalf("UpsertSemanticRule() error = %v", err)
 	}
 	updatedAt := created.UpdatedAt.Add(time.Second)
+	unsupportedNode := consensus.NodeID(1)
+	if unsupportedNode == leaderNode {
+		unsupportedNode = 2
+	}
+	modules[leaderNode].conditionalRuleSupportProbe = func(_ context.Context, nodeID consensus.NodeID, _ domainspace.SpaceID) error {
+		if nodeID == unsupportedNode {
+			return errors.New("conditional mutation capability unsupported")
+		}
+		return nil
+	}
+	leaderGroup, ok := groupsByNode[leaderNode].Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatal("leader partition group not found")
+	}
+	_, commitBeforeBlockedMutation, _ := leaderGroup.Progress()
+	if err := modules[leaderNode].SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); !errors.Is(err, storesemantic.ErrConflict) {
+		t.Fatalf("mixed-version SetSemanticRuleEnabled() error=%v, want fail-closed ErrConflict", err)
+	}
+	_, commitAfterBlockedMutation, _ := leaderGroup.Progress()
+	if commitAfterBlockedMutation != commitBeforeBlockedMutation {
+		t.Fatalf("blocked mixed-version mutation advanced commit index from %d to %d", commitBeforeBlockedMutation, commitAfterBlockedMutation)
+	}
+	for _, module := range modules {
+		module.conditionalRuleSupportProbe = func(context.Context, consensus.NodeID, domainspace.SpaceID) error { return nil }
+	}
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
 		var ok bool
 		leaderNode, ok = currentLeader()
@@ -1331,6 +1361,25 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("node %d did not apply exact semantic rule enabled state: %v", nodeID, err)
 		}
+	}
+}
+
+func TestSemanticRaftCapabilityAdvertisesConditionalRuleMutationV2(t *testing.T) {
+	spaceID := domainspace.SpaceID(uuid.New())
+	payload, err := json.Marshal(raftSemanticReadRequest{Op: "conditional_rule_mutation_v2", SpaceID: spaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := NewModule().ExecuteLocalRaftSemanticRead(context.Background(), spaceID.String(), payload)
+	if err != nil {
+		t.Fatalf("ExecuteLocalRaftSemanticRead() error = %v", err)
+	}
+	var capability raftSemanticCapabilityResponse
+	if err := json.Unmarshal(raw, &capability); err != nil {
+		t.Fatal(err)
+	}
+	if !capability.ConditionalRuleMutationV2 {
+		t.Fatal("conditional semantic rule mutation v2 capability was not advertised")
 	}
 }
 

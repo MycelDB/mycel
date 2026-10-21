@@ -10,7 +10,7 @@ Semantic index state is derived from committed graph state, but its correctness 
 
 Enable and disable operations address a semantic rule by immutable ID and require the rule's previously observed update timestamp. The caller-selected successor timestamp is carried unchanged through WAL or Raft and returned only after the conditional mutation commits. A concurrent update, delete, or same-key identity replacement is rejected rather than applied to a different rule. Deterministic rejection is a completed WAL/Raft outcome and does not block later replay or progress.
 
-Conditional rule control uses `semantic.space.conditional-mutation.v2`. A replica that does not support this record fails closed instead of interpreting it as the older broad upsert. Operators must therefore upgrade every Raft member to a supporting image before issuing enable or disable operations; do not use this operation during a mixed-version rolling interval.
+Conditional rule control uses `semantic.space.conditional-mutation.v2`. Before proposing this record, the daemon probes every configured voting peer and requires an affirmative capability response; an old, unreachable, or nonaffirming member blocks the operation. Operators must upgrade every Raft member before issuing enable or disable operations and must not use this operation during a mixed-version rolling interval. See the [Raft cluster operations procedure](../../operations/procedures/raft-cluster-operations.md#semantic-rule-control-upgrade-gate).
 
 ## Generations and records
 

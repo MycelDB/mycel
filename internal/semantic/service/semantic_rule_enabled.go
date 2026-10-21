@@ -23,6 +23,9 @@ func (m *Module) SetSemanticRuleEnabled(ctx context.Context, in SemanticRuleEnab
 		Kind: "semantic_rule.upsert", SpaceID: rule.SpaceID, Payload: raw(rule),
 		ExpectedSemanticRuleUpdatedAt: &expectedUpdatedAt,
 	}
+	if err := m.requireConditionalRuleMutationSupport(ctx, rule.SpaceID); err != nil {
+		return err
+	}
 	if m.wal == nil && m.raftGroups == nil {
 		manager, err := m.baseSpaceManager(ctx, rule.SpaceID)
 		if err != nil {

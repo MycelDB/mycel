@@ -54,11 +54,49 @@ type raftSemanticVectorRecordsResponse struct {
 type raftSemanticSearchResponse struct {
 	Result semanticsearch.Result `json:"result"`
 }
+type raftSemanticCapabilityResponse struct {
+	ConditionalRuleMutationV2 bool `json:"conditional_rule_mutation_v2"`
+}
 
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
 	m.raftLocalNode = local
 	m.raftNodeAddrs = append([]string(nil), addrs...)
 	m.raftBackendAuthToken = token
+}
+
+func (m *Module) requireConditionalRuleMutationSupport(ctx context.Context, spaceID domainspace.SpaceID) error {
+	if m.raftGroups == nil {
+		return nil
+	}
+	local := m.raftGroups.NodeID()
+	for _, nodeID := range m.raftGroups.PeerNodeIDs() {
+		if nodeID == local {
+			continue
+		}
+		if m.conditionalRuleSupportProbe != nil {
+			if err := m.conditionalRuleSupportProbe(ctx, nodeID, spaceID); err != nil {
+				return fmt.Errorf("%w: conditional semantic rule mutation v2 support not confirmed for node %d: %v", storesemantic.ErrConflict, nodeID, err)
+			}
+			continue
+		}
+		idx := int(nodeID) - 1
+		if idx < 0 || idx >= len(m.raftNodeAddrs) || strings.TrimSpace(m.raftNodeAddrs[idx]) == "" {
+			return fmt.Errorf("%w: conditional semantic rule mutation v2 support cannot be confirmed for node %d", storesemantic.ErrConflict, nodeID)
+		}
+		payload, err := json.Marshal(raftSemanticReadRequest{Op: "conditional_rule_mutation_v2", SpaceID: spaceID})
+		if err != nil {
+			return err
+		}
+		raw, err := (backend.Client{AuthToken: m.raftBackendAuthToken}).ExecuteRaftSemanticRead(ctx, m.raftNodeAddrs[idx], spaceID.String(), payload)
+		if err != nil {
+			return fmt.Errorf("%w: conditional semantic rule mutation v2 support not confirmed for node %d: %v", storesemantic.ErrConflict, nodeID, err)
+		}
+		var capability raftSemanticCapabilityResponse
+		if err := json.Unmarshal(raw, &capability); err != nil || !capability.ConditionalRuleMutationV2 {
+			return fmt.Errorf("%w: conditional semantic rule mutation v2 support not confirmed for node %d", storesemantic.ErrConflict, nodeID)
+		}
+	}
+	return nil
 }
 
 func (m *Module) shouldForwardRaftSemanticRead(spaceID domainspace.SpaceID) (consensus.NodeID, bool, error) {
@@ -106,6 +144,8 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		req.SpaceID = domainspace.SpaceID(parsed)
 	}
 	switch req.Op {
+	case "conditional_rule_mutation_v2":
+		return json.Marshal(raftSemanticCapabilityResponse{ConditionalRuleMutationV2: true})
 	case "list_rules":
 		mgr, err := m.baseSpaceManager(ctx, req.SpaceID)
 		if err != nil {

@@ -121,6 +121,12 @@ Downgrade guidance:
 - For a safe downgrade, restore PVCs from a pre-upgrade snapshot/backup taken before any v0.16.0 daemon started on those PVCs.
 - If an emergency downgrade is required without a pre-upgrade snapshot, preserve the PVCs first and validate the raft logs offline before attempting service restoration; do not delete `entries.log` or copy raft files between nodes as a repair strategy.
 
+## Semantic rule control upgrade gate
+
+Semantic rule enable/disable operations use the versioned `semantic.space.conditional-mutation.v2` partition record. Do not issue these operations during a mixed-version rolling interval. Before proposing the record, a supporting daemon probes every configured voting peer through the authenticated backend and requires an affirmative capability response. An older, unreachable, missing-address, or nonaffirming peer causes the operation to fail with `FailedPrecondition`; no conditional record is proposed.
+
+For an upgrade, finish replacing every voting member, wait for all system and partition groups to regain leaders and healthy applied progress, and only then resume semantic rule enable/disable operations. Do not bypass the gate by removing a healthy voter, editing Raft logs, or calling the backend capability operation manually. A downgrade to a daemon that does not support the v2 record requires stopping these operations before the first older member starts.
+
 ## Snapshot and compaction policy
 
 B2 snapshot recovery is implemented for current composite children at an initial contract level, but automatic production compaction remains disabled by default.
