@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -132,6 +133,52 @@ func (m *Module) projectSemanticGlobalMutation(ctx context.Context, r semanticMu
 		var v domainsemantic.InferenceCredentialID
 		_ = json.Unmarshal(r.Payload, &v)
 		err = projector.DeleteDerivedCredential(ctx, domaininference.CredentialID(v))
+	case "credential.create":
+		var v credentialCreateMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		result, resultErr := m.credentialLifecycleResult(ctx, v.Credential.ID, v.Credential.Key)
+		if resultErr != nil {
+			err = resultErr
+			break
+		}
+		if result.Secret != nil {
+			_, err = projector.UpsertDerivedSecret(ctx, semanticSecretToInference(*result.Secret))
+		}
+		if err == nil {
+			_, err = projector.UpsertDerivedCredential(ctx, semanticCredentialToInference(result.Credential))
+		}
+	case "credential.rotate":
+		var v credentialRotateMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		result, resultErr := m.credentialLifecycleResult(ctx, v.CredentialID, "")
+		if resultErr != nil {
+			err = resultErr
+			break
+		}
+		if result.Secret != nil {
+			_, err = projector.UpsertDerivedSecret(ctx, semanticSecretToInference(*result.Secret))
+		}
+		if err == nil {
+			_, err = projector.UpsertDerivedCredential(ctx, semanticCredentialToInference(result.Credential))
+		}
+	case "credential.set_status":
+		var v credentialStatusMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		result, resultErr := m.credentialLifecycleResult(ctx, v.CredentialID, "")
+		if resultErr != nil {
+			err = resultErr
+			break
+		}
+		_, err = projector.UpsertDerivedCredential(ctx, semanticCredentialToInference(result.Credential))
+	case "credential.delete_lifecycle":
+		var v credentialDeleteMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		credentialErr := projector.DeleteDerivedCredential(ctx, domaininference.CredentialID(v.CredentialID))
+		var secretErr error
+		if v.DeleteSecret && v.ExpectedSecretRef != uuid.Nil {
+			secretErr = projector.DeleteDerivedSecret(ctx, domaininference.SecretID(v.ExpectedSecretRef))
+		}
+		err = errors.Join(credentialErr, secretErr)
 	}
 	m.logProjectionError(logger, "global", r.Kind, err)
 	return nil

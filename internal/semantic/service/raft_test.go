@@ -82,6 +82,83 @@ func TestSemanticRaftStateMachineAppliesGlobalAndMaintenanceMutations(t *testing
 	}
 }
 
+func TestCredentialLifecycleRaftReplayAndSnapshotPreserveStatusAndSecretIdentity(t *testing.T) {
+	ctx := context.Background()
+	newModule := func() *Module {
+		module := NewModule()
+		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module
+	}
+	source := newModule()
+	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0).UTC()
+	secretID := domainsemantic.SecretID(uuid.New())
+	credentialID := domainsemantic.InferenceCredentialID(uuid.New())
+	secret := domainsemantic.Secret{ID: secretID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "old"}, SecretSuffix: "old", CreatedAt: now, UpdatedAt: now}
+	credential := domainsemantic.InferenceCredential{ID: credentialID, Key: "api", Name: "api", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretID, SecretSuffix: "old", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	if _, _, err := source.globalBase.(storesemantic.CredentialLifecycleManager).CreateCredentialLifecycle(ctx, credential, &secret); err != nil {
+		t.Fatal(err)
+	}
+
+	statusMutation := credentialStatusMutation{CredentialID: credentialID, Status: domainsemantic.CredentialStatusRevoked, UpdatedAt: now.Add(time.Second)}
+	statusRecord := semanticMutationRecord{Kind: "credential.set_status", Payload: raw(statusMutation)}
+	statusPayload, _ := json.Marshal(statusRecord)
+	statusCommand, err := source.buildSemanticGlobalRaftCommand(statusRecord, statusPayload, "credential-status-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedSecret := secret
+	rotatedSecret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "new"}
+	rotatedSecret.SecretSuffix = "new"
+	rotatedSecret.UpdatedAt = now.Add(2 * time.Second)
+	rotateMutation := credentialRotateMutation{CredentialID: credentialID, ExpectedSecretRef: secretID, Secret: rotatedSecret}
+	rotateRecord := semanticMutationRecord{Kind: "credential.rotate", Payload: raw(rotateMutation)}
+	rotatePayload, _ := json.Marshal(rotateRecord)
+	rotateCommand, err := source.buildSemanticGlobalRaftCommand(rotateRecord, rotatePayload, "credential-rotate-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := RaftStateMachine{Module: source, System: true, PartitionCount: 64}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, statusCommand); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, rotateCommand); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 2}, rotateCommand); err != nil {
+		t.Fatalf("duplicate replay: %v", err)
+	}
+	assertCredentialLifecycle := func(module *Module) {
+		credentials, err := module.globalBase.ListCredentials(ctx)
+		if err != nil || len(credentials) != 1 {
+			t.Fatalf("credentials=%+v err=%v", credentials, err)
+		}
+		if credentials[0].Status != domainsemantic.CredentialStatusRevoked || credentials[0].SecretRef != secretID || credentials[0].SecretSuffix != "new" {
+			t.Fatalf("credential lifecycle state=%+v", credentials[0])
+		}
+		secrets, err := module.globalBase.ListSecrets(ctx)
+		if err != nil || len(secrets) != 1 || secrets[0].ID != secretID || secrets[0].Ciphertext.CipherB64 != "new" {
+			t.Fatalf("secrets=%+v err=%v", secrets, err)
+		}
+	}
+	assertCredentialLifecycle(source)
+	snapshot, err := sm.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := newModule()
+	if err := (RaftStateMachine{Module: restored, System: true, PartitionCount: 64}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	assertCredentialLifecycle(restored)
+}
+
 func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

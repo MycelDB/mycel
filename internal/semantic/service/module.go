@@ -43,6 +43,7 @@ type semanticGateContextKey struct{}
 
 type Module struct {
 	mu                   sync.Mutex
+	globalMutationMu     sync.Mutex
 	publicationFencesMu  sync.Mutex
 	publicationFences    map[string]*semanticPublicationFence
 	dataDir              string
@@ -374,6 +375,7 @@ func (m *Module) GlobalManager() storesemantic.GlobalManager {
 	// observe metadata written by those embedded/admin workflows without a daemon restart.
 	mgr := storesemantic.NewGlobalManager()
 	if err := mgr.Init(context.Background(), filepath.Join(m.dataDir, "meta")); err == nil {
+		m.globalBase = mgr
 		m.global = mgr
 	}
 	return m.global

@@ -147,6 +147,7 @@ type globalManager struct {
 	vectorStores vectorStoresState
 	secrets      secretsState
 	credentials  credentialsState
+	persistHook  func(path string, value any) error
 }
 
 func (m *globalManager) Init(ctx context.Context, metaDir string) error {
@@ -270,6 +271,11 @@ func (m *globalManager) UpsertModelEndpoint(ctx context.Context, endpoint domain
 		if normalizeKey(existing.Key) == endpoint.Key {
 			endpoint.ID = existing.ID
 			endpoint.CreatedAt = existing.CreatedAt
+			for _, credential := range m.credentials.Credentials {
+				if credential.ModelEndpointID == endpoint.ID && !endpointSupportsCredentialAuth(endpoint, credential.AuthType) {
+					return domainsemantic.ModelEndpoint{}, fmt.Errorf("%w: endpoint auth modes would invalidate credential %s", ErrConflict, credential.ID)
+				}
+			}
 			m.endpoints.ModelEndpoints[i] = endpoint
 			return endpoint, m.persistLocked(m.path(modelEndpointsFileName), m.endpoints)
 		}
@@ -492,6 +498,11 @@ func (m *globalManager) DeleteModelEndpoint(ctx context.Context, id domainsemant
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, credential := range m.credentials.Credentials {
+		if credential.ModelEndpointID == id {
+			return fmt.Errorf("%w: model endpoint is referenced by credential %s", ErrConflict, credential.ID)
+		}
+	}
 	for i, item := range m.endpoints.ModelEndpoints {
 		if item.ID == id {
 			m.endpoints.ModelEndpoints = append(m.endpoints.ModelEndpoints[:i], m.endpoints.ModelEndpoints[i+1:]...)
@@ -589,7 +600,12 @@ func (m *globalManager) path(name string) string {
 	}
 }
 
-func (m *globalManager) persistLocked(path string, v any) error { return persistJSON(path, v) }
+func (m *globalManager) persistLocked(path string, v any) error {
+	if m.persistHook != nil {
+		return m.persistHook(path, v)
+	}
+	return persistJSON(path, v)
+}
 
 type spaceManager struct {
 	mu                sync.RWMutex
@@ -2217,6 +2233,15 @@ func validateSecret(ctx context.Context, secret domainsemantic.Secret) error {
 		return fmt.Errorf("%w: ciphertext is required", ErrInvalidInput)
 	}
 	return nil
+}
+
+func endpointSupportsCredentialAuth(endpoint domainsemantic.ModelEndpoint, authType domainsemantic.AuthMode) bool {
+	for _, supported := range endpoint.AuthModes {
+		if supported == authType {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCredential(ctx context.Context, credential domainsemantic.InferenceCredential) error {

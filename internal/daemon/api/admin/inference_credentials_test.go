@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -34,13 +35,13 @@ func TestCredentialAuthModeAndSecretLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	semantic := semanticservice.NewModule()
-	if result := semantic.Init(ctx, credentialEncryptionHost{Host: host, service: encryptionService}); !result.OK {
-		t.Fatalf("init semantic module: %#v", result)
-	}
 	inference := inferenceservice.NewModule()
 	if result := inference.Init(ctx, host); !result.OK {
 		t.Fatalf("init inference module: %#v", result)
+	}
+	semantic := semanticservice.NewModule(semanticservice.Config{InferenceProjection: inference})
+	if result := semantic.Init(ctx, credentialEncryptionHost{Host: host, service: encryptionService}); !result.OK {
+		t.Fatalf("init semantic module: %#v", result)
 	}
 	svc := NewAdminInferenceService(semantic, inference, fakeAuthorizer{allowed: true})
 	catalog, err := svc.ApplyInferencePackage(authenticatedContext(), &adminv1.AdminInferenceCatalogServiceApplyInferencePackageRequest{
@@ -119,6 +120,43 @@ func TestCredentialAuthModeAndSecretLifecycle(t *testing.T) {
 			t.Fatalf("rotation allocated a new secret: %+v", rotated)
 		}
 	}
+	start := make(chan struct{})
+	var raceWG sync.WaitGroup
+	raceErrors := make(chan error, 2)
+	raceWG.Add(2)
+	go func() {
+		defer raceWG.Done()
+		<-start
+		_, raceErr := svc.RotateCredential(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceRotateCredentialRequest{CredentialId: apiResponse.GetCredential().GetCredentialId(), SecretValue: "concurrent-secret"})
+		raceErrors <- raceErr
+	}()
+	go func() {
+		defer raceWG.Done()
+		<-start
+		_, raceErr := svc.SetCredentialStatus(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceSetCredentialStatusRequest{CredentialId: apiResponse.GetCredential().GetCredentialId(), Status: "revoked"})
+		raceErrors <- raceErr
+	}()
+	close(start)
+	raceWG.Wait()
+	close(raceErrors)
+	for raceErr := range raceErrors {
+		if raceErr != nil {
+			t.Fatalf("concurrent rotate/status error = %v", raceErr)
+		}
+	}
+	semanticCredentials, err := semantic.GlobalManager().ListCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var racedCredentialStatus string
+	for _, credential := range semanticCredentials {
+		if credential.ID.String() == apiResponse.GetCredential().GetCredentialId() {
+			racedCredentialStatus = string(credential.Status)
+		}
+	}
+	if racedCredentialStatus != "revoked" {
+		t.Fatalf("concurrent rotation restored status %q, want revoked", racedCredentialStatus)
+	}
 	semanticSecrets, err = semantic.GlobalManager().ListSecrets(ctx)
 	if err != nil || len(semanticSecrets) != 1 || semanticSecrets[0].ID.String() != secretID {
 		t.Fatalf("rotated semantic secrets=%+v err=%v", semanticSecrets, err)
@@ -127,8 +165,41 @@ func TestCredentialAuthModeAndSecretLifecycle(t *testing.T) {
 	if err != nil || len(derivedSecrets) != 1 || derivedSecrets[0].ID.String() != secretID {
 		t.Fatalf("rotated derived secrets=%+v err=%v", derivedSecrets, err)
 	}
-	if _, err := svc.DeleteCredential(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialRequest{CredentialId: apiResponse.GetCredential().GetCredentialId(), DeleteSecret: true}); err != nil {
-		t.Fatalf("DeleteCredential(api_key) error = %v", err)
+	start = make(chan struct{})
+	raceErrors = make(chan error, 2)
+	raceWG.Add(2)
+	go func() {
+		defer raceWG.Done()
+		<-start
+		_, raceErr := svc.RotateCredential(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceRotateCredentialRequest{CredentialId: apiResponse.GetCredential().GetCredentialId(), SecretValue: "delete-race-secret"})
+		if raceErr != nil && status.Code(raceErr) != codes.NotFound && status.Code(raceErr) != codes.FailedPrecondition {
+			raceErrors <- raceErr
+			return
+		}
+		raceErrors <- nil
+	}()
+	go func() {
+		defer raceWG.Done()
+		<-start
+		_, raceErr := svc.DeleteCredential(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialRequest{CredentialId: apiResponse.GetCredential().GetCredentialId(), DeleteSecret: true})
+		raceErrors <- raceErr
+	}()
+	close(start)
+	raceWG.Wait()
+	close(raceErrors)
+	for raceErr := range raceErrors {
+		if raceErr != nil {
+			t.Fatalf("concurrent rotate/delete error = %v", raceErr)
+		}
+	}
+	semanticCredentials, err = semantic.GlobalManager().ListCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range semanticCredentials {
+		if credential.ID.String() == apiResponse.GetCredential().GetCredentialId() {
+			t.Fatalf("deleted credential was resurrected: %+v", credential)
+		}
 	}
 	semanticSecrets, err = semantic.GlobalManager().ListSecrets(ctx)
 	if err != nil || len(semanticSecrets) != 0 {
@@ -137,5 +208,14 @@ func TestCredentialAuthModeAndSecretLifecycle(t *testing.T) {
 	derivedSecrets, err = inference.GlobalManager().ListSecrets(ctx)
 	if err != nil || len(derivedSecrets) != 0 {
 		t.Fatalf("deleted derived secrets=%+v err=%v", derivedSecrets, err)
+	}
+	derivedCredentials, err = inference.GlobalManager().ListCredentials(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range derivedCredentials {
+		if credential.ID.String() == apiResponse.GetCredential().GetCredentialId() {
+			t.Fatalf("deleted derived credential was resurrected: %+v", credential)
+		}
 	}
 }

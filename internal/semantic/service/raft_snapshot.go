@@ -160,6 +160,8 @@ func (m *Module) restoreSemanticRaft(ctx context.Context, data []byte, expectedS
 }
 
 func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnapshot, error) {
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
 	var out semanticGlobalSnapshot
 	var err error
 	if m.globalBase == nil {
@@ -190,6 +192,8 @@ func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnap
 }
 
 func (m *Module) restoreSemanticGlobal(ctx context.Context, snap semanticGlobalSnapshot) error {
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
 	if err := validateSemanticGlobalSnapshotByApply(ctx, snap); err != nil {
 		return err
 	}

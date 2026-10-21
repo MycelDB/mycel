@@ -69,6 +69,10 @@ type Config struct {
 
 type Manager interface {
 	BeginMutation(ctx context.Context) (context.Context, func(), error)
+	CreateInferenceCredential(ctx context.Context, in CredentialCreateInput) (CredentialLifecycleResult, error)
+	RotateInferenceCredential(ctx context.Context, in CredentialRotateInput) (CredentialLifecycleResult, error)
+	SetInferenceCredentialStatus(ctx context.Context, in CredentialStatusInput) (CredentialLifecycleResult, error)
+	DeleteInferenceCredential(ctx context.Context, in CredentialDeleteInput) error
 	GlobalManager() storesemantic.GlobalManager
 	SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error)
 	ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error)
@@ -88,6 +92,33 @@ type Manager interface {
 	ListRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticGenerationRule, error)
 	ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) // transitional until API/search are rule-native
 	Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error)
+}
+
+type CredentialCreateInput struct {
+	Credential domainsemantic.InferenceCredential
+	Secret     *domainsemantic.Secret
+}
+
+type CredentialRotateInput struct {
+	CredentialID      domainsemantic.InferenceCredentialID
+	ExpectedSecretRef domainsemantic.SecretID
+	Secret            domainsemantic.Secret
+}
+
+type CredentialStatusInput struct {
+	CredentialID domainsemantic.InferenceCredentialID
+	Status       domainsemantic.CredentialStatus
+}
+
+type CredentialDeleteInput struct {
+	CredentialID      domainsemantic.InferenceCredentialID
+	ExpectedSecretRef domainsemantic.SecretID
+	DeleteSecret      bool
+}
+
+type CredentialLifecycleResult struct {
+	Credential domainsemantic.InferenceCredential
+	Secret     *domainsemantic.Secret
 }
 
 type SpaceSemanticManager struct {

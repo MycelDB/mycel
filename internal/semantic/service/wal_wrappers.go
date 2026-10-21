@@ -54,6 +54,10 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 			return m.proposeSemanticRaftCommand(ctx, cmd)
 		}
 	}
+	if typ == recordTypeSemanticGlobal {
+		m.globalMutationMu.Lock()
+		defer m.globalMutationMu.Unlock()
+	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: typ, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
 	if err != nil {
 		return err
@@ -168,6 +172,30 @@ func applySemanticGlobalMutation(ctx context.Context, g storesemantic.GlobalMana
 		var v domainsemantic.InferenceCredentialID
 		_ = json.Unmarshal(r.Payload, &v)
 		return g.DeleteCredential(ctx, v)
+	case "credential.create":
+		var v credentialCreateMutation
+		if err := json.Unmarshal(r.Payload, &v); err != nil {
+			return err
+		}
+		return applyCredentialCreateMutation(ctx, g, v)
+	case "credential.rotate":
+		var v credentialRotateMutation
+		if err := json.Unmarshal(r.Payload, &v); err != nil {
+			return err
+		}
+		return applyCredentialRotateMutation(ctx, g, v)
+	case "credential.set_status":
+		var v credentialStatusMutation
+		if err := json.Unmarshal(r.Payload, &v); err != nil {
+			return err
+		}
+		return applyCredentialStatusMutation(ctx, g, v)
+	case "credential.delete_lifecycle":
+		var v credentialDeleteMutation
+		if err := json.Unmarshal(r.Payload, &v); err != nil {
+			return err
+		}
+		return applyCredentialDeleteMutation(ctx, g, v)
 	}
 	return nil
 }

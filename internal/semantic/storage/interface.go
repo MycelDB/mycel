@@ -36,6 +36,16 @@ type GlobalManager interface {
 	DeleteCredential(ctx context.Context, id domainsemantic.InferenceCredentialID) error
 }
 
+// CredentialLifecycleManager applies conditional credential/secret lifecycle
+// changes while holding one storage lock. The enclosing WAL/Raft record provides
+// crash replay; this contract prevents concurrently visible partial state.
+type CredentialLifecycleManager interface {
+	CreateCredentialLifecycle(ctx context.Context, credential domainsemantic.InferenceCredential, secret *domainsemantic.Secret) (domainsemantic.InferenceCredential, *domainsemantic.Secret, error)
+	RotateCredentialLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, expectedSecretRef domainsemantic.SecretID, secret domainsemantic.Secret) (domainsemantic.InferenceCredential, domainsemantic.Secret, error)
+	SetCredentialStatusLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, status domainsemantic.CredentialStatus, updatedAt time.Time) (domainsemantic.InferenceCredential, error)
+	DeleteCredentialLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, expectedSecretRef domainsemantic.SecretID, deleteSecret bool) error
+}
+
 // SpaceManager stores space-owned semantic resource metadata under graphs/<space_id>/semantic/.
 type SpaceManager interface {
 	Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error

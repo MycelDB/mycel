@@ -14,6 +14,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -516,6 +517,15 @@ func mapAdminInferenceError(err error, action string) error {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.Unavailable, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrNotFound) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrInvalidInput) {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "not found") {

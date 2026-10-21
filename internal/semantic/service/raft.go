@@ -124,6 +124,10 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 	if err := cmd.Validate(partitionCount); err != nil {
 		return err
 	}
+	if cmd.RecordType == recordTypeSemanticGlobal {
+		m.globalMutationMu.Lock()
+		defer m.globalMutationMu.Unlock()
+	}
 	if m.raftCommandApplied(cmd.CommandID) {
 		return nil
 	}
