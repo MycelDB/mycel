@@ -829,6 +829,8 @@ type SemanticReliabilityState struct {
 	BaselineFreshThrough      uint64                  `json:"baseline_fresh_through,omitempty"`
 	RebuildEpoch              string                  `json:"rebuild_epoch,omitempty"`
 	RebuildState              string                  `json:"rebuild_state,omitempty"`
+	RebuildOwnerNode          uint64                  `json:"rebuild_owner_node,omitempty"`
+	RebuildOwnerTerm          uint64                  `json:"rebuild_owner_term,omitempty"`
 	PinnedTargetRevision      uint64                  `json:"pinned_target_revision,omitempty"`
 	DeltaCatchupRevision      uint64                  `json:"delta_catchup_revision,omitempty"`
 	RebuildStartedAt          *time.Time              `json:"rebuild_started_at,omitempty"`

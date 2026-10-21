@@ -360,6 +360,21 @@ func TestRebuildSemanticRuleFailsWhenLeadershipChangesDuringBackfill(t *testing.
 	if got := status.Rebuild.RebuildState; got != "failed" {
 		t.Fatalf("rebuild state=%q, want failed", got)
 	}
+	staleRunning := status.Rebuild
+	staleRunning.RebuildState = "running"
+	staleRunning.RebuildEpoch = "abandoned-term-7"
+	staleRunning.RebuildOwnerNode = 1
+	staleRunning.RebuildOwnerTerm = 7
+	if err := module.saveReliabilityState(ctx, spaceID, ruleID, staleRunning); err != nil {
+		t.Fatal(err)
+	}
+	takenOver, err := module.RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 1})
+	if err != nil {
+		t.Fatalf("new-term rebuild takeover failed: %v", err)
+	}
+	if takenOver.Reliability.Rebuild.RebuildState != "completed" || takenOver.Reliability.Rebuild.RebuildOwnerNode != 1 || takenOver.Reliability.Rebuild.RebuildOwnerTerm != 8 {
+		t.Fatalf("unexpected takeover result: %+v", takenOver.Reliability.Rebuild)
+	}
 }
 
 func TestReliabilityStatusKeepsAnalyzedAndFreshFrontiersDistinctAcrossReload(t *testing.T) {

@@ -48,6 +48,7 @@ type Module struct {
 	credentialProjectionRepairNeeded bool
 	publicationFencesMu              sync.Mutex
 	publicationFences                map[string]*semanticPublicationFence
+	projectionLeasesMu               sync.Mutex
 	dataDir                          string
 	encryption                       *encryption.Service
 	global                           storesemantic.GlobalManager
@@ -962,6 +963,12 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return res, err
 	}
+	if err := m.advanceProjectionLeases(ctx, in.SpaceID); err != nil {
+		return res, err
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
@@ -1131,6 +1138,14 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			}); saveErr != nil {
 				return result, saveErr
 			}
+		}
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return result, err
+	}
+	if in.Force && in.Offset == 0 && len(in.NodeIDs) == 0 && result.FailedCount == 0 && result.NextOffset == 0 && result.SelectedCount == result.TotalSelectedCount && in.SemanticRuleID != uuid.Nil {
+		if err := m.saveProjectionLease(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, in.SemanticGeneration, in.RebuildEpoch, in.SourceGraphRevision); err != nil {
+			return result, err
 		}
 	}
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
@@ -1396,11 +1411,26 @@ func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Res
 }
 
 func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return semanticsearch.Result{}, err
+	}
+	if err := m.validateLocalProjectionForSearch(ctx, in); err != nil {
+		return semanticsearch.Result{}, err
+	}
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
 	global := m.GlobalManager()
 	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: m.localVectorBackend()}
-	return planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
+	result, err := planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
+	if err != nil {
+		return result, err
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return semanticsearch.Result{}, err
+	}
+	return result, nil
 }

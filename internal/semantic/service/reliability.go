@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -578,6 +579,8 @@ func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domai
 		reliability.BaselineFreshThrough = 0
 		reliability.RebuildEpoch = ""
 		reliability.RebuildState = "required"
+		reliability.RebuildOwnerNode = 0
+		reliability.RebuildOwnerTerm = 0
 		reliability.PinnedTargetRevision = 0
 		reliability.DeltaCatchupRevision = 0
 		reliability.RebuildStartedAt = nil
@@ -628,8 +631,20 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	if err != nil {
 		return RebuildResult{}, err
 	}
+	leadership, clusteredLeadership := semanticOperationLeadershipFromContext(ctx, in.SpaceID)
 	if status.Rebuild.RebuildState == "running" {
-		return RebuildResult{}, fmt.Errorf("semantic rebuild is already running")
+		ownedByCurrentLeadership := clusteredLeadership && status.Rebuild.RebuildOwnerNode == uint64(leadership.NodeID) && status.Rebuild.RebuildOwnerTerm == leadership.Term
+		if !clusteredLeadership || ownedByCurrentLeadership {
+			return RebuildResult{}, fmt.Errorf("semantic rebuild is already running")
+		}
+		abandoned := status.Rebuild
+		abandoned.RebuildState = "failed"
+		abandoned.RebuildCompletedAt = nil
+		abandoned.RebuildErrorSanitized = "semantic rebuild owner leadership changed"
+		if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, abandoned.SemanticGeneration, abandoned.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) { *current = abandoned }); err != nil {
+			return RebuildResult{}, fmt.Errorf("invalidate stale semantic rebuild: %w", err)
+		}
+		status.Rebuild = abandoned
 	}
 	now := time.Now().UTC()
 	generation := status.SemanticGeneration
@@ -637,6 +652,10 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 		generation = 1
 	}
 	rebuild := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: in.EmbeddingBindingKey, ResolvedConfigurationHash: status.Rebuild.ResolvedConfigurationHash, SemanticGeneration: generation, RebuildEpoch: uuid.NewString(), RebuildState: "running", PinnedTargetRevision: status.LatestObservedGraphRevision, RebuildStartedAt: &now}
+	if clusteredLeadership {
+		rebuild.RebuildOwnerNode = uint64(leadership.NodeID)
+		rebuild.RebuildOwnerTerm = leadership.Term
+	}
 	if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, generation, status.Rebuild.RebuildEpoch, "", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild }); err != nil {
 		return RebuildResult{}, err
 	}
@@ -709,6 +728,12 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 			if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 				return m.failRebuildFromState(ctx, in, rebuild, backfill, "completed", err)
 			}
+			if err := m.saveProjectionLease(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, rebuild.FreshThrough); err != nil {
+				return m.failRebuildFromState(ctx, in, rebuild, backfill, "completed", err)
+			}
+			if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+				return m.failRebuildFromState(ctx, in, rebuild, backfill, "completed", err)
+			}
 			return RebuildResult{Reliability: status, Backfill: backfill}, nil
 		}
 	}
@@ -775,7 +800,12 @@ func (m *Module) failRebuildFromState(ctx context.Context, in RebuildInput, rebu
 	rebuild.RebuildState = "failed"
 	rebuild.RebuildCompletedAt = nil
 	rebuild.RebuildErrorSanitized = sanitizeMaintenanceError(cause.Error())
-	_ = m.transitionReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, expectedState, func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild })
+	failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	transitionErr := m.transitionReliabilityState(failureCtx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, expectedState, func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild })
+	if transitionErr != nil {
+		return RebuildResult{Backfill: backfill}, errors.Join(cause, fmt.Errorf("persist failed semantic rebuild state: %w", transitionErr))
+	}
 	return RebuildResult{Backfill: backfill}, cause
 }
 

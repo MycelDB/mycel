@@ -234,6 +234,14 @@ func (m *Module) requireAuthenticatedSemanticMaintenanceRoute() error {
 	return nil
 }
 
+func semanticOperationLeadershipFromContext(ctx context.Context, spaceID domainspace.SpaceID) (semanticOperationLeadership, bool) {
+	leadership, ok := ctx.Value(semanticOperationLeadershipContextKey{}).(semanticOperationLeadership)
+	if !ok || leadership.SpaceID != spaceID {
+		return semanticOperationLeadership{}, false
+	}
+	return leadership, true
+}
+
 func (m *Module) semanticOperationAlreadyBound(ctx context.Context, spaceID domainspace.SpaceID) (bool, error) {
 	leadership, ok := ctx.Value(semanticOperationLeadershipContextKey{}).(semanticOperationLeadership)
 	if !ok {

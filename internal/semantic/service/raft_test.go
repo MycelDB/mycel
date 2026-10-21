@@ -1632,6 +1632,80 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 			}
 		}
 	}
+
+	ruleID := domainsemantic.SemanticRuleID(idx.ID)
+	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: idx.DomainID, Key: "failover-rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: idx.VectorStoreID, Enabled: true}}}
+	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
+		t.Fatalf("upsert failover rule: %v", err)
+	}
+	oldLeaderGroup, ok := groupsByNode[leaderID].Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatalf("old leader partition group %d unavailable", probe.PartitionID)
+	}
+	oldTerm, _, _ := oldLeaderGroup.Progress()
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildEpoch: "old-running", RebuildState: "running", RebuildOwnerNode: uint64(leaderID), RebuildOwnerTerm: oldTerm}}}); err != nil {
+		t.Fatalf("upsert failover rule state: %v", err)
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		for _, module := range modules {
+			base, err := module.baseSpaceManager(ctx, spaceID)
+			if err != nil {
+				return false
+			}
+			rules, err := base.ListSemanticRules(ctx)
+			if err != nil || len(rules) == 0 {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("failover rule did not replicate: %v", err)
+	}
+	leaderCtx, err := modules[leaderID].bindSemanticOperationLeadership(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("bind old leader projection: %v", err)
+	}
+	if err := modules[leaderID].saveProjectionLease(leaderCtx, spaceID, ruleID, "search", 1, "old-running", 1); err != nil {
+		t.Fatalf("save old leader projection: %v", err)
+	}
+	followerGroup, ok := groupsByNode[followerID].Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatalf("follower partition group %d unavailable", probe.PartitionID)
+	}
+	if err := followerGroup.Campaign(ctx); err != nil {
+		t.Fatalf("campaign promoted semantic leader: %v", err)
+	}
+	if err := consensus.TickUntil(ctx, 20*time.Millisecond, func() {
+		for _, mg := range groupsByNode {
+			mg.Tick()
+		}
+	}, func() bool { return leaderForPartition() == followerID }); err != nil {
+		t.Fatalf("semantic leader did not transfer to node %d: %v", followerID, err)
+	}
+	if _, err := modules[followerID].Search(ctx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: "query", Limit: 1}); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("promoted empty leader search error=%v, want projection readiness rejection", err)
+	}
+	if _, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 1}); err == nil || strings.Contains(err.Error(), "already running") {
+		t.Fatalf("new leader rebuild takeover error=%v, want execution failure after stale-running takeover", err)
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		base, err := modules[followerID].baseSpaceManager(ctx, spaceID)
+		if err != nil {
+			return false
+		}
+		states, err := base.ListSemanticRuleStates(ctx)
+		if err != nil {
+			return false
+		}
+		for _, state := range states {
+			if state.SemanticRuleID == ruleID {
+				return state.ReliabilityByBinding["search"].RebuildState != "running"
+			}
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("stale running rebuild was not invalidated after failover: %v", err)
+	}
 }
 
 func TestExecuteLocalRaftSemanticReadRejectsUnauthenticatedDerivedOperations(t *testing.T) {
