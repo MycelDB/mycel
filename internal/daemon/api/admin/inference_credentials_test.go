@@ -218,4 +218,8 @@ func TestCredentialAuthModeAndSecretLifecycle(t *testing.T) {
 			t.Fatalf("deleted derived credential was resurrected: %+v", credential)
 		}
 	}
+	retriedDelete, err := svc.DeleteCredential(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialRequest{CredentialId: apiResponse.GetCredential().GetCredentialId(), DeleteSecret: true})
+	if err != nil || !retriedDelete.GetSecretDeleted() {
+		t.Fatalf("idempotent DeleteCredential() response=%+v error=%v", retriedDelete, err)
+	}
 }

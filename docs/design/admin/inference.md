@@ -45,7 +45,7 @@ Credential-free reliability suites may opt the `fake` connector into the documen
 - `RotateCredential`
 - `DeleteCredential`
 
-Credential creation, status changes, secret rotation, and credential/secret deletion are conditional semantic-global lifecycle mutations. Each operation is represented by one WAL/Raft record, re-reads current state in the state machine, preserves a concurrent disabled/revoked/expired status during rotation, verifies the expected endpoint/auth/secret identity, and is idempotent under replay. Storage publishes no concurrently visible half-mutation; a crash after one file replacement is repaired by replay of the same lifecycle record. Endpoints referenced by credentials cannot be deleted or updated to remove the credential's auth mode.
+Credential creation, status changes, secret rotation, and credential/secret deletion are conditional semantic-global lifecycle mutations. Each operation is represented by one WAL/Raft record, re-reads current state in the state machine, preserves a concurrent disabled/revoked/expired status during rotation, verifies the expected endpoint/auth/secret identity, and is idempotent under replay. Before replacing either metadata document, storage atomically persists a lifecycle intent containing the complete prospective credential and secret state. Failed writes leave the prior in-memory state visible; the intent must be completed before any later local WAL record advances, before a system Raft snapshot is captured, or during restart initialization. Recovery also rebuilds the derived inference projection before further global publication. Endpoints referenced by credentials cannot be deleted or updated to remove the credential's auth mode.
 
 `AdminInferenceGrantService`:
 

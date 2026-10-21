@@ -39,6 +39,11 @@ func (m *Module) commitMaintenanceMutation(ctx context.Context, rec maintenanceM
 		}
 		return m.proposeSemanticRaftCommand(ctx, cmd)
 	}
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
+	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+		return err
+	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
 	if err != nil {
 		return err

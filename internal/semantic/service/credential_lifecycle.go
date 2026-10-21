@@ -94,6 +94,33 @@ func (m *Module) DeleteInferenceCredential(ctx context.Context, in CredentialDel
 	return m.commitCredentialLifecycle(ctx, semanticMutationRecord{Kind: "credential.delete_lifecycle", Payload: raw(mutation)})
 }
 
+func (m *Module) recoverCredentialLifecycle(ctx context.Context) error {
+	lifecycle, ok := m.globalBase.(storesemantic.CredentialLifecycleManager)
+	if !ok {
+		return nil
+	}
+	recovered, err := lifecycle.RecoverCredentialLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if recovered {
+		m.credentialProjectionRepairNeeded = true
+	}
+	repairProjection := m.credentialProjectionRepairNeeded
+	m.mu.Unlock()
+	if !repairProjection {
+		return nil
+	}
+	if err := m.rebuildInferenceGlobalProjection(ctx); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.credentialProjectionRepairNeeded = false
+	m.mu.Unlock()
+	return nil
+}
+
 func (m *Module) credentialGlobalManager() storesemantic.GlobalManager {
 	if m.wal != nil || m.raftGroups != nil {
 		return m.globalBase

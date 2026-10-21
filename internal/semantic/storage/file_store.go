@@ -22,40 +22,41 @@ import (
 )
 
 const (
-	inferenceDirName                   = "inference"
-	secretsDirName                     = "secrets"
-	credentialsDirName                 = "credentials"
-	packagesFileName                   = "packages.json"
-	modelEndpointsFileName             = "model_endpoints.json"
-	modelsFileName                     = "models.json"
-	modelEndpointCapsFileName          = "model_endpoint_capabilities.json"
-	vectorStoresFileName               = "vector_stores.json"
-	secretsFileName                    = "secrets.json"
-	credentialsFileName                = "credentials.json"
-	semanticRulesFileName              = "rules.json"
-	semanticIndexesFileName            = "indexes.json"
-	intelligenceProfilesFileName       = "intelligence_profiles.json"
-	credentialGrantsFileName           = "credential_grants.json"
-	inferencePoliciesFileName          = "inference_policies.json"
-	dirtyQueueFileName                 = "dirty_queue.json"
-	ruleStateFileName                  = "rule_state.json"
-	searchIndexStateFileName           = "search_index_state.json"
-	indexStateFileName                 = "index_state.json"
-	policyDecisionsFileName            = "policy_decisions.json"
-	maintenanceDirName                 = "maintenance"
-	graphDirtyEventsDirName            = "dirty"
-	graphDirtyEventsFileName           = "graph-dirty-000001.ksem"
-	workStateDirName                   = "work"
-	workStateFileName                  = "state.json"
-	workEventsFileName                 = "work-000001.ksem"
-	checkpointsFileName                = "checkpoints.json"
-	maxRetainedDirtyEvents             = 100000
-	maxRetainedDirtyWorkItems          = 100000
-	maxWorkLogMutationRecords          = 4096
-	maxWorkLogBytes              int64 = 8 << 20
-	maxWorkLogCheckpointBytes          = 256 << 20
-	defaultVectorStoreKey              = "mycel-file"
-	defaultVectorStoreName             = "Mycel embedded file vector store"
+	inferenceDirName                        = "inference"
+	secretsDirName                          = "secrets"
+	credentialsDirName                      = "credentials"
+	packagesFileName                        = "packages.json"
+	modelEndpointsFileName                  = "model_endpoints.json"
+	modelsFileName                          = "models.json"
+	modelEndpointCapsFileName               = "model_endpoint_capabilities.json"
+	vectorStoresFileName                    = "vector_stores.json"
+	secretsFileName                         = "secrets.json"
+	credentialsFileName                     = "credentials.json"
+	credentialLifecycleIntentFileName       = "lifecycle_intent.json"
+	semanticRulesFileName                   = "rules.json"
+	semanticIndexesFileName                 = "indexes.json"
+	intelligenceProfilesFileName            = "intelligence_profiles.json"
+	credentialGrantsFileName                = "credential_grants.json"
+	inferencePoliciesFileName               = "inference_policies.json"
+	dirtyQueueFileName                      = "dirty_queue.json"
+	ruleStateFileName                       = "rule_state.json"
+	searchIndexStateFileName                = "search_index_state.json"
+	indexStateFileName                      = "index_state.json"
+	policyDecisionsFileName                 = "policy_decisions.json"
+	maintenanceDirName                      = "maintenance"
+	graphDirtyEventsDirName                 = "dirty"
+	graphDirtyEventsFileName                = "graph-dirty-000001.ksem"
+	workStateDirName                        = "work"
+	workStateFileName                       = "state.json"
+	workEventsFileName                      = "work-000001.ksem"
+	checkpointsFileName                     = "checkpoints.json"
+	maxRetainedDirtyEvents                  = 100000
+	maxRetainedDirtyWorkItems               = 100000
+	maxWorkLogMutationRecords               = 4096
+	maxWorkLogBytes                   int64 = 8 << 20
+	maxWorkLogCheckpointBytes               = 256 << 20
+	defaultVectorStoreKey                   = "mycel-file"
+	defaultVectorStoreName                  = "Mycel embedded file vector store"
 )
 
 type packagesState struct {
@@ -187,7 +188,11 @@ func (m *globalManager) Init(ctx context.Context, metaDir string) error {
 	if err := loadJSON(m.path(secretsFileName), &m.secrets, secretsState{Secrets: []domainsemantic.Secret{}}); err != nil {
 		return err
 	}
-	return loadJSON(m.path(credentialsFileName), &m.credentials, credentialsState{Credentials: []domainsemantic.InferenceCredential{}})
+	if err := loadJSON(m.path(credentialsFileName), &m.credentials, credentialsState{Credentials: []domainsemantic.InferenceCredential{}}); err != nil {
+		return err
+	}
+	_, err := m.recoverCredentialLifecycleLocked(ctx)
+	return err
 }
 
 func (m *globalManager) EnsureDefaultVectorStore(ctx context.Context) (domainsemantic.VectorStoreBackend, error) {
@@ -589,7 +594,7 @@ func (m *globalManager) DeleteCredential(ctx context.Context, id domainsemantic.
 
 func (m *globalManager) path(name string) string {
 	switch name {
-	case packagesFileName, modelEndpointsFileName, modelsFileName, modelEndpointCapsFileName, vectorStoresFileName:
+	case packagesFileName, modelEndpointsFileName, modelsFileName, modelEndpointCapsFileName, vectorStoresFileName, credentialLifecycleIntentFileName:
 		return filepath.Join(m.metaDir, inferenceDirName, name)
 	case secretsFileName:
 		return filepath.Join(m.metaDir, secretsDirName, name)

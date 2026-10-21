@@ -40,6 +40,7 @@ type GlobalManager interface {
 // changes while holding one storage lock. The enclosing WAL/Raft record provides
 // crash replay; this contract prevents concurrently visible partial state.
 type CredentialLifecycleManager interface {
+	RecoverCredentialLifecycle(ctx context.Context) (bool, error)
 	CreateCredentialLifecycle(ctx context.Context, credential domainsemantic.InferenceCredential, secret *domainsemantic.Secret) (domainsemantic.InferenceCredential, *domainsemantic.Secret, error)
 	RotateCredentialLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, expectedSecretRef domainsemantic.SecretID, secret domainsemantic.Secret) (domainsemantic.InferenceCredential, domainsemantic.Secret, error)
 	SetCredentialStatusLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, status domainsemantic.CredentialStatus, updatedAt time.Time) (domainsemantic.InferenceCredential, error)

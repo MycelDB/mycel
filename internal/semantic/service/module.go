@@ -42,39 +42,40 @@ var _ runtime.StatusReporter = (*Module)(nil)
 type semanticGateContextKey struct{}
 
 type Module struct {
-	mu                   sync.Mutex
-	globalMutationMu     sync.Mutex
-	publicationFencesMu  sync.Mutex
-	publicationFences    map[string]*semanticPublicationFence
-	dataDir              string
-	encryption           *encryption.Service
-	global               storesemantic.GlobalManager
-	globalBase           storesemantic.GlobalManager
-	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
-	maintenanceManagers  map[domainspace.SpaceID]storesemantic.MaintenanceManager
-	maintenanceConfig    MaintenanceConfig
-	schemas              SchemaReader
-	graphs               GraphReader
-	graphRevisions       GraphRevisionReader
-	inferenceInvoker     connectors.InferenceInvoker
-	inferenceProjection  InferenceProjection
-	logger               *slog.Logger
-	maintenanceCancel    context.CancelFunc
-	maintenanceWG        sync.WaitGroup
-	maintenanceRunning   bool
-	maintenanceStarted   time.Time
-	stats                MaintenanceStats
-	gate                 *quiesce.Gate
-	wal                  *wal.Manager
-	walProgress          wal.AppliedLSNStore
-	walWaiter            *wal.ApplyWaiter
-	writeAllowed         func() error
-	raftGroups           *consensus.MultiGroup
-	raftPartitionCount   uint32
-	raftLocalNode        consensus.NodeID
-	raftNodeAddrs        []string
-	raftBackendAuthToken string
-	raftAppliedCommands  map[string]struct{}
+	mu                               sync.Mutex
+	globalMutationMu                 sync.Mutex
+	credentialProjectionRepairNeeded bool
+	publicationFencesMu              sync.Mutex
+	publicationFences                map[string]*semanticPublicationFence
+	dataDir                          string
+	encryption                       *encryption.Service
+	global                           storesemantic.GlobalManager
+	globalBase                       storesemantic.GlobalManager
+	spaces                           map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceManagers              map[domainspace.SpaceID]storesemantic.MaintenanceManager
+	maintenanceConfig                MaintenanceConfig
+	schemas                          SchemaReader
+	graphs                           GraphReader
+	graphRevisions                   GraphRevisionReader
+	inferenceInvoker                 connectors.InferenceInvoker
+	inferenceProjection              InferenceProjection
+	logger                           *slog.Logger
+	maintenanceCancel                context.CancelFunc
+	maintenanceWG                    sync.WaitGroup
+	maintenanceRunning               bool
+	maintenanceStarted               time.Time
+	stats                            MaintenanceStats
+	gate                             *quiesce.Gate
+	wal                              *wal.Manager
+	walProgress                      wal.AppliedLSNStore
+	walWaiter                        *wal.ApplyWaiter
+	writeAllowed                     func() error
+	raftGroups                       *consensus.MultiGroup
+	raftPartitionCount               uint32
+	raftLocalNode                    consensus.NodeID
+	raftNodeAddrs                    []string
+	raftBackendAuthToken             string
+	raftAppliedCommands              map[string]struct{}
 }
 
 type MaintenanceStats struct {

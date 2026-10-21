@@ -54,9 +54,13 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 			return m.proposeSemanticRaftCommand(ctx, cmd)
 		}
 	}
-	if typ == recordTypeSemanticGlobal {
-		m.globalMutationMu.Lock()
-		defer m.globalMutationMu.Unlock()
+	// The semantic WAL uses one applied-LSN frontier across global, space, and
+	// maintenance records. Serialize local append/apply/progress so a later
+	// record cannot advance past an unresolved credential lifecycle intent.
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
+	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+		return err
 	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: typ, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
 	if err != nil {
@@ -85,6 +89,9 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 }
 
 func (m *Module) applySemanticGlobal(ctx context.Context, rec wal.Record) error {
+	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+		return err
+	}
 	var r semanticMutationRecord
 	if err := json.Unmarshal(rec.Payload, &r); err != nil {
 		return err

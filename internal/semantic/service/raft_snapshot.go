@@ -167,6 +167,9 @@ func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnap
 	if m.globalBase == nil {
 		return out, fmt.Errorf("semantic global stores are not initialized")
 	}
+	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+		return out, err
+	}
 	if out.Packages, err = m.globalBase.ListPackages(ctx); err != nil {
 		return out, err
 	}
@@ -851,6 +854,7 @@ func resetSemanticGlobalFiles(dataDir string) error {
 		filepath.Join(dataDir, "meta", "inference", "models.json"),
 		filepath.Join(dataDir, "meta", "inference", "model_endpoint_capabilities.json"),
 		filepath.Join(dataDir, "meta", "inference", "vector_stores.json"),
+		filepath.Join(dataDir, "meta", "inference", "lifecycle_intent.json"),
 		filepath.Join(dataDir, "meta", "secrets", "secrets.json"),
 		filepath.Join(dataDir, "meta", "credentials", "credentials.json"),
 	}

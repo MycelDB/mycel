@@ -238,7 +238,8 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 		return nil, err
 	}
 	credential, err := s.credentialByID(ctx, id)
-	if err != nil {
+	credentialExists := err == nil
+	if err != nil && status.Code(err) != codes.NotFound {
 		return nil, err
 	}
 	grantRefs, err := s.credentialGrantReferences(ctx, id)
@@ -339,7 +340,7 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	if err := s.semantic.DeleteInferenceCredential(ctx, semanticservice.CredentialDeleteInput{CredentialID: id, ExpectedSecretRef: credential.SecretRef, DeleteSecret: deleteSecret}); err != nil {
 		return nil, mapAdminInferenceError(err, "delete credential lifecycle")
 	}
-	return &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: deleteSecret}, nil
+	return &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialResponse{CredentialId: id.String(), CredentialGrantsDeleted: deletedGrants, SecretDeleted: deleteSecret || (!credentialExists && req.GetDeleteSecret())}, nil
 }
 
 func secretSuffix(value string) string {

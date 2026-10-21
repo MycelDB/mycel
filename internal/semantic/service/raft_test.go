@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	clustermodel "github.com/myceldb/mycel/internal/clustering/model"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -84,15 +87,21 @@ func TestSemanticRaftStateMachineAppliesGlobalAndMaintenanceMutations(t *testing
 
 func TestCredentialLifecycleRaftReplayAndSnapshotPreserveStatusAndSecretIdentity(t *testing.T) {
 	ctx := context.Background()
-	newModule := func() *Module {
-		module := NewModule()
-		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+	newModule := func(dataDir string) (*Module, *inferenceservice.Module) {
+		host := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}
+		inference := inferenceservice.NewModule()
+		if result := inference.Init(ctx, host); !result.OK {
+			t.Fatalf("init inference module: %v", result.Error)
+		}
+		module := NewModule(Config{InferenceProjection: inference})
+		if result := module.Init(ctx, host); !result.OK {
 			t.Fatalf("init failed: %v", result.Error)
 		}
 		module.raftPartitionCount = 64
-		return module
+		return module, inference
 	}
-	source := newModule()
+	sourceDataDir := t.TempDir()
+	source, inference := newModule(sourceDataDir)
 	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +112,9 @@ func TestCredentialLifecycleRaftReplayAndSnapshotPreserveStatusAndSecretIdentity
 	secret := domainsemantic.Secret{ID: secretID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "old"}, SecretSuffix: "old", CreatedAt: now, UpdatedAt: now}
 	credential := domainsemantic.InferenceCredential{ID: credentialID, Key: "api", Name: "api", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretID, SecretSuffix: "old", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
 	if _, _, err := source.globalBase.(storesemantic.CredentialLifecycleManager).CreateCredentialLifecycle(ctx, credential, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.rebuildInferenceGlobalProjection(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,15 +160,146 @@ func TestCredentialLifecycleRaftReplayAndSnapshotPreserveStatusAndSecretIdentity
 		}
 	}
 	assertCredentialLifecycle(source)
+
+	deleteMutation := credentialDeleteMutation{CredentialID: credentialID, ExpectedSecretRef: secretID, DeleteSecret: true}
+	deleteRecord := semanticMutationRecord{Kind: "credential.delete_lifecycle", Payload: raw(deleteMutation)}
+	deletePayload, _ := json.Marshal(deleteRecord)
+	deleteCommand, err := source.buildSemanticGlobalRaftCommand(deleteRecord, deletePayload, "credential-delete-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialsDir := filepath.Join(sourceDataDir, "meta", "credentials")
+	credentialsBackup := credentialsDir + ".backup"
+	if err := os.Rename(credentialsDir, credentialsBackup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialsDir, []byte("block credential persistence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 4, RaftTerm: 2}, deleteCommand); err == nil {
+		t.Fatal("delete apply error=nil, want injected persistence failure")
+	}
+	assertCredentialLifecycle(source)
+	if _, err := sm.Snapshot(); err == nil {
+		t.Fatal("snapshot error=nil while credential lifecycle intent cannot recover")
+	}
+	if err := os.Remove(credentialsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(credentialsBackup, credentialsDir); err != nil {
+		t.Fatal(err)
+	}
+	vectorStore := semanticVectorStore("credential-recovery-probe")
+	probeRecord := semanticMutationRecord{Kind: "vector_store.upsert", Payload: raw(vectorStore)}
+	probePayload, _ := json.Marshal(probeRecord)
+	probeCommand, err := source.buildSemanticGlobalRaftCommand(probeRecord, probePayload, "credential-recovery-probe-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 5, RaftTerm: 3}, probeCommand); err != nil {
+		t.Fatalf("later command did not recover pending lifecycle intent: %v", err)
+	}
+	credentials, err := source.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("recovered delete credentials=%+v err=%v", credentials, err)
+	}
+	secrets, err := source.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("recovered delete secrets=%+v err=%v", secrets, err)
+	}
+	derivedCredentials, err := inference.GlobalManager().ListCredentials(ctx)
+	if err != nil || len(derivedCredentials) != 0 {
+		t.Fatalf("recovered derived credentials=%+v err=%v", derivedCredentials, err)
+	}
+	derivedSecrets, err := inference.GlobalManager().ListSecrets(ctx)
+	if err != nil || len(derivedSecrets) != 0 {
+		t.Fatalf("recovered derived secrets=%+v err=%v", derivedSecrets, err)
+	}
+
 	snapshot, err := sm.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	restored := newModule()
+	restored, _ := newModule(t.TempDir())
 	if err := (RaftStateMachine{Module: restored, System: true, PartitionCount: 64}).RestoreSnapshot(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	assertCredentialLifecycle(restored)
+	restoredCredentials, err := restored.globalBase.ListCredentials(ctx)
+	if err != nil || len(restoredCredentials) != 0 {
+		t.Fatalf("restored credentials=%+v err=%v", restoredCredentials, err)
+	}
+	restoredSecrets, err := restored.globalBase.ListSecrets(ctx)
+	if err != nil || len(restoredSecrets) != 0 {
+		t.Fatalf("restored secrets=%+v err=%v", restoredSecrets, err)
+	}
+}
+
+func TestCredentialLifecycleWALFailureRecoversBeforeLaterProgress(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	wm, err := wal.Open(ctx, wal.Options{Dir: t.TempDir(), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wm.Close()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: wal.NewRegistry(), WALWaiter: wal.NewApplyWaiter()}
+	inference := inferenceservice.NewModule()
+	if result := inference.Init(ctx, host); !result.OK {
+		t.Fatalf("init inference module: %v", result.Error)
+	}
+	module := NewModule(Config{InferenceProjection: inference})
+	if result := module.Init(ctx, host); !result.OK {
+		t.Fatalf("init semantic module: %v", result.Error)
+	}
+	endpoint, err := module.GlobalManager().UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := module.CreateInferenceCredential(ctx, CredentialCreateInput{Credential: domainsemantic.InferenceCredential{Key: "api", Name: "api", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", AuthType: domainsemantic.AuthModeAPIKey, Status: domainsemantic.CredentialStatusActive}, Secret: &domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "old"}, SecretSuffix: "old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.SetInferenceCredentialStatus(ctx, CredentialStatusInput{CredentialID: created.Credential.ID, Status: domainsemantic.CredentialStatusRevoked}); err != nil {
+		t.Fatal(err)
+	}
+	credentialsDir := filepath.Join(dataDir, "meta", "credentials")
+	credentialsBackup := credentialsDir + ".backup"
+	if err := os.Rename(credentialsDir, credentialsBackup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialsDir, []byte("block credential persistence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rotatedSecret := *created.Secret
+	rotatedSecret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "new"}
+	rotatedSecret.SecretSuffix = "new"
+	if _, err := module.RotateInferenceCredential(ctx, CredentialRotateInput{CredentialID: created.Credential.ID, ExpectedSecretRef: created.Credential.SecretRef, Secret: rotatedSecret}); err == nil {
+		t.Fatal("RotateInferenceCredential() error=nil, want injected WAL apply failure")
+	}
+	if err := os.Remove(credentialsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(credentialsBackup, credentialsDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, semanticVectorStore("wal-recovery-probe")); err != nil {
+		t.Fatalf("later WAL mutation did not recover lifecycle intent: %v", err)
+	}
+	credentials, err := module.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 1 {
+		t.Fatalf("credentials=%+v err=%v", credentials, err)
+	}
+	if credentials[0].Status != domainsemantic.CredentialStatusRevoked || credentials[0].SecretRef != created.Credential.SecretRef || credentials[0].SecretSuffix != "new" {
+		t.Fatalf("recovered credential=%+v", credentials[0])
+	}
+	secrets, err := module.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 1 || secrets[0].Ciphertext.CipherB64 != "new" {
+		t.Fatalf("recovered secrets=%+v err=%v", secrets, err)
+	}
+	derivedCredentials, err := inference.GlobalManager().ListCredentials(ctx)
+	if err != nil || len(derivedCredentials) != 1 || string(derivedCredentials[0].Status) != string(domainsemantic.CredentialStatusRevoked) || derivedCredentials[0].SecretSuffix != "new" {
+		t.Fatalf("recovered derived credentials=%+v err=%v", derivedCredentials, err)
+	}
 }
 
 func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {

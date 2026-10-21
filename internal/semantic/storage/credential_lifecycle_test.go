@@ -3,6 +3,7 @@ package semantic
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,81 @@ func TestModelEndpointCannotInvalidateReferencedCredential(t *testing.T) {
 	}
 }
 
+func TestCredentialLifecycleIntentRecoversOnRestartAtEveryBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		failFile       string
+		wantCiphertext string
+	}{
+		{name: "intent", failFile: credentialLifecycleIntentFileName, wantCiphertext: "old"},
+		{name: "secrets", failFile: secretsFileName, wantCiphertext: "new"},
+		{name: "credentials", failFile: credentialsFileName, wantCiphertext: "new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			metaDir := t.TempDir()
+			manager := NewGlobalManager()
+			if err := manager.Init(ctx, metaDir); err != nil {
+				t.Fatal(err)
+			}
+			endpoint, err := manager.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(75, 0).UTC()
+			secretID := domainsemantic.SecretID(uuid.New())
+			credentialID := domainsemantic.InferenceCredentialID(uuid.New())
+			secret := domainsemantic.Secret{ID: secretID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "old"}, SecretSuffix: "old", CreatedAt: now, UpdatedAt: now}
+			credential := domainsemantic.InferenceCredential{ID: credentialID, Key: "api", Name: "api", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretID, SecretSuffix: "old", Status: domainsemantic.CredentialStatusRevoked, CreatedAt: now, UpdatedAt: now}
+			lifecycle := manager.(CredentialLifecycleManager)
+			if _, _, err := lifecycle.CreateCredentialLifecycle(ctx, credential, &secret); err != nil {
+				t.Fatal(err)
+			}
+			rotated := secret
+			rotated.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "new"}
+			rotated.SecretSuffix = "new"
+			rotated.UpdatedAt = now.Add(time.Second)
+			concrete := manager.(*globalManager)
+			failed := false
+			concrete.persistHook = func(path string, value any) error {
+				if !failed && filepath.Base(path) == tc.failFile {
+					failed = true
+					return errors.New("injected lifecycle persistence failure")
+				}
+				return persistJSON(path, value)
+			}
+			if _, _, err := lifecycle.RotateCredentialLifecycle(ctx, credentialID, secretID, rotated); err == nil {
+				t.Fatal("rotation error=nil, want injected failure")
+			}
+			concrete.persistHook = nil
+			visibleCredentials, _ := manager.ListCredentials(ctx)
+			visibleSecrets, _ := manager.ListSecrets(ctx)
+			if len(visibleCredentials) != 1 || visibleCredentials[0].Status != domainsemantic.CredentialStatusRevoked || visibleCredentials[0].SecretSuffix != "old" || len(visibleSecrets) != 1 || visibleSecrets[0].Ciphertext.CipherB64 != "old" {
+				t.Fatalf("failed mutation became visible: credentials=%+v secrets=%+v", visibleCredentials, visibleSecrets)
+			}
+			restarted := NewGlobalManager()
+			if err := restarted.Init(ctx, metaDir); err != nil {
+				t.Fatalf("restart recovery: %v", err)
+			}
+			credentials, err := restarted.ListCredentials(ctx)
+			if err != nil || len(credentials) != 1 || credentials[0].Status != domainsemantic.CredentialStatusRevoked || credentials[0].SecretRef != secretID {
+				t.Fatalf("restarted credentials=%+v err=%v", credentials, err)
+			}
+			secrets, err := restarted.ListSecrets(ctx)
+			if err != nil || len(secrets) != 1 || secrets[0].ID != secretID || secrets[0].Ciphertext.CipherB64 != tc.wantCiphertext {
+				t.Fatalf("restarted secrets=%+v err=%v", secrets, err)
+			}
+			wantSuffix := "old"
+			if tc.wantCiphertext == "new" {
+				wantSuffix = "new"
+			}
+			if credentials[0].SecretSuffix != wantSuffix {
+				t.Fatalf("restarted credential suffix=%q want %q", credentials[0].SecretSuffix, wantSuffix)
+			}
+		})
+	}
+}
+
 func TestCredentialLifecycleRotationRepairsAfterPartialPersistence(t *testing.T) {
 	ctx := context.Background()
 	metaDir := t.TempDir()
@@ -114,8 +190,8 @@ func TestCredentialLifecycleRotationRepairsAfterPartialPersistence(t *testing.T)
 		t.Fatalf("partial rotation changed protected credential fields: %+v", credentials[0])
 	}
 	secrets, err := manager.ListSecrets(ctx)
-	if err != nil || len(secrets) != 1 || secrets[0].Ciphertext.CipherB64 != "new" {
-		t.Fatalf("partial rotation secret=%+v err=%v", secrets, err)
+	if err != nil || len(secrets) != 1 || secrets[0].Ciphertext.CipherB64 != "old" {
+		t.Fatalf("failed rotation became visible before intent recovery: %+v err=%v", secrets, err)
 	}
 
 	concrete.persistHook = nil
@@ -148,12 +224,12 @@ func TestCredentialLifecycleRotationRepairsAfterPartialPersistence(t *testing.T)
 		t.Fatal("DeleteCredentialLifecycle() error=nil, want injected secret persistence failure")
 	}
 	credentials, err = manager.ListCredentials(ctx)
-	if err != nil || len(credentials) != 0 {
-		t.Fatalf("partial delete resurrected credential: %+v err=%v", credentials, err)
+	if err != nil || len(credentials) != 1 || credentials[0].ID != credentialID {
+		t.Fatalf("failed delete became visible before intent recovery: %+v err=%v", credentials, err)
 	}
 	secrets, err = manager.ListSecrets(ctx)
 	if err != nil || len(secrets) != 1 {
-		t.Fatalf("partial delete lost retryable secret state: %+v err=%v", secrets, err)
+		t.Fatalf("failed delete lost retryable secret state: %+v err=%v", secrets, err)
 	}
 	concrete.persistHook = nil
 	if err := lifecycle.DeleteCredentialLifecycle(ctx, credentialID, secretID, true); err != nil {
