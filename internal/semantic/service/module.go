@@ -130,13 +130,16 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	m.writeAllowed = func() error { return nil }
 	if provider, ok := host.(runtime.WALProvider); ok {
 		if registry := provider.WALRegistryStore(); registry != nil {
-			if err := registry.Register(recordTypeSemanticGlobal, wal.ApplierFunc(m.applySemanticGlobal)); err != nil {
+			if err := registry.Register(recordTypeSemanticGlobal, semanticWALRecoveryApplier(m.applySemanticGlobal)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic global WAL applier", err)
 			}
-			if err := registry.Register(recordTypeSemanticSpace, wal.ApplierFunc(m.applySemanticSpace)); err != nil {
+			if err := registry.Register(recordTypeSemanticSpace, semanticWALRecoveryApplier(m.applySemanticSpace)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic space WAL applier", err)
 			}
-			if err := registry.Register(recordTypeSemanticMaintenance, wal.ApplierFunc(m.applySemanticMaintenance)); err != nil {
+			if err := registry.Register(recordTypeSemanticSpaceConditional, semanticWALRecoveryApplier(m.applySemanticSpace)); err != nil {
+				return runtime.Abort(ModuleName, "wal", "register conditional semantic space WAL applier", err)
+			}
+			if err := registry.Register(recordTypeSemanticMaintenance, semanticWALRecoveryApplier(m.applySemanticMaintenance)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic maintenance WAL applier", err)
 			}
 		}

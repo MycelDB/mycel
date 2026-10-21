@@ -903,6 +903,50 @@ func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing
 	}
 }
 
+func TestSpaceManagerSetSemanticRuleEnabledReloadsAcrossManagers(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	dir := t.TempDir()
+	first := NewSpaceManager()
+	if err := first.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := first.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "replacement-rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := NewSpaceManager()
+	if err := stale.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.DeleteSemanticRule(ctx, created.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := first.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: created.DomainID, Key: created.Key, Enabled: true,
+		Selector: created.Selector, Source: created.Source, Embeddings: created.Embeddings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setter := stale.(SemanticRuleEnabledManager)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, false, created.UpdatedAt.Add(time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale cross-manager update error=%v, want ErrNotFound", err)
+	}
+	verified := NewSpaceManager()
+	if err := verified.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := verified.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].ID != replacement.ID || !rules[0].Enabled {
+		t.Fatalf("replacement rules=%+v err=%v", rules, err)
+	}
+}
+
 func TestSpaceManagerSemanticRulesLoadLegacyUnderscoreEventsAsDotted(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

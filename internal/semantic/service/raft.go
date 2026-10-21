@@ -27,7 +27,7 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 	switch recordType {
 	case recordTypeSemanticGlobal:
 		return scope == consensus.CommandScopeSystem
-	case recordTypeSemanticSpace, recordTypeSemanticMaintenance:
+	case recordTypeSemanticSpace, recordTypeSemanticSpaceConditional, recordTypeSemanticMaintenance:
 		return scope == consensus.CommandScopeSpacePartition
 	default:
 		return false
@@ -60,7 +60,11 @@ func (m *Module) buildSemanticGlobalRaftCommand(rec semanticMutationRecord, payl
 }
 
 func (m *Module) buildSemanticSpaceRaftCommand(rec semanticMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
-	return m.buildSemanticPartitionRaftCommand(rec.SpaceID, recordTypeSemanticSpace, payload, commandID)
+	return m.buildSemanticSpaceRaftCommandForRecord(rec, recordTypeSemanticSpace, payload, commandID)
+}
+
+func (m *Module) buildSemanticSpaceRaftCommandForRecord(rec semanticMutationRecord, recordType wal.RecordType, payload []byte, commandID string) (consensus.RaftCommand, error) {
+	return m.buildSemanticPartitionRaftCommand(rec.SpaceID, recordType, payload, commandID)
 }
 
 func (m *Module) buildSemanticMaintenanceRaftCommand(rec maintenanceMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
@@ -96,6 +100,9 @@ func (m *Module) proposeSemanticSystemRaftCommand(ctx context.Context, cmd conse
 		return status.Error(codes.Unavailable, "semantic raft system group has no leader")
 	}
 	if _, err := group.Propose(ctx, cmd); err != nil {
+		if isSemanticCommandRejection(err) {
+			return err
+		}
 		return status.Errorf(codes.Unavailable, "semantic raft system proposal failed: %v", err)
 	}
 	return nil
@@ -119,6 +126,9 @@ func (m *Module) proposeSemanticRaftCommandWithResult(ctx context.Context, cmd c
 	}
 	result, err := group.Propose(ctx, cmd)
 	if err != nil {
+		if isSemanticCommandRejection(err) {
+			return consensus.ProposalResult{}, err
+		}
 		return consensus.ProposalResult{}, status.Errorf(codes.Unavailable, "semantic raft proposal for partition %d failed: %v", cmd.PartitionID, err)
 	}
 	return result, nil
@@ -143,7 +153,7 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 			return fmt.Errorf("semantic global raft command must use system scope")
 		}
 		err = m.applySemanticGlobal(ctx, wal.Record{Type: cmd.RecordType, SchemaVersion: cmd.SchemaVersion, Encoding: cmd.Encoding, Payload: cmd.Payload})
-	case recordTypeSemanticSpace:
+	case recordTypeSemanticSpace, recordTypeSemanticSpaceConditional:
 		if cmd.Scope != consensus.CommandScopeSpacePartition {
 			return fmt.Errorf("semantic space raft command must use space partition scope")
 		}

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -99,6 +100,21 @@ func TestSetSemanticRuleEnabledReturnsExactConditionalMutation(t *testing.T) {
 	}
 	if response.GetRule().GetUpdatedAt() != timeValueString(persisted.UpdatedAt) {
 		t.Fatalf("response updated_at=%q persisted=%q", response.GetRule().GetUpdatedAt(), timeValueString(persisted.UpdatedAt))
+	}
+}
+
+func TestSetSemanticRuleEnabledMapsConcurrentUpdateConflict(t *testing.T) {
+	ctx, spaceID, space, created, global := newSemanticRuleServiceTest(t)
+	manager := &semanticRuleResponseManager{space: space, global: global, beforeSet: func() error {
+		return fmt.Errorf("%w: concurrent semantic rule update", storesemantic.ErrConflict)
+	}}
+	service := NewAdminSemanticService(manager, nil, &scopedSemanticAuthorizer{})
+	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: "operator"})
+	_, err := service.SetSemanticRuleEnabled(requestCtx, &adminv1.SetSemanticRuleEnabledRequest{
+		SpaceId: spaceID.String(), SemanticRuleId: created.ID.String(), Enabled: false,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("SetSemanticRuleEnabled() code=%v err=%v; want FailedPrecondition", status.Code(err), err)
 	}
 }
 

@@ -30,5 +30,5 @@ func (m *Module) SetSemanticRuleEnabled(ctx context.Context, in SemanticRuleEnab
 		}
 		return classifySemanticMutationError(applySemanticSpaceMutation(ctx, manager, record))
 	}
-	return m.commitSemanticMutation(ctx, recordTypeSemanticSpace, record)
+	return m.commitSemanticMutation(ctx, recordTypeSemanticSpaceConditional, record)
 }

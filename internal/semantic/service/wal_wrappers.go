@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	recordTypeSemanticGlobal wal.RecordType = "semantic.global.mutation.v1"
-	recordTypeSemanticSpace  wal.RecordType = "semantic.space.mutation.v1"
+	recordTypeSemanticGlobal           wal.RecordType = "semantic.global.mutation.v1"
+	recordTypeSemanticSpace            wal.RecordType = "semantic.space.mutation.v1"
+	recordTypeSemanticSpaceConditional wal.RecordType = "semantic.space.conditional-mutation.v2"
 )
 
 type semanticMutationRecord struct {
@@ -47,6 +48,16 @@ func isSemanticCommandRejection(err error) bool {
 	return errors.As(err, &rejection)
 }
 
+func semanticWALRecoveryApplier(apply func(context.Context, wal.Record) error) wal.ApplierFunc {
+	return func(ctx context.Context, record wal.Record) error {
+		err := apply(ctx, record)
+		if isSemanticCommandRejection(err) {
+			return nil
+		}
+		return err
+	}
+}
+
 type walGlobalManager struct {
 	inner  storesemantic.GlobalManager
 	module *Module
@@ -66,7 +77,7 @@ func (m *Module) applySemanticWALRecord(ctx context.Context, record wal.Record) 
 	switch record.Type {
 	case recordTypeSemanticGlobal:
 		return m.applySemanticGlobal(ctx, record)
-	case recordTypeSemanticSpace:
+	case recordTypeSemanticSpace, recordTypeSemanticSpaceConditional:
 		return m.applySemanticSpace(ctx, record)
 	case recordTypeSemanticMaintenance:
 		return m.applySemanticMaintenance(ctx, record)
@@ -119,8 +130,8 @@ func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType,
 				return err
 			}
 			return m.proposeSemanticSystemRaftCommand(ctx, cmd)
-		case recordTypeSemanticSpace:
-			cmd, err := m.buildSemanticSpaceRaftCommand(rec, payload, "semantic-space-"+rec.SpaceID.String()+"-"+rec.Kind+"-"+uuid.NewString())
+		case recordTypeSemanticSpace, recordTypeSemanticSpaceConditional:
+			cmd, err := m.buildSemanticSpaceRaftCommandForRecord(rec, typ, payload, "semantic-space-"+rec.SpaceID.String()+"-"+rec.Kind+"-"+uuid.NewString())
 			if err != nil {
 				return err
 			}

@@ -20,6 +20,7 @@ import (
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -635,6 +636,15 @@ func paginateAdminSemantic[T any](items []T, pageSize int, pageToken string) ([]
 func mapAdminSemanticError(err error, action string) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, storesemantic.ErrNotFound) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrInvalidInput) {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
 		return err

@@ -620,8 +620,19 @@ func (m *globalManager) SetCredentialLifecyclePersistenceFaultInjector(inject fu
 	m.persistFailureHook = inject
 }
 
+var spaceManagerLocks sync.Map
+
+func sharedSpaceManagerLock(location string) *sync.RWMutex {
+	key, err := filepath.Abs(filepath.Clean(location))
+	if err != nil {
+		key = filepath.Clean(location)
+	}
+	lock, _ := spaceManagerLocks.LoadOrStore(key, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
+}
+
 type spaceManager struct {
-	mu                sync.RWMutex
+	mu                *sync.RWMutex
 	location          string
 	spaceID           domainspace.SpaceID
 	rules             semanticRulesState
@@ -666,6 +677,7 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
+	m.mu = sharedSpaceManagerLock(location)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.location = location
@@ -790,6 +802,11 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, id domainsema
 	updatedAt = updatedAt.UTC()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var latest semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.rules = latest
 	for i, rule := range m.rules.Rules {
 		if rule.ID != id {
 			continue

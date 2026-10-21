@@ -712,6 +712,94 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walDir := t.TempDir()
+	progressPath := filepath.Join(t.TempDir(), "semantic-progress.json")
+	wm, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := wal.NewRegistry()
+	progress := wal.NewFileProgressStore(progressPath)
+	m := NewModule()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: registry, WALProgress: progress, WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, host); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	staleRule := created
+	staleRule.Enabled = true
+	staleRule.UpdatedAt = updatedAt.Add(time.Second)
+	expected := created.UpdatedAt.UTC()
+	payload, err := json.Marshal(semanticMutationRecord{
+		Kind: "semantic_rule.upsert", SpaceID: spaceID, Payload: raw(staleRule),
+		ExpectedSemanticRuleUpdatedAt: &expected,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedLSN, err := wm.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticSpaceConditional, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.Sync(ctx, rejectedLSN); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedWAL, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedWAL.Close()
+	reopenedRegistry := wal.NewRegistry()
+	reopenedProgress := wal.NewFileProgressStore(progressPath)
+	restarted := NewModule()
+	restartedHost := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WAL: reopenedWAL, WALRegistry: reopenedRegistry, WALProgress: reopenedProgress, WALWaiter: wal.NewApplyWaiter()}
+	if result := restarted.Init(ctx, restartedHost); !result.OK {
+		t.Fatalf("restart init failed: %v", result.Error)
+	}
+	applied, err := wal.NewRecovery(reopenedWAL, reopenedRegistry, reopenedProgress).Recover(ctx)
+	if err != nil {
+		t.Fatalf("recovery rejected deterministic outcome: %v", err)
+	}
+	if applied != rejectedLSN {
+		t.Fatalf("recovered LSN=%d, want %d", applied, rejectedLSN)
+	}
+	persisted, err := restarted.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := persisted.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("rules after rejected recovery=%+v err=%v", rules, err)
+	}
+	finalAt := updatedAt.Add(2 * time.Second)
+	if err := restarted.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: rules[0], ExpectedUpdatedAt: updatedAt, Enabled: true, UpdatedAt: finalAt}); err != nil {
+		t.Fatalf("mutation after rejected recovery failed: %v", err)
+	}
+}
+
 func TestSemanticRuleEnabledWALRejectionDoesNotBlockLaterMutation(t *testing.T) {
 	ctx := context.Background()
 	wm, err := wal.Open(ctx, wal.Options{Dir: t.TempDir(), SegmentBytes: 1024 * 1024})
@@ -817,8 +905,8 @@ func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
 	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("persisted rules=%+v err=%v", rules, err)
 	}
-	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); err == nil {
-		t.Fatal("stale SetSemanticRuleEnabled() succeeded; want fail-closed Raft rejection")
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); !errors.Is(err, storesemantic.ErrConflict) {
+		t.Fatalf("stale SetSemanticRuleEnabled() error=%v, want ErrConflict", err)
 	}
 }
 
