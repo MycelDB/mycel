@@ -859,6 +859,50 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 	}
 }
 
+func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	dir := t.TempDir()
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "conditional-rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setter := mgr.(SemanticRuleEnabledManager)
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	updated, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, false, updatedAt)
+	if err != nil {
+		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
+	}
+	if updated.Enabled || !updated.UpdatedAt.Equal(updatedAt) || updated.ID != created.ID || !updated.CreatedAt.Equal(created.CreatedAt) {
+		t.Fatalf("updated rule=%+v", updated)
+	}
+	if replayed, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, false, updatedAt); err != nil || replayed.Enabled || !replayed.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("idempotent replay=%+v err=%v", replayed, err)
+	}
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created.ID, created.UpdatedAt, true, updatedAt.Add(time.Second)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale conditional update error=%v, want ErrConflict", err)
+	}
+	if _, err := setter.SetSemanticRuleEnabled(ctx, domainsemantic.SemanticRuleID(uuid.New()), updatedAt, true, updatedAt.Add(time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replacement identity update error=%v, want ErrNotFound", err)
+	}
+	reopened := NewSpaceManager()
+	if err := reopened.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := reopened.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("reopened rules=%+v err=%v", rules, err)
+	}
+}
+
 func TestSpaceManagerSemanticRulesLoadLegacyUnderscoreEventsAsDotted(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

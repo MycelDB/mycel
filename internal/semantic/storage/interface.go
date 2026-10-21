@@ -36,6 +36,12 @@ type GlobalManager interface {
 	DeleteCredential(ctx context.Context, id domainsemantic.InferenceCredentialID) error
 }
 
+// SemanticRuleEnabledManager applies an ID-qualified, conditional enabled-state
+// mutation without permitting key-based identity replacement.
+type SemanticRuleEnabledManager interface {
+	SetSemanticRuleEnabled(ctx context.Context, id domainsemantic.SemanticRuleID, expectedUpdatedAt time.Time, enabled bool, updatedAt time.Time) (domainsemantic.SemanticGenerationRule, error)
+}
+
 // CredentialLifecycleManager applies conditional credential/secret lifecycle
 // changes while holding one storage lock. The enclosing WAL/Raft record provides
 // crash replay; this contract prevents concurrently visible partial state.

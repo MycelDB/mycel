@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
@@ -19,10 +20,11 @@ const (
 )
 
 type semanticMutationRecord struct {
-	Kind    string              `json:"kind"`
-	SpaceID domainspace.SpaceID `json:"space_id,omitempty"`
-	Payload json.RawMessage     `json:"payload,omitempty"`
-	Flag    bool                `json:"flag,omitempty"`
+	Kind                          string              `json:"kind"`
+	SpaceID                       domainspace.SpaceID `json:"space_id,omitempty"`
+	Payload                       json.RawMessage     `json:"payload,omitempty"`
+	Flag                          bool                `json:"flag,omitempty"`
+	ExpectedSemanticRuleUpdatedAt *time.Time          `json:"expected_semantic_rule_updated_at,omitempty"`
 }
 
 type semanticCommandRejection struct{ err error }
@@ -81,7 +83,7 @@ func (m *Module) retrySemanticWALFailureLocked(ctx context.Context) error {
 		return m.recoverCredentialLifecycle(ctx)
 	}
 	failed := *m.semanticWALFailure
-	if err := m.applySemanticWALRecord(ctx, failed.Record); err != nil {
+	if err := m.applySemanticWALRecord(ctx, failed.Record); err != nil && !isSemanticCommandRejection(err) {
 		return err
 	}
 	if err := m.markSemanticWALApplied(ctx, failed.LSN); err != nil {
@@ -92,15 +94,16 @@ func (m *Module) retrySemanticWALFailureLocked(ctx context.Context) error {
 }
 
 func (m *Module) applyAndMarkSemanticWALLocked(ctx context.Context, lsn wal.LSN, record wal.Record) error {
-	if err := m.applySemanticWALRecord(ctx, record); err != nil {
+	applyErr := m.applySemanticWALRecord(ctx, record)
+	if applyErr != nil && !isSemanticCommandRejection(applyErr) {
 		m.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
-		return err
+		return applyErr
 	}
 	if err := m.markSemanticWALApplied(ctx, lsn); err != nil {
 		m.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
 		return err
 	}
-	return nil
+	return applyErr
 }
 
 func (m *Module) commitSemanticMutation(ctx context.Context, typ wal.RecordType, rec semanticMutationRecord) error {
@@ -266,7 +269,17 @@ func applySemanticSpaceMutation(ctx context.Context, s storesemantic.SpaceManage
 	switch r.Kind {
 	case "semantic_rule.upsert":
 		var v domainsemantic.SemanticGenerationRule
-		_ = json.Unmarshal(r.Payload, &v)
+		if err := json.Unmarshal(r.Payload, &v); err != nil {
+			return err
+		}
+		if r.ExpectedSemanticRuleUpdatedAt != nil {
+			setter, ok := s.(storesemantic.SemanticRuleEnabledManager)
+			if !ok {
+				return errors.New("semantic rule enabled-state storage mutation is unavailable")
+			}
+			_, err := setter.SetSemanticRuleEnabled(ctx, v.ID, *r.ExpectedSemanticRuleUpdatedAt, v.Enabled, v.UpdatedAt)
+			return err
+		}
 		_, err := s.UpsertSemanticRule(ctx, v)
 		return err
 	case "semantic_rule.delete":

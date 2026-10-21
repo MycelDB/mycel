@@ -226,24 +226,23 @@ func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *
 	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
-	rule.Enabled = req.GetEnabled()
-	rule.UpdatedAt = time.Now().UTC()
+	expectedUpdatedAt := rule.UpdatedAt.UTC()
+	updatedAt := time.Now().UTC()
+	if !updatedAt.After(expectedUpdatedAt) {
+		updatedAt = expectedUpdatedAt.Add(time.Nanosecond)
+	}
 	ctx, release, err := s.semantic.BeginMutation(ctx)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "begin semantic mutation")
 	}
 	defer release()
-	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
-	if err != nil {
-		return nil, mapAdminSemanticError(err, "open semantic space manager")
-	}
-	if _, err := spaceMgr.UpsertSemanticRule(ctx, rule); err != nil {
+	if err := s.semantic.SetSemanticRuleEnabled(ctx, daemonsemantic.SemanticRuleEnabledInput{
+		Rule: rule, ExpectedUpdatedAt: expectedUpdatedAt, Enabled: req.GetEnabled(), UpdatedAt: updatedAt,
+	}); err != nil {
 		return nil, mapAdminSemanticError(err, "set semantic rule enabled")
 	}
-	// The request-local space manager can retain its pre-mutation cache because
-	// durable WAL/Raft application uses a fresh manager. The rule loaded above
-	// has authoritative identity and canonical fields; only enabled/update time
-	// changed, so it is the response for this successfully committed mutation.
+	rule.Enabled = req.GetEnabled()
+	rule.UpdatedAt = updatedAt
 	updated := rule
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {

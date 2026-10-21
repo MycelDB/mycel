@@ -26,7 +26,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 ### Fixed
 
 - Raft-forwarded graph reads now preserve deterministic graph error codes across the internal backend boundary, including `NotFound` for absent entities instead of relabeling absence as `Internal`.
-- Semantic-rule enable/disable responses now report the successfully committed requested state instead of a request-local pre-mutation cache entry.
+- Semantic-rule enable/disable mutations are now ID-qualified and version-conditional, preserve one replicated update timestamp, reject concurrent identity replacement, and return the exact successfully committed state instead of a request-local cache entry.
 
 ## [v0.20.0] - 2026-10-19
 

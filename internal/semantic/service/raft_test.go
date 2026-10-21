@@ -712,6 +712,116 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestSemanticRuleEnabledWALRejectionDoesNotBlockLaterMutation(t *testing.T) {
+	ctx := context.Background()
+	wm, err := wal.Open(ctx, wal.Options{Dir: t.TempDir(), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wm.Close()
+	m := NewModule()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: wal.NewRegistry(), WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, host); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); !isSemanticCommandRejection(err) {
+		t.Fatalf("stale mutation error=%v, want deterministic rejection", err)
+	}
+	if m.semanticWALFailure != nil {
+		t.Fatalf("deterministic rejection retained as WAL failure: %+v", m.semanticWALFailure)
+	}
+	created.Enabled = false
+	created.UpdatedAt = updatedAt
+	finalAt := updatedAt.Add(2 * time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: updatedAt, Enabled: true, UpdatedAt: finalAt}); err != nil {
+		t.Fatalf("later mutation after rejection failed: %v", err)
+	}
+	persisted, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := persisted.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || !rules[0].Enabled || !rules[0].UpdatedAt.Equal(finalAt) {
+		t.Fatalf("persisted rules=%+v err=%v", rules, err)
+	}
+}
+
+func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	router := consensus.NewLocalMessageRouter()
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(consensus.NodeID) (consensus.MessageSender, bool) { return router, true })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }}, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer groups.Stop()
+	for _, group := range groups.Groups() {
+		router.Register(group)
+	}
+	m.EnableExperimentalRaft(groups, 4)
+	spaceID := domainspace.SpaceID(uuid.New())
+	probe, err := m.buildSemanticSpaceRaftCommand(semanticMutationRecord{Kind: "semantic_rule.upsert", SpaceID: spaceID}, []byte(`{}`), "semantic-rule-enabled-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := groups.Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatal("semantic rule partition group not found")
+	}
+	if err := consensus.TickUntil(ctx, 10*time.Millisecond, groups.Tick, func() bool { return group.Leader() == 1 }); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
+	}
+	persisted, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := persisted.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("persisted rules=%+v err=%v", rules, err)
+	}
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); err == nil {
+		t.Fatal("stale SetSemanticRuleEnabled() succeeded; want fail-closed Raft rejection")
+	}
+}
+
 func TestSemanticGlobalRaftFailsClosedWithoutSystemLeader(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
@@ -1056,7 +1166,23 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("leader not elected: %v", err)
 	}
-	mgr, err := modules[1].SpaceManager(ctx, spaceID)
+	currentLeader := func() (consensus.NodeID, bool) {
+		for _, nodeID := range peers {
+			if group, ok := groupsByNode[nodeID].Group(consensus.PartitionGroupID(probe.PartitionID)); ok && group.Leader() == nodeID {
+				return nodeID, true
+			}
+		}
+		return 0, false
+	}
+	var leaderNode consensus.NodeID
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		var ok bool
+		leaderNode, ok = currentLeader()
+		return ok
+	}); err != nil {
+		t.Fatalf("local partition leader unavailable: %v", err)
+	}
+	mgr, err := modules[leaderNode].SpaceManager(ctx, spaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,6 +1200,48 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 			return err == nil && len(indexes) == 1 && indexes[0].ID == idx.ID
 		}); err != nil {
 			t.Fatalf("node %d did not apply semantic index: %v", nodeID, err)
+		}
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		var ok bool
+		leaderNode, ok = currentLeader()
+		return ok
+	}); err != nil {
+		t.Fatalf("local partition leader unavailable before rule create: %v", err)
+	}
+	mgr, err = modules[leaderNode].SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "clustered-rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("UpsertSemanticRule() error = %v", err)
+	}
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		var ok bool
+		leaderNode, ok = currentLeader()
+		return ok
+	}); err != nil {
+		t.Fatalf("local partition leader unavailable before rule update: %v", err)
+	}
+	if err := modules[leaderNode].SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
+	}
+	for nodeID, m := range modules {
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			persisted, err := m.baseSpaceManager(ctx, spaceID)
+			if err != nil {
+				return false
+			}
+			rules, err := persisted.ListSemanticRules(ctx)
+			return err == nil && len(rules) == 1 && rules[0].ID == created.ID && !rules[0].Enabled && rules[0].UpdatedAt.Equal(updatedAt)
+		}); err != nil {
+			t.Fatalf("node %d did not apply exact semantic rule enabled state: %v", nodeID, err)
 		}
 	}
 }

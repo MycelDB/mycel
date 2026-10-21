@@ -73,6 +73,7 @@ type Manager interface {
 	RotateInferenceCredential(ctx context.Context, in CredentialRotateInput) (CredentialLifecycleResult, error)
 	SetInferenceCredentialStatus(ctx context.Context, in CredentialStatusInput) (CredentialLifecycleResult, error)
 	DeleteInferenceCredential(ctx context.Context, in CredentialDeleteInput) error
+	SetSemanticRuleEnabled(ctx context.Context, in SemanticRuleEnabledInput) error
 	GlobalManager() storesemantic.GlobalManager
 	SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error)
 	ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error)
@@ -114,6 +115,13 @@ type CredentialDeleteInput struct {
 	CredentialID      domainsemantic.InferenceCredentialID
 	ExpectedSecretRef domainsemantic.SecretID
 	DeleteSecret      bool
+}
+
+type SemanticRuleEnabledInput struct {
+	Rule              domainsemantic.SemanticGenerationRule
+	ExpectedUpdatedAt time.Time
+	Enabled           bool
+	UpdatedAt         time.Time
 }
 
 type CredentialLifecycleResult struct {
