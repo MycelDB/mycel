@@ -197,12 +197,12 @@ type ReliabilityStatus struct {
 }
 
 type RebuildInput struct {
-	SpaceID               domainspace.SpaceID
-	SemanticRuleID        domainsemantic.SemanticRuleID
-	EmbeddingBindingKey   string
-	BackfillLimit         int
-	MaintenanceBatchLimit int
-	MaxCatchupIterations  int
+	SpaceID               domainspace.SpaceID           `json:"space_id"`
+	SemanticRuleID        domainsemantic.SemanticRuleID `json:"semantic_rule_id"`
+	EmbeddingBindingKey   string                        `json:"embedding_binding_key"`
+	BackfillLimit         int                           `json:"backfill_limit,omitempty"`
+	MaintenanceBatchLimit int                           `json:"maintenance_batch_limit,omitempty"`
+	MaxCatchupIterations  int                           `json:"max_catchup_iterations,omitempty"`
 }
 
 type RebuildResult struct {
@@ -246,8 +246,8 @@ type MaintenanceWorkItem struct {
 }
 
 type ProcessInput struct {
-	SpaceID domainspace.SpaceID
-	Limit   int
+	SpaceID domainspace.SpaceID `json:"space_id"`
+	Limit   int                 `json:"limit,omitempty"`
 }
 
 type SearchInput struct {

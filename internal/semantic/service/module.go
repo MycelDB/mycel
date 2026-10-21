@@ -918,6 +918,9 @@ func semanticCooldownForNode(schema schemamodel.DomainSchema, node graph.Node) t
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
+	if forwarded, result, err := m.forwardSemanticProcess(ctx, in); forwarded || err != nil {
+		return result, err
+	}
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
@@ -1013,6 +1016,9 @@ func (m *Module) syncSemanticDirtyCounts(ctx context.Context, spaceID domainspac
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {
+	if forwarded, result, err := m.forwardSemanticBackfill(ctx, in); forwarded || err != nil {
+		return result, err
+	}
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticbackfill.Result{}, err

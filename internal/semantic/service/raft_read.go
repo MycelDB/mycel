@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
+	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
@@ -23,6 +25,9 @@ type raftSemanticReadRequest struct {
 	Consumer string                         `json:"consumer,omitempty"`
 	IndexID  domainsemantic.SemanticIndexID `json:"index_id,omitempty"`
 	Search   SearchInput                    `json:"search,omitempty"`
+	Backfill *semanticbackfill.Input        `json:"backfill,omitempty"`
+	Process  *ProcessInput                  `json:"process,omitempty"`
+	Rebuild  *RebuildInput                  `json:"rebuild,omitempty"`
 }
 type raftSemanticRulesResponse struct {
 	Rules []domainsemantic.SemanticGenerationRule `json:"rules"`
@@ -56,6 +61,30 @@ type raftSemanticVectorRecordsResponse struct {
 type raftSemanticSearchResponse struct {
 	Result semanticsearch.Result `json:"result"`
 }
+
+type raftSemanticBackfillResponse struct {
+	SemanticRuleID      domainsemantic.SemanticRuleID  `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey string                         `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID     domainsemantic.SemanticIndexID `json:"semantic_index_id,omitempty"`
+	SelectedCount       int                            `json:"selected_count"`
+	GeneratedCount      int                            `json:"generated_count"`
+	SkippedCount        int                            `json:"skipped_count"`
+	FailedCount         int                            `json:"failed_count"`
+	TotalSelectedCount  int                            `json:"total_selected_count,omitempty"`
+	NextOffset          int                            `json:"next_offset,omitempty"`
+	Skipped             []semanticbackfill.Skipped     `json:"skipped,omitempty"`
+	Failures            []semanticbackfill.Failure     `json:"failures,omitempty"`
+}
+
+type raftSemanticProcessResponse struct {
+	Result semanticmaintenance.WorkerResult `json:"result"`
+}
+
+type raftSemanticRebuildResponse struct {
+	Reliability ReliabilityStatus            `json:"reliability"`
+	Backfill    raftSemanticBackfillResponse `json:"backfill"`
+}
+
 type raftSemanticCapabilityResponse struct {
 	ConditionalRuleMutationV2 bool `json:"conditional_rule_mutation_v2"`
 }
@@ -127,6 +156,58 @@ func (m *Module) shouldForwardRaftSemanticRead(spaceID domainspace.SpaceID) (con
 	}
 	leader := g.Leader()
 	return leader, leader != 0 && leader != m.raftLocalNode, nil
+}
+
+func (m *Module) forwardSemanticBackfill(ctx context.Context, in semanticbackfill.Input) (bool, semanticbackfill.Result, error) {
+	leader, forward, err := m.semanticOperationLeader(in.SpaceID)
+	if err != nil || !forward {
+		return false, semanticbackfill.Result{}, err
+	}
+	var response raftSemanticBackfillResponse
+	err = m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "backfill", SpaceID: in.SpaceID, Backfill: &in}, &response)
+	return true, response.result(), err
+}
+
+func (m *Module) forwardSemanticProcess(ctx context.Context, in ProcessInput) (bool, semanticmaintenance.WorkerResult, error) {
+	leader, forward, err := m.semanticOperationLeader(in.SpaceID)
+	if err != nil || !forward {
+		return false, semanticmaintenance.WorkerResult{}, err
+	}
+	var response raftSemanticProcessResponse
+	err = m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "process_dirty_work", SpaceID: in.SpaceID, Process: &in}, &response)
+	return true, response.Result, err
+}
+
+func (m *Module) forwardSemanticRebuild(ctx context.Context, in RebuildInput) (bool, RebuildResult, error) {
+	leader, forward, err := m.semanticOperationLeader(in.SpaceID)
+	if err != nil || !forward {
+		return false, RebuildResult{}, err
+	}
+	var response raftSemanticRebuildResponse
+	err = m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "rebuild", SpaceID: in.SpaceID, Rebuild: &in}, &response)
+	return true, RebuildResult{Reliability: response.Reliability, Backfill: response.Backfill.result()}, err
+}
+
+func (m *Module) semanticOperationLeader(spaceID domainspace.SpaceID) (consensus.NodeID, bool, error) {
+	leader, forward, err := m.shouldForwardRaftSemanticRead(spaceID)
+	if err != nil {
+		return 0, false, err
+	}
+	if m.raftGroups != nil && leader == 0 {
+		return 0, false, fmt.Errorf("semantic raft partition for space %s has no leader", spaceID)
+	}
+	return leader, forward, nil
+}
+
+func (m *Module) requireLocalSemanticOperationLeader(spaceID domainspace.SpaceID) error {
+	leader, forward, err := m.semanticOperationLeader(spaceID)
+	if err != nil {
+		return err
+	}
+	if forward {
+		return fmt.Errorf("semantic raft partition leader changed to node %d", leader)
+	}
+	return nil
 }
 
 func (m *Module) forwardRaftSemanticRead(ctx context.Context, leader consensus.NodeID, req raftSemanticReadRequest, out any) error {
@@ -251,6 +332,48 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 			return nil, err
 		}
 		return json.Marshal(struct{}{})
+	case "backfill":
+		if err := m.requireLocalSemanticOperationLeader(req.SpaceID); err != nil {
+			return nil, err
+		}
+		if req.Backfill == nil {
+			return nil, errors.New("semantic backfill input is required")
+		}
+		in := *req.Backfill
+		in.SpaceID = req.SpaceID
+		result, err := m.BackfillIndex(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(newRaftSemanticBackfillResponse(result))
+	case "process_dirty_work":
+		if err := m.requireLocalSemanticOperationLeader(req.SpaceID); err != nil {
+			return nil, err
+		}
+		if req.Process == nil {
+			return nil, errors.New("semantic process input is required")
+		}
+		in := *req.Process
+		in.SpaceID = req.SpaceID
+		result, err := m.ProcessDirtyWork(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftSemanticProcessResponse{Result: result})
+	case "rebuild":
+		if err := m.requireLocalSemanticOperationLeader(req.SpaceID); err != nil {
+			return nil, err
+		}
+		if req.Rebuild == nil {
+			return nil, errors.New("semantic rebuild input is required")
+		}
+		in := *req.Rebuild
+		in.SpaceID = req.SpaceID
+		result, err := m.RebuildSemanticRule(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(raftSemanticRebuildResponse{Reliability: result.Reliability, Backfill: newRaftSemanticBackfillResponse(result.Backfill)})
 	case "search":
 		if req.Search.SpaceID == (domainspace.SpaceID{}) {
 			req.Search.SpaceID = req.SpaceID
@@ -262,5 +385,23 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		return json.Marshal(raftSemanticSearchResponse{Result: v})
 	default:
 		return nil, fmt.Errorf("unsupported raft semantic read op %q", req.Op)
+	}
+}
+
+func newRaftSemanticBackfillResponse(result semanticbackfill.Result) raftSemanticBackfillResponse {
+	return raftSemanticBackfillResponse{
+		SemanticRuleID: result.SemanticRuleID, EmbeddingBindingKey: result.EmbeddingBindingKey, SemanticIndexID: result.SemanticIndexID,
+		SelectedCount: result.SelectedCount, GeneratedCount: result.GeneratedCount, SkippedCount: result.SkippedCount, FailedCount: result.FailedCount,
+		TotalSelectedCount: result.TotalSelectedCount, NextOffset: result.NextOffset,
+		Skipped: append([]semanticbackfill.Skipped(nil), result.Skipped...), Failures: append([]semanticbackfill.Failure(nil), result.Failures...),
+	}
+}
+
+func (r raftSemanticBackfillResponse) result() semanticbackfill.Result {
+	return semanticbackfill.Result{
+		SemanticRuleID: r.SemanticRuleID, EmbeddingBindingKey: r.EmbeddingBindingKey, SemanticIndexID: r.SemanticIndexID,
+		SelectedCount: r.SelectedCount, GeneratedCount: r.GeneratedCount, SkippedCount: r.SkippedCount, FailedCount: r.FailedCount,
+		TotalSelectedCount: r.TotalSelectedCount, NextOffset: r.NextOffset,
+		Skipped: append([]semanticbackfill.Skipped(nil), r.Skipped...), Failures: append([]semanticbackfill.Failure(nil), r.Failures...),
 	}
 }

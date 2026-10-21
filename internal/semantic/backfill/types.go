@@ -37,22 +37,22 @@ type ConnectorService interface {
 }
 
 type Input struct {
-	SpaceID                domainspace.SpaceID
-	SemanticRuleID         domainsemantic.SemanticRuleID
-	EmbeddingBindingKey    string
-	SemanticIndexID        domainsemantic.SemanticIndexID // transitional fallback until API/CLI adapters are rule-native
-	NodeIDs                []graph.NodeID
-	Force                  bool
-	Limit                  int
-	Offset                 int
-	Reconcile              bool
-	ContinueOnError        bool
-	SourceGraphRevision    uint64
-	PinSourceGraphRevision bool
-	SemanticGeneration     uint64
-	RebuildEpoch           string
-	WorkItemID             domainsemantic.SemanticDirtyWorkItemID
-	WorkItemGeneration     int
+	SpaceID                domainspace.SpaceID                    `json:"space_id"`
+	SemanticRuleID         domainsemantic.SemanticRuleID          `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey    string                                 `json:"embedding_binding_key,omitempty"`
+	SemanticIndexID        domainsemantic.SemanticIndexID         `json:"semantic_index_id,omitempty"` // transitional fallback until API/CLI adapters are rule-native
+	NodeIDs                []graph.NodeID                         `json:"node_ids,omitempty"`
+	Force                  bool                                   `json:"force,omitempty"`
+	Limit                  int                                    `json:"limit,omitempty"`
+	Offset                 int                                    `json:"offset,omitempty"`
+	Reconcile              bool                                   `json:"reconcile,omitempty"`
+	ContinueOnError        bool                                   `json:"continue_on_error,omitempty"`
+	SourceGraphRevision    uint64                                 `json:"source_graph_revision,omitempty"`
+	PinSourceGraphRevision bool                                   `json:"pin_source_graph_revision,omitempty"`
+	SemanticGeneration     uint64                                 `json:"semantic_generation,omitempty"`
+	RebuildEpoch           string                                 `json:"rebuild_epoch,omitempty"`
+	WorkItemID             domainsemantic.SemanticDirtyWorkItemID `json:"work_item_id,omitempty"`
+	WorkItemGeneration     int                                    `json:"work_item_generation,omitempty"`
 }
 
 type Publication struct {

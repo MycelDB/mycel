@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,8 @@ import (
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
+	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
@@ -1416,7 +1419,7 @@ func TestSemanticRaftCapabilityAdvertisesConditionalRuleMutationV2(t *testing.T)
 	}
 }
 
-func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
+func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	peers := []consensus.NodeID{1, 2, 3}
@@ -1451,6 +1454,7 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		}
 	}()
 	servers := map[consensus.NodeID]*grpc.Server{}
+	readers := map[consensus.NodeID]*recordingRaftSemanticReader{}
 	addrs := make([]string, len(peers))
 	for _, nodeID := range peers {
 		lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1459,7 +1463,9 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		}
 		srv := grpc.NewServer()
 		backend := clusterbackend.NewService(clustermodel.NodeIdentity{}, clustermodel.NodeStateClustered, nil)
-		backend.SemanticReader = modules[nodeID]
+		reader := &recordingRaftSemanticReader{delegate: modules[nodeID], responses: map[string][]byte{}}
+		readers[nodeID] = reader
+		backend.SemanticReader = reader
 		clusterpb.RegisterClusterBackendServiceServer(srv, backend)
 		servers[nodeID] = srv
 		addrs[int(nodeID)-1] = lis.Addr().String()
@@ -1474,8 +1480,9 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		modules[nodeID].EnableExperimentalRaftNetworking(nodeID, addrs, "")
 	}
 	stopTick := make(chan struct{})
-	defer close(stopTick)
+	tickDone := make(chan struct{})
 	go func() {
+		defer close(tickDone)
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -1516,6 +1523,8 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		t.Fatalf("leader not elected: %v", err)
 	}
 	leaderID := leaderForPartition()
+	close(stopTick)
+	<-tickDone
 	followerID := consensus.NodeID(1)
 	if followerID == leaderID {
 		followerID = 2
@@ -1545,6 +1554,86 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 	}
 	if len(forwarded) != 1 || forwarded[0].ID != rec.ID {
 		t.Fatalf("forwarded records=%#v want %s from leader %d via follower %d", forwarded, rec.ID, leaderID, followerID)
+	}
+
+	directFollowerPayload, err := json.Marshal(raftSemanticReadRequest{Op: "backfill", SpaceID: spaceID, Backfill: &semanticbackfill.Input{SpaceID: spaceID, Force: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modules[followerID].ExecuteLocalRaftSemanticRead(ctx, spaceID.String(), directFollowerPayload); err == nil || !strings.Contains(err.Error(), "leader changed") {
+		t.Fatalf("direct follower semantic operation error=%v, want leader-changed rejection", err)
+	}
+
+	backfillResponse := newRaftSemanticBackfillResponse(semanticbackfill.Result{SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", SelectedCount: 3, GeneratedCount: 3})
+	processResponse := raftSemanticProcessResponse{Result: semanticmaintenance.WorkerResult{Processed: 2, Completed: 2}}
+	rebuildResponse := raftSemanticRebuildResponse{Reliability: ReliabilityStatus{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", FreshThroughGraphRevision: 3}, Backfill: backfillResponse}
+	readers[leaderID].setResponse(t, "backfill", backfillResponse)
+	readers[leaderID].setResponse(t, "process_dirty_work", processResponse)
+	readers[leaderID].setResponse(t, "rebuild", rebuildResponse)
+
+	backfill, err := modules[followerID].BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", Force: true, Limit: 16})
+	if err != nil {
+		t.Fatalf("follower forwarded semantic backfill: %v", err)
+	}
+	if backfill.SelectedCount != 3 || backfill.GeneratedCount != 3 {
+		t.Fatalf("forwarded backfill=%+v", backfill)
+	}
+	processed, err := modules[followerID].ProcessDirtyWork(ctx, ProcessInput{SpaceID: spaceID, Limit: 16})
+	if err != nil {
+		t.Fatalf("follower forwarded semantic processing: %v", err)
+	}
+	if processed.Processed != 2 || processed.Completed != 2 {
+		t.Fatalf("forwarded process result=%+v", processed)
+	}
+	rebuilt, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", BackfillLimit: 16})
+	if err != nil {
+		t.Fatalf("follower forwarded semantic rebuild: %v", err)
+	}
+	if rebuilt.Reliability.FreshThroughGraphRevision != 3 || rebuilt.Backfill.GeneratedCount != 3 {
+		t.Fatalf("forwarded rebuild=%+v", rebuilt)
+	}
+	for _, op := range []string{"backfill", "process_dirty_work", "rebuild"} {
+		request, ok := readers[leaderID].lastRequest(op)
+		if !ok || request.SpaceID != spaceID {
+			t.Fatalf("leader did not receive %q for space %s: %+v", op, spaceID, request)
+		}
+		switch op {
+		case "backfill":
+			if request.Backfill == nil || !request.Backfill.Force || request.Backfill.Limit != 16 {
+				t.Fatalf("leader backfill request=%+v", request.Backfill)
+			}
+		case "process_dirty_work":
+			if request.Process == nil || request.Process.Limit != 16 {
+				t.Fatalf("leader process request=%+v", request.Process)
+			}
+		case "rebuild":
+			if request.Rebuild == nil || request.Rebuild.BackfillLimit != 16 {
+				t.Fatalf("leader rebuild request=%+v", request.Rebuild)
+			}
+		}
+	}
+}
+
+func TestExecuteLocalRaftSemanticReadValidatesDerivedOperationInputs(t *testing.T) {
+	module := NewModule()
+	spaceID := domainspace.SpaceID(uuid.New())
+	for _, tc := range []struct {
+		op   string
+		want string
+	}{
+		{op: "backfill", want: "semantic backfill input is required"},
+		{op: "process_dirty_work", want: "semantic process input is required"},
+		{op: "rebuild", want: "semantic rebuild input is required"},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			payload, err := json.Marshal(raftSemanticReadRequest{Op: tc.op, SpaceID: spaceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := module.ExecuteLocalRaftSemanticRead(context.Background(), spaceID.String(), payload); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ExecuteLocalRaftSemanticRead() error=%v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -1757,6 +1846,68 @@ func TestSemanticSpaceManagerUsesRaftWhenEnabled(t *testing.T) {
 	if len(indexes) != 1 || indexes[0].ID != storedIndex.ID {
 		t.Fatalf("indexes=%#v want %s", indexes, storedIndex.ID)
 	}
+}
+
+func TestRaftSemanticBackfillResponseOmitsRecordPayloads(t *testing.T) {
+	response := newRaftSemanticBackfillResponse(semanticbackfill.Result{
+		SelectedCount: 1, GeneratedCount: 1,
+		Records: []domainsemantic.AdvancedEmbeddingRecord{{SourceHash: "must-not-cross-backend", Vector: []float64{0.25, 0.75}}},
+	})
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "must-not-cross-backend") || strings.Contains(string(encoded), "0.25") {
+		t.Fatalf("forwarded backfill response contains record payload: %s", encoded)
+	}
+	result := response.result()
+	if result.GeneratedCount != 1 || len(result.Records) != 0 {
+		t.Fatalf("reconstructed compact result=%+v", result)
+	}
+}
+
+type recordingRaftSemanticReader struct {
+	delegate  *Module
+	mu        sync.Mutex
+	requests  []raftSemanticReadRequest
+	responses map[string][]byte
+}
+
+func (r *recordingRaftSemanticReader) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID string, payload []byte) ([]byte, error) {
+	var request raftSemanticReadRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	r.requests = append(r.requests, request)
+	response := append([]byte(nil), r.responses[request.Op]...)
+	r.mu.Unlock()
+	if response != nil {
+		return response, nil
+	}
+	return r.delegate.ExecuteLocalRaftSemanticRead(ctx, spaceID, payload)
+}
+
+func (r *recordingRaftSemanticReader) setResponse(t *testing.T, op string, value any) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal %s response: %v", op, err)
+	}
+	r.mu.Lock()
+	r.responses[op] = encoded
+	r.mu.Unlock()
+}
+
+func (r *recordingRaftSemanticReader) lastRequest(op string) (raftSemanticReadRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := len(r.requests) - 1; index >= 0; index-- {
+		if r.requests[index].Op == op {
+			return r.requests[index], true
+		}
+	}
+	return raftSemanticReadRequest{}, false
 }
 
 func semanticIndex(spaceID domainspace.SpaceID) domainsemantic.SemanticIndex {

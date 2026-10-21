@@ -127,6 +127,10 @@ Semantic rule enable/disable operations use the versioned `semantic.space.condit
 
 For an upgrade, finish replacing every voting member, wait for all system and partition groups to regain leaders and healthy applied progress, and only then resume semantic rule enable/disable operations. Do not bypass the gate by removing a healthy voter, editing Raft logs, or calling the backend capability operation manually. A downgrade to a daemon that does not support the v2 record requires stopping these operations before the first older member starts.
 
+## Semantic maintenance leader routing
+
+Semantic vector indexes are derived node-local state, while clustered semantic search reads from the partition leader. Backfill, dirty-work processing, and rebuild requests sent to a follower are routed to that leader through the authenticated cluster backend so the acknowledged publication is visible to search. During a mixed-version interval, an older leader that does not recognize a routed maintenance operation returns an error; the receiving follower must not fall back to local execution. Pause operator-triggered backfills and rebuilds until every voting member runs a compatible version and partition leadership is healthy.
+
 ## Snapshot and compaction policy
 
 B2 snapshot recovery is implemented for current composite children at an initial contract level, but automatic production compaction remains disabled by default.

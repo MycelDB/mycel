@@ -583,6 +583,9 @@ func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domai
 }
 
 func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (RebuildResult, error) {
+	if forwarded, result, err := m.forwardSemanticRebuild(ctx, in); forwarded || err != nil {
+		return result, err
+	}
 	if in.BackfillLimit <= 0 {
 		in.BackfillLimit = 4096
 	}
