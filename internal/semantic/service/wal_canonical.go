@@ -209,14 +209,7 @@ func (w *walGlobalManager) canonicalCredential(ctx context.Context, v domainsema
 
 func (w *walSpaceManager) canonicalSemanticRule(ctx context.Context, v domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
 	now := time.Now().UTC()
-	v.Key = semanticKey(v.Key)
-	v.Trigger = domainsemantic.NormalizeSemanticTriggerPolicy(v.Trigger)
-	if v.Storage.PhysicalIndex == "" {
-		v.Storage = domainsemantic.DefaultSemanticStoragePolicy()
-	}
-	for i, binding := range v.Embeddings {
-		v.Embeddings[i] = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
-	}
+	v = domainsemantic.NormalizeSemanticGenerationRule(v)
 	items, err := w.inner.ListSemanticRules(ctx)
 	if err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err

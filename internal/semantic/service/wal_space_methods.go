@@ -31,7 +31,10 @@ func (w *walSpaceManager) UpsertSemanticRule(ctx context.Context, v domainsemant
 	if err := w.module.commitSemanticMutation(ctx, recordTypeSemanticSpace, semanticMutationRecord{Kind: "semantic_rule.upsert", SpaceID: w.spaceID, Payload: raw(v)}); err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err
 	}
-	return w.resolveSemanticRule(ctx, v)
+	// Durable space mutations apply through a fresh storage manager so the
+	// request-local manager may still contain the pre-mutation rule. The
+	// canonical command payload is the committed value and is safe to return.
+	return v, nil
 }
 
 func (w *walSpaceManager) DeleteSemanticRule(ctx context.Context, id domainsemantic.SemanticRuleID, purge bool) error {
