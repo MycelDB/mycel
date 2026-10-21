@@ -237,10 +237,14 @@ func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
 	}
-	updated, err := spaceMgr.UpsertSemanticRule(ctx, rule)
-	if err != nil {
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, rule); err != nil {
 		return nil, mapAdminSemanticError(err, "set semantic rule enabled")
 	}
+	// The request-local space manager can retain its pre-mutation cache because
+	// durable WAL/Raft application uses a fresh manager. The rule loaded above
+	// has authoritative identity and canonical fields; only enabled/update time
+	// changed, so it is the response for this successfully committed mutation.
+	updated := rule
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "load semantic rule metadata")
