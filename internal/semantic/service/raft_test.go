@@ -88,6 +88,103 @@ func TestSemanticRaftStateMachineAppliesGlobalAndMaintenanceMutations(t *testing
 	}
 }
 
+func TestDeterministicCredentialRejectionRemainsRejectedAcrossRaftRestartReplay(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	newModule := func() *Module {
+		module := NewModule()
+		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module
+	}
+	source := newModule()
+	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(95, 0).UTC()
+	credentialAID := domainsemantic.InferenceCredentialID(uuid.New())
+	secretAID := domainsemantic.SecretID(uuid.New())
+	secretA := domainsemantic.Secret{ID: secretAID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "a"}, SecretSuffix: "a", CreatedAt: now, UpdatedAt: now}
+	credentialA := domainsemantic.InferenceCredential{ID: credentialAID, Key: "duplicate-key", Name: "a", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretAID, SecretSuffix: "a", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	credentialBID := domainsemantic.InferenceCredentialID(uuid.New())
+	secretBID := domainsemantic.SecretID(uuid.New())
+	secretB := domainsemantic.Secret{ID: secretBID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "b"}, SecretSuffix: "b", CreatedAt: now, UpdatedAt: now}
+	credentialB := domainsemantic.InferenceCredential{ID: credentialBID, Key: credentialA.Key, Name: "b", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretBID, SecretSuffix: "b", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+
+	buildCommand := func(kind string, mutation any, commandID string) consensus.RaftCommand {
+		t.Helper()
+		record := semanticMutationRecord{Kind: kind, Payload: raw(mutation)}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := source.buildSemanticGlobalRaftCommand(record, payload, commandID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return command
+	}
+	createACommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialA, Secret: &secretA}, "semantic-global-credential-create-a")
+	createBCommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialB, Secret: &secretB}, "semantic-global-credential-create-b-rejected")
+	deleteACommand := buildCommand("credential.delete_lifecycle", credentialDeleteMutation{CredentialID: credentialAID, ExpectedSecretRef: secretAID, DeleteSecret: true}, "semantic-global-credential-delete-a")
+
+	sm := RaftStateMachine{Module: source, System: true, PartitionCount: 64}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, createACommand); err != nil {
+		t.Fatalf("create credential A: %v", err)
+	}
+
+	// Make completion-marker persistence fail after the deterministic conflict.
+	// The domain rejection must become fatal until its marker can be persisted.
+	markerPath := source.raftAppliedCommandsLogPath()
+	markerBackup := markerPath + ".backup"
+	if err := os.Rename(markerPath, markerBackup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(markerPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, createBCommand); !consensus.IsFatalApplyError(err) {
+		t.Fatalf("rejected command marker failure=%v, want fatal apply error", err)
+	}
+	if source.raftCommandApplied(createBCommand.CommandID) {
+		t.Fatal("rejected command recorded despite marker persistence failure")
+	}
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(markerBackup, markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 2, Replay: true}, createBCommand); !errors.Is(err, storesemantic.ErrConflict) || consensus.IsFatalApplyError(err) {
+		t.Fatalf("replayed deterministic rejection=%v, want nonfatal conflict", err)
+	}
+	if !source.raftCommandApplied(createBCommand.CommandID) {
+		t.Fatal("deterministic rejection command ID was not recorded")
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 2}, deleteACommand); err != nil {
+		t.Fatalf("delete credential A: %v", err)
+	}
+
+	restarted := newModule()
+	replay := RaftStateMachine{Module: restarted, System: true, PartitionCount: 64}
+	for index, command := range []consensus.RaftCommand{createACommand, createBCommand, deleteACommand} {
+		if err := replay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: uint64(index + 1), RaftTerm: 2, Replay: true}, command); err != nil {
+			t.Fatalf("restart replay command %d: %v", index+1, err)
+		}
+	}
+	credentials, err := restarted.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("restart replay resurrected rejected credential: credentials=%+v err=%v", credentials, err)
+	}
+	secrets, err := restarted.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("restart replay resurrected rejected secret: secrets=%+v err=%v", secrets, err)
+	}
+}
+
 type credentialProjectionOrderRecorder struct {
 	InferenceProjection
 	mu     sync.Mutex

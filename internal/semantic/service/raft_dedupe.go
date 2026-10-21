@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/myceldb/mycel/internal/filestore"
 	"github.com/myceldb/mycel/internal/fsperm"
 )
 
@@ -113,11 +115,22 @@ func (m *Module) appendRaftAppliedCommand(ctx context.Context, commandID string)
 			return err
 		}
 	}
-	defer f.Close()
 	if _, err := f.Write(append(payload, '\n')); err != nil {
+		_ = f.Close()
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
 }
 
 func (m *Module) persistRaftAppliedCommands(ctx context.Context) error {
@@ -143,11 +156,7 @@ func (m *Module) persistRaftAppliedCommands(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, payload, fsperm.PrivateFile); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := filestore.WriteFileAtomic(path, payload, fsperm.PrivateFile); err != nil {
 		return err
 	}
 	if err := os.Remove(m.raftAppliedCommandsLogPath()); err != nil && !os.IsNotExist(err) {
