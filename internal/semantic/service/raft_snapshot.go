@@ -101,13 +101,13 @@ func (m *Module) snapshotSemanticRaft(ctx context.Context, scope string, partiti
 		snap.Spaces = parts
 		spaces = spaceSet
 	}
-	m.mu.Lock()
+	m.raftAppliedCommandsMu.Lock()
 	for id := range m.raftAppliedCommands {
 		if semanticCommandIDBelongsToScope(id, scope, spaces) {
 			snap.AppliedCommands = append(snap.AppliedCommands, id)
 		}
 	}
-	m.mu.Unlock()
+	m.raftAppliedCommandsMu.Unlock()
 	sort.Strings(snap.AppliedCommands)
 	return json.Marshal(snap)
 }
@@ -141,7 +141,8 @@ func (m *Module) restoreSemanticRaft(ctx context.Context, data []byte, expectedS
 			return err
 		}
 	}
-	m.mu.Lock()
+	m.raftAppliedCommandsMu.Lock()
+	defer m.raftAppliedCommandsMu.Unlock()
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -155,8 +156,7 @@ func (m *Module) restoreSemanticRaft(ctx context.Context, data []byte, expectedS
 			m.raftAppliedCommands[id] = struct{}{}
 		}
 	}
-	m.mu.Unlock()
-	return m.persistRaftAppliedCommands(ctx)
+	return m.persistRaftAppliedCommandsLocked(ctx)
 }
 
 func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnapshot, error) {

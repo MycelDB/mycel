@@ -185,6 +185,121 @@ func TestDeterministicCredentialRejectionRemainsRejectedAcrossRaftRestartReplay(
 	}
 }
 
+func TestTornRejectedCredentialMarkerRepairsAcrossTwoRestarts(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	newModule := func() *Module {
+		module := NewModule()
+		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module
+	}
+	source := newModule()
+	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api-torn", Name: "api-torn", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(96, 0).UTC()
+	credentialAID := domainsemantic.InferenceCredentialID(uuid.New())
+	secretAID := domainsemantic.SecretID(uuid.New())
+	secretA := domainsemantic.Secret{ID: secretAID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "a"}, SecretSuffix: "a", CreatedAt: now, UpdatedAt: now}
+	credentialA := domainsemantic.InferenceCredential{ID: credentialAID, Key: "torn-duplicate-key", Name: "a", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretAID, SecretSuffix: "a", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	secretBID := domainsemantic.SecretID(uuid.New())
+	secretB := domainsemantic.Secret{ID: secretBID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "b"}, SecretSuffix: "b", CreatedAt: now, UpdatedAt: now}
+	credentialB := domainsemantic.InferenceCredential{ID: domainsemantic.InferenceCredentialID(uuid.New()), Key: credentialA.Key, Name: "b", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretBID, SecretSuffix: "b", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	buildCommand := func(kind string, mutation any, commandID string) consensus.RaftCommand {
+		t.Helper()
+		record := semanticMutationRecord{Kind: kind, Payload: raw(mutation)}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := source.buildSemanticGlobalRaftCommand(record, payload, commandID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return command
+	}
+	createACommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialA, Secret: &secretA}, "semantic-global-torn-create-a")
+	createBCommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialB, Secret: &secretB}, "semantic-global-torn-create-b-rejected")
+	deleteACommand := buildCommand("credential.delete_lifecycle", credentialDeleteMutation{CredentialID: credentialAID, ExpectedSecretRef: secretAID, DeleteSecret: true}, "semantic-global-torn-delete-a")
+	if err := (RaftStateMachine{Module: source, System: true, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, createACommand); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a crash after only a prefix of B's rejection marker reached disk.
+	journal, err := os.OpenFile(source.raftAppliedCommandsLogPath(), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.WriteString(`{"command_id":"` + createBCommand.CommandID); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	firstRestart := newModule()
+	firstReplay := RaftStateMachine{Module: firstRestart, System: true, PartitionCount: 64}
+	if err := firstReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 2, Replay: true}, createACommand); err != nil {
+		t.Fatalf("first restart create A replay: %v", err)
+	}
+	if err := firstReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 2, Replay: true}, createBCommand); !errors.Is(err, storesemantic.ErrConflict) || consensus.IsFatalApplyError(err) {
+		t.Fatalf("first restart rejected B replay=%v, want nonfatal conflict", err)
+	}
+	if err := firstReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 2}, deleteACommand); err != nil {
+		t.Fatalf("first restart delete A: %v", err)
+	}
+
+	secondRestart := newModule()
+	secondReplay := RaftStateMachine{Module: secondRestart, System: true, PartitionCount: 64}
+	for index, command := range []consensus.RaftCommand{createACommand, createBCommand, deleteACommand} {
+		if err := secondReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: uint64(index + 1), RaftTerm: 3, Replay: true}, command); err != nil {
+			t.Fatalf("second restart replay command %d: %v", index+1, err)
+		}
+	}
+	credentials, err := secondRestart.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("torn marker replay resurrected credential B: credentials=%+v err=%v", credentials, err)
+	}
+	secrets, err := secondRestart.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("torn marker replay resurrected secret B: secrets=%+v err=%v", secrets, err)
+	}
+}
+
+func TestCredentialIntentRecoveryErrorIsFatalRaftApply(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	module := NewModule()
+	if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	intentPath := filepath.Join(dataDir, "meta", "inference", "lifecycle_intent.json")
+	if err := os.WriteFile(intentPath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := semanticVectorStore("recovery-error-must-be-fatal")
+	record := semanticMutationRecord{Kind: "vector_store.upsert", Payload: raw(store)}
+	payload, _ := json.Marshal(record)
+	command, err := module.buildSemanticGlobalRaftCommand(record, payload, "semantic-global-recovery-error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = (RaftStateMachine{Module: module, System: true, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, command)
+	if !consensus.IsFatalApplyError(err) || !errors.Is(err, storesemantic.ErrInvalidInput) {
+		t.Fatalf("recovery apply error=%v, want fatal invalid persisted intent", err)
+	}
+	if module.raftCommandApplied(command.CommandID) {
+		t.Fatal("command was recorded despite failing during pre-apply recovery")
+	}
+}
+
 type credentialProjectionOrderRecorder struct {
 	InferenceProjection
 	mu     sync.Mutex

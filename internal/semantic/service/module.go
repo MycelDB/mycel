@@ -43,6 +43,7 @@ type semanticGateContextKey struct{}
 
 type Module struct {
 	mu                               sync.Mutex
+	raftAppliedCommandsMu            sync.Mutex
 	globalMutationMu                 sync.Mutex
 	credentialProjectionRepairNeeded bool
 	publicationFencesMu              sync.Mutex
@@ -77,6 +78,7 @@ type Module struct {
 	raftNodeAddrs                    []string
 	raftBackendAuthToken             string
 	raftAppliedCommands              map[string]struct{}
+	raftAppliedCommandsPersistHook   func(stage string)
 }
 
 type MaintenanceStats struct {
@@ -116,7 +118,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
-	m.loadRaftAppliedCommands()
+	if err := m.loadRaftAppliedCommands(); err != nil {
+		return runtime.Abort(ModuleName, "raft", "failed to load semantic applied-command markers", err)
+	}
 	m.globalBase = global
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -22,6 +23,26 @@ type semanticMutationRecord struct {
 	SpaceID domainspace.SpaceID `json:"space_id,omitempty"`
 	Payload json.RawMessage     `json:"payload,omitempty"`
 	Flag    bool                `json:"flag,omitempty"`
+}
+
+type semanticCommandRejection struct{ err error }
+
+func (e *semanticCommandRejection) Error() string { return e.err.Error() }
+func (e *semanticCommandRejection) Unwrap() error { return e.err }
+
+func classifySemanticMutationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, storesemantic.ErrInvalidInput) || errors.Is(err, storesemantic.ErrConflict) || errors.Is(err, storesemantic.ErrNotFound) {
+		return &semanticCommandRejection{err: err}
+	}
+	return err
+}
+
+func isSemanticCommandRejection(err error) bool {
+	var rejection *semanticCommandRejection
+	return errors.As(err, &rejection)
 }
 
 type walGlobalManager struct {
@@ -131,7 +152,7 @@ func (m *Module) applySemanticGlobal(ctx context.Context, rec wal.Record) error 
 		return err
 	}
 	if err := applySemanticGlobalMutation(ctx, m.globalBase, r); err != nil {
-		return err
+		return classifySemanticMutationError(err)
 	}
 	return m.projectSemanticGlobalMutation(ctx, r)
 }
@@ -145,7 +166,7 @@ func (m *Module) applySemanticSpace(ctx context.Context, rec wal.Record) error {
 		return err
 	}
 	if err := applySemanticSpaceMutation(ctx, mgr, r); err != nil {
-		return err
+		return classifySemanticMutationError(err)
 	}
 	return m.projectSemanticSpaceMutation(ctx, r)
 }

@@ -74,7 +74,7 @@ func (m *Module) applySemanticMaintenance(ctx context.Context, rec wal.Record) e
 	if err != nil {
 		return err
 	}
-	return applyMaintenanceMutation(ctx, mgr, r)
+	return classifySemanticMutationError(applyMaintenanceMutation(ctx, mgr, r))
 }
 
 func applyMaintenanceMutation(ctx context.Context, mgr storesemantic.MaintenanceManager, r maintenanceMutationRecord) error {

@@ -3,13 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
-	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
@@ -41,14 +39,10 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 		return nil
 	}
 	err := s.Module.applySemanticRaftCommand(ctx, cmd, s.PartitionCount)
-	if err != nil && !isDeterministicSemanticApplyError(err) {
+	if err != nil && !isSemanticCommandRejection(err) {
 		return consensus.NewFatalApplyError(err)
 	}
 	return err
-}
-
-func isDeterministicSemanticApplyError(err error) bool {
-	return errors.Is(err, storesemantic.ErrInvalidInput) || errors.Is(err, storesemantic.ErrConflict) || errors.Is(err, storesemantic.ErrNotFound)
 }
 
 func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionCount uint32) {
@@ -176,7 +170,7 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 		return fmt.Errorf("semantic raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, spaceID.String())
 	}
 	if err != nil {
-		if !isDeterministicSemanticApplyError(err) {
+		if !isSemanticCommandRejection(err) {
 			return err
 		}
 		// A deterministic rejection is a completed Raft outcome. Persist its
