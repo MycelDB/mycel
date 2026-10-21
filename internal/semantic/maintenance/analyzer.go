@@ -975,6 +975,11 @@ func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDir
 			return result, err
 		}
 		if skip {
+			if w.AuthorizeWorkItem != nil {
+				if err := w.AuthorizeWorkItem(ctx, item); err != nil {
+					return result, err
+				}
+			}
 			result.Completed++
 			if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{Generation: item.Generation}); completeErr != nil {
 				return result, completeErr
@@ -992,6 +997,11 @@ func (w Worker) processItem(ctx context.Context, item domainsemantic.SemanticDir
 			return result, failErr
 		}
 		return result, nil
+	}
+	if w.AuthorizeWorkItem != nil {
+		if err := w.AuthorizeWorkItem(ctx, item); err != nil {
+			return result, err
+		}
 	}
 	result.Completed++
 	if completeErr := w.MaintenanceManager.CompleteWork(ctx, item.ID, storesemantic.WorkResult{Generation: item.Generation}); completeErr != nil {

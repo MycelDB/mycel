@@ -89,6 +89,14 @@ type raftSemanticCapabilityResponse struct {
 	ConditionalRuleMutationV2 bool `json:"conditional_rule_mutation_v2"`
 }
 
+type semanticOperationLeadership struct {
+	SpaceID domainspace.SpaceID
+	NodeID  consensus.NodeID
+	Term    uint64
+}
+
+type semanticOperationLeadershipContextKey struct{}
+
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
 	m.raftLocalNode = local
 	m.raftNodeAddrs = append([]string(nil), addrs...)
@@ -159,6 +167,9 @@ func (m *Module) shouldForwardRaftSemanticRead(spaceID domainspace.SpaceID) (con
 }
 
 func (m *Module) forwardSemanticBackfill(ctx context.Context, in semanticbackfill.Input) (bool, semanticbackfill.Result, error) {
+	if bound, err := m.semanticOperationAlreadyBound(ctx, in.SpaceID); bound || err != nil {
+		return false, semanticbackfill.Result{}, err
+	}
 	leader, forward, err := m.semanticOperationLeader(in.SpaceID)
 	if err != nil || !forward {
 		return false, semanticbackfill.Result{}, err
@@ -169,6 +180,9 @@ func (m *Module) forwardSemanticBackfill(ctx context.Context, in semanticbackfil
 }
 
 func (m *Module) forwardSemanticProcess(ctx context.Context, in ProcessInput) (bool, semanticmaintenance.WorkerResult, error) {
+	if bound, err := m.semanticOperationAlreadyBound(ctx, in.SpaceID); bound || err != nil {
+		return false, semanticmaintenance.WorkerResult{}, err
+	}
 	leader, forward, err := m.semanticOperationLeader(in.SpaceID)
 	if err != nil || !forward {
 		return false, semanticmaintenance.WorkerResult{}, err
@@ -179,6 +193,9 @@ func (m *Module) forwardSemanticProcess(ctx context.Context, in ProcessInput) (b
 }
 
 func (m *Module) forwardSemanticRebuild(ctx context.Context, in RebuildInput) (bool, RebuildResult, error) {
+	if bound, err := m.semanticOperationAlreadyBound(ctx, in.SpaceID); bound || err != nil {
+		return false, RebuildResult{}, err
+	}
 	leader, forward, err := m.semanticOperationLeader(in.SpaceID)
 	if err != nil || !forward {
 		return false, RebuildResult{}, err
@@ -208,6 +225,87 @@ func (m *Module) requireLocalSemanticOperationLeader(spaceID domainspace.SpaceID
 		return fmt.Errorf("semantic raft partition leader changed to node %d", leader)
 	}
 	return nil
+}
+
+func (m *Module) requireAuthenticatedSemanticMaintenanceRoute() error {
+	if m.raftGroups == nil || m.raftLocalNode == 0 || strings.TrimSpace(m.raftBackendAuthToken) == "" {
+		return errors.New("authenticated clustered semantic maintenance routing is required")
+	}
+	return nil
+}
+
+func (m *Module) semanticOperationAlreadyBound(ctx context.Context, spaceID domainspace.SpaceID) (bool, error) {
+	leadership, ok := ctx.Value(semanticOperationLeadershipContextKey{}).(semanticOperationLeadership)
+	if !ok {
+		return false, nil
+	}
+	if leadership.SpaceID != spaceID {
+		return true, errors.New("semantic operation leadership scope changed")
+	}
+	return true, m.validateSemanticOperationLeadership(ctx, spaceID)
+}
+
+func (m *Module) bindSemanticOperationLeadership(ctx context.Context, spaceID domainspace.SpaceID) (context.Context, error) {
+	if bound, err := m.semanticOperationAlreadyBound(ctx, spaceID); bound || err != nil {
+		return ctx, err
+	}
+	leader, term, clustered, err := m.currentSemanticOperationLeadership(spaceID)
+	if err != nil {
+		return ctx, err
+	}
+	if !clustered {
+		return ctx, nil
+	}
+	if leader == 0 {
+		return ctx, fmt.Errorf("semantic raft partition for space %s has no leader", spaceID)
+	}
+	if leader != m.raftLocalNode {
+		return ctx, fmt.Errorf("semantic raft partition leader changed to node %d", leader)
+	}
+	leadership := semanticOperationLeadership{SpaceID: spaceID, NodeID: leader, Term: term}
+	return context.WithValue(ctx, semanticOperationLeadershipContextKey{}, leadership), nil
+}
+
+func (m *Module) validateSemanticOperationLeadership(ctx context.Context, spaceID domainspace.SpaceID) error {
+	leadership, ok := ctx.Value(semanticOperationLeadershipContextKey{}).(semanticOperationLeadership)
+	if !ok {
+		return nil
+	}
+	if leadership.SpaceID != spaceID {
+		return errors.New("semantic operation leadership scope changed")
+	}
+	leader, term, clustered, err := m.currentSemanticOperationLeadership(spaceID)
+	if err != nil {
+		return err
+	}
+	if !clustered || leader != leadership.NodeID || term != leadership.Term || leader != m.raftLocalNode {
+		return errors.New("semantic operation leadership changed")
+	}
+	return nil
+}
+
+func (m *Module) currentSemanticOperationLeadership(spaceID domainspace.SpaceID) (consensus.NodeID, uint64, bool, error) {
+	if m.semanticLeadershipProbe != nil {
+		return m.semanticLeadershipProbe(spaceID)
+	}
+	if m.raftGroups == nil || m.raftLocalNode == 0 {
+		return 0, 0, false, nil
+	}
+	cmd, err := consensus.NewSpaceCommand(spaceID, m.raftPartitionCount, recordTypeSemanticSpace, nil, "semantic-operation-leadership")
+	if err != nil {
+		return 0, 0, true, err
+	}
+	group, ok := m.raftGroups.Group(consensus.PartitionGroupID(cmd.PartitionID))
+	if !ok || group == nil {
+		return 0, 0, true, fmt.Errorf("raft partition group %d is not available", cmd.PartitionID)
+	}
+	termBefore, _, _ := group.Progress()
+	leader := group.Leader()
+	termAfter, _, _ := group.Progress()
+	if termBefore != termAfter {
+		return 0, 0, true, errors.New("semantic operation leadership changed")
+	}
+	return leader, termAfter, true, nil
 }
 
 func (m *Module) forwardRaftSemanticRead(ctx context.Context, leader consensus.NodeID, req raftSemanticReadRequest, out any) error {
@@ -333,6 +431,9 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(struct{}{})
 	case "backfill":
+		if err := m.requireAuthenticatedSemanticMaintenanceRoute(); err != nil {
+			return nil, err
+		}
 		if err := m.requireLocalSemanticOperationLeader(req.SpaceID); err != nil {
 			return nil, err
 		}
@@ -347,6 +448,9 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(newRaftSemanticBackfillResponse(result))
 	case "process_dirty_work":
+		if err := m.requireAuthenticatedSemanticMaintenanceRoute(); err != nil {
+			return nil, err
+		}
 		if err := m.requireLocalSemanticOperationLeader(req.SpaceID); err != nil {
 			return nil, err
 		}
@@ -361,6 +465,9 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		return json.Marshal(raftSemanticProcessResponse{Result: result})
 	case "rebuild":
+		if err := m.requireAuthenticatedSemanticMaintenanceRoute(); err != nil {
+			return nil, err
+		}
 		if err := m.requireLocalSemanticOperationLeader(req.SpaceID); err != nil {
 			return nil, err
 		}

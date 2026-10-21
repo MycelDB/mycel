@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
@@ -1477,7 +1479,7 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 		}
 	}()
 	for _, nodeID := range peers {
-		modules[nodeID].EnableExperimentalRaftNetworking(nodeID, addrs, "")
+		modules[nodeID].EnableExperimentalRaftNetworking(nodeID, addrs, "test-cluster-token")
 	}
 	stopTick := make(chan struct{})
 	tickDone := make(chan struct{})
@@ -1563,12 +1565,30 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	if _, err := modules[followerID].ExecuteLocalRaftSemanticRead(ctx, spaceID.String(), directFollowerPayload); err == nil || !strings.Contains(err.Error(), "leader changed") {
 		t.Fatalf("direct follower semantic operation error=%v, want leader-changed rejection", err)
 	}
+	directLeaderPayload, err := json.Marshal(raftSemanticReadRequest{Op: "backfill", SpaceID: spaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modules[leaderID].ExecuteLocalRaftSemanticRead(ctx, spaceID.String(), directLeaderPayload); err == nil || !strings.Contains(err.Error(), "semantic backfill input is required") {
+		t.Fatalf("direct leader semantic operation error=%v, want input validation", err)
+	}
 
 	backfillResponse := newRaftSemanticBackfillResponse(semanticbackfill.Result{SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", SelectedCount: 3, GeneratedCount: 3})
 	processResponse := raftSemanticProcessResponse{Result: semanticmaintenance.WorkerResult{Processed: 2, Completed: 2}}
 	rebuildResponse := raftSemanticRebuildResponse{Reliability: ReliabilityStatus{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", FreshThroughGraphRevision: 3}, Backfill: backfillResponse}
 	readers[leaderID].setResponse(t, "backfill", backfillResponse)
 	readers[leaderID].setResponse(t, "process_dirty_work", processResponse)
+
+	lease, err := modules[leaderID].gate.Quiesce(ctx, quiesce.Request{Reason: "routed rebuild test", Source: "test"})
+	if err != nil {
+		t.Fatalf("quiesce semantic leader: %v", err)
+	}
+	if _, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", BackfillLimit: 16}); err == nil {
+		t.Fatal("routed rebuild unexpectedly entered a quiesced semantic leader")
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release semantic leader quiesce: %v", err)
+	}
 	readers[leaderID].setResponse(t, "rebuild", rebuildResponse)
 
 	backfill, err := modules[followerID].BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", Force: true, Limit: 16})
@@ -1614,26 +1634,47 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	}
 }
 
-func TestExecuteLocalRaftSemanticReadValidatesDerivedOperationInputs(t *testing.T) {
+func TestExecuteLocalRaftSemanticReadRejectsUnauthenticatedDerivedOperations(t *testing.T) {
 	module := NewModule()
 	spaceID := domainspace.SpaceID(uuid.New())
-	for _, tc := range []struct {
-		op   string
-		want string
-	}{
-		{op: "backfill", want: "semantic backfill input is required"},
-		{op: "process_dirty_work", want: "semantic process input is required"},
-		{op: "rebuild", want: "semantic rebuild input is required"},
-	} {
-		t.Run(tc.op, func(t *testing.T) {
-			payload, err := json.Marshal(raftSemanticReadRequest{Op: tc.op, SpaceID: spaceID})
+	for _, op := range []string{"backfill", "process_dirty_work", "rebuild"} {
+		t.Run(op, func(t *testing.T) {
+			payload, err := json.Marshal(raftSemanticReadRequest{Op: op, SpaceID: spaceID})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := module.ExecuteLocalRaftSemanticRead(context.Background(), spaceID.String(), payload); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ExecuteLocalRaftSemanticRead() error=%v, want %q", err, tc.want)
+			if _, err := module.ExecuteLocalRaftSemanticRead(context.Background(), spaceID.String(), payload); err == nil || !strings.Contains(err.Error(), "authenticated clustered semantic maintenance routing is required") {
+				t.Fatalf("ExecuteLocalRaftSemanticRead() error=%v, want authenticated-route rejection", err)
 			}
 		})
+	}
+}
+
+func TestSemanticOperationLeadershipRejectsChangedTermAtPublicationBoundary(t *testing.T) {
+	spaceID := domainspace.SpaceID(uuid.New())
+	var term atomic.Uint64
+	term.Store(7)
+	module := NewModule()
+	module.raftLocalNode = 1
+	module.semanticLeadershipProbe = func(got domainspace.SpaceID) (consensus.NodeID, uint64, bool, error) {
+		if got != spaceID {
+			t.Fatalf("leadership probe space=%s, want %s", got, spaceID)
+		}
+		return 1, term.Load(), true, nil
+	}
+	ctx, err := module.bindSemanticOperationLeadership(context.Background(), spaceID)
+	if err != nil {
+		t.Fatalf("bind leadership: %v", err)
+	}
+	if err := module.validateSemanticOperationLeadership(ctx, spaceID); err != nil {
+		t.Fatalf("validate stable leadership: %v", err)
+	}
+	term.Store(8)
+	if err := module.validateSemanticOperationLeadership(ctx, spaceID); err == nil || !strings.Contains(err.Error(), "leadership changed") {
+		t.Fatalf("changed-term validation error=%v", err)
+	}
+	if err := module.authorizeSemanticPublication(ctx, semanticbackfill.Publication{Input: semanticbackfill.Input{SpaceID: spaceID}}); err == nil || !strings.Contains(err.Error(), "leadership changed") {
+		t.Fatalf("changed-term publication error=%v", err)
 	}
 }
 

@@ -3,15 +3,20 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daemonconfig "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -310,6 +315,53 @@ func TestRebuildSemanticRuleCompletesAtNonzeroPinnedRevision(t *testing.T) {
 	}
 }
 
+func TestRebuildSemanticRuleFailsWhenLeadershipChangesDuringBackfill(t *testing.T) {
+	ctx := context.Background()
+	var term atomic.Uint64
+	term.Store(7)
+	graphs := &leadershipChangingGraphReader{change: func() { term.Store(8) }}
+	module := NewModule(Config{GraphReader: graphs, GraphRevisionReader: fixedGraphRevisionReader{revision: 5}})
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	storeID := domainsemantic.VectorStoreID(uuid.New())
+	module.raftLocalNode = 1
+	module.semanticLeadershipProbe = func(got domainspace.SpaceID) (consensus.NodeID, uint64, bool, error) {
+		if got != spaceID {
+			t.Fatalf("leadership probe space=%s, want %s", got, spaceID)
+		}
+		return 1, term.Load(), true, nil
+	}
+	now := time.Now().UTC()
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	spaceMgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 2, RebuildState: "required"}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = module.RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 1})
+	if err == nil || !strings.Contains(err.Error(), "leadership changed") {
+		t.Fatalf("RebuildSemanticRule() error=%v, want leadership rejection", err)
+	}
+	status, statusErr := module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if statusErr != nil {
+		t.Fatalf("get reliability status: %v", statusErr)
+	}
+	if got := status.Rebuild.RebuildState; got != "failed" {
+		t.Fatalf("rebuild state=%q, want failed", got)
+	}
+}
+
 func TestReliabilityStatusKeepsAnalyzedAndFreshFrontiersDistinctAcrossReload(t *testing.T) {
 	ctx := context.Background()
 	runtime := testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})
@@ -388,4 +440,26 @@ func TestReliabilityStatusKeepsAnalyzedAndFreshFrontiersDistinctAcrossReload(t *
 	if status.FreshThroughGraphRevision != 15 || status.UnresolvedGapCount != 0 || status.AnalyzedThroughGraphRevision != 15 {
 		t.Fatalf("unexpected converged status: %+v", status)
 	}
+}
+
+type leadershipChangingGraphReader struct {
+	once   sync.Once
+	change func()
+}
+
+func (r *leadershipChangingGraphReader) GetNode(context.Context, sessionmodel.GraphTransaction, string) (graph.Node, error) {
+	return graph.Node{}, nil
+}
+
+func (r *leadershipChangingGraphReader) ListNodes(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Node, string, error) {
+	r.once.Do(r.change)
+	return nil, "", nil
+}
+
+func (r *leadershipChangingGraphReader) ListEdges(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Edge, string, error) {
+	return nil, "", nil
+}
+
+func (r *leadershipChangingGraphReader) GetParent(context.Context, sessionmodel.GraphTransaction, string) (*graph.Edge, error) {
+	return nil, nil
 }

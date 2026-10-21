@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,42 @@ func TestWorkerCompletesRefreshWithNonForcedBackfill(t *testing.T) {
 	items, _ := maintenanceMgr.ListDirtyWorkItems(ctx)
 	if len(items) != 1 || items[0].ID != item.ID || items[0].Status != domainsemantic.SemanticDirtyWorkStatusComplete || items[0].CompletedAt == nil {
 		t.Fatalf("work not completed: %+v", items)
+	}
+}
+
+func TestWorkerReauthorizesBeforeDurableCompletion(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
+	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
+	if err != nil {
+		t.Fatalf("upsert work: %v", err)
+	}
+	authorizeCalls := 0
+	worker := Worker{
+		SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: &fakeBackfillRunner{}, Config: WorkerConfig{MaxBatchSize: 1},
+		AuthorizeWorkItem: func(context.Context, domainsemantic.SemanticDirtyWorkItem) error {
+			authorizeCalls++
+			if authorizeCalls > 1 {
+				return errors.New("semantic operation leadership changed")
+			}
+			return nil
+		},
+	}
+	res, err := worker.ProcessOnce(ctx, 1)
+	if err == nil || !strings.Contains(err.Error(), "leadership changed") {
+		t.Fatalf("ProcessOnce() result=%+v error=%v, want leadership rejection", res, err)
+	}
+	items, listErr := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	got := findWorkItem(items, item.ID)
+	if got.Status == domainsemantic.SemanticDirtyWorkStatusComplete {
+		t.Fatalf("work completed after authorization changed: %+v", got)
 	}
 }
 

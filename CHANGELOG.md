@@ -25,7 +25,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
-- Raft-cluster semantic backfill, dirty-work processing, and rebuild requests now execute on the semantic partition leader that owns the authoritative derived vector index used by forwarded search. Follower requests fail closed when no leader is available instead of publishing locally invisible records.
+- Raft-cluster semantic backfill, dirty-work processing, and rebuild requests now execute on the semantic partition leader that owns the authoritative derived vector index used by forwarded search. Routing requires authenticated cluster transport, operation leases revalidate leader and term through publication/completion, and rebuild holds the backup gate throughout orchestration; missing or changed leadership fails closed instead of acknowledging locally invisible records.
 - Raft-forwarded graph reads now preserve deterministic graph error codes across the internal backend boundary, including `NotFound` for absent entities instead of relabeling absence as `Internal`.
 - Semantic-rule enable/disable mutations are now ID-qualified and version-conditional, preserve one replicated update timestamp, reject concurrent identity replacement, and return the exact successfully committed state instead of a request-local cache entry. Conditional mutations use an explicitly versioned WAL/Raft record so unsupported mixed-version replicas fail closed, and deterministic WAL rejections remain recoverable without blocking later progress.
 

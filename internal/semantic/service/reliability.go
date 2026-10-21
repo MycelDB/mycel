@@ -227,6 +227,9 @@ func (m *Module) lockSemanticPublication(spaceID domainspace.SpaceID, ruleID dom
 }
 
 func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusInput) (ReliabilityStatus, error) {
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return ReliabilityStatus{}, err
+	}
 	if in.SpaceID == uuid.Nil || in.SemanticRuleID == uuid.Nil || strings.TrimSpace(in.EmbeddingBindingKey) == "" {
 		return ReliabilityStatus{}, fmt.Errorf("space_id, semantic_rule_id, and embedding_binding_key are required")
 	}
@@ -403,6 +406,9 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	if degradedReason == "" && capacityState == "exhausted" {
 		degradedReason = "semantic reliability frontier capacity exhausted"
 	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return ReliabilityStatus{}, err
+	}
 	return ReliabilityStatus{
 		SpaceID: in.SpaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key,
 		LatestObservedGraphRevision: latest, AnalyzedThroughGraphRevision: checkpoint.LastGraphRevision, FreshThroughGraphRevision: fresh, candidateFreshThroughGraphRevision: candidateFresh,
@@ -437,6 +443,9 @@ func mergeSemanticRevisionRanges(ranges []domainsemantic.SemanticRevisionRange) 
 }
 
 func (m *Module) authorizeSemanticWorkItem(ctx context.Context, expected domainsemantic.SemanticDirtyWorkItem) error {
+	if err := m.validateSemanticOperationLeadership(ctx, expected.SpaceID); err != nil {
+		return err
+	}
 	mgr, err := m.MaintenanceManager(ctx, expected.SpaceID)
 	if err != nil {
 		return err
@@ -484,6 +493,9 @@ func (m *Module) acquireSemanticPublication(ctx context.Context, publication sem
 
 func (m *Module) authorizeSemanticPublication(ctx context.Context, publication semanticbackfill.Publication) error {
 	in := publication.Input
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return err
+	}
 	if in.WorkItemID != uuid.Nil {
 		if err := m.authorizeSemanticWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{ID: in.WorkItemID, SpaceID: in.SpaceID, Generation: in.WorkItemGeneration}); err != nil {
 			return err
@@ -586,6 +598,17 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	if forwarded, result, err := m.forwardSemanticRebuild(ctx, in); forwarded || err != nil {
 		return result, err
 	}
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return RebuildResult{}, err
+	}
+	release, err := m.enterWork(ctx)
+	if err != nil {
+		return RebuildResult{}, err
+	}
+	defer release()
+	ctx = context.WithValue(ctx, semanticGateContextKey{}, true)
 	if in.BackfillLimit <= 0 {
 		in.BackfillLimit = 4096
 	}
@@ -660,6 +683,9 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 			return m.failRebuild(ctx, in, rebuild, backfill, err)
 		}
 		if status.UnresolvedGapCount == 0 && status.candidateFreshThroughGraphRevision >= status.LatestObservedGraphRevision {
+			if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+				return m.failRebuild(ctx, in, rebuild, backfill, err)
+			}
 			completed := time.Now().UTC()
 			rebuild.RebuildState = "completed"
 			rebuild.DeltaCatchupRevision = status.LatestObservedGraphRevision
@@ -680,6 +706,9 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 			status.Degraded = false
 			status.DegradedReason = ""
 			status.RebuildRequired = false
+			if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+				return m.failRebuildFromState(ctx, in, rebuild, backfill, "completed", err)
+			}
 			return RebuildResult{Reliability: status, Backfill: backfill}, nil
 		}
 	}
@@ -708,6 +737,9 @@ func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.R
 }
 
 func (m *Module) supersedeCancelledWorkThrough(ctx context.Context, in RebuildInput, revision uint64) error {
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return err
+	}
 	unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
 	defer unlockFence()
 	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
@@ -732,13 +764,18 @@ func (m *Module) supersedeCancelledWorkThrough(ctx context.Context, in RebuildIn
 			return err
 		}
 	}
-	return nil
+	return m.validateSemanticOperationLeadership(ctx, in.SpaceID)
 }
 
 func (m *Module) failRebuild(ctx context.Context, in RebuildInput, rebuild domainsemantic.SemanticReliabilityState, backfill semanticbackfill.Result, cause error) (RebuildResult, error) {
+	return m.failRebuildFromState(ctx, in, rebuild, backfill, "running", cause)
+}
+
+func (m *Module) failRebuildFromState(ctx context.Context, in RebuildInput, rebuild domainsemantic.SemanticReliabilityState, backfill semanticbackfill.Result, expectedState string, cause error) (RebuildResult, error) {
 	rebuild.RebuildState = "failed"
+	rebuild.RebuildCompletedAt = nil
 	rebuild.RebuildErrorSanitized = sanitizeMaintenanceError(cause.Error())
-	_ = m.transitionReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild })
+	_ = m.transitionReliabilityState(context.WithoutCancel(ctx), in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, expectedState, func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild })
 	return RebuildResult{Backfill: backfill}, cause
 }
 

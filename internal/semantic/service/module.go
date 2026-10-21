@@ -78,6 +78,7 @@ type Module struct {
 	raftNodeAddrs                    []string
 	raftBackendAuthToken             string
 	conditionalRuleSupportProbe      func(context.Context, consensus.NodeID, domainspace.SpaceID) error
+	semanticLeadershipProbe          func(domainspace.SpaceID) (consensus.NodeID, uint64, bool, error)
 	raftAppliedCommands              map[string]struct{}
 	raftAppliedCommandsPersistHook   func(stage string)
 }
@@ -826,7 +827,15 @@ func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, d
 	return out, nil
 }
 
-func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error) {
+func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result semanticmaintenance.AnalyzeResult, err error) {
+	if err = m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	defer func() {
+		if err == nil {
+			err = m.validateSemanticOperationLeadership(ctx, in.SpaceID)
+		}
+	}()
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
@@ -858,7 +867,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 	}
 	sort.Slice(rules, func(i, j int) bool { return rules[i].ID.String() < rules[j].ID.String() })
-	result := semanticmaintenance.AnalyzeResult{}
+	result = semanticmaintenance.AnalyzeResult{}
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
@@ -921,6 +930,11 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if forwarded, result, err := m.forwardSemanticProcess(ctx, in); forwarded || err != nil {
 		return result, err
 	}
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return semanticmaintenance.WorkerResult{}, err
+	}
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
@@ -943,6 +957,9 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 		return res, err
 	}
 	if err := m.syncSemanticDirtyCounts(ctx, in.SpaceID, mgr, maintenanceMgr); err != nil {
+		return res, err
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -1018,6 +1035,11 @@ func (m *Module) syncSemanticDirtyCounts(ctx context.Context, spaceID domainspac
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {
 	if forwarded, result, err := m.forwardSemanticBackfill(ctx, in); forwarded || err != nil {
 		return result, err
+	}
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return semanticbackfill.Result{}, err
 	}
 	release, err := m.enterWork(ctx)
 	if err != nil {
@@ -1110,6 +1132,9 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 				return result, saveErr
 			}
 		}
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return result, err
 	}
 	return result, nil
 }

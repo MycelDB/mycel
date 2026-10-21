@@ -170,6 +170,10 @@ func TestSemanticQuiesceRejectsManualMaintenance(t *testing.T) {
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("AnalyzeDirtyWork() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
+	_, err = m.RebuildSemanticRule(ctx, RebuildInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("RebuildSemanticRule() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
 }
 
 func TestSemanticMaintenanceDisabledDoesNotStartLoops(t *testing.T) {

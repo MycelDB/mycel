@@ -40,7 +40,7 @@ Diagnostics expose independent limits for retained work barriers, disjoint gap i
 
 ## Leader-owned derived execution
 
-In Raft mode, direct semantic search reads the partition leader's derived vector index. Backfill, dirty-work processing, and the complete rebuild orchestration therefore execute on that same semantic partition leader. Requests received by followers are forwarded through the authenticated cluster backend; they do not publish into follower-local derived storage. Missing leaders and unsupported mixed-version backend operations fail closed without a local fallback. Forwarded maintenance responses contain bounded counts and sanitized per-node outcomes, not vector record payloads.
+In Raft mode, direct semantic search reads the partition leader's derived vector index. Backfill, dirty-work processing, and the complete rebuild orchestration therefore execute on that same semantic partition leader. Requests received by followers are forwarded only when authenticated cluster routing has a nonempty backend token; they do not publish into follower-local derived storage. Execution captures the partition leader and term, revalidates that lease at publication and durable work-completion boundaries, and refuses success after leadership changes. A rebuild holds the semantic quiesce gate for its complete orchestration, including nested backfill and catch-up. Missing leaders, leadership changes, unauthenticated backend mutation calls, and unsupported mixed-version operations fail closed without a local fallback. Forwarded maintenance responses contain bounded counts and sanitized per-node outcomes, not vector record payloads.
 
 ## Rebuild
 
