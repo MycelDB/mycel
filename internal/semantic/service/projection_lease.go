@@ -104,14 +104,6 @@ func (m *Module) advanceProjectionLeases(ctx context.Context, spaceID domainspac
 	if err := m.validateSemanticOperationLeadership(ctx, spaceID); err != nil {
 		return err
 	}
-	mgr, err := m.baseSpaceManager(ctx, spaceID)
-	if err != nil {
-		return err
-	}
-	ruleStates, err := mgr.ListSemanticRuleStates(ctx)
-	if err != nil {
-		return err
-	}
 	m.projectionLeasesMu.Lock()
 	defer m.projectionLeasesMu.Unlock()
 	state, err := m.loadProjectionLeasesLocked(spaceID)
@@ -124,16 +116,14 @@ func (m *Module) advanceProjectionLeases(ctx context.Context, spaceID domainspac
 		if entry.LeaderNode != uint64(leadership.NodeID) || entry.LeaderTerm != leadership.Term {
 			continue
 		}
-		for _, ruleState := range ruleStates {
-			if ruleState.SemanticRuleID != entry.SemanticRuleID {
-				continue
-			}
-			reliability, ok := ruleState.ReliabilityByBinding[entry.EmbeddingBindingKey]
-			if ok && reliability.SemanticGeneration == entry.SemanticGeneration && reliability.RebuildEpoch == entry.RebuildEpoch && reliability.FreshThrough > entry.FreshThrough {
-				entry.FreshThrough = reliability.FreshThrough
-				entry.UpdatedAt = time.Now().UTC()
-				changed = true
-			}
+		status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: entry.SemanticRuleID, EmbeddingBindingKey: entry.EmbeddingBindingKey})
+		if statusErr != nil {
+			return statusErr
+		}
+		if status.SemanticGeneration == entry.SemanticGeneration && status.Rebuild.RebuildEpoch == entry.RebuildEpoch && status.FreshThroughGraphRevision > entry.FreshThrough {
+			entry.FreshThrough = status.FreshThroughGraphRevision
+			entry.UpdatedAt = time.Now().UTC()
+			changed = true
 		}
 	}
 	if !changed {
@@ -167,14 +157,6 @@ func (m *Module) validateLocalProjectionForSearch(ctx context.Context, in Search
 	if err != nil {
 		return err
 	}
-	states, err := mgr.ListSemanticRuleStates(ctx)
-	if err != nil {
-		return err
-	}
-	reliabilityByRule := make(map[domainsemantic.SemanticRuleID]map[string]domainsemantic.SemanticReliabilityState, len(states))
-	for _, ruleState := range states {
-		reliabilityByRule[ruleState.SemanticRuleID] = ruleState.ReliabilityByBinding
-	}
 	wantedRules := make(map[domainsemantic.SemanticRuleID]bool)
 	for _, id := range in.SemanticRuleIDs {
 		wantedRules[id] = true
@@ -193,14 +175,13 @@ func (m *Module) validateLocalProjectionForSearch(ctx context.Context, in Search
 			if !binding.Enabled || (wantedBinding != "" && binding.Key != wantedBinding) || domainsemantic.NormalizeSemanticIndexPurpose(domainsemantic.SemanticIndexPurpose(binding.Purpose)) != purpose {
 				continue
 			}
-			reliability := reliabilityByRule[rule.ID][binding.Key]
-			generation := reliability.SemanticGeneration
-			if generation == 0 {
-				generation = 1
+			status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key})
+			if statusErr != nil {
+				return statusErr
 			}
 			ready := false
 			for _, entry := range state.Entries {
-				if entry.SemanticRuleID == rule.ID && entry.EmbeddingBindingKey == binding.Key && entry.LeaderNode == uint64(leader) && entry.LeaderTerm == term && entry.SemanticGeneration == generation && entry.RebuildEpoch == reliability.RebuildEpoch && entry.FreshThrough >= reliability.FreshThrough {
+				if entry.SemanticRuleID == rule.ID && entry.EmbeddingBindingKey == binding.Key && entry.LeaderNode == uint64(leader) && entry.LeaderTerm == term && entry.SemanticGeneration == status.SemanticGeneration && entry.RebuildEpoch == status.Rebuild.RebuildEpoch && entry.FreshThrough >= status.FreshThroughGraphRevision {
 					ready = true
 					break
 				}

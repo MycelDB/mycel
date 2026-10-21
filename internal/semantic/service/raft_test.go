@@ -30,6 +30,7 @@ import (
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc"
@@ -1431,7 +1432,7 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { r, ok := routers[nodeID]; return r, ok })}
 	groupsByNode := map[consensus.NodeID]*consensus.MultiGroup{}
 	for _, nodeID := range peers {
-		m := NewModule()
+		m := NewModule(Config{GraphReader: &recordingGraphReader{}, GraphRevisionReader: fixedGraphRevisionReader{revision: 5}})
 		if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 			t.Fatalf("init node %d failed: %v", nodeID, result.Error)
 		}
@@ -1633,6 +1634,11 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 		}
 	}
 
+	for nodeID, module := range modules {
+		if _, err := module.globalBase.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: idx.VectorStoreID, Key: "failover-mycel-file", Name: "failover-mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("upsert failover vector store on node %d: %v", nodeID, err)
+		}
+	}
 	ruleID := domainsemantic.SemanticRuleID(idx.ID)
 	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: idx.DomainID, Key: "failover-rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: idx.VectorStoreID, Enabled: true}}}
 	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
@@ -1645,6 +1651,11 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	oldTerm, _, _ := oldLeaderGroup.Progress()
 	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildEpoch: "old-running", RebuildState: "running", RebuildOwnerNode: uint64(leaderID), RebuildOwnerTerm: oldTerm}}}); err != nil {
 		t.Fatalf("upsert failover rule state: %v", err)
+	}
+	staleNodeID := graphmodel.NodeID(uuid.New())
+	staleRecord, err := modules[leaderID].localVectorBackend().Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: idx.ID, NodeID: staleNodeID, TargetNodeID: staleNodeID, SourceHash: "sha256:stale-former-leader", SourceMode: "self", SourceGraphRevision: 1, SemanticGeneration: 1, RebuildEpoch: "old-running", SemanticConfigurationHash: "stale-config", ModelEndpointID: idx.ModelEndpointID, ModelID: idx.ModelID, VectorStoreID: idx.VectorStoreID, VectorSpaceKey: "test/3", Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("upsert stale former-leader record: %v", err)
 	}
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
 		for _, module := range modules {
@@ -1685,8 +1696,8 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	if _, err := modules[followerID].Search(ctx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: "query", Limit: 1}); err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("promoted empty leader search error=%v, want projection readiness rejection", err)
 	}
-	if _, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 1}); err == nil || strings.Contains(err.Error(), "already running") {
-		t.Fatalf("new leader rebuild takeover error=%v, want execution failure after stale-running takeover", err)
+	if _, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 1}); err != nil && strings.Contains(err.Error(), "already running") {
+		t.Fatalf("new leader rebuild did not take over stale running state: %v", err)
 	}
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
 		base, err := modules[followerID].baseSpaceManager(ctx, spaceID)
@@ -1705,6 +1716,26 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 		return false
 	}); err != nil {
 		t.Fatalf("stale running rebuild was not invalidated after failover: %v", err)
+	}
+	if err := oldLeaderGroup.Campaign(ctx); err != nil {
+		t.Fatalf("campaign stale former leader: %v", err)
+	}
+	if err := consensus.TickUntil(ctx, 20*time.Millisecond, func() {
+		for _, mg := range groupsByNode {
+			mg.Tick()
+		}
+	}, func() bool { return leaderForPartition() == leaderID }); err != nil {
+		t.Fatalf("stale former leader was not promoted: %v", err)
+	}
+	if _, err := modules[leaderID].BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", Force: true, Reconcile: true, Limit: 100}); err != nil {
+		t.Fatalf("reconcile promoted stale leader: %v", err)
+	}
+	latest, found, err := modules[leaderID].localVectorBackend().LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: idx.ID, NodeID: staleNodeID, SourceMode: "self", VectorStoreID: idx.VectorStoreID})
+	if err != nil || !found || !latest.Tombstone || latest.DeleteTargetRecordID != staleRecord.ID {
+		t.Fatalf("promoted stale leader record was not reconciled: found=%t record=%+v err=%v", found, latest, err)
+	}
+	if err := modules[leaderID].validateLocalProjectionForSearch(ctx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search"}); err != nil {
+		t.Fatalf("reconciled former leader projection not ready: %v", err)
 	}
 }
 

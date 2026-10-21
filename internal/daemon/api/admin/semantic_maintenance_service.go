@@ -189,7 +189,7 @@ func (s *AdminSemanticMaintenanceService) BackfillSemanticRule(ctx context.Conte
 		}
 		nodeIDs = append(nodeIDs, id)
 	}
-	res, err := s.semantic.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), NodeIDs: nodeIDs, Force: req.GetForce(), Limit: int(req.GetLimit()), ContinueOnError: req.GetContinueOnError()})
+	res, err := s.semantic.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: req.GetEmbeddingBindingKey(), NodeIDs: nodeIDs, Force: req.GetForce(), Reconcile: req.GetForce() && len(nodeIDs) == 0, Limit: int(req.GetLimit()), ContinueOnError: req.GetContinueOnError()})
 	if err != nil {
 		return nil, mapAdminSemanticMaintenanceError(err, "backfill semantic rule")
 	}

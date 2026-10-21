@@ -612,6 +612,7 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	}
 	defer release()
 	ctx = context.WithValue(ctx, semanticGateContextKey{}, true)
+	ctx = context.WithValue(ctx, semanticRebuildContextKey{}, true)
 	if in.BackfillLimit <= 0 {
 		in.BackfillLimit = 4096
 	}
@@ -742,6 +743,37 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 
 func semanticBackfillInput(in RebuildInput, rebuild domainsemantic.SemanticReliabilityState) semanticbackfill.Input {
 	return semanticbackfill.Input{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Force: true, Limit: in.BackfillLimit, Reconcile: true, ContinueOnError: false, SourceGraphRevision: rebuild.PinnedTargetRevision, PinSourceGraphRevision: true, SemanticGeneration: rebuild.SemanticGeneration, RebuildEpoch: rebuild.RebuildEpoch}
+}
+
+func (m *Module) completeSemanticBackfillBaseline(ctx context.Context, in semanticbackfill.Input) error {
+	status, err := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
+	if err != nil {
+		return err
+	}
+	if status.Rebuild.RebuildState == "running" {
+		return fmt.Errorf("semantic rebuild is already running")
+	}
+	if in.SourceGraphRevision < status.LatestObservedGraphRevision {
+		return fmt.Errorf("semantic backfill baseline revision %d is behind latest graph revision %d", in.SourceGraphRevision, status.LatestObservedGraphRevision)
+	}
+	completed := status.Rebuild
+	now := time.Now().UTC()
+	completed.SemanticGeneration = in.SemanticGeneration
+	completed.RebuildEpoch = in.RebuildEpoch
+	completed.RebuildState = "completed"
+	completed.BaselineFreshThrough = in.SourceGraphRevision
+	completed.PinnedTargetRevision = in.SourceGraphRevision
+	completed.DeltaCatchupRevision = in.SourceGraphRevision
+	completed.FreshThrough = in.SourceGraphRevision
+	completed.RebuildCompletedAt = &now
+	completed.RebuildErrorSanitized = ""
+	completed.CapacityState = "ok"
+	completed.CapacityReason = ""
+	if leadership, ok := semanticOperationLeadershipFromContext(ctx, in.SpaceID); ok {
+		completed.RebuildOwnerNode = uint64(leadership.NodeID)
+		completed.RebuildOwnerTerm = leadership.Term
+	}
+	return m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, status.SemanticGeneration, status.Rebuild.RebuildEpoch, status.Rebuild.RebuildState, func(current *domainsemantic.SemanticReliabilityState) { *current = completed })
 }
 
 func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.Result) {

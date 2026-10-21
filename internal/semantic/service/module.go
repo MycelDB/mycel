@@ -40,6 +40,7 @@ var _ runtime.Stopper = (*Module)(nil)
 var _ runtime.StatusReporter = (*Module)(nil)
 
 type semanticGateContextKey struct{}
+type semanticRebuildContextKey struct{}
 
 type Module struct {
 	mu                               sync.Mutex
@@ -1108,6 +1109,18 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 	if domainID != uuid.Nil {
 		in.PinSourceGraphRevision = true
 	}
+	if in.SemanticRuleID != uuid.Nil && strings.TrimSpace(in.EmbeddingBindingKey) != "" && (in.SemanticGeneration == 0 || strings.TrimSpace(in.RebuildEpoch) == "") {
+		status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
+		if statusErr != nil {
+			return semanticbackfill.Result{}, statusErr
+		}
+		if in.SemanticGeneration == 0 {
+			in.SemanticGeneration = status.SemanticGeneration
+		}
+		if strings.TrimSpace(in.RebuildEpoch) == "" {
+			in.RebuildEpoch = status.Rebuild.RebuildEpoch
+		}
+	}
 	if in.SemanticGeneration == 0 {
 		in.SemanticGeneration = 1
 	}
@@ -1143,7 +1156,12 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return result, err
 	}
-	if in.Force && in.Offset == 0 && len(in.NodeIDs) == 0 && result.FailedCount == 0 && result.NextOffset == 0 && result.SelectedCount == result.TotalSelectedCount && in.SemanticRuleID != uuid.Nil {
+	certifiesBaseline := in.Force && in.Reconcile && in.Offset == 0 && len(in.NodeIDs) == 0 && result.FailedCount == 0 && result.NextOffset == 0 && result.SelectedCount == result.TotalSelectedCount && in.SemanticRuleID != uuid.Nil
+	nestedRebuild, _ := ctx.Value(semanticRebuildContextKey{}).(bool)
+	if certifiesBaseline && !nestedRebuild {
+		if err := m.completeSemanticBackfillBaseline(ctx, in); err != nil {
+			return result, err
+		}
 		if err := m.saveProjectionLease(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, in.SemanticGeneration, in.RebuildEpoch, in.SourceGraphRevision); err != nil {
 			return result, err
 		}
