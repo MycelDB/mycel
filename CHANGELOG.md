@@ -23,6 +23,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 - Semantic analyzer admission now enforces prospective retained-item, gap-interval, revision-span, and serialized-range limits before allocating another reliability barrier; stable IDs/timestamps and claim/retry/completion transitions replicate deterministically, snapshot-derived rebuild state, legacy timestamp fallback, and lease reset preserve deterministic semantic timestamps and durable bytes, active-consumer checkpoints compact dirty events and completed work through durable WAL/Raft mutations, and hard mutation/byte thresholds checkpoint retry-churn logs independently of analyzer availability (#238).
 - Inference now rejects empty, non-finite, and declared-dimension-mismatched embedding responses before publication; the historical unconfigured fake connector response remains unchanged (#237).
 
+### Fixed
+
+- Raft-forwarded graph reads now preserve deterministic graph error codes across the internal backend boundary, including `NotFound` for absent entities instead of relabeling absence as `Internal`.
+
 ## [v0.20.0] - 2026-10-19
 
 ### Added
