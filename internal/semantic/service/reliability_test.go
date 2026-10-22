@@ -23,10 +23,16 @@ import (
 func TestRuleScopedPublicationFencesDoNotSerializeIndependentRules(t *testing.T) {
 	module := NewModule()
 	spaceID := domainspace.SpaceID(uuid.New())
-	unlockFirst := module.lockSemanticPublication(spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+	unlockFirst, err := module.lockSemanticPublication(context.Background(), spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	acquiredSecond := make(chan struct{}, 1)
 	go func() {
-		unlockSecond := module.lockSemanticPublication(spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+		unlockSecond, lockErr := module.lockSemanticPublication(context.Background(), spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+		if lockErr != nil {
+			return
+		}
 		acquiredSecond <- struct{}{}
 		unlockSecond()
 	}()
@@ -41,6 +47,68 @@ func TestRuleScopedPublicationFencesDoNotSerializeIndependentRules(t *testing.T)
 	defer module.publicationFencesMu.Unlock()
 	if len(module.publicationFences) != 0 {
 		t.Fatalf("released publication fences retained %d entries", len(module.publicationFences))
+	}
+}
+
+func TestRuleScopedPublicationFenceWaitHonorsContextCancellation(t *testing.T) {
+	module := NewModule()
+	spaceID := domainspace.SpaceID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	unlock, err := module.lockSemanticPublication(context.Background(), spaceID, ruleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if waitingUnlock, lockErr := module.lockSemanticPublication(waitCtx, spaceID, ruleID); !errors.Is(lockErr, context.DeadlineExceeded) {
+		if waitingUnlock != nil {
+			waitingUnlock()
+		}
+		t.Fatalf("contended publication fence error=%v, want context deadline exceeded", lockErr)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("contended publication fence ignored its context for %s", elapsed)
+	}
+	unlock()
+
+	module.publicationFencesMu.Lock()
+	defer module.publicationFencesMu.Unlock()
+	if len(module.publicationFences) != 0 {
+		t.Fatalf("canceled publication fence waiter retained %d entries", len(module.publicationFences))
+	}
+}
+
+func TestRebuildSemanticRuleReturnsWhenPublicationFenceOwnerStalls(t *testing.T) {
+	module := NewModule()
+	if result := module.Init(context.Background(), testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	unlock, err := module.lockSemanticPublication(context.Background(), spaceID, ruleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rebuildCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = module.RebuildSemanticRule(rebuildCtx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RebuildSemanticRule() error=%v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("RebuildSemanticRule() ignored the publication-fence deadline for %s", elapsed)
+	}
+	unlock()
+
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), time.Second)
+	defer retryCancel()
+	_, retryErr := module.RebuildSemanticRule(retryCtx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if errors.Is(retryErr, context.DeadlineExceeded) {
+		t.Fatalf("canceled rebuild retained a publication-fence waiter: %v", retryErr)
 	}
 }
 

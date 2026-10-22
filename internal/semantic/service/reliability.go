@@ -198,11 +198,14 @@ func slicesMatchingCapabilitiesModels(items []domainsemantic.InferenceModel, cap
 }
 
 type semanticPublicationFence struct {
-	mu   sync.Mutex
-	refs int
+	token chan struct{}
+	refs  int
 }
 
-func (m *Module) lockSemanticPublication(spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) func() {
+func (m *Module) lockSemanticPublication(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	key := spaceID.String() + "/" + ruleID.String()
 	m.publicationFencesMu.Lock()
 	if m.publicationFences == nil {
@@ -210,20 +213,37 @@ func (m *Module) lockSemanticPublication(spaceID domainspace.SpaceID, ruleID dom
 	}
 	fence := m.publicationFences[key]
 	if fence == nil {
-		fence = &semanticPublicationFence{}
+		fence = &semanticPublicationFence{token: make(chan struct{}, 1)}
 		m.publicationFences[key] = fence
 	}
 	fence.refs++
 	m.publicationFencesMu.Unlock()
-	fence.mu.Lock()
-	return func() {
-		fence.mu.Unlock()
-		m.publicationFencesMu.Lock()
-		fence.refs--
-		if fence.refs == 0 && m.publicationFences[key] == fence {
-			delete(m.publicationFences, key)
+	select {
+	case fence.token <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-fence.token
+			m.releaseSemanticPublicationFenceRef(key, fence)
+			return nil, err
 		}
-		m.publicationFencesMu.Unlock()
+	case <-ctx.Done():
+		m.releaseSemanticPublicationFenceRef(key, fence)
+		return nil, ctx.Err()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-fence.token
+			m.releaseSemanticPublicationFenceRef(key, fence)
+		})
+	}, nil
+}
+
+func (m *Module) releaseSemanticPublicationFenceRef(key string, fence *semanticPublicationFence) {
+	m.publicationFencesMu.Lock()
+	defer m.publicationFencesMu.Unlock()
+	fence.refs--
+	if fence.refs == 0 && m.publicationFences[key] == fence {
+		delete(m.publicationFences, key)
 	}
 }
 
@@ -236,7 +256,10 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	}
 	// Status evaluation can durably rotate generations or mark frontier
 	// exhaustion. Serialize those decisions with publication and rule transitions.
-	unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+	unlockFence, err := m.lockSemanticPublication(ctx, in.SpaceID, in.SemanticRuleID)
+	if err != nil {
+		return ReliabilityStatus{}, err
+	}
 	defer unlockFence()
 	spaceMgr, err := m.SpaceManager(ctx, in.SpaceID)
 	if err != nil {
@@ -464,7 +487,10 @@ func (m *Module) authorizeSemanticWorkItem(ctx context.Context, expected domains
 }
 
 func (m *Module) acquireSemanticWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (func(), error) {
-	unlockFence := m.lockSemanticPublication(item.SpaceID, item.EffectiveSemanticRuleID())
+	unlockFence, err := m.lockSemanticPublication(ctx, item.SpaceID, item.EffectiveSemanticRuleID())
+	if err != nil {
+		return nil, err
+	}
 	if err := m.authorizeSemanticWorkItem(ctx, item); err != nil {
 		unlockFence()
 		return nil, err
@@ -478,7 +504,11 @@ func (m *Module) acquireSemanticPublication(ctx context.Context, publication sem
 	locked := publication.Input.WorkItemID == uuid.Nil
 	var unlockFence func()
 	if locked {
-		unlockFence = m.lockSemanticPublication(publication.Input.SpaceID, publication.Input.SemanticRuleID)
+		var err error
+		unlockFence, err = m.lockSemanticPublication(ctx, publication.Input.SpaceID, publication.Input.SemanticRuleID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := m.authorizeSemanticPublication(ctx, publication); err != nil {
 		if locked {
@@ -546,7 +576,10 @@ func (m *Module) semanticGenerationForWork(ctx context.Context, item domainseman
 }
 
 func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error {
-	unlockFence := m.lockSemanticPublication(spaceID, rule.ID)
+	unlockFence, err := m.lockSemanticPublication(ctx, spaceID, rule.ID)
+	if err != nil {
+		return err
+	}
 	defer unlockFence()
 	states, err := m.SpaceManager(ctx, spaceID)
 	if err != nil {
@@ -800,7 +833,10 @@ func (m *Module) supersedeCancelledWorkThrough(ctx context.Context, in RebuildIn
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return err
 	}
-	unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+	unlockFence, err := m.lockSemanticPublication(ctx, in.SpaceID, in.SemanticRuleID)
+	if err != nil {
+		return err
+	}
 	defer unlockFence()
 	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
 	if err != nil {
@@ -845,7 +881,10 @@ func (m *Module) failRebuildFromState(ctx context.Context, in RebuildInput, rebu
 }
 
 func (m *Module) transitionReliabilityState(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID, bindingKey string, expectedGeneration uint64, expectedEpoch, expectedState string, mutate func(*domainsemantic.SemanticReliabilityState)) error {
-	unlockFence := m.lockSemanticPublication(spaceID, ruleID)
+	unlockFence, err := m.lockSemanticPublication(ctx, spaceID, ruleID)
+	if err != nil {
+		return err
+	}
 	defer unlockFence()
 	mgr, err := m.SpaceManager(ctx, spaceID)
 	if err != nil {
