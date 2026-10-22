@@ -29,44 +29,21 @@ func TestValidateSemanticGenerationRuleRejectsMissingNodeTypeLabels(t *testing.T
 	}
 }
 
-func TestValidateSemanticGenerationRuleAcceptsBoundedGQLSelector(t *testing.T) {
+func TestValidateSemanticGenerationRuleRejectsGQLSelectorUntilExecutionIsSupported(t *testing.T) {
 	rule := validSemanticRuleForValidation()
 	rule.Selector = SemanticTargetSelector{Mode: SemanticTargetSelectorGQL, GQL: "MATCH (target:Note) RETURN target FETCH FIRST 10 ROWS ONLY", TargetAlias: "target", MaxResults: 5}
 	res := ValidateSemanticGenerationRule(rule)
-	if !res.Valid {
-		t.Fatalf("expected bounded GQL selector to be valid, diagnostics=%+v", res.Diagnostics)
+	if res.Valid || !diagnosticsMessageContains(res.Diagnostics, "not supported") {
+		t.Fatalf("expected unsupported GQL selector diagnostic, got valid=%v diagnostics=%+v", res.Valid, res.Diagnostics)
 	}
 }
 
-func TestValidateSemanticGenerationRuleRejectsMissingGQLTargetAlias(t *testing.T) {
+func TestValidateSemanticGenerationRuleRejectsContextQueryUntilExecutionIsSupported(t *testing.T) {
 	rule := validSemanticRuleForValidation()
-	rule.Selector = SemanticTargetSelector{Mode: SemanticTargetSelectorGQL, GQL: "MATCH (target:Note) RETURN target FETCH FIRST 10 ROWS ONLY"}
+	rule.Source = SemanticSourceAssemblyPolicy{Mode: SemanticSourceContextQuery, ContextGQL: "MATCH (n:Note) RETURN n FETCH FIRST 1 ROW ONLY"}
 	res := ValidateSemanticGenerationRule(rule)
-	if res.Valid || !diagnosticsContain(res.Diagnostics, "selector.target_alias") {
-		t.Fatalf("expected selector.target_alias diagnostic, got valid=%v diagnostics=%+v", res.Valid, res.Diagnostics)
-	}
-}
-
-func TestValidateSemanticGenerationRuleRejectsUnsafeGQLSelectors(t *testing.T) {
-	tests := []struct {
-		name string
-		gql  string
-		want string
-	}{
-		{name: "write", gql: "MATCH (target:Note) SET target.flag = true RETURN target FETCH FIRST 10 ROWS ONLY", want: "read-only"},
-		{name: "unbounded", gql: "MATCH (target:Note) RETURN target", want: "FETCH FIRST"},
-		{name: "unlabeled relationship", gql: "MATCH (target:Note)-->(other:Note) RETURN target FETCH FIRST 10 ROWS ONLY", want: "relationship patterns"},
-		{name: "missing alias", gql: "MATCH (other:Note) RETURN other FETCH FIRST 10 ROWS ONLY", want: "target alias"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rule := validSemanticRuleForValidation()
-			rule.Selector = SemanticTargetSelector{Mode: SemanticTargetSelectorGQL, GQL: tt.gql, TargetAlias: "target"}
-			res := ValidateSemanticGenerationRule(rule)
-			if res.Valid || !diagnosticsMessageContains(res.Diagnostics, tt.want) {
-				t.Fatalf("expected diagnostic containing %q, got valid=%v diagnostics=%+v", tt.want, res.Valid, res.Diagnostics)
-			}
-		})
+	if res.Valid || !diagnosticsMessageContains(res.Diagnostics, "not supported") {
+		t.Fatalf("expected unsupported context query diagnostic, got valid=%v diagnostics=%+v", res.Valid, res.Diagnostics)
 	}
 }
 

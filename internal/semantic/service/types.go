@@ -69,6 +69,11 @@ type Config struct {
 
 type Manager interface {
 	BeginMutation(ctx context.Context) (context.Context, func(), error)
+	CreateInferenceCredential(ctx context.Context, in CredentialCreateInput) (CredentialLifecycleResult, error)
+	RotateInferenceCredential(ctx context.Context, in CredentialRotateInput) (CredentialLifecycleResult, error)
+	SetInferenceCredentialStatus(ctx context.Context, in CredentialStatusInput) (CredentialLifecycleResult, error)
+	DeleteInferenceCredential(ctx context.Context, in CredentialDeleteInput) error
+	SetSemanticRuleEnabled(ctx context.Context, in SemanticRuleEnabledInput) error
 	GlobalManager() storesemantic.GlobalManager
 	SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error)
 	ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error)
@@ -76,15 +81,53 @@ type Manager interface {
 	PurgeVectorIndex(ctx context.Context, spaceID domainspace.SpaceID, indexID domainsemantic.SemanticIndexID) error
 	EncryptSecret(ctx context.Context, plain string) (*domainsemantic.EncryptedSecretPayload, error)
 	GetMaintenanceStatus(ctx context.Context, in MaintenanceStatusInput) (MaintenanceStatus, error)
+	GetReliabilityStatus(ctx context.Context, in ReliabilityStatusInput) (ReliabilityStatus, error)
+	RebuildSemanticRule(ctx context.Context, in RebuildInput) (RebuildResult, error)
+	MarkRuleConfigurationChanged(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error
 	ListMaintenanceWork(ctx context.Context, in MaintenanceWorkListInput) ([]MaintenanceWorkItem, error)
 	RetryMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error)
 	CancelMaintenanceWork(ctx context.Context, in MaintenanceWorkControlInput) (MaintenanceWorkItem, error)
 	AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error)
 	ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error)
 	BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error)
+	// ListRules returns every rule in the domain, including disabled rules; API callers apply search eligibility.
 	ListRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticGenerationRule, error)
 	ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) // transitional until API/search are rule-native
 	Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error)
+}
+
+type CredentialCreateInput struct {
+	Credential domainsemantic.InferenceCredential
+	Secret     *domainsemantic.Secret
+}
+
+type CredentialRotateInput struct {
+	CredentialID      domainsemantic.InferenceCredentialID
+	ExpectedSecretRef domainsemantic.SecretID
+	Secret            domainsemantic.Secret
+}
+
+type CredentialStatusInput struct {
+	CredentialID domainsemantic.InferenceCredentialID
+	Status       domainsemantic.CredentialStatus
+}
+
+type CredentialDeleteInput struct {
+	CredentialID      domainsemantic.InferenceCredentialID
+	ExpectedSecretRef domainsemantic.SecretID
+	DeleteSecret      bool
+}
+
+type SemanticRuleEnabledInput struct {
+	Rule              domainsemantic.SemanticGenerationRule
+	ExpectedUpdatedAt time.Time
+	Enabled           bool
+	UpdatedAt         time.Time
+}
+
+type CredentialLifecycleResult struct {
+	Credential domainsemantic.InferenceCredential
+	Secret     *domainsemantic.Secret
 }
 
 type SpaceSemanticManager struct {
@@ -122,6 +165,52 @@ type MaintenanceStatus struct {
 	WorkerRuns                int
 }
 
+type ReliabilityStatusInput struct {
+	SpaceID             domainspace.SpaceID
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
+}
+
+type ReliabilityStatus struct {
+	SpaceID                            domainspace.SpaceID
+	SemanticRuleID                     domainsemantic.SemanticRuleID
+	EmbeddingBindingKey                string
+	LatestObservedGraphRevision        uint64
+	AnalyzedThroughGraphRevision       uint64
+	FreshThroughGraphRevision          uint64
+	candidateFreshThroughGraphRevision uint64
+	UnresolvedGapCount                 uint64
+	OldestUnresolvedGraphRevision      uint64
+	ConfiguredFrontierLimit            uint64
+	ConfiguredGapIntervalLimit         uint64
+	ConfiguredRevisionSpanLimit        uint64
+	ConfiguredSerializedByteLimit      uint64
+	RetainedWorkItemCount              uint64
+	RetainedGapIntervalCount           uint64
+	RetainedRevisionSpan               uint64
+	RetainedSerializedBytes            uint64
+	SemanticGeneration                 uint64
+	CapacityState                      string
+	Degraded                           bool
+	DegradedReason                     string
+	RebuildRequired                    bool
+	Rebuild                            domainsemantic.SemanticReliabilityState
+}
+
+type RebuildInput struct {
+	SpaceID               domainspace.SpaceID           `json:"space_id"`
+	SemanticRuleID        domainsemantic.SemanticRuleID `json:"semantic_rule_id"`
+	EmbeddingBindingKey   string                        `json:"embedding_binding_key"`
+	BackfillLimit         int                           `json:"backfill_limit,omitempty"`
+	MaintenanceBatchLimit int                           `json:"maintenance_batch_limit,omitempty"`
+	MaxCatchupIterations  int                           `json:"max_catchup_iterations,omitempty"`
+}
+
+type RebuildResult struct {
+	Reliability ReliabilityStatus
+	Backfill    semanticbackfill.Result
+}
+
 type MaintenanceWorkListInput struct {
 	SpaceID             domainspace.SpaceID
 	Status              string
@@ -152,11 +241,14 @@ type MaintenanceWorkItem struct {
 	LastErrorMessageSanitized string
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
+	FirstGraphRevision        uint64
+	LastGraphRevision         uint64
+	Generation                uint64
 }
 
 type ProcessInput struct {
-	SpaceID domainspace.SpaceID
-	Limit   int
+	SpaceID domainspace.SpaceID `json:"space_id"`
+	Limit   int                 `json:"limit,omitempty"`
 }
 
 type SearchInput struct {

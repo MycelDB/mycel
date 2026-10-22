@@ -42,7 +42,10 @@ Credential-free reliability suites may opt the `fake` connector into the documen
 - `CreateCredential`
 - `ListCredentials`
 - `SetCredentialStatus`
+- `RotateCredential`
 - `DeleteCredential`
+
+Credential creation, status changes, secret rotation, and credential/secret deletion are conditional semantic-global lifecycle mutations. Each operation is represented by one WAL/Raft record, re-reads current state in the state machine, preserves a concurrent disabled/revoked/expired status during rotation, verifies the expected endpoint/auth/secret identity, and is idempotent under replay. Before replacing either metadata document, storage atomically persists and directory-syncs a lifecycle intent containing the complete prospective credential and secret state. Failed writes retain the original local WAL record behind one ordering fence shared by global, space, and timed-maintenance mutations; the record must replay successfully before any later LSN advances or a snapshot is captured. A Raft storage failure is fatal to that node's apply loop: the committed entry is not marked applied, later entries and unsafe snapshot advancement are not processed, and restart replays it. Only typed mutation-domain rejection is durably recorded as a completed application outcome before its domain error is returned, so recovery, projection, and storage-corruption errors remain fatal and restart cannot reevaluate a rejection against later state. The marker journal repairs a torn final record, fails startup on earlier corruption, serializes append with snapshot compaction, and directory-syncs replacement and removal; failure to persist that completion marker is fatal. Recovery also rebuilds the derived inference projection before further global publication, deleting credential projections before referenced secret projections and rejecting direct deletion of any still-referenced secret. Endpoints referenced by credentials cannot be deleted or updated to remove the credential's auth mode.
 
 `AdminInferenceGrantService`:
 
@@ -60,7 +63,7 @@ Credential-free reliability suites may opt the `fake` connector into the documen
 
 ## Not yet implemented
 
-- credential/secret update RPCs beyond create/upsert behavior
+- credential/secret update RPCs beyond status changes and secret rotation
 - endpoint/model/vector-store full update RPCs outside package application
 - semantic backfill/maintenance controls are implemented by Admin Semantic Maintenance, not this service
 - general chat/completion execution for applications such as Knot PKM
@@ -125,7 +128,7 @@ printf '%s' "$OPENAI_API_KEY" | ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admi
   --privacy-class third_party
 ```
 
-API key material is encrypted by the daemon using the encryption-at-rest envelope service. Deployments that create inline inference credentials must enable encryption at rest with `MYCELD_ENCRYPTION_*` settings; the old `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` path is no longer accepted. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history.
+API key material is encrypted by the daemon using the encryption-at-rest envelope service. Deployments that create inline inference credentials must enable encryption at rest with `MYCELD_ENCRYPTION_*` settings; the old `MYCELD_USER_STORE_ENCRYPTION_KEY_B64` path is no longer accepted. Prefer `--secret-stdin`; `--secret-value` is available for controlled automation but may be captured in shell history. Endpoints declaring credential-free authentication may use `auth_type=none`; those credentials must omit `secret_value`, persist no secret reference, reject secret rotation, and never trigger secret resolution. Credential auth modes must be declared by an existing catalog endpoint. API-key rotation overwrites the existing encrypted secret identity so superseded ciphertext is not retained, and unsupported credential statuses are rejected rather than projected active.
 
 Daemon-backed soft cleanup/lifecycle commands:
 

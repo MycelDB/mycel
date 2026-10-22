@@ -170,6 +170,10 @@ func TestSemanticQuiesceRejectsManualMaintenance(t *testing.T) {
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("AnalyzeDirtyWork() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
+	_, err = m.RebuildSemanticRule(ctx, RebuildInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("RebuildSemanticRule() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
 }
 
 func TestSemanticMaintenanceDisabledDoesNotStartLoops(t *testing.T) {
@@ -355,6 +359,31 @@ func TestApplyMaintenanceMutationUpsertBatch(t *testing.T) {
 	}
 }
 
+func TestListRulesIncludesDisabledRulesForClientPreconditionMapping(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	mgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "disabled-rule", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := module.ListRules(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].ID != ruleID || rules[0].Enabled {
+		t.Fatalf("ListRules()=%+v, want disabled rule", rules)
+	}
+}
+
 func TestBackfillIndexRejectsSemanticDisabledDomain(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
@@ -492,7 +521,7 @@ func TestSyncSemanticDirtyCountsRefreshesRuleAndIndexState(t *testing.T) {
 	if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), TargetNodeID: graph.NodeID(uuid.New()), Action: domainsemantic.SemanticDirtyWorkActionRefresh, Status: domainsemantic.SemanticDirtyWorkStatusComplete}); err != nil {
 		t.Fatalf("seed completed work: %v", err)
 	}
-	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+	if err := NewModule().syncSemanticDirtyCounts(ctx, spaceID, mgr, maintenanceMgr); err != nil {
 		t.Fatalf("syncSemanticDirtyCounts() error = %v", err)
 	}
 	ruleStates, err := mgr.ListSemanticRuleStates(ctx)

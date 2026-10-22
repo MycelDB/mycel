@@ -27,7 +27,7 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 	switch recordType {
 	case recordTypeSemanticGlobal:
 		return scope == consensus.CommandScopeSystem
-	case recordTypeSemanticSpace, recordTypeSemanticMaintenance:
+	case recordTypeSemanticSpace, recordTypeSemanticSpaceConditional, recordTypeSemanticMaintenance:
 		return scope == consensus.CommandScopeSpacePartition
 	default:
 		return false
@@ -38,7 +38,11 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if s.Module == nil {
 		return nil
 	}
-	return s.Module.applySemanticRaftCommand(ctx, cmd, s.PartitionCount)
+	err := s.Module.applySemanticRaftCommand(ctx, cmd, s.PartitionCount)
+	if err != nil && !isSemanticCommandRejection(err) {
+		return consensus.NewFatalApplyError(err)
+	}
+	return err
 }
 
 func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionCount uint32) {
@@ -56,7 +60,11 @@ func (m *Module) buildSemanticGlobalRaftCommand(rec semanticMutationRecord, payl
 }
 
 func (m *Module) buildSemanticSpaceRaftCommand(rec semanticMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
-	return m.buildSemanticPartitionRaftCommand(rec.SpaceID, recordTypeSemanticSpace, payload, commandID)
+	return m.buildSemanticSpaceRaftCommandForRecord(rec, recordTypeSemanticSpace, payload, commandID)
+}
+
+func (m *Module) buildSemanticSpaceRaftCommandForRecord(rec semanticMutationRecord, recordType wal.RecordType, payload []byte, commandID string) (consensus.RaftCommand, error) {
+	return m.buildSemanticPartitionRaftCommand(rec.SpaceID, recordType, payload, commandID)
 }
 
 func (m *Module) buildSemanticMaintenanceRaftCommand(rec maintenanceMutationRecord, payload []byte, commandID string) (consensus.RaftCommand, error) {
@@ -92,6 +100,9 @@ func (m *Module) proposeSemanticSystemRaftCommand(ctx context.Context, cmd conse
 		return status.Error(codes.Unavailable, "semantic raft system group has no leader")
 	}
 	if _, err := group.Propose(ctx, cmd); err != nil {
+		if isSemanticCommandRejection(err) {
+			return err
+		}
 		return status.Errorf(codes.Unavailable, "semantic raft system proposal failed: %v", err)
 	}
 	return nil
@@ -115,6 +126,9 @@ func (m *Module) proposeSemanticRaftCommandWithResult(ctx context.Context, cmd c
 	}
 	result, err := group.Propose(ctx, cmd)
 	if err != nil {
+		if isSemanticCommandRejection(err) {
+			return consensus.ProposalResult{}, err
+		}
 		return consensus.ProposalResult{}, status.Errorf(codes.Unavailable, "semantic raft proposal for partition %d failed: %v", cmd.PartitionID, err)
 	}
 	return result, nil
@@ -123,6 +137,10 @@ func (m *Module) proposeSemanticRaftCommandWithResult(ctx context.Context, cmd c
 func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.RaftCommand, partitionCount uint32) error {
 	if err := cmd.Validate(partitionCount); err != nil {
 		return err
+	}
+	if cmd.RecordType == recordTypeSemanticGlobal {
+		m.globalMutationMu.Lock()
+		defer m.globalMutationMu.Unlock()
 	}
 	if m.raftCommandApplied(cmd.CommandID) {
 		return nil
@@ -135,7 +153,7 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 			return fmt.Errorf("semantic global raft command must use system scope")
 		}
 		err = m.applySemanticGlobal(ctx, wal.Record{Type: cmd.RecordType, SchemaVersion: cmd.SchemaVersion, Encoding: cmd.Encoding, Payload: cmd.Payload})
-	case recordTypeSemanticSpace:
+	case recordTypeSemanticSpace, recordTypeSemanticSpaceConditional:
 		if cmd.Scope != consensus.CommandScopeSpacePartition {
 			return fmt.Errorf("semantic space raft command must use space partition scope")
 		}
@@ -162,6 +180,16 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 		return fmt.Errorf("semantic raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, spaceID.String())
 	}
 	if err != nil {
+		if !isSemanticCommandRejection(err) {
+			return err
+		}
+		// A deterministic rejection is a completed Raft outcome. Persist its
+		// command ID before returning the domain error so restart replay cannot
+		// reevaluate it against later durable state. Marker persistence failure
+		// is intentionally returned without the domain sentinel and is fatal.
+		if rememberErr := m.rememberRaftAppliedCommand(ctx, cmd.CommandID); rememberErr != nil {
+			return fmt.Errorf("persist rejected semantic raft command %q: %w", cmd.CommandID, rememberErr)
+		}
 		return err
 	}
 	return m.rememberRaftAppliedCommand(ctx, cmd.CommandID)

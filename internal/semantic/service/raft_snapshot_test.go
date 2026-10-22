@@ -1,8 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -70,6 +75,17 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 	if _, err := spaceMgr.UpsertSemanticIndex(ctx, idx); err != nil {
 		t.Fatalf("UpsertSemanticIndex() error = %v", err)
 	}
+	if _, err := spaceMgr.UpsertIndexState(ctx, domainsemantic.SemanticIndexState{SemanticIndexID: idx.ID, State: "ready", RecordCount: 4, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("UpsertIndexState() error = %v", err)
+	}
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	reliability := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: "search", SemanticGeneration: 3, LatestObserved: 12, AnalyzedThrough: 11, FreshThrough: 8, UnresolvedRanges: []domainsemantic.SemanticRevisionRange{{FirstRevision: 9, LastRevision: 11}}, CapacityState: "exhausted", CapacityReason: "test capacity", RebuildState: "required"}
+	if _, err := spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "degraded", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": reliability}, UpdatedAt: time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("UpsertSemanticRuleState() error = %v", err)
+	}
+	if _, err := spaceMgr.UpsertSearchIndexState(ctx, domainsemantic.SemanticSearchIndexState{ID: domainsemantic.SearchIndexID(uuid.New()), SemanticRuleID: ruleID, EmbeddingBindingKey: "search", State: "ready", LiveRecordCount: 4, UpdatedAt: time.Date(2026, 10, 20, 10, 1, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("UpsertSearchIndexState() error = %v", err)
+	}
 	maintMgr, err := source.MaintenanceManager(ctx, spaceID)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +105,24 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 	snapshot, err := (RaftStateMachine{Module: source, PartitionID: pid.Uint32(), PartitionCount: 4}).Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot() error = %v", err)
+	}
+	var decoded semanticRaftSnapshot
+	if err := json.Unmarshal(snapshot, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Spaces) != 1 || len(decoded.Spaces[0].WorkItems) != 1 {
+		t.Fatalf("unexpected snapshot shape: %+v", decoded.Spaces)
+	}
+	decoded.Spaces[0].WorkItems[0].CreatedAt = time.Time{}
+	decoded.Spaces[0].WorkItems[0].UpdatedAt = time.Time{}
+	pendingWorkID := domainsemantic.SemanticDirtyWorkItemID(uuid.New())
+	decoded.Spaces[0].WorkItems = append(decoded.Spaces[0].WorkItems, domainsemantic.SemanticDirtyWorkItem{ID: pendingWorkID, SemanticIndexID: idx.ID, SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), TargetNodeID: graphmodel.NodeID(uuid.New()), Reason: "legacy pending", Action: domainsemantic.SemanticDirtyWorkActionRefresh, Status: domainsemantic.SemanticDirtyWorkStatusPending, FirstGraphRevision: 8, LastGraphRevision: 8})
+	decoded.Spaces[0].DirtyEvents[0].CommittedAt = time.Time{}
+	decoded.Spaces[0].Checkpoints[0].UpdatedAt = time.Time{}
+	decoded.Spaces[0].SearchIndexStates[0].UpdatedAt = time.Time{}
+	snapshot, err = json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	restored := NewModule()
@@ -120,13 +154,133 @@ func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *te
 		t.Fatalf("checkpoint=%+v err=%v want revision 7", checkpoint, err)
 	}
 	items, err := restoredMaint.ListDirtyWorkItems(ctx)
-	if err != nil || len(items) != 1 {
-		t.Fatalf("work items=%#v err=%v want one", items, err)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("work items=%#v err=%v want two", items, err)
 	}
-	if items[0].Status != domainsemantic.SemanticDirtyWorkStatusPending || items[0].ClaimedBy != "" || items[0].ClaimedUntil != nil {
-		t.Fatalf("restored running work not reset: %+v", items[0])
+	for _, item := range items {
+		if item.Status != domainsemantic.SemanticDirtyWorkStatusPending || item.ClaimedBy != "" || item.ClaimedUntil != nil || !item.CreatedAt.Equal(time.Unix(0, 0).UTC()) || !item.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+			t.Fatalf("restored zero-time work was not normalized deterministically: %+v", item)
+		}
+	}
+	if items[0].ID != work.ID && items[1].ID != work.ID {
+		t.Fatalf("restored running work %s missing: %+v", work.ID, items)
+	}
+	if items[0].ID != pendingWorkID && items[1].ID != pendingWorkID {
+		t.Fatalf("restored pending work %s missing: %+v", pendingWorkID, items)
+	}
+	restoredAgain := NewModule()
+	if result := restoredAgain.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("second restored init failed: %v", result.Error)
+	}
+	if err := (RaftStateMachine{Module: restoredAgain, PartitionID: pid.Uint32(), PartitionCount: 4}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatalf("second RestoreSnapshot() error = %v", err)
+	}
+	restoredAgainMaint, err := restoredAgain.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemsAgain, err := restoredAgainMaint.ListDirtyWorkItems(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items, itemsAgain) {
+		t.Fatalf("identical snapshot produced different work state:\nfirst=%+v\nsecond=%+v", items, itemsAgain)
+	}
+	workLog := filepath.Join("work", "work-000001.ksem")
+	firstLog, err := os.ReadFile(filepath.Join(restored.maintenanceDir(spaceID), workLog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLog, err := os.ReadFile(filepath.Join(restoredAgain.maintenanceDir(spaceID), workLog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstLog, secondLog) {
+		t.Fatal("identical snapshot produced different durable work-log bytes")
+	}
+	states, err := restoredSpace.ListSemanticRuleStates(ctx)
+	if err != nil || len(states) != 1 {
+		t.Fatalf("rule states=%#v err=%v want one", states, err)
+	}
+	gotReliability := states[0].ReliabilityByBinding["search"]
+	if gotReliability.SemanticGeneration != 3 || gotReliability.FreshThrough != 0 || gotReliability.RebuildState != "required" || gotReliability.CapacityState != "exhausted" || len(gotReliability.UnresolvedRanges) != 1 {
+		t.Fatalf("restored reliability state mismatch: %+v", gotReliability)
+	}
+	searchStates, err := restoredSpace.ListSearchIndexStates(ctx)
+	if err != nil || len(searchStates) != 1 || searchStates[0].State != "missing" || !searchStates[0].UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("restored search index state should require rebuild with deterministic time: states=%+v err=%v", searchStates, err)
+	}
+	indexStates, err := restoredSpace.ListIndexStates(ctx)
+	if err != nil || len(indexStates) != 1 || indexStates[0].State != "missing" || indexStates[0].RecordCount != 0 {
+		t.Fatalf("restored legacy index state should require rebuild: states=%+v err=%v", indexStates, err)
+	}
+	restoredAgainSpace, err := restoredAgain.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statesAgain, err := restoredAgainSpace.ListSemanticRuleStates(ctx)
+	if err != nil || !reflect.DeepEqual(states, statesAgain) {
+		t.Fatalf("identical snapshot produced different rule state: first=%+v second=%+v err=%v", states, statesAgain, err)
+	}
+	searchStatesAgain, err := restoredAgainSpace.ListSearchIndexStates(ctx)
+	if err != nil || !reflect.DeepEqual(searchStates, searchStatesAgain) {
+		t.Fatalf("identical snapshot produced different search-index state: first=%+v second=%+v err=%v", searchStates, searchStatesAgain, err)
+	}
+	indexStatesAgain, err := restoredAgainSpace.ListIndexStates(ctx)
+	if err != nil || !reflect.DeepEqual(indexStates, indexStatesAgain) {
+		t.Fatalf("identical snapshot produced different index state: first=%+v second=%+v err=%v", indexStates, indexStatesAgain, err)
+	}
+	eventsAgain, err := restoredAgainMaint.ListGraphDirtyEvents(ctx)
+	if err != nil || !reflect.DeepEqual(events, eventsAgain) {
+		t.Fatalf("identical snapshot produced different dirty-event state: first=%+v second=%+v err=%v", events, eventsAgain, err)
+	}
+	checkpointAgain, err := restoredAgainMaint.GetCheckpoint(ctx, "snapshot-test")
+	if err != nil || !reflect.DeepEqual(checkpoint, checkpointAgain) || !checkpointAgain.UpdatedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("identical snapshot produced different checkpoint state: first=%+v second=%+v err=%v", checkpoint, checkpointAgain, err)
+	}
+	firstFiles, err := semanticSnapshotFileTree(restored.spaceSemanticDir(spaceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFiles, err := semanticSnapshotFileTree(restoredAgain.spaceSemanticDir(spaceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firstFiles, secondFiles) {
+		t.Fatalf("identical snapshot produced different durable semantic files: first=%v second=%v", fileTreeSizes(firstFiles), fileTreeSizes(secondFiles))
 	}
 	if restored.raftCommandApplied("semantic-maintenance-" + spaceID.String() + "-stale-post-snapshot") {
 		t.Fatal("RestoreSnapshot should trim stale same-partition semantic applied command IDs")
 	}
+}
+
+func semanticSnapshotFileTree(root string) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[relative] = raw
+		return nil
+	})
+	return out, err
+}
+
+func fileTreeSizes(tree map[string][]byte) map[string]int {
+	out := make(map[string]int, len(tree))
+	for path, raw := range tree {
+		out[path] = len(raw)
+	}
+	return out
 }

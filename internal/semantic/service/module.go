@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,38 +40,49 @@ var _ runtime.Stopper = (*Module)(nil)
 var _ runtime.StatusReporter = (*Module)(nil)
 
 type semanticGateContextKey struct{}
+type semanticRebuildContextKey struct{}
 
 type Module struct {
-	mu                   sync.Mutex
-	dataDir              string
-	encryption           *encryption.Service
-	global               storesemantic.GlobalManager
-	globalBase           storesemantic.GlobalManager
-	spaces               map[domainspace.SpaceID]storesemantic.SpaceManager
-	maintenanceManagers  map[domainspace.SpaceID]storesemantic.MaintenanceManager
-	maintenanceConfig    MaintenanceConfig
-	schemas              SchemaReader
-	graphs               GraphReader
-	graphRevisions       GraphRevisionReader
-	inferenceInvoker     connectors.InferenceInvoker
-	inferenceProjection  InferenceProjection
-	logger               *slog.Logger
-	maintenanceCancel    context.CancelFunc
-	maintenanceWG        sync.WaitGroup
-	maintenanceRunning   bool
-	maintenanceStarted   time.Time
-	stats                MaintenanceStats
-	gate                 *quiesce.Gate
-	wal                  *wal.Manager
-	walProgress          wal.AppliedLSNStore
-	walWaiter            *wal.ApplyWaiter
-	writeAllowed         func() error
-	raftGroups           *consensus.MultiGroup
-	raftPartitionCount   uint32
-	raftLocalNode        consensus.NodeID
-	raftNodeAddrs        []string
-	raftBackendAuthToken string
-	raftAppliedCommands  map[string]struct{}
+	mu                               sync.Mutex
+	raftAppliedCommandsMu            sync.Mutex
+	globalMutationMu                 sync.Mutex
+	credentialProjectionRepairNeeded bool
+	publicationFencesMu              sync.Mutex
+	publicationFences                map[string]*semanticPublicationFence
+	projectionLeasesMu               sync.Mutex
+	dataDir                          string
+	encryption                       *encryption.Service
+	global                           storesemantic.GlobalManager
+	globalBase                       storesemantic.GlobalManager
+	spaces                           map[domainspace.SpaceID]storesemantic.SpaceManager
+	maintenanceManagers              map[domainspace.SpaceID]storesemantic.MaintenanceManager
+	maintenanceConfig                MaintenanceConfig
+	schemas                          SchemaReader
+	graphs                           GraphReader
+	graphRevisions                   GraphRevisionReader
+	inferenceInvoker                 connectors.InferenceInvoker
+	inferenceProjection              InferenceProjection
+	logger                           *slog.Logger
+	maintenanceCancel                context.CancelFunc
+	maintenanceWG                    sync.WaitGroup
+	maintenanceRunning               bool
+	maintenanceStarted               time.Time
+	stats                            MaintenanceStats
+	gate                             *quiesce.Gate
+	wal                              *wal.Manager
+	walProgress                      wal.AppliedLSNStore
+	walWaiter                        *wal.ApplyWaiter
+	semanticWALFailure               *semanticWALApplyFailure
+	writeAllowed                     func() error
+	raftGroups                       *consensus.MultiGroup
+	raftPartitionCount               uint32
+	raftLocalNode                    consensus.NodeID
+	raftNodeAddrs                    []string
+	raftBackendAuthToken             string
+	conditionalRuleSupportProbe      func(context.Context, consensus.NodeID, domainspace.SpaceID) error
+	semanticLeadershipProbe          func(domainspace.SpaceID) (consensus.NodeID, uint64, bool, error)
+	raftAppliedCommands              map[string]struct{}
+	raftAppliedCommandsPersistHook   func(stage string)
 }
 
 type MaintenanceStats struct {
@@ -110,7 +122,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
-	m.loadRaftAppliedCommands()
+	if err := m.loadRaftAppliedCommands(); err != nil {
+		return runtime.Abort(ModuleName, "raft", "failed to load semantic applied-command markers", err)
+	}
 	m.globalBase = global
 	if provider, ok := host.(runtime.WALProvider); ok {
 		m.wal = provider.WALManager()
@@ -120,13 +134,16 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	m.writeAllowed = func() error { return nil }
 	if provider, ok := host.(runtime.WALProvider); ok {
 		if registry := provider.WALRegistryStore(); registry != nil {
-			if err := registry.Register(recordTypeSemanticGlobal, wal.ApplierFunc(m.applySemanticGlobal)); err != nil {
+			if err := registry.Register(recordTypeSemanticGlobal, semanticWALRecoveryApplier(m.applySemanticGlobal)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic global WAL applier", err)
 			}
-			if err := registry.Register(recordTypeSemanticSpace, wal.ApplierFunc(m.applySemanticSpace)); err != nil {
+			if err := registry.Register(recordTypeSemanticSpace, semanticWALRecoveryApplier(m.applySemanticSpace)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic space WAL applier", err)
 			}
-			if err := registry.Register(recordTypeSemanticMaintenance, wal.ApplierFunc(m.applySemanticMaintenance)); err != nil {
+			if err := registry.Register(recordTypeSemanticSpaceConditional, semanticWALRecoveryApplier(m.applySemanticSpace)); err != nil {
+				return runtime.Abort(ModuleName, "wal", "register conditional semantic space WAL applier", err)
+			}
+			if err := registry.Register(recordTypeSemanticMaintenance, semanticWALRecoveryApplier(m.applySemanticMaintenance)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register semantic maintenance WAL applier", err)
 			}
 		}
@@ -371,6 +388,7 @@ func (m *Module) GlobalManager() storesemantic.GlobalManager {
 	// observe metadata written by those embedded/admin workflows without a daemon restart.
 	mgr := storesemantic.NewGlobalManager()
 	if err := mgr.Init(context.Background(), filepath.Join(m.dataDir, "meta")); err == nil {
+		m.globalBase = mgr
 		m.global = mgr
 	}
 	return m.global
@@ -700,6 +718,25 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 		if item.ID != in.WorkItemID {
 			continue
 		}
+		unlockFence := m.lockSemanticPublication(item.SpaceID, item.EffectiveSemanticRuleID())
+		defer unlockFence()
+		// Reload after acquiring the rule fence so cancellation cannot overwrite a
+		// worker completion observed in the first read.
+		current, reloadErr := maintenanceMgr.ListDirtyWorkItems(ctx)
+		if reloadErr != nil {
+			return MaintenanceWorkItem{}, reloadErr
+		}
+		found := false
+		for _, candidate := range current {
+			if candidate.ID == item.ID {
+				item = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			return MaintenanceWorkItem{}, fmt.Errorf("semantic maintenance work item %s not found", in.WorkItemID)
+		}
 		item = mutate(item)
 		updated, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, item)
 		if err != nil {
@@ -711,7 +748,7 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 }
 
 func toMaintenanceWorkItem(item domainsemantic.SemanticDirtyWorkItem) MaintenanceWorkItem {
-	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	out := MaintenanceWorkItem{ID: item.ID, SpaceID: item.SpaceID, DomainID: item.DomainID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, TargetNodeID: item.TargetNodeID, Action: string(item.Action), Status: string(item.Status), AttemptCount: item.Attempts, LastErrorCategory: item.LastErrorCategory, LastErrorMessageSanitized: sanitizeMaintenanceError(item.LastError), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt, FirstGraphRevision: item.FirstGraphRevision, LastGraphRevision: item.LastGraphRevision, Generation: uint64(item.Generation)}
 	if item.EarliestRunAt != nil {
 		out.NotBefore = *item.EarliestRunAt
 	}
@@ -722,11 +759,29 @@ func toMaintenanceWorkItem(item domainsemantic.SemanticDirtyWorkItem) Maintenanc
 }
 
 func sanitizeMaintenanceError(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) > 500 {
-		return value[:500]
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.Contains(lower, "capacity exhausted"):
+		return "semantic reliability frontier capacity exhausted; rebuild required"
+	case strings.Contains(lower, "catch-up iteration limit"):
+		return "semantic rebuild catch-up iteration limit reached"
+	case strings.Contains(lower, "stale semantic"):
+		return "stale semantic work rejected"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline"):
+		return "semantic provider timeout"
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "429"):
+		return "semantic provider rate limited"
+	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy"):
+		return "semantic provider authorization failed"
+	case strings.Contains(lower, "configuration") || strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "invalid"):
+		return "semantic configuration failed"
+	case strings.Contains(lower, "vector"):
+		return "semantic vector store failed"
+	case lower == "":
+		return ""
+	default:
+		return "semantic maintenance failed"
 	}
-	return value
 }
 
 func firstNonEmpty(values ...string) string {
@@ -749,7 +804,7 @@ func (m *Module) ListRules(ctx context.Context, spaceID domainspace.SpaceID, dom
 	}
 	out := make([]domainsemantic.SemanticGenerationRule, 0, len(rules))
 	for _, rule := range rules {
-		if rule.SpaceID == spaceID && rule.DomainID == domainID && rule.Enabled {
+		if rule.SpaceID == spaceID && rule.DomainID == domainID {
 			out = append(out, rule)
 		}
 	}
@@ -774,7 +829,15 @@ func (m *Module) ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, d
 	return out, nil
 }
 
-func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error) {
+func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result semanticmaintenance.AnalyzeResult, err error) {
+	if err = m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	defer func() {
+		if err == nil {
+			err = m.validateSemanticOperationLeadership(ctx, in.SpaceID)
+		}
+	}()
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
@@ -792,7 +855,42 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanti
 	if err != nil {
 		return semanticmaintenance.AnalyzeResult{}, err
 	}
-	return semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	analyzer := semanticmaintenance.Analyzer{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, DirtyCooldown: m.maintenanceConfig.DirtyCooldown, MaxBatchSize: m.maintenanceConfig.MaxBatchSize, DirtyCooldownForTarget: m.schemaDirtyCooldownForTarget(reader), SkipIndex: m.skipSemanticDisabledIndex}
+	rules, err := mgr.ListSemanticRules(ctx)
+	if err != nil {
+		return semanticmaintenance.AnalyzeResult{}, err
+	}
+	if len(rules) == 0 {
+		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	}
+	if in.SemanticRuleID != uuid.Nil {
+		unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+		defer unlockFence()
+		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
+	}
+	sort.Slice(rules, func(i, j int) bool { return rules[i].ID.String() < rules[j].ID.String() })
+	result = semanticmaintenance.AnalyzeResult{}
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		limit := in.Limit
+		if limit > 0 {
+			limit -= result.ProcessedEvents
+			if limit <= 0 {
+				break
+			}
+		}
+		unlockFence := m.lockSemanticPublication(in.SpaceID, rule.ID)
+		current, analyzeErr := analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: rule.ID, EmbeddingBindingKey: in.EmbeddingBindingKey, Limit: limit})
+		unlockFence()
+		result.ProcessedEvents += current.ProcessedEvents
+		result.EnqueuedItems += current.EnqueuedItems
+		if analyzeErr != nil {
+			return result, analyzeErr
+		}
+	}
+	return result, nil
 }
 
 func (m *Module) schemaDirtyCooldownForTarget(reader semanticmaintenance.GraphReader) func(context.Context, domainsemantic.SemanticIndex, graph.NodeID, time.Duration) (time.Duration, error) {
@@ -831,6 +929,14 @@ func semanticCooldownForNode(schema schemamodel.DomainSchema, node graph.Node) t
 }
 
 func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error) {
+	if forwarded, result, err := m.forwardSemanticProcess(ctx, in); forwarded || err != nil {
+		return result, err
+	}
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return semanticmaintenance.WorkerResult{}, err
+	}
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
@@ -848,17 +954,26 @@ func (m *Module) ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanti
 	if err != nil {
 		return semanticmaintenance.WorkerResult{}, err
 	}
-	res, err := semanticmaintenance.Worker{SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem}.ProcessOnce(ctx, in.Limit)
+	res, err := semanticmaintenance.Worker{GlobalManager: m.GlobalManager(), SpaceManager: mgr, MaintenanceManager: maintenanceMgr, Backfill: runner, VectorBackend: runner.VectorBackend, Config: workerConfigFromDaemon(m.maintenanceConfig), SkipWorkItem: m.skipSemanticDisabledWorkItem, ResolveGeneration: m.semanticGenerationForWork, AuthorizeWorkItem: m.authorizeSemanticWorkItem, AcquireWorkItem: m.acquireSemanticWorkItem}.ProcessOnce(ctx, in.Limit)
 	if err != nil {
 		return res, err
 	}
-	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+	if err := m.syncSemanticDirtyCounts(ctx, in.SpaceID, mgr, maintenanceMgr); err != nil {
+		return res, err
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return res, err
+	}
+	if err := m.advanceProjectionLeases(ctx, in.SpaceID); err != nil {
+		return res, err
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return res, err
 	}
 	return res, nil
 }
 
-func syncSemanticDirtyCounts(ctx context.Context, mgr storesemantic.SpaceManager, maintenanceMgr storesemantic.MaintenanceManager) error {
+func (m *Module) syncSemanticDirtyCounts(ctx context.Context, spaceID domainspace.SpaceID, mgr storesemantic.SpaceManager, maintenanceMgr storesemantic.MaintenanceManager) error {
 	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
 	if err != nil {
 		return err
@@ -887,10 +1002,24 @@ func syncSemanticDirtyCounts(ctx context.Context, mgr storesemantic.SpaceManager
 		return err
 	}
 	for _, state := range ruleStates {
+		unlockFence := m.lockSemanticPublication(spaceID, state.SemanticRuleID)
+		current, reloadErr := mgr.ListSemanticRuleStates(ctx)
+		if reloadErr != nil {
+			unlockFence()
+			return reloadErr
+		}
+		for _, candidate := range current {
+			if candidate.SemanticRuleID == state.SemanticRuleID {
+				state = candidate
+				break
+			}
+		}
 		state.DirtyCount = pendingRule[state.SemanticRuleID]
 		state.UpdatedAt = now
-		if _, err := mgr.UpsertSemanticRuleState(ctx, state); err != nil {
-			return err
+		_, upsertErr := mgr.UpsertSemanticRuleState(ctx, state)
+		unlockFence()
+		if upsertErr != nil {
+			return upsertErr
 		}
 	}
 	indexStates, err := mgr.ListIndexStates(ctx)
@@ -912,6 +1041,14 @@ func syncSemanticDirtyCounts(ctx context.Context, mgr storesemantic.SpaceManager
 }
 
 func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error) {
+	if forwarded, result, err := m.forwardSemanticBackfill(ctx, in); forwarded || err != nil {
+		return result, err
+	}
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return semanticbackfill.Result{}, err
+	}
 	release, err := m.enterWork(ctx)
 	if err != nil {
 		return semanticbackfill.Result{}, err
@@ -935,11 +1072,104 @@ func (m *Module) BackfillIndex(ctx context.Context, in semanticbackfill.Input) (
 			break
 		}
 	}
+	var domainID graph.DomainID
+	if in.SemanticRuleID != uuid.Nil {
+		rules, listErr := mgr.ListSemanticRules(ctx)
+		if listErr != nil {
+			return semanticbackfill.Result{}, listErr
+		}
+		for _, rule := range rules {
+			if rule.ID == in.SemanticRuleID {
+				domainID = rule.DomainID
+				break
+			}
+		}
+	} else {
+		for _, index := range indexes {
+			if index.ID == in.SemanticIndexID {
+				domainID = index.DomainID
+				break
+			}
+		}
+	}
+	if !in.PinSourceGraphRevision && in.SourceGraphRevision == 0 && domainID != uuid.Nil {
+		m.mu.Lock()
+		revisions := m.graphRevisions
+		m.mu.Unlock()
+		if revisions != nil {
+			revision, revisionErr := revisions.CurrentDomainRevision(ctx, in.SpaceID.String(), domainID.String())
+			if revisionErr != nil {
+				return semanticbackfill.Result{}, fmt.Errorf("read backfill graph revision: %w", revisionErr)
+			}
+			if revision > 0 {
+				in.SourceGraphRevision = uint64(revision)
+			}
+		}
+	}
+	if domainID != uuid.Nil {
+		in.PinSourceGraphRevision = true
+	}
+	if in.SemanticRuleID != uuid.Nil && strings.TrimSpace(in.EmbeddingBindingKey) != "" && (in.SemanticGeneration == 0 || strings.TrimSpace(in.RebuildEpoch) == "") {
+		status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
+		if statusErr != nil {
+			return semanticbackfill.Result{}, statusErr
+		}
+		if in.SemanticGeneration == 0 {
+			in.SemanticGeneration = status.SemanticGeneration
+		}
+		if strings.TrimSpace(in.RebuildEpoch) == "" {
+			in.RebuildEpoch = status.Rebuild.RebuildEpoch
+		}
+	}
+	if in.SemanticGeneration == 0 {
+		in.SemanticGeneration = 1
+	}
 	runner, err := m.backfillRunner(ctx, in.SpaceID, mgr)
 	if err != nil {
 		return semanticbackfill.Result{}, err
 	}
-	return runner.Run(ctx, in)
+	result, err := runner.Run(ctx, in)
+	if err != nil {
+		return result, err
+	}
+	if in.SemanticRuleID != uuid.Nil && result.FailedCount == 0 && result.NextOffset == 0 && in.SourceGraphRevision > 0 && strings.TrimSpace(in.RebuildEpoch) == "" {
+		status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
+		if statusErr == nil {
+			reliability := status.Rebuild
+			reliability.EmbeddingBindingKey = in.EmbeddingBindingKey
+			if in.SemanticGeneration > reliability.SemanticGeneration {
+				reliability.SemanticGeneration = in.SemanticGeneration
+			}
+			if in.SourceGraphRevision > reliability.BaselineFreshThrough {
+				reliability.BaselineFreshThrough = in.SourceGraphRevision
+			}
+			if in.RebuildEpoch != "" {
+				reliability.RebuildEpoch = in.RebuildEpoch
+			}
+			if saveErr := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, status.SemanticGeneration, status.Rebuild.RebuildEpoch, "", func(current *domainsemantic.SemanticReliabilityState) {
+				*current = reliability
+			}); saveErr != nil {
+				return result, saveErr
+			}
+		}
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return result, err
+	}
+	certifiesBaseline := in.Force && in.Reconcile && in.Offset == 0 && len(in.NodeIDs) == 0 && result.FailedCount == 0 && result.NextOffset == 0 && result.SelectedCount == result.TotalSelectedCount && in.SemanticRuleID != uuid.Nil
+	nestedRebuild, _ := ctx.Value(semanticRebuildContextKey{}).(bool)
+	if certifiesBaseline && !nestedRebuild {
+		if err := m.completeSemanticBackfillBaseline(ctx, in); err != nil {
+			return result, err
+		}
+		if err := m.saveProjectionLease(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, in.SemanticGeneration, in.RebuildEpoch, in.SourceGraphRevision); err != nil {
+			return result, err
+		}
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (m *Module) skipSemanticDisabledIndex(ctx context.Context, index domainsemantic.SemanticIndex) (bool, error) {
@@ -996,13 +1226,20 @@ func (m *Module) backfillRunner(ctx context.Context, spaceID domainspace.SpaceID
 		return semanticbackfill.Runner{}, err
 	}
 	global := m.GlobalManager()
-	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend()}, nil
+	return semanticbackfill.Runner{GraphReader: reader, GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, ""), VectorBackend: m.localVectorBackend(), AcquirePublication: m.acquireSemanticPublication}, nil
 }
 
 type semanticGraphReader struct {
-	reader    GraphReader
-	revisions GraphRevisionReader
-	spaceID   domainspace.SpaceID
+	reader       GraphReader
+	revisions    GraphRevisionReader
+	spaceID      domainspace.SpaceID
+	baseRevision *int64
+}
+
+func (r semanticGraphReader) AtGraphRevision(revision uint64) semanticbackfill.GraphSourceReader {
+	pinned := int64(revision)
+	r.baseRevision = &pinned
+	return r
 }
 
 func (r semanticGraphReader) GetNode(ctx context.Context, domainID graph.DomainID, id graph.NodeID) (graph.Node, error) {
@@ -1051,7 +1288,9 @@ func (r semanticGraphReader) ListEdges(ctx context.Context, domainID graph.Domai
 
 func (r semanticGraphReader) tx(ctx context.Context, domainID graph.DomainID) (sessionmodel.GraphTransaction, error) {
 	baseRevision := int64(0)
-	if r.revisions != nil {
+	if r.baseRevision != nil {
+		baseRevision = *r.baseRevision
+	} else if r.revisions != nil {
 		rev, err := r.revisions.CurrentDomainRevision(ctx, r.spaceID.String(), domainID.String())
 		if err != nil {
 			return sessionmodel.GraphTransaction{}, err
@@ -1190,11 +1429,41 @@ func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Res
 }
 
 func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {
+	var err error
+	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
+	if err != nil {
+		return semanticsearch.Result{}, err
+	}
+	projectionSnapshot, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, true, nil)
+	if err != nil {
+		return semanticsearch.Result{}, err
+	}
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
 	global := m.GlobalManager()
 	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: m.localVectorBackend()}
-	return planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
+	result, err := planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
+	if err != nil {
+		return result, err
+	}
+	if projectionSnapshot != nil {
+		searchedBindings := make(map[semanticProjectionBindingKey]semanticProjectionObservation, len(result.ProjectionSearchBindings))
+		for _, binding := range result.ProjectionSearchBindings {
+			key := semanticProjectionBindingKey{ruleID: binding.SemanticRuleID, bindingKey: binding.EmbeddingBindingKey}
+			observed, ok := projectionSnapshot[key]
+			if !ok {
+				return semanticsearch.Result{}, fmt.Errorf("semantic projection for rule %s binding %q changed provenance while searching", binding.SemanticRuleID, binding.EmbeddingBindingKey)
+			}
+			searchedBindings[key] = observed
+		}
+		if _, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, false, searchedBindings); err != nil {
+			return semanticsearch.Result{}, err
+		}
+	}
+	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return semanticsearch.Result{}, err
+	}
+	return result, nil
 }

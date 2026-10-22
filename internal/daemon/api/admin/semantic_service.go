@@ -20,6 +20,7 @@ import (
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
@@ -190,9 +191,18 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
 	}
+	configurationChanged := domainsemantic.SemanticRuleConfigurationHash(existing) != domainsemantic.SemanticRuleConfigurationHash(rule)
 	updated, err := spaceMgr.UpsertSemanticRule(ctx, rule)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "update semantic rule")
+	}
+	if configurationChanged {
+		if err := s.semantic.MarkRuleConfigurationChanged(ctx, spaceID, updated); err != nil {
+			if _, rollbackErr := spaceMgr.UpsertSemanticRule(ctx, existing); rollbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore semantic rule after reliability-state failure: %w", rollbackErr))
+			}
+			return nil, mapAdminSemanticError(err, "mark semantic rule rebuild required")
+		}
 	}
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {
@@ -217,21 +227,24 @@ func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *
 	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
-	rule.Enabled = req.GetEnabled()
-	rule.UpdatedAt = time.Now().UTC()
+	expectedUpdatedAt := rule.UpdatedAt.UTC()
+	updatedAt := time.Now().UTC()
+	if !updatedAt.After(expectedUpdatedAt) {
+		updatedAt = expectedUpdatedAt.Add(time.Nanosecond)
+	}
 	ctx, release, err := s.semantic.BeginMutation(ctx)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "begin semantic mutation")
 	}
 	defer release()
-	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
-	if err != nil {
-		return nil, mapAdminSemanticError(err, "open semantic space manager")
-	}
-	updated, err := spaceMgr.UpsertSemanticRule(ctx, rule)
-	if err != nil {
+	if err := s.semantic.SetSemanticRuleEnabled(ctx, daemonsemantic.SemanticRuleEnabledInput{
+		Rule: rule, ExpectedUpdatedAt: expectedUpdatedAt, Enabled: req.GetEnabled(), UpdatedAt: updatedAt,
+	}); err != nil {
 		return nil, mapAdminSemanticError(err, "set semantic rule enabled")
 	}
+	rule.Enabled = req.GetEnabled()
+	rule.UpdatedAt = updatedAt
+	updated := rule
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "load semantic rule metadata")
@@ -623,6 +636,15 @@ func paginateAdminSemantic[T any](items []T, pageSize int, pageToken string) ([]
 func mapAdminSemanticError(err error, action string) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, storesemantic.ErrNotFound) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrInvalidInput) {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
 		return err

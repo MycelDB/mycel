@@ -359,7 +359,10 @@ func recordForwardedRaftGraphRead(ctx context.Context, out any) {
 	}
 }
 
-func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, payload []byte) ([]byte, error) {
+func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, payload []byte) (response []byte, responseErr error) {
+	defer func() {
+		responseErr = mapRaftGraphReadBoundaryError(responseErr)
+	}()
 	var req raftGraphReadRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, err
@@ -535,6 +538,37 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		return json.Marshal(raftGraphCountResponse{Count: count, Read: read})
 	default:
 		return nil, fmt.Errorf("unsupported raft graph read op %q", req.Op)
+	}
+}
+
+func mapRaftGraphReadBoundaryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
+		return err
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.Is(err, ErrInvalidInput):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, ErrNotFound):
+		return status.Error(codes.NotFound, "graph entity not found")
+	case errors.Is(err, ErrUnauthorized):
+		return status.Error(codes.PermissionDenied, "graph access denied")
+	case errors.Is(err, ErrReadOnly), errors.Is(err, ErrInvalidState):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, ErrConflict):
+		return status.Error(codes.Aborted, "graph transaction conflict")
+	case errors.Is(err, ErrIdempotencyConflict):
+		return status.Error(codes.AlreadyExists, "idempotency key is already bound to a different graph mutation")
+	case errors.Is(err, ErrIdempotencyCapacity):
+		return status.Error(codes.ResourceExhausted, "graph idempotency retention capacity is exhausted")
+	default:
+		return err
 	}
 }
 

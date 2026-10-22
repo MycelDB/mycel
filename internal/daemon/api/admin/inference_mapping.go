@@ -14,6 +14,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -125,7 +126,10 @@ func mapSecret(in domainsemantic.Secret) *adminv1.Secret {
 }
 
 func mapCredential(in domainsemantic.InferenceCredential) *adminv1.IntelligenceCredential {
-	out := &adminv1.IntelligenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretId: in.SecretRef.String(), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+	out := &adminv1.IntelligenceCredential{CredentialId: in.ID.String(), Key: in.Key, DisplayName: in.Name, ModelEndpointId: in.ModelEndpointID.String(), OwnerType: string(in.OwnerType), OwnerId: in.OwnerID, AuthType: string(in.AuthType), SecretSuffix: in.SecretSuffix, Status: string(in.Status), IsDefault: in.IsDefault, CreateTime: timestamppb.New(in.CreatedAt), UpdateTime: timestamppb.New(in.UpdatedAt)}
+	if in.SecretRef != uuid.Nil {
+		out.SecretId = in.SecretRef.String()
+	}
 	if in.LastUsedAt != nil {
 		out.LastUsedTime = timestamppb.New(*in.LastUsedAt)
 	}
@@ -513,6 +517,15 @@ func mapAdminInferenceError(err error, action string) error {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.Unavailable, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrNotFound) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrInvalidInput) {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "not found") {
@@ -934,12 +947,14 @@ func inferenceOwnerTypeFromSemantic(value domainsemantic.CredentialOwnerType) do
 
 func inferenceCredentialStatusFromSemantic(value domainsemantic.CredentialStatus) domaininference.CredentialStatus {
 	switch value {
+	case domainsemantic.CredentialStatusActive:
+		return domaininference.CredentialStatusActive
 	case domainsemantic.CredentialStatusDisabled:
 		return domaininference.CredentialStatusDisabled
 	case domainsemantic.CredentialStatusRevoked, domainsemantic.CredentialStatusExpired:
 		return domaininference.CredentialStatusRevoked
 	default:
-		return domaininference.CredentialStatusActive
+		return domaininference.CredentialStatusRevoked
 	}
 }
 

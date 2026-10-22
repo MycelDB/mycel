@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,6 +28,16 @@ func (r Runner) Run(ctx context.Context, in Input) (Result, error) {
 	}
 	if r.GraphReader == nil || r.GlobalManager == nil || r.SpaceManager == nil || r.Connector == nil || r.VectorBackend == nil {
 		return Result{}, fmt.Errorf("graph reader, managers, connector, and vector backend are required")
+	}
+	if in.SemanticGeneration == 0 {
+		in.SemanticGeneration = 1
+	}
+	if in.PinSourceGraphRevision {
+		pinner, ok := r.GraphReader.(RevisionPinnedGraphSourceReader)
+		if !ok {
+			return Result{}, fmt.Errorf("graph reader does not support revision-pinned semantic reads")
+		}
+		r.GraphReader = pinner.AtGraphRevision(in.SourceGraphRevision)
 	}
 	rules, err := r.SpaceManager.ListSemanticRules(ctx)
 	if err != nil {
@@ -137,18 +148,35 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 		}
 		edges = []graph.Edge{}
 	}
-	selected, err := selectRuleTargets(nodes, edges, *rule, in.NodeIDs)
+	allSelected, err := selectRuleTargets(nodes, edges, *rule, in.NodeIDs)
 	if err != nil {
 		return Result{}, err
 	}
-	if in.Limit > 0 && len(selected) > in.Limit {
-		selected = selected[:in.Limit]
+	start := in.Offset
+	if start < 0 {
+		start = 0
 	}
-	result := Result{SemanticRuleID: rule.ID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), SelectedCount: len(selected) * len(bindings)}
+	if start > len(allSelected) {
+		start = len(allSelected)
+	}
+	end := len(allSelected)
+	if in.Limit > 0 && start+in.Limit < end {
+		end = start + in.Limit
+	}
+	selected := allSelected[start:end]
+	result := Result{SemanticRuleID: rule.ID, EmbeddingBindingKey: strings.TrimSpace(in.EmbeddingBindingKey), SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), SelectedCount: len(selected) * len(bindings), TotalSelectedCount: len(allSelected) * len(bindings)}
+	if end < len(allSelected) {
+		result.NextOffset = end
+	}
 	for _, binding := range bindings {
 		vectorStoreID, err := r.resolveBindingVectorStore(ctx, binding)
 		if err != nil {
-			result.FailedCount += len(selected)
+			bindingFailures := len(selected)
+			if bindingFailures == 0 {
+				bindingFailures = 1
+				result.Failures = append(result.Failures, Failure{Error: err.Error()})
+			}
+			result.FailedCount += bindingFailures
 			for _, root := range selected {
 				result.Failures = append(result.Failures, Failure{NodeID: root.ID, Error: err.Error()})
 			}
@@ -158,7 +186,7 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 			continue
 		}
 		for _, root := range selected {
-			rec, skipped, failure := r.processRuleRoot(ctx, *rule, binding, vectorStoreID, root, nodes, edges, in.Force)
+			rec, skipped, failure := r.processRuleRoot(ctx, *rule, binding, vectorStoreID, root, nodes, edges, in)
 			if failure != nil {
 				result.FailedCount++
 				result.Failures = append(result.Failures, *failure)
@@ -175,24 +203,117 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 			result.GeneratedCount++
 			result.Records = append(result.Records, rec)
 		}
-		if err := r.syncRuleBindingSearchIndexState(ctx, *rule, binding, vectorStoreID); err != nil {
+		if in.Reconcile && result.NextOffset == 0 {
+			if err := r.reconcileRuleBinding(ctx, *rule, binding, vectorStoreID, allSelected, in); err != nil {
+				if !in.ContinueOnError {
+					return result, err
+				}
+				result.FailedCount++
+				result.Failures = append(result.Failures, Failure{Error: "semantic rebuild reconciliation failed"})
+			}
+		}
+		var indexStateErr error
+		if in.Reconcile && result.NextOffset == 0 {
+			indexStateErr = r.syncRuleBindingSearchIndexState(ctx, *rule, binding, vectorStoreID, in)
+		} else {
+			indexStateErr = r.mirrorRuleBindingSearchIndexState(ctx, *rule, binding, vectorStoreID, in)
+		}
+		if indexStateErr != nil {
 			if !in.ContinueOnError {
-				return result, err
+				return result, indexStateErr
 			}
 			result.FailedCount++
-			result.Failures = append(result.Failures, Failure{Error: err.Error()})
+			result.Failures = append(result.Failures, Failure{Error: indexStateErr.Error()})
 		}
 	}
 	return result, nil
 }
 
-func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID) error {
+func (r Runner) acquirePublication(ctx context.Context, publication Publication) (func(), error) {
+	if r.AcquirePublication == nil {
+		return func() {}, nil
+	}
+	return r.AcquirePublication(ctx, publication)
+}
+
+func (r Runner) reconcileRuleBinding(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, selected []graph.Node, in Input) error {
+	records, err := r.listRuleVectorRecordsBounded(ctx, rule)
+	if err != nil {
+		return err
+	}
+	selectedIDs := make(map[graph.NodeID]struct{}, len(selected))
+	for _, node := range selected {
+		selectedIDs[node.ID] = struct{}{}
+	}
+	latest := map[graph.NodeID]domainsemantic.AdvancedEmbeddingRecord{}
+	for _, record := range records {
+		if record.EffectiveSemanticRuleID() != rule.ID || record.EmbeddingBindingKey != binding.Key || record.VectorStoreID != vectorStoreID || record.SemanticGeneration != in.SemanticGeneration {
+			continue
+		}
+		if in.PinSourceGraphRevision && record.SourceGraphRevision > in.SourceGraphRevision {
+			continue
+		}
+		current, ok := latest[record.NodeID]
+		if !ok || ruleRecordSupersedes(record, current) {
+			latest[record.NodeID] = record
+		}
+	}
+	for nodeID, record := range latest {
+		if record.Tombstone {
+			continue
+		}
+		if _, ok := selectedIDs[nodeID]; ok {
+			continue
+		}
+		release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: nodeID, SourceHash: record.SourceHash, SemanticConfigurationHash: record.SemanticConfigurationHash})
+		if errors.Is(err, ErrSupersededPublication) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		_, err = r.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: nodeID, SourceMode: record.SourceMode, VectorStoreID: vectorStoreID, TargetRecordID: record.ID, TargetGeneration: record.SemanticGeneration, TargetRebuildEpoch: record.RebuildEpoch, Reason: "rebuild_graph_truth_reconciliation", ModelEndpointID: record.ModelEndpointID, ModelID: record.ModelID, ModelEndpointCapID: record.ModelEndpointCapabilityID, CredentialID: record.CredentialID, CredentialGrantID: record.CredentialGrantID, PolicyDecisionID: record.PolicyDecisionID, SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch, CreatedAt: time.Now().UTC()})
+		release()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r Runner) mirrorRuleBindingSearchIndexState(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, in Input) error {
+	reader, ok := r.VectorBackend.(vectorstore.SearchIndexStateReader)
+	if !ok {
+		return nil
+	}
+	release, err := r.acquirePublication(ctx, Publication{Input: in})
+	if err != nil {
+		return err
+	}
+	defer release()
+	key := vectorstore.SearchIndexKey{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: vectorStoreID}
+	state, err := reader.ReadSearchIndexState(ctx, key)
+	if err != nil {
+		return fmt.Errorf("read semantic search index state for rule %s binding %q: %w", rule.ID, binding.Key, err)
+	}
+	if _, err := r.SpaceManager.UpsertSearchIndexState(ctx, state); err != nil {
+		return fmt.Errorf("sync semantic search index state for rule %s binding %q: %w", rule.ID, binding.Key, err)
+	}
+	return nil
+}
+
+func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, in Input) error {
 	rebuilder, ok := r.VectorBackend.(vectorstore.SearchIndexRebuilder)
 	if !ok {
 		return nil
 	}
+	release, err := r.acquirePublication(ctx, Publication{Input: in})
+	if err != nil {
+		return err
+	}
+	defer release()
 	key := vectorstore.SearchIndexKey{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: vectorStoreID}
-	state, err := rebuilder.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{})
+	state, err := rebuilder.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{MaxRecords: 100000, MaxBytes: 256 << 20, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch})
 	if err != nil {
 		failed := domainsemantic.SemanticSearchIndexState{SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, State: "error", LastError: err.Error(), UpdatedAt: time.Now().UTC()}
 		if _, upsertErr := r.SpaceManager.UpsertSearchIndexState(ctx, failed); upsertErr != nil {
@@ -206,24 +327,66 @@ func (r Runner) syncRuleBindingSearchIndexState(ctx context.Context, rule domain
 	return nil
 }
 
-func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, root graph.Node, nodes []graph.Node, edges []graph.Edge, force bool) (domainsemantic.AdvancedEmbeddingRecord, *Skipped, *Failure) {
+func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID, root graph.Node, nodes []graph.Node, edges []graph.Edge, in Input) (domainsemantic.AdvancedEmbeddingRecord, *Skipped, *Failure) {
 	mode := sourceModeForRule(rule)
 	source := embedding.AssembleSource(embedding.SourceInput{Root: root, Nodes: nodes, Edges: edges, Mode: mode, IncludeProps: ruleIncludeProps(rule), MaxDepth: rule.Source.MaxDepth})
-	records, err := r.listRuleVectorRecords(ctx, rule)
+	latestStore, ok := r.VectorBackend.(vectorstore.LatestRecordStore)
+	if !ok {
+		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: "vector backend does not support latest semantic record lookup"}
+	}
+	latestRecord, found, err := latestStore.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: string(mode), VectorStoreID: vectorStoreID})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
-	latest := latestCurrentRuleBindingRecord(records, root.ID, string(mode), rule, binding, vectorStoreID)
+	var latest *domainsemantic.AdvancedEmbeddingRecord
+	if found {
+		latest = &latestRecord
+	}
 	if strings.TrimSpace(source.Text) == "" || len(source.Text) < rule.Source.MinimumTextLength {
+		if latest != nil && latest.Tombstone {
+			release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: root.ID, SourceHash: source.Hash, SemanticConfigurationHash: latest.SemanticConfigurationHash})
+			if errors.Is(err, ErrSupersededPublication) {
+				return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "newer semantic publication already exists"}, nil
+			}
+			if err != nil {
+				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+			}
+			err = latestStore.EnsureSearchIndexRecord(ctx, *latest)
+			release()
+			if err != nil {
+				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+			}
+		}
 		if latest != nil && !latest.Tombstone {
-			if _, err := r.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: string(mode), VectorStoreID: vectorStoreID, TargetRecordID: latest.ID, Reason: "source_below_minimum_text_length", ModelEndpointID: latest.ModelEndpointID, ModelID: latest.ModelID, ModelEndpointCapID: latest.ModelEndpointCapabilityID, CredentialID: latest.CredentialID, CredentialGrantID: latest.CredentialGrantID, PolicyDecisionID: latest.PolicyDecisionID, CreatedAt: time.Now().UTC()}); err != nil {
+			release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: root.ID, SourceHash: source.Hash, SemanticConfigurationHash: latest.SemanticConfigurationHash})
+			if errors.Is(err, ErrSupersededPublication) {
+				return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "newer semantic publication already exists"}, nil
+			}
+			if err != nil {
+				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+			}
+			_, err = r.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: string(mode), VectorStoreID: vectorStoreID, TargetRecordID: latest.ID, TargetGeneration: latest.SemanticGeneration, TargetRebuildEpoch: latest.RebuildEpoch, Reason: "source_below_minimum_text_length", ModelEndpointID: latest.ModelEndpointID, ModelID: latest.ModelID, ModelEndpointCapID: latest.ModelEndpointCapabilityID, CredentialID: latest.CredentialID, CredentialGrantID: latest.CredentialGrantID, PolicyDecisionID: latest.PolicyDecisionID, SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, RebuildEpoch: in.RebuildEpoch, CreatedAt: time.Now().UTC()})
+			release()
+			if err != nil {
 				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 			}
 		}
 		return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "source text below minimum length"}, nil
 	}
-	if !force {
+	if !in.Force {
 		if latest != nil && !latest.Tombstone && latest.SourceHash == source.Hash {
+			release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: root.ID, SourceHash: source.Hash, SemanticConfigurationHash: latest.SemanticConfigurationHash})
+			if errors.Is(err, ErrSupersededPublication) {
+				return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "newer semantic publication already exists"}, nil
+			}
+			if err != nil {
+				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+			}
+			err = latestStore.EnsureSearchIndexRecord(ctx, *latest)
+			release()
+			if err != nil {
+				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+			}
 			return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "current source hash already embedded"}, nil
 		}
 	}
@@ -236,7 +399,16 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
-	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, NodeID: root.ID, SourceHash: source.Hash, SourceMode: string(mode), IntelligenceProfileID: binding.IntelligenceProfileID, ModelEndpointID: resp.EndpointID, ModelID: resp.ModelID, ModelEndpointCapabilityID: resp.CapabilityID, CredentialID: resp.CredentialID, CredentialGrantID: resp.CredentialGrantID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: vectorStoreID, VectorSpaceKey: vectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
+	configurationHash := domainsemantic.SemanticRecordConfigurationHash(rule, binding, resp.EndpointID, resp.ModelID, resp.CapabilityID, vectorSpaceKey, len(resp.Vector))
+	release, err := r.acquirePublication(ctx, Publication{Input: in, NodeID: root.ID, SourceHash: source.Hash, SemanticConfigurationHash: configurationHash})
+	if errors.Is(err, ErrSupersededPublication) {
+		return domainsemantic.AdvancedEmbeddingRecord{}, &Skipped{NodeID: root.ID, Reason: "newer semantic publication already exists"}, nil
+	}
+	if err != nil {
+		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+	}
+	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, NodeID: root.ID, SourceHash: source.Hash, SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, SemanticConfigurationHash: configurationHash, RebuildEpoch: in.RebuildEpoch, SourceMode: string(mode), IntelligenceProfileID: binding.IntelligenceProfileID, ModelEndpointID: resp.EndpointID, ModelID: resp.ModelID, ModelEndpointCapabilityID: resp.CapabilityID, CredentialID: resp.CredentialID, CredentialGrantID: resp.CredentialGrantID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: vectorStoreID, VectorSpaceKey: vectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
+	release()
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
@@ -256,14 +428,21 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 		mode = domainembedding.SourceModeSubtree
 	}
 	source := embedding.AssembleSource(embedding.SourceInput{Root: root, Nodes: nodes, Edges: edges, Mode: mode, IncludeProps: index.SourcePolicy.IncludeProps, MaxDepth: index.SourcePolicy.MaxDepth})
-	records, err := r.listVectorRecords(ctx, index, model)
+	latestStore, ok := r.VectorBackend.(vectorstore.LatestRecordStore)
+	if !ok {
+		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: "vector backend does not support latest semantic record lookup"}
+	}
+	latestRecord, found, err := latestStore.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticRuleID: domainsemantic.SemanticRuleID(index.ID), SemanticIndexID: index.ID, NodeID: root.ID, SourceMode: string(mode), VectorStoreID: index.VectorStoreID})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
-	latest := latestCurrentBindingRecord(records, root.ID, string(mode), index, model, cap)
+	var latest *domainsemantic.AdvancedEmbeddingRecord
+	if found && recordBindingMatches(latestRecord, root.ID, string(mode), index, model, cap) {
+		latest = &latestRecord
+	}
 	if strings.TrimSpace(source.Text) == "" || len(source.Text) < index.SourcePolicy.MinimumTextLength {
 		if latest != nil && !latest.Tombstone {
-			if _, err := r.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceMode: string(mode), VectorStoreID: index.VectorStoreID, TargetRecordID: latest.ID, Reason: "source_below_minimum_text_length", ModelEndpointID: latest.ModelEndpointID, ModelID: latest.ModelID, ModelEndpointCapID: latest.ModelEndpointCapabilityID, CredentialID: latest.CredentialID, CredentialGrantID: latest.CredentialGrantID, PolicyDecisionID: latest.PolicyDecisionID, CreatedAt: time.Now().UTC()}); err != nil {
+			if _, err := r.VectorBackend.Delete(ctx, vectorstore.DeleteInput{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceMode: string(mode), VectorStoreID: index.VectorStoreID, TargetRecordID: latest.ID, TargetGeneration: latest.SemanticGeneration, TargetRebuildEpoch: latest.RebuildEpoch, Reason: "source_below_minimum_text_length", ModelEndpointID: latest.ModelEndpointID, ModelID: latest.ModelID, ModelEndpointCapID: latest.ModelEndpointCapabilityID, CredentialID: latest.CredentialID, CredentialGrantID: latest.CredentialGrantID, PolicyDecisionID: latest.PolicyDecisionID, CreatedAt: time.Now().UTC()}); err != nil {
 				return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 			}
 		}
@@ -284,21 +463,6 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
 	return rec, nil, nil
-}
-
-func (r Runner) listVectorRecords(ctx context.Context, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
-	if lister, ok := r.VectorBackend.(vectorstore.RecordLister); ok {
-		return lister.ListRecords(ctx, index.SpaceID, index.ID)
-	}
-	results, err := r.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, Query: zeroVector(model.Dimensions), Limit: 100000, MinScore: -1})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domainsemantic.AdvancedEmbeddingRecord, 0, len(results))
-	for _, result := range results {
-		out = append(out, result.Record)
-	}
-	return out, nil
 }
 
 func (r Runner) resolveEndpointModelCapability(ctx context.Context, index domainsemantic.SemanticIndex) (domainsemantic.ModelEndpoint, domainsemantic.InferenceModel, domainsemantic.ModelEndpointCapability, error) {
@@ -340,20 +504,6 @@ func (r Runner) resolveEndpointModelCapability(ctx context.Context, index domain
 		}
 	}
 	return domainsemantic.ModelEndpoint{}, domainsemantic.InferenceModel{}, domainsemantic.ModelEndpointCapability{}, fmt.Errorf("enabled capability not found for endpoint=%s model=%s operation=embeddings", endpoint.ID, model.ID)
-}
-
-func latestCurrentBindingRecord(records []domainsemantic.AdvancedEmbeddingRecord, nodeID graph.NodeID, sourceMode string, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability) *domainsemantic.AdvancedEmbeddingRecord {
-	var latest *domainsemantic.AdvancedEmbeddingRecord
-	for i := range records {
-		rec := records[i]
-		if !recordBindingMatches(rec, nodeID, sourceMode, index, model, cap) {
-			continue
-		}
-		if latest == nil || rec.CreatedAt.After(latest.CreatedAt) || (rec.CreatedAt.Equal(latest.CreatedAt) && rec.ID.String() > latest.ID.String()) {
-			latest = &rec
-		}
-	}
-	return latest
 }
 
 func recordBindingMatches(rec domainsemantic.AdvancedEmbeddingRecord, nodeID graph.NodeID, sourceMode string, index domainsemantic.SemanticIndex, model domainsemantic.InferenceModel, cap domainsemantic.ModelEndpointCapability) bool {
@@ -506,25 +656,18 @@ func ruleIncludeProps(rule domainsemantic.SemanticGenerationRule) []string {
 	return out
 }
 
-func latestCurrentRuleBindingRecord(records []domainsemantic.AdvancedEmbeddingRecord, nodeID graph.NodeID, sourceMode string, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, vectorStoreID domainsemantic.VectorStoreID) *domainsemantic.AdvancedEmbeddingRecord {
-	var latest *domainsemantic.AdvancedEmbeddingRecord
-	for i := range records {
-		rec := records[i]
-		if rec.NodeID != nodeID || rec.EffectiveSemanticRuleID() != rule.ID || rec.EmbeddingBindingKey != binding.Key || rec.SourceMode != sourceMode || rec.VectorStoreID != vectorStoreID {
-			continue
-		}
-		if latest == nil || rec.CreatedAt.After(latest.CreatedAt) || (rec.CreatedAt.Equal(latest.CreatedAt) && rec.ID.String() > latest.ID.String()) {
-			latest = &rec
-		}
+func ruleRecordSupersedes(candidate, current domainsemantic.AdvancedEmbeddingRecord) bool {
+	if candidate.SemanticGeneration == current.SemanticGeneration && candidate.RebuildEpoch == current.RebuildEpoch && candidate.SourceGraphRevision != current.SourceGraphRevision {
+		return candidate.SourceGraphRevision > current.SourceGraphRevision
 	}
-	return latest
+	return candidate.CreatedAt.After(current.CreatedAt) || (candidate.CreatedAt.Equal(current.CreatedAt) && candidate.ID.String() > current.ID.String())
 }
 
-func (r Runner) listRuleVectorRecords(ctx context.Context, rule domainsemantic.SemanticGenerationRule) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
-	if lister, ok := r.VectorBackend.(vectorstore.RecordLister); ok {
-		return lister.ListRecords(ctx, rule.SpaceID, domainsemantic.SemanticIndexID(rule.ID))
+func (r Runner) listRuleVectorRecordsBounded(ctx context.Context, rule domainsemantic.SemanticGenerationRule) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	if lister, ok := r.VectorBackend.(vectorstore.BoundedRecordLister); ok {
+		return lister.ListRecordsBounded(ctx, rule.SpaceID, domainsemantic.SemanticIndexID(rule.ID), vectorstore.RebuildLimit{MaxRecords: 100000, MaxBytes: 256 << 20})
 	}
-	return nil, fmt.Errorf("vector backend does not support rule record listing")
+	return nil, fmt.Errorf("vector backend does not support bounded rule record listing")
 }
 
 func (r Runner) resolveBindingVectorStore(ctx context.Context, binding domainsemantic.SemanticEmbeddingBinding) (domainsemantic.VectorStoreID, error) {
@@ -554,13 +697,6 @@ func (r Runner) vectorSpaceKey(ctx context.Context, modelID domainsemantic.Infer
 		}
 	}
 	return "", nil
-}
-
-func zeroVector(dim int) []float64 {
-	if dim <= 0 {
-		dim = 1
-	}
-	return make([]float64, dim)
 }
 
 func semanticInferenceProfileRef(index domainsemantic.SemanticIndex) (string, uuid.UUID) {

@@ -155,6 +155,11 @@ func TestCommitTransactionGraphUsesRaftWhenEnabled(t *testing.T) {
 	if readRes.Read == nil || !readRes.Read.Strong || readRes.Read.ReadIndex == 0 || readRes.Read.LeaderNodeID != 1 {
 		t.Fatalf("forwarded read metadata=%#v", readRes.Read)
 	}
+	req.ID = uuid.NewString()
+	payload, _ = json.Marshal(req)
+	if _, err := m.ExecuteLocalRaftGraphRead(ctx, spaceID, payload); status.Code(err) != codes.NotFound {
+		t.Fatalf("ExecuteLocalRaftGraphRead(missing node) code=%v err=%v; want NotFound", status.Code(err), err)
+	}
 }
 
 func TestReadOnlyTransactionUsesLinearizableHistoricalSnapshot(t *testing.T) {

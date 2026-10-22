@@ -859,6 +859,149 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 	}
 }
 
+func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	dir := t.TempDir()
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "conditional-rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setter := mgr.(SemanticRuleEnabledManager)
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	desired := created
+	desired.Enabled = false
+	desired.UpdatedAt = updatedAt
+	updated, err := setter.SetSemanticRuleEnabled(ctx, created, desired)
+	if err != nil {
+		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
+	}
+	if updated.Enabled || !updated.UpdatedAt.Equal(updatedAt) || updated.ID != created.ID || !updated.CreatedAt.Equal(created.CreatedAt) {
+		t.Fatalf("updated rule=%+v", updated)
+	}
+	if replayed, err := setter.SetSemanticRuleEnabled(ctx, created, desired); err != nil || replayed.Enabled || !replayed.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("idempotent replay=%+v err=%v", replayed, err)
+	}
+	staleDesired := created
+	staleDesired.UpdatedAt = updatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created, staleDesired); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale conditional update error=%v, want ErrConflict", err)
+	}
+	missing := desired
+	missing.ID = domainsemantic.SemanticRuleID(uuid.New())
+	missing.UpdatedAt = updatedAt
+	missingDesired := missing
+	missingDesired.UpdatedAt = updatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, missing, missingDesired); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replacement identity update error=%v, want ErrNotFound", err)
+	}
+	reopened := NewSpaceManager()
+	if err := reopened.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := reopened.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("reopened rules=%+v err=%v", rules, err)
+	}
+}
+
+func TestSpaceManagerSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	dir := t.TempDir()
+	writer := NewSpaceManager()
+	if err := writer.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := writer.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "same-timestamp-rule", DisplayName: "before", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := NewSpaceManager()
+	if err := stale.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	concurrent := created
+	concurrent.DisplayName = "concurrent"
+	concurrent.UpdatedAt = created.UpdatedAt
+	if _, err := writer.UpsertSemanticRule(ctx, concurrent); err != nil {
+		t.Fatal(err)
+	}
+	desired := created
+	desired.Enabled = false
+	desired.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	if _, err := stale.(SemanticRuleEnabledManager).SetSemanticRuleEnabled(ctx, created, desired); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-timestamp concurrent update error=%v, want ErrConflict", err)
+	}
+	verified := NewSpaceManager()
+	if err := verified.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := verified.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].DisplayName != "concurrent" || !rules[0].Enabled {
+		t.Fatalf("rules after rejected stale mutation=%+v err=%v", rules, err)
+	}
+}
+
+func TestSpaceManagerSetSemanticRuleEnabledReloadsAcrossManagers(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	dir := t.TempDir()
+	first := NewSpaceManager()
+	if err := first.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := first.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "replacement-rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := NewSpaceManager()
+	if err := stale.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.DeleteSemanticRule(ctx, created.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := first.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: created.DomainID, Key: created.Key, Enabled: true,
+		Selector: created.Selector, Source: created.Source, Embeddings: created.Embeddings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setter := stale.(SemanticRuleEnabledManager)
+	desired := created
+	desired.Enabled = false
+	desired.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created, desired); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale cross-manager update error=%v, want ErrNotFound", err)
+	}
+	verified := NewSpaceManager()
+	if err := verified.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := verified.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].ID != replacement.ID || !rules[0].Enabled {
+		t.Fatalf("replacement rules=%+v err=%v", rules, err)
+	}
+}
+
 func TestSpaceManagerSemanticRulesLoadLegacyUnderscoreEventsAsDotted(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -1000,6 +1143,98 @@ func TestMaintenanceWorkCoalescesByRuleBindingAndTarget(t *testing.T) {
 	items, err := mgr.ListDirtyWorkItems(ctx)
 	if err != nil || len(items) != 2 {
 		t.Fatalf("expected two binding-aware work items, got items=%+v err=%v", items, err)
+	}
+}
+
+func TestMaintenanceHistoryCompactionBoundsEventsWorkAndRestartState(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainA := graph.DomainID(uuid.New())
+	domainB := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	mgr := NewMaintenanceManager()
+	if err := mgr.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 128; i++ {
+		domainID := domainA
+		if i%2 == 0 {
+			domainID = domainB
+		}
+		if _, err := mgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: uint64(i), SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{graph.NodeID(uuid.New())}, CommittedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: graph.NodeID(uuid.New()), Status: domainsemantic.SemanticDirtyWorkStatusComplete, FirstGraphRevision: uint64(i), LastGraphRevision: uint64(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := CompactHistoryInput{Consumers: []MaintenanceConsumerFrontier{{Consumer: "a", DomainID: domainA, LastGraphRevision: 127}, {Consumer: "b", DomainID: domainB, LastGraphRevision: 128}}, MaxRetainedEvents: 16, MaxRetainedCompletedWork: 8}
+	if err := mgr.CompactHistory(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	events, err := mgr.ListGraphDirtyEvents(ctx)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("expected one latest event per domain: events=%+v err=%v", events, err)
+	}
+	items, err := mgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 8 {
+		t.Fatalf("completed work retention not bounded: items=%d err=%v", len(items), err)
+	}
+	restarted := NewMaintenanceManager()
+	if err := restarted.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	events, err = restarted.ListGraphDirtyEvents(ctx)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("compacted events did not survive restart: events=%+v err=%v", events, err)
+	}
+	items, err = restarted.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 8 {
+		t.Fatalf("compacted work did not survive restart: items=%d err=%v", len(items), err)
+	}
+}
+
+func TestMaintenanceWorkLogCheckpointsRetryChurnWithoutAnalyzer(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	manager := NewMaintenanceManager()
+	if err := manager.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	concrete := manager.(*maintenanceManager)
+	concrete.workLogMutationRecordLimit = 16
+	item, err := manager.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", TargetNodeID: graph.NodeID(uuid.New())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 64; i++ {
+		claimed, err := manager.ClaimReadyWork(ctx, ClaimReadyWorkInput{Limit: 1, Now: time.Now().UTC().Add(time.Duration(i) * time.Second)})
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("claim %d: claimed=%+v err=%v", i, claimed, err)
+		}
+		if err := manager.FailWork(ctx, item.ID, WorkFailure{Retryable: true, Generation: claimed[0].Generation, FailedAt: time.Now().UTC(), Message: "retry"}); err != nil {
+			t.Fatalf("fail %d: %v", i, err)
+		}
+	}
+	claimed, err := manager.ClaimReadyWork(ctx, ClaimReadyWorkInput{Limit: 1, Now: time.Now().UTC().Add(24 * time.Hour)})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("threshold claim: claimed=%+v err=%v", claimed, err)
+	}
+	info, err := os.Stat(filepath.Join(root, workStateDirName, workEventsFileName))
+	if err != nil || info.Size() > maxWorkLogBytes {
+		t.Fatalf("work log was not bounded by checkpoint: size=%v err=%v", info, err)
+	}
+	restarted := NewMaintenanceManager()
+	if err := restarted.Init(ctx, root, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := restarted.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].ID != item.ID || items[0].Status != domainsemantic.SemanticDirtyWorkStatusRunning || items[0].Attempts != 65 {
+		t.Fatalf("checkpoint replay lost retry state: items=%+v err=%v", items, err)
 	}
 }
 

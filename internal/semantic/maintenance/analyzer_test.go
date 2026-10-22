@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,43 @@ func TestAnalyzerCoalescesGraphDirtyEvents(t *testing.T) {
 	}
 	if res.ProcessedEvents != 0 {
 		t.Fatalf("expected checkpoint skip, got %+v", res)
+	}
+}
+
+func TestAnalyzerForeignDomainEventDoesNotAdvanceLocalCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	localDomainID := graph.DomainID(uuid.New())
+	foreignDomainID := graph.DomainID(uuid.New())
+	localNodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: localDomainID, Key: "local", Name: "local", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSelf}, ModelEndpointID: uuid.New(), ModelID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 100, SpaceID: spaceID, DomainIDs: []graph.DomainID{foreignDomainID}, UpdatedNodeIDs: []graph.NodeID{graph.NodeID(uuid.New())}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	analyzer := Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: fakeGraphReader{nodes: map[graph.NodeID]graph.Node{localNodeID: {ID: localNodeID, DomainID: localDomainID, Content: "local"}}}}
+	if _, err := analyzer.AnalyzeOnce(ctx, AnalyzeInput{}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := maintenanceMgr.GetCheckpoint(ctx, analyzerConsumer(index.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.LastGraphRevision != 0 {
+		t.Fatalf("foreign domain advanced local checkpoint to %d", checkpoint.LastGraphRevision)
+	}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 1, SpaceID: spaceID, DomainIDs: []graph.DomainID{localDomainID}, UpdatedNodeIDs: []graph.NodeID{localNodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := analyzer.AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EnqueuedItems != 1 {
+		t.Fatalf("local revision was skipped after foreign event: %+v", result)
 	}
 }
 
@@ -495,15 +533,167 @@ func TestAnalyzerSemanticRuleFiltersLabelsAndBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze failed: %v", err)
 	}
-	if res.EnqueuedItems != 1 {
-		t.Fatalf("expected one enqueued item, got %+v", res)
+	if res.EnqueuedItems != 2 {
+		t.Fatalf("expected refresh plus selector-transition cleanup, got %+v", res)
 	}
 	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
-	if err != nil || len(items) != 1 {
-		t.Fatalf("expected one work item, got %+v err=%v", items, err)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("expected two work items, got %+v err=%v", items, err)
 	}
-	if items[0].TargetNodeID != noteID || items[0].EmbeddingBindingKey != "summary" {
-		t.Fatalf("unexpected filtered item %+v", items[0])
+	actions := map[graph.NodeID]domainsemantic.SemanticDirtyWorkAction{}
+	for _, item := range items {
+		if item.EmbeddingBindingKey != "summary" {
+			t.Fatalf("unexpected binding in work item %+v", item)
+		}
+		actions[item.TargetNodeID] = item.Action
+	}
+	if actions[noteID] != domainsemantic.SemanticDirtyWorkActionRefresh || actions[taskID] != domainsemantic.SemanticDirtyWorkActionDelete {
+		t.Fatalf("unexpected selector transition actions: %+v", actions)
+	}
+}
+
+func TestAnalyzerLabelRemovalEnqueuesCleanupDespiteTriggerLabels(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	rule := analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{analyzerBinding("search", true)})
+	rule.Trigger = domainsemantic.SemanticTriggerPolicy{Events: []string{"node.updated"}, Labels: []string{"Note"}}
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"Task"}}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 7, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil || result.EnqueuedItems != 1 {
+		t.Fatalf("label-removal analysis: result=%+v err=%v", result, err)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 1 || items[0].SemanticRuleID != rule.ID || items[0].TargetNodeID != nodeID || items[0].Action != domainsemantic.SemanticDirtyWorkActionDelete {
+		t.Fatalf("expected exact selector-transition cleanup: items=%+v err=%v", items, err)
+	}
+}
+
+func TestAnalyzerSubtreeSelectorTransitionDeletesOldRootAndRefreshesAncestor(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	parentID := graph.NodeID(uuid.New())
+	childID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	rule := analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{analyzerBinding("search", true)})
+	rule.Source.Mode = domainsemantic.SemanticSourceSubtree
+	rule.Trigger = domainsemantic.SemanticTriggerPolicy{Events: []string{"node.updated"}, Labels: []string{"Note"}}
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{parentID: {ID: parentID, DomainID: domainID, Labels: []string{"Note"}}, childID: {ID: childID, DomainID: domainID, Labels: []string{"Task"}}}, parents: map[graph.NodeID]graph.NodeID{childID: parentID}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 8, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{childID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err != nil || result.EnqueuedItems != 2 {
+		t.Fatalf("subtree selector transition: result=%+v err=%v", result, err)
+	}
+	items, err := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("subtree work items: items=%+v err=%v", items, err)
+	}
+	actions := map[graph.NodeID]domainsemantic.SemanticDirtyWorkAction{}
+	for _, item := range items {
+		actions[item.TargetNodeID] = item.Action
+	}
+	if actions[parentID] != domainsemantic.SemanticDirtyWorkActionRefresh || actions[childID] != domainsemantic.SemanticDirtyWorkActionDelete {
+		t.Fatalf("unexpected subtree transition actions: %+v", actions)
+	}
+}
+
+func TestAnalyzerCancelledItemsRetainReliabilityCapacity(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+	binding := analyzerBinding("search", true)
+	rule, err := spaceMgr.UpsertSemanticRule(ctx, analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{binding}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, TargetNodeID: graph.NodeID(uuid.New()), Status: domainsemantic.SemanticDirtyWorkStatusCancelled, FirstGraphRevision: uint64(i + 1), LastGraphRevision: uint64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"Note"}}}}
+	if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: 3, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, MaxReliabilityBarriers: 2}).AnalyzeOnce(ctx, AnalyzeInput{})
+	if err == nil || !strings.Contains(err.Error(), "capacity exhausted") {
+		t.Fatalf("expected fail-closed capacity exhaustion, got %v", err)
+	}
+	items, listErr := maintenanceMgr.ListDirtyWorkItems(ctx)
+	if listErr != nil || len(items) != 2 {
+		t.Fatalf("capacity failure allocated additional work: items=%+v err=%v", items, listErr)
+	}
+	states, stateErr := spaceMgr.ListSemanticRuleStates(ctx)
+	if stateErr != nil || len(states) != 1 {
+		t.Fatalf("capacity exhaustion state unavailable: states=%+v err=%v", states, stateErr)
+	}
+	reliability := states[0].ReliabilityByBinding[binding.Key]
+	if reliability.RebuildState != "required" || reliability.CapacityState != "exhausted" {
+		t.Fatalf("capacity exhaustion was not persisted: states=%+v", states)
+	}
+}
+
+func TestAnalyzerRejectsProspectiveReliabilityRangeCapacityBeforeAllocation(t *testing.T) {
+	tests := []struct {
+		name            string
+		existing        []uint64
+		eventRevision   uint64
+		gapIntervals    int
+		revisionSpan    uint64
+		serializedBytes uint64
+	}{
+		{name: "gap intervals", existing: []uint64{1, 3}, eventRevision: 5, gapIntervals: 2},
+		{name: "revision span", existing: []uint64{1}, eventRevision: 5, revisionSpan: 5},
+		{name: "serialized bytes", existing: []uint64{1}, eventRevision: 3, serializedBytes: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			spaceID := domainspace.SpaceID(uuid.New())
+			domainID := graph.DomainID(uuid.New())
+			nodeID := graph.NodeID(uuid.New())
+			spaceMgr, maintenanceMgr := newAnalyzerManagers(t, ctx, spaceID)
+			binding := analyzerBinding("search", true)
+			rule, err := spaceMgr.UpsertSemanticRule(ctx, analyzerRule(spaceID, domainID, []string{"Note"}, []domainsemantic.SemanticEmbeddingBinding{binding}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, revision := range tt.existing {
+				if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, TargetNodeID: graph.NodeID(uuid.New()), Status: domainsemantic.SemanticDirtyWorkStatusCancelled, FirstGraphRevision: revision, LastGraphRevision: revision}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reader := fakeGraphReader{nodes: map[graph.NodeID]graph.Node{nodeID: {ID: nodeID, DomainID: domainID, Labels: []string{"Note"}}}}
+			if _, err := maintenanceMgr.AppendGraphDirtyEvent(ctx, domainsemantic.GraphDirtyEvent{TxnID: uuid.New(), GraphRevision: tt.eventRevision, SpaceID: spaceID, DomainIDs: []graph.DomainID{domainID}, UpdatedNodeIDs: []graph.NodeID{nodeID}, CommittedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = (Analyzer{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, GraphReader: reader, MaxReliabilityBarriers: 10, MaxReliabilityGapIntervals: tt.gapIntervals, MaxReliabilityRevisionSpan: tt.revisionSpan, MaxReliabilitySerializedBytes: tt.serializedBytes}).AnalyzeOnce(ctx, AnalyzeInput{})
+			if err == nil || !strings.Contains(err.Error(), "capacity exhausted") {
+				t.Fatalf("expected prospective %s exhaustion, got %v", tt.name, err)
+			}
+			items, listErr := maintenanceMgr.ListDirtyWorkItems(ctx)
+			if listErr != nil || len(items) != len(tt.existing) {
+				t.Fatalf("%s exhaustion allocated a new barrier: items=%+v err=%v", tt.name, items, listErr)
+			}
+		})
 	}
 }
 

@@ -36,12 +36,33 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	if len(result.Results) != 1 || result.Results[0].SemanticRuleID != allowed.ID || result.Results[0].EmbeddingBindingKey != "search" || result.Results[0].CredentialGrantID != grantID {
 		t.Fatalf("expected profiled rule/binding result with record grant provenance, got %+v", result)
 	}
+	if len(result.ProjectionSearchBindings) != 1 || result.ProjectionSearchBindings[0].SemanticRuleID != allowed.ID || result.ProjectionSearchBindings[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("searched projection binding evidence=%+v, want allowed/search", result.ProjectionSearchBindings)
+	}
 	if len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "focus notes") {
 		t.Fatalf("expected one query embedding call, calls=%+v", env.connector.calls)
 	}
 	warnings := strings.Join(result.Warnings, "\n")
 	if !strings.Contains(warnings, "missing-store") || !strings.Contains(warnings, "enabled vector store not found") {
 		t.Fatalf("expected warning for missing vector store, got %+v", result.Warnings)
+	}
+}
+
+func TestPlannerRejectsLegacyOrIncompatibleRecordConfiguration(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "stale", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	record := env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))
+	record.SemanticConfigurationHash = ""
+	if _, err := env.vector.Upsert(ctx, record); err != nil {
+		t.Fatalf("upsert stale vector failed: %v", err)
+	}
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(result.Results) != 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), "stale records and requires rebuild") {
+		t.Fatalf("legacy record was not rejected explicitly: %+v", result)
 	}
 }
 
@@ -97,8 +118,57 @@ func TestPlannerSkipsBindingWhenProfileResolutionFails(t *testing.T) {
 	if len(result.Results) != 1 || result.Results[0].EmbeddingBindingKey != "search" {
 		t.Fatalf("expected only allowed binding result, got %+v", result.Results)
 	}
-	if !strings.Contains(strings.Join(result.Warnings, "\n"), "policy denies semantic binding") {
-		t.Fatalf("expected denied binding warning, got %+v", result.Warnings)
+	if len(result.ProjectionSearchBindings) != 1 || result.ProjectionSearchBindings[0].SemanticRuleID != rule.ID || result.ProjectionSearchBindings[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("projection search bindings=%+v, want only successful search binding", result.ProjectionSearchBindings)
+	}
+	warnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(warnings, "embedding_failed") || strings.Contains(warnings, "policy denies semantic binding") {
+		t.Fatalf("expected sanitized binding warning, got %+v", result.Warnings)
+	}
+}
+
+func TestPlannerPropagatesRawCandidateTruncationBeforeCompatibilityFiltering(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "capped", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	record := env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))
+	results := make([]vectorstore.SearchResult, maxPerBindingLimit+1)
+	for i := range results {
+		current := record
+		current.SemanticConfigurationHash = "stale"
+		results[i] = vectorstore.SearchResult{Record: current, NodeID: current.NodeID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), Score: 1}
+	}
+	// The first eligible record is immediately below the bounded raw scan.
+	results[len(results)-1].Record = record
+	env.planner.VectorBackend = cappedSearchBackend{results: results}
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: maxPerBindingLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CandidateScanTruncated {
+		t.Fatal("raw backend truncation was lost after compatibility filtering")
+	}
+}
+
+func TestPlannerRejectsBindingThatRequiresRebuild(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "stale", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: rule.ID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildState: "required"}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if err != nil || len(result.Results) != 0 {
+		t.Fatalf("expected rebuild-required binding to return no records, result=%+v err=%v", result, err)
+	}
+	if len(result.ProjectionSearchBindings) != 0 {
+		t.Fatalf("rebuild-blocked binding unexpectedly searched projection: %+v", result.ProjectionSearchBindings)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "requires rebuild") {
+		t.Fatalf("expected rebuild warning, got %+v", result.Warnings)
 	}
 }
 
@@ -185,7 +255,45 @@ func (e *searchEnv) addRule(t *testing.T, key string, bindings []domainsemantic.
 }
 
 func (e *searchEnv) record(ruleID domainsemantic.SemanticRuleID, bindingKey string, nodeID graph.NodeID, vector []float64, grantID domainsemantic.CredentialGrantID) domainsemantic.AdvancedEmbeddingRecord {
-	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
+	configurationHash := ""
+	rules, _ := e.spaceMgr.ListSemanticRules(context.Background())
+	for _, rule := range rules {
+		if rule.ID != ruleID {
+			continue
+		}
+		for _, binding := range rule.Embeddings {
+			if binding.Key == bindingKey {
+				configurationHash = domainsemantic.SemanticRecordConfigurationHash(rule, binding, e.endpoint.ID, e.model.ID, e.capability.ID, e.model.VectorSpaceKey, len(vector))
+				break
+			}
+		}
+		break
+	}
+	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SemanticGeneration: 1, SemanticConfigurationHash: configurationHash, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
+}
+
+type cappedSearchBackend struct {
+	results []vectorstore.SearchResult
+}
+
+func (b cappedSearchBackend) Upsert(_ context.Context, record domainsemantic.AdvancedEmbeddingRecord) (domainsemantic.AdvancedEmbeddingRecord, error) {
+	return record, nil
+}
+
+func (b cappedSearchBackend) Search(_ context.Context, in vectorstore.SearchInput) ([]vectorstore.SearchResult, error) {
+	limit := in.Limit
+	if limit > len(b.results) {
+		limit = len(b.results)
+	}
+	return append([]vectorstore.SearchResult(nil), b.results[:limit]...), nil
+}
+
+func (b cappedSearchBackend) Delete(_ context.Context, _ vectorstore.DeleteInput) (domainsemantic.AdvancedEmbeddingRecord, error) {
+	return domainsemantic.AdvancedEmbeddingRecord{}, nil
+}
+
+func (b cappedSearchBackend) VerifyDeleted(_ context.Context, _ vectorstore.VerifyDeletedInput) (bool, error) {
+	return true, nil
 }
 
 type fakeSearchConnector struct {

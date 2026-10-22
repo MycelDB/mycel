@@ -142,6 +142,9 @@ func (m *recordingMaintenanceManager) UpsertDirtyWorkItem(_ context.Context, ite
 func (m *recordingMaintenanceManager) ListDirtyWorkItems(context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error) {
 	return nil, nil
 }
+func (m *recordingMaintenanceManager) CompactHistory(context.Context, storesemantic.CompactHistoryInput) error {
+	return nil
+}
 func (m *recordingMaintenanceManager) ClaimReadyWork(context.Context, storesemantic.ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {
 	return nil, nil
 }

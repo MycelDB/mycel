@@ -152,13 +152,7 @@ func validateSelector(out resultAppend, selector SemanticTargetSelector) {
 			out.err("selector", "explicit_nodes selector must not set labels, gql, or target_alias")
 		}
 	case SemanticTargetSelectorGQL:
-		if strings.TrimSpace(selector.TargetAlias) == "" {
-			out.err("selector.target_alias", "gql selector requires target_alias")
-		}
-		validateBoundedGQL(out, "selector.gql", selector.GQL, selector.TargetAlias, selector.MaxResults)
-		if len(selector.Labels) > 0 || len(selector.NodeIDs) > 0 {
-			out.err("selector", "gql selector must not set labels or node_ids")
-		}
+		out.err("selector.mode", "gql selector execution is not supported")
 	case "":
 		out.err("selector.mode", "selector mode is required")
 	default:
@@ -189,7 +183,7 @@ func validateSource(out resultAppend, source SemanticSourceAssemblyPolicy) {
 			out.err("source.context_gql", "context_gql requires context_query source mode")
 		}
 	case SemanticSourceContextQuery:
-		validateBoundedGQL(out, "source.context_gql", source.ContextGQL, "", 0)
+		out.err("source.mode", "context_query source execution is not supported")
 	case "":
 		out.err("source.mode", "source mode is required")
 	default:

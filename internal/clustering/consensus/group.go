@@ -18,6 +18,23 @@ type NodeID uint64
 var ErrNoLeader = errors.New("raft group has no leader")
 var ErrNotLeader = errors.New("raft group local node is not leader")
 
+type FatalApplyError struct{ Err error }
+
+func (e *FatalApplyError) Error() string { return "fatal raft state-machine apply: " + e.Err.Error() }
+func (e *FatalApplyError) Unwrap() error { return e.Err }
+
+func NewFatalApplyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &FatalApplyError{Err: err}
+}
+
+func IsFatalApplyError(err error) bool {
+	var target *FatalApplyError
+	return errors.As(err, &target)
+}
+
 const slowRaftReadApplyWait = 100 * time.Millisecond
 
 type ProposalResult struct {
@@ -240,7 +257,7 @@ func restoreSnapshotAndReplayCommittedEntries(ctx context.Context, storage raftS
 			if err := cmd.Validate(partitionCount); err != nil {
 				return applied, err
 			}
-			if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term, Replay: true}, cmd); err != nil {
+			if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term, Replay: true}, cmd); IsFatalApplyError(err) {
 				return applied, err
 			}
 		}
@@ -649,13 +666,15 @@ func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, e
 	}
 	g.proposalTimings[cmd.CommandID] = timing
 	g.mu.Unlock()
-	timing.WaiterRegister = time.Since(stepStart)
+	waiterRegister := time.Since(stepStart)
+	g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.WaiterRegister = waiterRegister })
 	stepStart = time.Now()
 	if err := g.node.Propose(ctx, data); err != nil {
 		g.forgetWaiter(cmd.CommandID, proposalOutcome{err: err})
 		return ProposalResult{}, err
 	}
-	timing.NodePropose = time.Since(stepStart)
+	nodePropose := time.Since(stepStart)
+	g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.NodePropose = nodePropose })
 	waitStart := time.Now()
 	select {
 	case out := <-ch:
@@ -741,7 +760,10 @@ func (g *Group) processReady(rd raft.Ready) bool {
 		})
 	}
 	for _, entry := range rd.CommittedEntries {
-		g.applyEntry(entry)
+		if err := g.applyEntry(entry); err != nil {
+			g.failWaiters(err)
+			return false
+		}
 	}
 	for _, readState := range rd.ReadStates {
 		g.completeReadWaiter(string(readState.RequestCtx), readIndexOutcome{result: ReadBarrierResult{Index: readState.Index, Term: g.currentTerm()}})
@@ -789,40 +811,37 @@ func (g *Group) recordProposalTiming(commandID string, fn func(*ProposalTiming))
 	}
 }
 
-func (g *Group) applyEntry(entry raftpb.Entry) {
+func (g *Group) applyEntry(entry raftpb.Entry) error {
 	if g.alreadyApplied(entry.Index) {
-		return
+		return nil
 	}
 	if entry.Type == raftpb.EntryConfChange || entry.Type == raftpb.EntryConfChangeV2 {
 		var cc raftpb.ConfChangeI
 		if entry.Type == raftpb.EntryConfChange {
 			var v1 raftpb.ConfChange
 			if err := v1.Unmarshal(entry.Data); err != nil {
-				g.failWaiters(fmt.Errorf("decode raft conf change: %w", err))
-				return
+				return fmt.Errorf("decode raft conf change: %w", err)
 			}
 			cc = v1
 		} else {
 			var v2 raftpb.ConfChangeV2
 			if err := v2.Unmarshal(entry.Data); err != nil {
-				g.failWaiters(fmt.Errorf("decode raft conf change v2: %w", err))
-				return
+				return fmt.Errorf("decode raft conf change v2: %w", err)
 			}
 			cc = v2
 		}
 		cs := g.node.ApplyConfChange(cc)
 		if store, ok := g.storage.(interface{ SetConfState(raftpb.ConfState) error }); ok {
 			if err := store.SetConfState(*cs); err != nil {
-				g.failWaiters(fmt.Errorf("persist raft conf state: %w", err))
-				return
+				return fmt.Errorf("persist raft conf state: %w", err)
 			}
 		}
 		g.markApplied(entry.Index)
-		return
+		return nil
 	}
 	if entry.Type != raftpb.EntryNormal || len(entry.Data) == 0 {
 		g.markApplied(entry.Index)
-		return
+		return nil
 	}
 	cmd, err := DecodeCommand(entry.Data)
 	var applyDuration time.Duration
@@ -832,13 +851,17 @@ func (g *Group) applyEntry(entry raftpb.Entry) {
 		applyDuration = time.Since(stepStart)
 		g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.StateMachineApply = applyDuration })
 	}
-	g.markApplied(entry.Index)
 	if err != nil {
 		g.failReadWaiters(err)
 	}
 	if cmd.CommandID != "" {
 		g.completeWaiter(cmd.CommandID, proposalOutcome{result: ProposalResult{Index: entry.Index, Term: entry.Term}, err: err})
 	}
+	if IsFatalApplyError(err) {
+		return err
+	}
+	g.markApplied(entry.Index)
+	return nil
 }
 
 func (g *Group) alreadyApplied(index uint64) bool {

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -11,6 +12,25 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+func TestTokenManagerDerivesStablePurposeSeparatedKeys(t *testing.T) {
+	secret := []byte("01234567890123456789012345678901")
+	first, err := NewTokenManager(secret, time.Minute).DeriveKey("semantic-cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewTokenManager(secret, time.Hour).DeriveKey("semantic-cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewTokenManager(secret, time.Minute).DeriveKey("other-purpose")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) || bytes.Equal(first, other) {
+		t.Fatal("derived keys were not stable and purpose-separated")
+	}
+}
 
 func TestTokenManagerIssueVerify(t *testing.T) {
 	mgr := NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute)

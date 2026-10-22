@@ -34,8 +34,24 @@ func TestGlobalManagerRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert secret: %v", err)
 	}
-	if _, err := mgr.UpsertCredential(ctx, domaininference.Credential{Key: "openai-prod", EndpointID: endpoint.ID, OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "daemon", AuthType: domaininference.CredentialAuthBearer, SecretID: secret.ID, Status: domaininference.CredentialStatusActive}); err != nil {
+	credential, err := mgr.UpsertCredential(ctx, domaininference.Credential{Key: "openai-prod", EndpointID: endpoint.ID, OwnerType: domaininference.CredentialOwnerSystem, OwnerID: "daemon", AuthType: domaininference.CredentialAuthBearer, SecretID: secret.ID, Status: domaininference.CredentialStatusActive})
+	if err != nil {
 		t.Fatalf("upsert credential: %v", err)
+	}
+	if err := mgr.DeleteSecret(ctx, secret.ID); err == nil {
+		t.Fatal("DeleteSecret() error=nil while credential still references secret")
+	}
+	if err := mgr.DeleteCredential(ctx, credential.ID); err != nil {
+		t.Fatalf("delete credential: %v", err)
+	}
+	if err := mgr.DeleteSecret(ctx, secret.ID); err != nil {
+		t.Fatalf("delete unreferenced secret: %v", err)
+	}
+	if _, err := mgr.UpsertSecret(ctx, secret); err != nil {
+		t.Fatalf("restore secret for round trip: %v", err)
+	}
+	if _, err := mgr.UpsertCredential(ctx, credential); err != nil {
+		t.Fatalf("restore credential for round trip: %v", err)
 	}
 
 	reloaded := NewGlobalManager()

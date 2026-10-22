@@ -9,6 +9,24 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
+func TestSemanticRecordConfigurationHashBindsConcreteRouteAndCompatibleFields(t *testing.T) {
+	rule := SemanticGenerationRule{ID: uuid.New(), SpaceID: uuid.New(), DomainID: uuid.New(), Key: "rule", DisplayName: "display-a", Selector: SemanticTargetSelector{Mode: SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: SemanticSourceAssemblyPolicy{Mode: SemanticSourceSelf, IncludeProperties: []string{"text"}}, Embeddings: []SemanticEmbeddingBinding{{Key: "search", IntelligenceProfileID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}}, Storage: DefaultSemanticStoragePolicy()}
+	binding := rule.Embeddings[0]
+	endpointID, modelID, capabilityID := ModelEndpointID(uuid.New()), InferenceModelID(uuid.New()), ModelEndpointCapabilityID(uuid.New())
+	baseline := SemanticRecordConfigurationHash(rule, binding, endpointID, modelID, capabilityID, "fixture/8", 8)
+	compatible := rule
+	compatible.DisplayName = "display-b"
+	if got := SemanticRecordConfigurationHash(compatible, binding, endpointID, modelID, capabilityID, "fixture/8", 8); got != baseline {
+		t.Fatalf("display-only update rotated configuration hash: %q != %q", got, baseline)
+	}
+	if got := SemanticRecordConfigurationHash(rule, binding, endpointID, InferenceModelID(uuid.New()), capabilityID, "fixture/8", 8); got == baseline {
+		t.Fatal("model route change did not rotate configuration hash")
+	}
+	if got := SemanticRecordConfigurationHash(rule, binding, endpointID, modelID, capabilityID, "fixture/16", 16); got == baseline {
+		t.Fatal("vector-space/dimension change did not rotate configuration hash")
+	}
+}
+
 func TestNormalizeSemanticTriggerPolicyDefaultsToChanged(t *testing.T) {
 	got := NormalizeSemanticTriggerPolicy(SemanticTriggerPolicy{})
 	if len(got.Events) != 1 || got.Events[0] != DefaultSemanticTriggerEventChanged {
