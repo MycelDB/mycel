@@ -90,6 +90,7 @@ type Manager interface {
 	AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (semanticmaintenance.AnalyzeResult, error)
 	ProcessDirtyWork(ctx context.Context, in ProcessInput) (semanticmaintenance.WorkerResult, error)
 	BackfillIndex(ctx context.Context, in semanticbackfill.Input) (semanticbackfill.Result, error)
+	// ListRules returns every rule in the domain, including disabled rules; API callers apply search eligibility.
 	ListRules(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticGenerationRule, error)
 	ListIndexes(ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID) ([]domainsemantic.SemanticIndex, error) // transitional until API/search are rule-native
 	Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error)

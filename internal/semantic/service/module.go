@@ -804,7 +804,7 @@ func (m *Module) ListRules(ctx context.Context, spaceID domainspace.SpaceID, dom
 	}
 	out := make([]domainsemantic.SemanticGenerationRule, 0, len(rules))
 	for _, rule := range rules {
-		if rule.SpaceID == spaceID && rule.DomainID == domainID && rule.Enabled {
+		if rule.SpaceID == spaceID && rule.DomainID == domainID {
 			out = append(out, rule)
 		}
 	}

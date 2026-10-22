@@ -359,6 +359,31 @@ func TestApplyMaintenanceMutationUpsertBatch(t *testing.T) {
 	}
 }
 
+func TestListRulesIncludesDisabledRulesForClientPreconditionMapping(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	mgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "disabled-rule", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := module.ListRules(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].ID != ruleID || rules[0].Enabled {
+		t.Fatalf("ListRules()=%+v, want disabled rule", rules)
+	}
+}
+
 func TestBackfillIndexRejectsSemanticDisabledDomain(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
