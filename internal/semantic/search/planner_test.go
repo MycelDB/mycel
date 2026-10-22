@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,8 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 		t.Fatalf("upsert vector failed: %v", err)
 	}
 
+	var stages []string
+	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
 	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "focus notes", Limit: 10, ActorPrincipalID: env.userID})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
@@ -41,6 +44,11 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	}
 	if len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "focus notes") {
 		t.Fatalf("expected one query embedding call, calls=%+v", env.connector.calls)
+	}
+	for _, want := range []string{"load-global-definitions", "select-rule-bindings", "embed-query", "search-vector-index", "merge-rank-results", "complete"} {
+		if !slices.Contains(stages, want) {
+			t.Fatalf("search stages=%v, missing %q", stages, want)
+		}
 	}
 	warnings := strings.Join(result.Warnings, "\n")
 	if !strings.Contains(warnings, "missing-store") || !strings.Contains(warnings, "enabled vector store not found") {

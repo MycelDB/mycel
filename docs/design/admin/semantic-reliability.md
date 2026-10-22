@@ -60,4 +60,4 @@ Continuation tokens are opaque and integrity protected. They bind principal, nor
 
 ## Confidentiality
 
-Public provenance excludes credentials, raw vectors, projected text, provider bodies, and source-content digests. `opaque_source_version` is the authorization-scoped record identity, not a digest of low-entropy source text. Filter diagnostics count only authorized candidates. Admin maintenance failures and per-node backfill diagnostics are mapped to bounded semantic categories before crossing the API boundary.
+Public provenance excludes credentials, raw vectors, projected text, provider bodies, and source-content digests. `opaque_source_version` is the authorization-scoped record identity, not a digest of low-entropy source text. Filter diagnostics count only authorized candidates. Admin maintenance failures and per-node backfill diagnostics are mapped to bounded semantic categories before crossing the API boundary. Canceled or deadline-expired semantic searches emit only a fixed request or execution stage, bounded duration, and failure class; diagnostics exclude query text, resource and principal identities, provider data, credentials, and raw errors.

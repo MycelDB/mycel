@@ -243,7 +243,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if deriveErr != nil {
 		return nil, fmt.Errorf("derive semantic cursor integrity key: %w", deriveErr)
 	}
-	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager, semanticCursorKey))
+	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager, semanticCursorKey).WithLogger(cfg.Logger))
 	graphChangeAPI := clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager)
 	if checker, ok := cfg.GraphManager.(clientapi.TransactionGraphWriteLeaderChecker); ok {
 		graphChangeAPI.WithGraphWriteLeaderChecker(checker)

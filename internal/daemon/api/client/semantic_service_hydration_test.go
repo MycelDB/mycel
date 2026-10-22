@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphsvc "github.com/myceldb/mycel/internal/graph/service"
 	hybridsearch "github.com/myceldb/mycel/internal/search/hybrid"
@@ -19,6 +21,23 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestSemanticSearchCancellationDiagnosticUsesBoundedStage(t *testing.T) {
+	var logs bytes.Buffer
+	service := NewSemanticService(nil, nil, nil).WithLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = service.SemanticSearch(ctx, &clientv1.SemanticSearchRequest{})
+	got := logs.String()
+	if !strings.Contains(got, "semantic search request canceled") || !strings.Contains(got, "stage=authorize-domain") || !strings.Contains(got, "failure_class=canceled") {
+		t.Fatalf("cancellation diagnostic = %q", got)
+	}
+	for _, forbidden := range []string{"space_id", "domain_id", "query", "principal"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("cancellation diagnostic contains forbidden field %q: %s", forbidden, got)
+		}
+	}
+}
 
 func TestSemanticCandidateBoundFailsClosedForTruncatedFilteredScan(t *testing.T) {
 	err := semanticCandidateBoundError(true, semanticsearch.Result{CandidateScanTruncated: true}, 0)

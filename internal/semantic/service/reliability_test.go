@@ -22,6 +22,24 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func TestSemanticSearchCancellationDiagnosticUsesBoundedStage(t *testing.T) {
+	var logs bytes.Buffer
+	module := NewModule()
+	module.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	module.logCanceledSemanticSearch(ctx, "forward-to-leader", time.Now().Add(-2*time.Second))
+	got := logs.String()
+	if !strings.Contains(got, "semantic search canceled") || !strings.Contains(got, "stage=forward-to-leader") || !strings.Contains(got, "failure_class=deadline_exceeded") {
+		t.Fatalf("semantic search diagnostic = %q", got)
+	}
+	for _, forbidden := range []string{"space_id", "rule_id", "query", "provider"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("semantic search diagnostic contains forbidden field %q: %s", forbidden, got)
+		}
+	}
+}
+
 func TestRuleScopedPublicationFencesDoNotSerializeIndependentRules(t *testing.T) {
 	module := NewModule()
 	spaceID := domainspace.SpaceID(uuid.New())
