@@ -1434,7 +1434,8 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
-	if err := m.validateLocalProjectionForSearch(ctx, in); err != nil {
+	projectionSnapshot, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, true, nil)
+	if err != nil {
 		return semanticsearch.Result{}, err
 	}
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
@@ -1446,6 +1447,20 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	result, err := planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
 	if err != nil {
 		return result, err
+	}
+	if projectionSnapshot != nil {
+		searchedBindings := make(map[semanticProjectionBindingKey]semanticProjectionObservation, len(result.ProjectionSearchBindings))
+		for _, binding := range result.ProjectionSearchBindings {
+			key := semanticProjectionBindingKey{ruleID: binding.SemanticRuleID, bindingKey: binding.EmbeddingBindingKey}
+			observed, ok := projectionSnapshot[key]
+			if !ok {
+				return semanticsearch.Result{}, fmt.Errorf("semantic projection for rule %s binding %q changed provenance while searching", binding.SemanticRuleID, binding.EmbeddingBindingKey)
+			}
+			searchedBindings[key] = observed
+		}
+		if _, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, false, searchedBindings); err != nil {
+			return semanticsearch.Result{}, err
+		}
 	}
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return semanticsearch.Result{}, err

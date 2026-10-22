@@ -132,30 +132,47 @@ func (m *Module) advanceProjectionLeases(ctx context.Context, spaceID domainspac
 	return m.saveProjectionLeasesLocked(spaceID, state)
 }
 
+type semanticProjectionBindingKey struct {
+	ruleID     domainsemantic.SemanticRuleID
+	bindingKey string
+}
+
+type semanticProjectionObservation struct {
+	generation   uint64
+	rebuildEpoch string
+	freshThrough uint64
+}
+
 func (m *Module) validateLocalProjectionForSearch(ctx context.Context, in SearchInput) error {
+	_, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, false, nil)
+	return err
+}
+
+func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Context, in SearchInput, allowAllRebuildBlocked bool, searchedBindings map[semanticProjectionBindingKey]semanticProjectionObservation) (map[semanticProjectionBindingKey]semanticProjectionObservation, error) {
 	leader, term, clustered, err := m.currentSemanticOperationLeadership(in.SpaceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !clustered {
-		return nil
+		return nil, nil
 	}
+	observations := map[semanticProjectionBindingKey]semanticProjectionObservation{}
 	if leader == 0 || leader != m.raftLocalNode {
-		return fmt.Errorf("semantic projection is unavailable without local partition leadership")
+		return nil, fmt.Errorf("semantic projection is unavailable without local partition leadership")
 	}
 	m.projectionLeasesMu.Lock()
 	state, err := m.loadProjectionLeasesLocked(in.SpaceID)
 	m.projectionLeasesMu.Unlock()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rules, err := mgr.ListSemanticRules(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	wantedRules := make(map[domainsemantic.SemanticRuleID]bool)
 	for _, id := range in.SemanticRuleIDs {
@@ -166,6 +183,7 @@ func (m *Module) validateLocalProjectionForSearch(ctx context.Context, in Search
 	}
 	wantedBinding := strings.ToLower(strings.TrimSpace(in.EmbeddingBindingKey))
 	purpose := domainsemantic.NormalizeSemanticIndexPurpose("")
+	validatedSearchBindings := make(map[semanticProjectionBindingKey]bool, len(searchedBindings))
 	for _, rule := range rules {
 		if !rule.Enabled || rule.SpaceID != in.SpaceID || rule.DomainID != in.DomainID || (len(wantedRules) > 0 && !wantedRules[rule.ID]) {
 			continue
@@ -177,7 +195,33 @@ func (m *Module) validateLocalProjectionForSearch(ctx context.Context, in Search
 			}
 			status, statusErr := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key})
 			if statusErr != nil {
-				return statusErr
+				return nil, statusErr
+			}
+			key := semanticProjectionBindingKey{ruleID: rule.ID, bindingKey: binding.Key}
+			// The planner returns no records while a rebuild is required, running, or
+			// failed. A projection lease is unnecessary only when this binding took
+			// that fail-closed path and this leader/term already owned its preceding
+			// projection. A promoted node without a local baseline must still fail.
+			switch status.Rebuild.RebuildState {
+			case "required", "running", "failed":
+				ownedPrecedingProjection := false
+				for _, entry := range state.Entries {
+					if entry.SemanticRuleID == rule.ID && entry.EmbeddingBindingKey == binding.Key && entry.LeaderNode == uint64(leader) && entry.LeaderTerm == term {
+						ownedPrecedingProjection = true
+						break
+					}
+				}
+				_, searched := searchedBindings[key]
+				if ownedPrecedingProjection && (allowAllRebuildBlocked || (searchedBindings != nil && !searched)) {
+					continue
+				}
+				if ownedPrecedingProjection {
+					return nil, fmt.Errorf("semantic projection for rule %s binding %q changed rebuild state while searching", rule.ID, binding.Key)
+				}
+			}
+			current := semanticProjectionObservation{generation: status.SemanticGeneration, rebuildEpoch: status.Rebuild.RebuildEpoch, freshThrough: status.FreshThroughGraphRevision}
+			if observed, searched := searchedBindings[key]; searched && observed != current {
+				return nil, fmt.Errorf("semantic projection for rule %s binding %q changed provenance while searching", rule.ID, binding.Key)
 			}
 			ready := false
 			for _, entry := range state.Entries {
@@ -187,9 +231,18 @@ func (m *Module) validateLocalProjectionForSearch(ctx context.Context, in Search
 				}
 			}
 			if !ready {
-				return fmt.Errorf("semantic projection for rule %s binding %q is not ready for leader %d term %d", rule.ID, binding.Key, leader, term)
+				return nil, fmt.Errorf("semantic projection for rule %s binding %q is not ready for leader %d term %d", rule.ID, binding.Key, leader, term)
+			}
+			observations[key] = current
+			if _, searched := searchedBindings[key]; searched {
+				validatedSearchBindings[key] = true
 			}
 		}
 	}
-	return nil
+	for key := range searchedBindings {
+		if !validatedSearchBindings[key] {
+			return nil, fmt.Errorf("semantic projection for rule %s binding %q changed eligibility while searching", key.ruleID, key.bindingKey)
+		}
+	}
+	return observations, nil
 }

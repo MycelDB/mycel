@@ -73,9 +73,95 @@ func TestSemanticProjectionLeaseFailsClosedAcrossLeadershipTerms(t *testing.T) {
 	if err := module.validateLocalProjectionForSearch(ctx, search); err != nil {
 		t.Fatalf("advanced projection readiness rejected: %v", err)
 	}
+	snapshot, err := module.validateLocalProjectionForSearchWithRebuildBlock(ctx, search, true, nil)
+	if err != nil {
+		t.Fatalf("advanced projection snapshot rejected: %v", err)
+	}
+	key := semanticProjectionBindingKey{ruleID: ruleID, bindingKey: "search"}
+	if snapshot[key].freshThrough != 6 {
+		t.Fatalf("advanced projection snapshot freshness=%d, want authoritative checkpoint 6", snapshot[key].freshThrough)
+	}
+	if _, err := module.validateLocalProjectionForSearchWithRebuildBlock(ctx, search, false, snapshot); err != nil {
+		t.Fatalf("unchanged advanced projection failed post-search validation: %v", err)
+	}
 	term.Store(8)
 	if _, err := module.Search(ctx, search); err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("stale-term search error=%v, want fail-closed readiness error", err)
+	}
+}
+
+func TestSemanticProjectionLeaseAllowsFailClosedEmptySearchWhileRebuildBlocksResults(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	store, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: domainsemantic.VectorStoreID(uuid.New()), Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeID := store.ID
+	mgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}}
+	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	reliability := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: "search", SemanticGeneration: 2, RebuildState: "required"}
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": reliability}}); err != nil {
+		t.Fatal(err)
+	}
+	module.raftLocalNode = 1
+	module.semanticLeadershipProbe = func(domainspace.SpaceID) (consensus.NodeID, uint64, bool, error) { return 1, 7, true, nil }
+	leasedCtx, err := module.bindSemanticOperationLeadership(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.saveProjectionLease(leasedCtx, spaceID, ruleID, "search", 1, "", 8); err != nil {
+		t.Fatal(err)
+	}
+	search := SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: "query", Limit: 3}
+	if _, err := module.validateLocalProjectionForSearchWithRebuildBlock(ctx, search, true, nil); err != nil {
+		t.Fatalf("rebuild-blocked empty search required a projection lease: %v", err)
+	}
+	searched := map[semanticProjectionBindingKey]semanticProjectionObservation{{ruleID: ruleID, bindingKey: "search"}: {generation: 1, freshThrough: 8}}
+	if _, err := module.validateLocalProjectionForSearchWithRebuildBlock(ctx, search, false, searched); err == nil || !strings.Contains(err.Error(), "changed rebuild state") {
+		t.Fatalf("searched projection did not reject concurrent rebuild state: %v", err)
+	}
+	result, err := module.Search(ctx, search)
+	if err != nil || len(result.Results) != 0 || len(result.Warnings) == 0 {
+		t.Fatalf("rebuild-blocked search result=%+v err=%v, want empty warning result", result, err)
+	}
+	reliability.RebuildState = "completed"
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": reliability}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := module.validateLocalProjectionForSearch(ctx, search); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("servable projection without lease error=%v, want readiness rejection", err)
+	}
+	reliability.RebuildEpoch = "epoch-b"
+	reliability.FreshThrough = 9
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": reliability}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := module.saveProjectionLease(leasedCtx, spaceID, ruleID, "search", 2, "epoch-b", 9); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.validateLocalProjectionForSearchWithRebuildBlock(ctx, search, false, searched); err == nil || !strings.Contains(err.Error(), "changed provenance") {
+		t.Fatalf("completed projection ABA error=%v, want provenance rejection", err)
+	}
+	searchedB := map[semanticProjectionBindingKey]semanticProjectionObservation{{ruleID: ruleID, bindingKey: "search"}: {generation: 2, rebuildEpoch: "epoch-b", freshThrough: 9}}
+	rule.Enabled = false
+	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.validateLocalProjectionForSearchWithRebuildBlock(ctx, search, false, searchedB); err == nil || !strings.Contains(err.Error(), "changed eligibility") {
+		t.Fatalf("disabled searched binding error=%v, want eligibility rejection", err)
 	}
 }
 

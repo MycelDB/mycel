@@ -38,11 +38,17 @@ type Input struct {
 }
 
 type Result struct {
-	Results                []SearchResult `json:"results"`
-	CandidateScanTruncated bool           `json:"candidate_scan_truncated,omitempty"`
-	Warnings               []string       `json:"warnings,omitempty"`
-	WarningDetails         []Warning      `json:"warning_details,omitempty"`
-	Groups                 []GroupSummary `json:"groups,omitempty"`
+	Results                  []SearchResult            `json:"results"`
+	CandidateScanTruncated   bool                      `json:"candidate_scan_truncated,omitempty"`
+	Warnings                 []string                  `json:"warnings,omitempty"`
+	WarningDetails           []Warning                 `json:"warning_details,omitempty"`
+	Groups                   []GroupSummary            `json:"groups,omitempty"`
+	ProjectionSearchBindings []ProjectionSearchBinding `json:"-"`
+}
+
+type ProjectionSearchBinding struct {
+	SemanticRuleID      domainsemantic.SemanticRuleID
+	EmbeddingBindingKey string
 }
 
 type Warning struct {

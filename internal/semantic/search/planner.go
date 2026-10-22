@@ -71,6 +71,7 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
+		res.ProjectionSearchBindings = append(res.ProjectionSearchBindings, ProjectionSearchBinding{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key})
 		vectorSpaceKey := vectorSpaceForModel(query.ModelID, models)
 		results, err := p.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: item.rule.SpaceID, DomainID: item.rule.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), VectorStoreID: item.vectorStore.ID, VectorSpaceKey: vectorSpaceKey, Query: query.Vector, Limit: perBindingScanLimit, MinScore: in.MinScore})
 		if err != nil {

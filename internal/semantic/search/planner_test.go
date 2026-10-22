@@ -36,6 +36,9 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	if len(result.Results) != 1 || result.Results[0].SemanticRuleID != allowed.ID || result.Results[0].EmbeddingBindingKey != "search" || result.Results[0].CredentialGrantID != grantID {
 		t.Fatalf("expected profiled rule/binding result with record grant provenance, got %+v", result)
 	}
+	if len(result.ProjectionSearchBindings) != 1 || result.ProjectionSearchBindings[0].SemanticRuleID != allowed.ID || result.ProjectionSearchBindings[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("searched projection binding evidence=%+v, want allowed/search", result.ProjectionSearchBindings)
+	}
 	if len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "focus notes") {
 		t.Fatalf("expected one query embedding call, calls=%+v", env.connector.calls)
 	}
@@ -115,6 +118,9 @@ func TestPlannerSkipsBindingWhenProfileResolutionFails(t *testing.T) {
 	if len(result.Results) != 1 || result.Results[0].EmbeddingBindingKey != "search" {
 		t.Fatalf("expected only allowed binding result, got %+v", result.Results)
 	}
+	if len(result.ProjectionSearchBindings) != 1 || result.ProjectionSearchBindings[0].SemanticRuleID != rule.ID || result.ProjectionSearchBindings[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("projection search bindings=%+v, want only successful search binding", result.ProjectionSearchBindings)
+	}
 	warnings := strings.Join(result.Warnings, "\n")
 	if !strings.Contains(warnings, "embedding_failed") || strings.Contains(warnings, "policy denies semantic binding") {
 		t.Fatalf("expected sanitized binding warning, got %+v", result.Warnings)
@@ -157,6 +163,9 @@ func TestPlannerRejectsBindingThatRequiresRebuild(t *testing.T) {
 	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
 	if err != nil || len(result.Results) != 0 {
 		t.Fatalf("expected rebuild-required binding to return no records, result=%+v err=%v", result, err)
+	}
+	if len(result.ProjectionSearchBindings) != 0 {
+		t.Fatalf("rebuild-blocked binding unexpectedly searched projection: %+v", result.ProjectionSearchBindings)
 	}
 	if !strings.Contains(strings.Join(result.Warnings, "\n"), "requires rebuild") {
 		t.Fatalf("expected rebuild warning, got %+v", result.Warnings)
