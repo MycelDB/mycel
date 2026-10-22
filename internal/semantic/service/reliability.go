@@ -753,6 +753,9 @@ func (m *Module) completeSemanticBackfillBaseline(ctx context.Context, in semant
 	if status.Rebuild.RebuildState == "running" {
 		return fmt.Errorf("semantic rebuild is already running")
 	}
+	if status.SemanticGeneration != in.SemanticGeneration || status.Rebuild.RebuildEpoch != in.RebuildEpoch {
+		return fmt.Errorf("stale semantic generation completion rejected")
+	}
 	if in.SourceGraphRevision < status.LatestObservedGraphRevision {
 		return fmt.Errorf("semantic backfill baseline revision %d is behind latest graph revision %d", in.SourceGraphRevision, status.LatestObservedGraphRevision)
 	}
@@ -773,7 +776,7 @@ func (m *Module) completeSemanticBackfillBaseline(ctx context.Context, in semant
 		completed.RebuildOwnerNode = uint64(leadership.NodeID)
 		completed.RebuildOwnerTerm = leadership.Term
 	}
-	return m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, status.SemanticGeneration, status.Rebuild.RebuildEpoch, status.Rebuild.RebuildState, func(current *domainsemantic.SemanticReliabilityState) { *current = completed })
+	return m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, in.SemanticGeneration, in.RebuildEpoch, status.Rebuild.RebuildState, func(current *domainsemantic.SemanticReliabilityState) { *current = completed })
 }
 
 func mergeBackfillResult(total *semanticbackfill.Result, page semanticbackfill.Result) {

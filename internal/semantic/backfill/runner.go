@@ -171,7 +171,12 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 	for _, binding := range bindings {
 		vectorStoreID, err := r.resolveBindingVectorStore(ctx, binding)
 		if err != nil {
-			result.FailedCount += len(selected)
+			bindingFailures := len(selected)
+			if bindingFailures == 0 {
+				bindingFailures = 1
+				result.Failures = append(result.Failures, Failure{Error: err.Error()})
+			}
+			result.FailedCount += bindingFailures
 			for _, root := range selected {
 				result.Failures = append(result.Failures, Failure{NodeID: root.ID, Error: err.Error()})
 			}

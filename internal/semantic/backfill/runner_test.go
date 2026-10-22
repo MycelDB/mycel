@@ -93,6 +93,22 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsBindingFailureForEmptyReconciliationCorpus(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	ruleID := domainsemantic.SemanticRuleID(env.index.ID)
+	if _, err := env.spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: env.spaceID, DomainID: env.domainID, Key: "empty-resolution-failure", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStore: "missing-store", Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", Force: true, Reconcile: true, ContinueOnError: true})
+	if err != nil {
+		t.Fatalf("empty reconciliation returned error with continue_on_error: %v", err)
+	}
+	if result.SelectedCount != 0 || result.TotalSelectedCount != 0 || result.FailedCount != 1 || len(result.Failures) != 1 {
+		t.Fatalf("empty binding resolution failure was not recorded: %+v", result)
+	}
+}
+
 func TestRunnerTombstonesCurrentVectorWhenSourceBecomesEmpty(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)

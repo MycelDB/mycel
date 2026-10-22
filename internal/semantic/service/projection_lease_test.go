@@ -154,6 +154,28 @@ func TestForcedBackfillRequiresReconciliationAndResolvesCurrentProvenanceForProj
 	if status.Rebuild.RebuildState != "completed" || status.Rebuild.RebuildOwnerNode != 1 || status.Rebuild.RebuildOwnerTerm != 7 || status.SemanticGeneration != 3 {
 		t.Fatalf("forced baseline did not complete current reliability provenance: %+v", status.Rebuild)
 	}
+	rotated := status.Rebuild
+	rotated.SemanticGeneration = 4
+	rotated.RebuildEpoch = ""
+	rotated.RebuildState = "required"
+	rotated.RebuildErrorSanitized = "configuration changed"
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": rotated}}); err != nil {
+		t.Fatal(err)
+	}
+	boundCtx, err := module.bindSemanticOperationLeadership(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.completeSemanticBackfillBaseline(boundCtx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticGeneration: 3, RebuildEpoch: "epoch-3", SourceGraphRevision: 5}); err == nil || !strings.Contains(err.Error(), "stale semantic generation") {
+		t.Fatalf("stale completion after configuration rotation error=%v", err)
+	}
+	status, err = module.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.SemanticGeneration != 4 || status.Rebuild.RebuildState != "required" {
+		t.Fatalf("stale completion overwrote rotated reliability state: %+v", status.Rebuild)
+	}
 }
 
 func TestSemanticProjectionLeaseRequiresLocalBaselineOnPromotedNode(t *testing.T) {
