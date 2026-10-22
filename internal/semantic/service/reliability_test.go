@@ -22,13 +22,14 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-func TestSemanticSearchCancellationDiagnosticUsesBoundedStage(t *testing.T) {
+func TestSemanticSearchCancellationDiagnosticUsesBoundedStageWhileForwardRemainsBlocked(t *testing.T) {
 	var logs bytes.Buffer
 	module := NewModule()
 	module.logger = slog.New(slog.NewTextHandler(&logs, nil))
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	module.logCanceledSemanticSearch(ctx, "forward-to-leader", time.Now().Add(-2*time.Second))
+	trace, _ := module.beginSemanticSearchCancellationTrace(ctx, "forward-to-leader")
+	<-trace.done
 	got := logs.String()
 	if !strings.Contains(got, "semantic search canceled") || !strings.Contains(got, "stage=forward-to-leader") || !strings.Contains(got, "failure_class=deadline_exceeded") {
 		t.Fatalf("semantic search diagnostic = %q", got)

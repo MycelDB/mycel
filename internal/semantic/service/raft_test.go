@@ -1698,14 +1698,15 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 		if nodeID == followerID {
 			continue
 		}
+		query := fmt.Sprintf("query-from-node-%d", nodeID)
 		searchCtx, searchCancel := context.WithTimeout(ctx, 2*time.Second)
-		_, searchErr := module.Search(searchCtx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: "query", Limit: 1})
+		_, searchErr := module.Search(searchCtx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: query, Limit: 1})
 		searchCancel()
 		if searchErr != nil {
 			t.Fatalf("node %d did not route bounded search to recovered leader %d: %v", nodeID, followerID, searchErr)
 		}
 		request, ok := readers[followerID].lastRequest("search")
-		if !ok || request.Search.Text != "query" || request.SpaceID != spaceID {
+		if !ok || request.Search.Text != query || request.SpaceID != spaceID {
 			t.Fatalf("recovered leader %d did not receive search from node %d: %+v", followerID, nodeID, request)
 		}
 	}

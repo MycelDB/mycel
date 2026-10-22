@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
-	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphsvc "github.com/myceldb/mycel/internal/graph/service"
 	hybridsearch "github.com/myceldb/mycel/internal/search/hybrid"
@@ -22,14 +21,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestSemanticSearchCancellationDiagnosticUsesBoundedStage(t *testing.T) {
+func TestSemanticSearchCancellationDiagnosticUsesBoundedStageWhileRequestRemainsBlocked(t *testing.T) {
 	var logs bytes.Buffer
-	service := NewSemanticService(nil, nil, nil).WithLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	ctx, cancel := context.WithCancel(context.Background())
+	trace, _ := beginSemanticSearchCancellationTrace(ctx, logger, "authorize-domain", "semantic search request canceled")
+	trace.setStage("hydrate-graph-results")
 	cancel()
-	_, _ = service.SemanticSearch(ctx, &clientv1.SemanticSearchRequest{})
+	<-trace.done
 	got := logs.String()
-	if !strings.Contains(got, "semantic search request canceled") || !strings.Contains(got, "stage=authorize-domain") || !strings.Contains(got, "failure_class=canceled") {
+	if !strings.Contains(got, "semantic search request canceled") || !strings.Contains(got, "stage=hydrate-graph-results") || !strings.Contains(got, "failure_class=canceled") {
 		t.Fatalf("cancellation diagnostic = %q", got)
 	}
 	for _, forbidden := range []string{"space_id", "domain_id", "query", "principal"} {

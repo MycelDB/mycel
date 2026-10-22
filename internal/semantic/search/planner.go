@@ -71,6 +71,9 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		p.observeStage("embed-query")
 		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), ActorPrincipalID: in.ActorPrincipalID, OnBehalfOfPrincipalID: item.rule.OwnerPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return res, ctxErr
+			}
 			code := embeddingWarningCode(err)
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
@@ -80,6 +83,9 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		p.observeStage("search-vector-index")
 		results, err := p.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: item.rule.SpaceID, DomainID: item.rule.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), VectorStoreID: item.vectorStore.ID, VectorSpaceKey: vectorSpaceKey, Query: query.Vector, Limit: perBindingScanLimit, MinScore: in.MinScore})
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return res, ctxErr
+			}
 			code := searchIndexWarningCode(err)
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q search skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue

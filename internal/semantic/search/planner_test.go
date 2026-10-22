@@ -56,6 +56,38 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	}
 }
 
+func TestPlannerRetainsEmbeddingCancellationStage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	env := newSearchEnv(t)
+	env.addRule(t, "cancel-embedding", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	env.planner.Connector = cancelingSearchConnector{cancel: cancel}
+	var stages []string
+	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
+	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Search() error = %v, want context cancellation", err)
+	}
+	if got := stages[len(stages)-1]; got != "embed-query" {
+		t.Fatalf("last stage = %q, want embed-query (all=%v)", got, stages)
+	}
+}
+
+func TestPlannerRetainsVectorSearchCancellationStage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	env := newSearchEnv(t)
+	env.addRule(t, "cancel-vector", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	env.planner.VectorBackend = cancelingSearchBackend{cancel: cancel}
+	var stages []string
+	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
+	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Search() error = %v, want context cancellation", err)
+	}
+	if got := stages[len(stages)-1]; got != "search-vector-index" {
+		t.Fatalf("last stage = %q, want search-vector-index (all=%v)", got, stages)
+	}
+}
+
 func TestPlannerRejectsLegacyOrIncompatibleRecordConfiguration(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)
@@ -278,6 +310,36 @@ func (e *searchEnv) record(ruleID domainsemantic.SemanticRuleID, bindingKey stri
 		break
 	}
 	return domainsemantic.AdvancedEmbeddingRecord{SpaceID: e.spaceID, DomainID: e.domainID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), TargetNodeID: nodeID, NodeID: nodeID, SourceHash: "sha256:" + bindingKey, SemanticGeneration: 1, SemanticConfigurationHash: configurationHash, SourceMode: "self", ModelEndpointID: e.endpoint.ID, ModelID: e.model.ID, ModelEndpointCapabilityID: e.capability.ID, CredentialID: e.credential.ID, CredentialGrantID: grantID, VectorStoreID: e.vectorStore.ID, VectorSpaceKey: e.model.VectorSpaceKey, Dimensions: len(vector), Vector: vector, CreatedAt: time.Now().UTC()}
+}
+
+type cancelingSearchConnector struct {
+	cancel context.CancelFunc
+}
+
+func (c cancelingSearchConnector) Embed(context.Context, connectors.EmbedInput) (connectors.EmbeddingResponse, error) {
+	c.cancel()
+	return connectors.EmbeddingResponse{}, context.Canceled
+}
+
+type cancelingSearchBackend struct {
+	cancel context.CancelFunc
+}
+
+func (b cancelingSearchBackend) Upsert(_ context.Context, record domainsemantic.AdvancedEmbeddingRecord) (domainsemantic.AdvancedEmbeddingRecord, error) {
+	return record, nil
+}
+
+func (b cancelingSearchBackend) Search(context.Context, vectorstore.SearchInput) ([]vectorstore.SearchResult, error) {
+	b.cancel()
+	return nil, context.Canceled
+}
+
+func (b cancelingSearchBackend) Delete(context.Context, vectorstore.DeleteInput) (domainsemantic.AdvancedEmbeddingRecord, error) {
+	return domainsemantic.AdvancedEmbeddingRecord{}, nil
+}
+
+func (b cancelingSearchBackend) VerifyDeleted(context.Context, vectorstore.VerifyDeletedInput) (bool, error) {
+	return true, nil
 }
 
 type cappedSearchBackend struct {

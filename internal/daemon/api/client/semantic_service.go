@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -83,13 +84,8 @@ func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.L
 }
 
 func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.SemanticSearchRequest) (*clientv1.SemanticSearchResponse, error) {
-	started := time.Now()
-	stage := "authorize-domain"
-	defer func() {
-		if ctx.Err() != nil && s.logger != nil {
-			s.logger.Warn("semantic search request canceled", "stage", stage, "duration", time.Since(started).Round(time.Millisecond), "failure_class", semanticSearchCancellationClass(ctx.Err()))
-		}
-	}()
+	trace, stopTrace := beginSemanticSearchCancellationTrace(ctx, s.logger, "authorize-domain", "semantic search request canceled")
+	defer stopTrace()
 	principal, spaceID, domainID, err := s.authorizeDomainRead(ctx, req.GetSpaceId(), req.GetDomainId())
 	if err != nil {
 		return nil, err
@@ -114,7 +110,7 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if bindingKey != "" && strings.TrimSpace(req.GetSemanticRuleId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "embedding_binding_key requires semantic_rule_id")
 	}
-	stage = "resolve-rules"
+	trace.setStage("resolve-rules")
 	selectedRuleIDs, err := s.resolveSearchRules(ctx, spaceID, domainID, req.GetSemanticRuleId())
 	if err != nil {
 		return nil, err
@@ -123,12 +119,12 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err != nil {
 		return nil, err
 	}
-	stage = "read-graph-revision"
+	trace.setStage("read-graph-revision")
 	graphRevision, err := s.semanticGraphRevision(ctx, spaceID, domainID)
 	if err != nil {
 		return nil, mapSemanticError(err, "read semantic graph revision")
 	}
-	stage = "read-semantic-view"
+	trace.setStage("read-semantic-view")
 	semanticView, err := s.semanticViewFingerprint(ctx, spaceID, domainID, selectedRuleIDs, bindingKey)
 	if err != nil {
 		return nil, mapSemanticError(err, "read semantic index view")
@@ -151,13 +147,16 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if normalizedFilter != nil {
 		plannerMinScore = -math.MaxFloat64
 	}
-	stage = "execute-semantic-search"
+	trace.setStage("execute-semantic-search")
 	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: semanticMaxCandidateExamination, MinScore: plannerMinScore, ActorPrincipalID: actorID})
 	if err != nil {
 		return nil, mapSemanticError(err, "semantic search")
 	}
-	stage = "hydrate-graph-results"
+	trace.setStage("hydrate-graph-results")
 	nodeByID, warnings := s.loadSearchNodes(ctx, principal.PrincipalID, spaceID, domainID, result.Results)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	out := make([]*clientv1.SemanticSearchResult, 0, len(result.Results))
 	examinedAuthorizedCandidates := 0
 	eligibleCandidates := 0
@@ -180,7 +179,7 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err := semanticCandidateBoundError(normalizedFilter != nil, result, examinedAuthorizedCandidates); err != nil {
 		return nil, err
 	}
-	stage = "recheck-graph-revision"
+	trace.setStage("recheck-graph-revision")
 	finalGraphRevision, err := s.semanticGraphRevision(ctx, spaceID, domainID)
 	if err != nil {
 		return nil, mapSemanticError(err, "recheck semantic graph revision")
@@ -213,8 +212,52 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if normalizedFilter != nil {
 		filterMode = "authorized_candidate_post_filter"
 	}
-	stage = "complete"
+	trace.setStage("complete")
 	return &clientv1.SemanticSearchResponse{Results: page, Warnings: allWarnings, NextPageToken: nextPageToken, FilterExecutionMode: filterMode, ExaminedSemanticCandidates: int32(examinedAuthorizedCandidates), EligibleSemanticCandidates: int32(eligibleCandidates)}, nil
+}
+
+type semanticSearchCancellationTrace struct {
+	mu      sync.Mutex
+	once    sync.Once
+	logger  *slog.Logger
+	message string
+	stage   string
+	started time.Time
+	done    chan struct{}
+}
+
+func beginSemanticSearchCancellationTrace(ctx context.Context, logger *slog.Logger, stage, message string) (*semanticSearchCancellationTrace, func()) {
+	trace := &semanticSearchCancellationTrace{logger: logger, message: message, stage: stage, started: time.Now(), done: make(chan struct{})}
+	stopCallback := context.AfterFunc(ctx, func() { trace.log(ctx.Err()) })
+	return trace, func() {
+		if stopCallback() {
+			trace.finishWithoutLog()
+		}
+		<-trace.done
+	}
+}
+
+func (t *semanticSearchCancellationTrace) setStage(stage string) {
+	t.mu.Lock()
+	t.stage = stage
+	t.mu.Unlock()
+}
+
+func (t *semanticSearchCancellationTrace) log(err error) {
+	t.once.Do(func() {
+		defer close(t.done)
+		if t.logger == nil {
+			return
+		}
+		t.mu.Lock()
+		stage := t.stage
+		t.mu.Unlock()
+		t.logger.Warn(t.message, "stage", stage, "duration", time.Since(t.started).Round(time.Millisecond), "failure_class", semanticSearchCancellationClass(err))
+	})
+}
+
+func (t *semanticSearchCancellationTrace) finishWithoutLog() {
+	t.once.Do(func() { close(t.done) })
 }
 
 func semanticSearchCancellationClass(err error) string {
