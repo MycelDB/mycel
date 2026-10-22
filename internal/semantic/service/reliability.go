@@ -198,14 +198,17 @@ func slicesMatchingCapabilitiesModels(items []domainsemantic.InferenceModel, cap
 }
 
 type semanticPublicationFence struct {
-	token chan struct{}
-	refs  int
+	token           chan struct{}
+	refs            int
+	ownerOperation  string
+	ownerAcquiredAt time.Time
 }
 
-func (m *Module) lockSemanticPublication(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) (func(), error) {
+func (m *Module) lockSemanticPublication(ctx context.Context, operation string, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	waitStarted := time.Now()
 	key := spaceID.String() + "/" + ruleID.String()
 	m.publicationFencesMu.Lock()
 	if m.publicationFences == nil {
@@ -220,22 +223,35 @@ func (m *Module) lockSemanticPublication(ctx context.Context, spaceID domainspac
 	m.publicationFencesMu.Unlock()
 	select {
 	case fence.token <- struct{}{}:
+		m.publicationFencesMu.Lock()
+		fence.ownerOperation = operation
+		fence.ownerAcquiredAt = time.Now()
+		m.publicationFencesMu.Unlock()
 		if err := ctx.Err(); err != nil {
-			<-fence.token
-			m.releaseSemanticPublicationFenceRef(key, fence)
+			m.releaseSemanticPublicationFence(key, fence)
 			return nil, err
 		}
 	case <-ctx.Done():
+		m.logCanceledSemanticPublicationFenceWait(operation, waitStarted, fence)
 		m.releaseSemanticPublicationFenceRef(key, fence)
 		return nil, ctx.Err()
 	}
 	var once sync.Once
 	return func() {
-		once.Do(func() {
-			<-fence.token
-			m.releaseSemanticPublicationFenceRef(key, fence)
-		})
+		once.Do(func() { m.releaseSemanticPublicationFence(key, fence) })
 	}, nil
+}
+
+func (m *Module) releaseSemanticPublicationFence(key string, fence *semanticPublicationFence) {
+	m.publicationFencesMu.Lock()
+	fence.ownerOperation = ""
+	fence.ownerAcquiredAt = time.Time{}
+	<-fence.token
+	fence.refs--
+	if fence.refs == 0 && m.publicationFences[key] == fence {
+		delete(m.publicationFences, key)
+	}
+	m.publicationFencesMu.Unlock()
 }
 
 func (m *Module) releaseSemanticPublicationFenceRef(key string, fence *semanticPublicationFence) {
@@ -247,6 +263,28 @@ func (m *Module) releaseSemanticPublicationFenceRef(key string, fence *semanticP
 	}
 }
 
+func (m *Module) logCanceledSemanticPublicationFenceWait(operation string, waitStarted time.Time, fence *semanticPublicationFence) {
+	if m.logger == nil {
+		return
+	}
+	m.publicationFencesMu.Lock()
+	ownerOperation := fence.ownerOperation
+	ownerAcquiredAt := fence.ownerAcquiredAt
+	refs := fence.refs
+	m.publicationFencesMu.Unlock()
+	ownerHeldFor := time.Duration(0)
+	if !ownerAcquiredAt.IsZero() {
+		ownerHeldFor = time.Since(ownerAcquiredAt)
+	}
+	m.logger.Warn("semantic publication fence wait canceled",
+		"operation", operation,
+		"wait_duration", time.Since(waitStarted),
+		"owner_operation", ownerOperation,
+		"owner_hold_duration", ownerHeldFor,
+		"reference_count", refs,
+	)
+}
+
 func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusInput) (ReliabilityStatus, error) {
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return ReliabilityStatus{}, err
@@ -256,7 +294,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	}
 	// Status evaluation can durably rotate generations or mark frontier
 	// exhaustion. Serialize those decisions with publication and rule transitions.
-	unlockFence, err := m.lockSemanticPublication(ctx, in.SpaceID, in.SemanticRuleID)
+	unlockFence, err := m.lockSemanticPublication(ctx, "reliability-status", in.SpaceID, in.SemanticRuleID)
 	if err != nil {
 		return ReliabilityStatus{}, err
 	}
@@ -487,7 +525,7 @@ func (m *Module) authorizeSemanticWorkItem(ctx context.Context, expected domains
 }
 
 func (m *Module) acquireSemanticWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (func(), error) {
-	unlockFence, err := m.lockSemanticPublication(ctx, item.SpaceID, item.EffectiveSemanticRuleID())
+	unlockFence, err := m.lockSemanticPublication(ctx, "maintenance-work-acquire", item.SpaceID, item.EffectiveSemanticRuleID())
 	if err != nil {
 		return nil, err
 	}
@@ -505,7 +543,7 @@ func (m *Module) acquireSemanticPublication(ctx context.Context, publication sem
 	var unlockFence func()
 	if locked {
 		var err error
-		unlockFence, err = m.lockSemanticPublication(ctx, publication.Input.SpaceID, publication.Input.SemanticRuleID)
+		unlockFence, err = m.lockSemanticPublication(ctx, "maintenance-publication", publication.Input.SpaceID, publication.Input.SemanticRuleID)
 		if err != nil {
 			return nil, err
 		}
@@ -576,7 +614,7 @@ func (m *Module) semanticGenerationForWork(ctx context.Context, item domainseman
 }
 
 func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule) error {
-	unlockFence, err := m.lockSemanticPublication(ctx, spaceID, rule.ID)
+	unlockFence, err := m.lockSemanticPublication(ctx, "configuration-generation", spaceID, rule.ID)
 	if err != nil {
 		return err
 	}
@@ -630,11 +668,29 @@ func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domai
 	return nil
 }
 
-func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (RebuildResult, error) {
+func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (result RebuildResult, err error) {
 	if forwarded, result, err := m.forwardSemanticRebuild(ctx, in); forwarded || err != nil {
 		return result, err
 	}
-	var err error
+	started := time.Now()
+	stage := "bind-leadership"
+	defer func() {
+		if m.logger == nil {
+			return
+		}
+		if err != nil {
+			failureKind := "operation-failed"
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				failureKind = "deadline-exceeded"
+			case errors.Is(err, context.Canceled):
+				failureKind = "context-canceled"
+			}
+			m.logger.Warn("semantic rebuild failed", "stage", stage, "duration", time.Since(started), "failure_kind", failureKind)
+			return
+		}
+		m.logger.Info("semantic rebuild completed", "duration", time.Since(started))
+	}()
 	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
 	if err != nil {
 		return RebuildResult{}, err
@@ -661,6 +717,7 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 	if in.MaxCatchupIterations > 10000 {
 		return RebuildResult{}, fmt.Errorf("max_catchup_iterations must be <= 10000")
 	}
+	stage = "initial-reliability-status"
 	status, err := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
 	if err != nil {
 		return RebuildResult{}, err
@@ -690,12 +747,14 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 		rebuild.RebuildOwnerNode = uint64(leadership.NodeID)
 		rebuild.RebuildOwnerTerm = leadership.Term
 	}
+	stage = "start-transition"
 	if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, generation, status.Rebuild.RebuildEpoch, "", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild }); err != nil {
 		return RebuildResult{}, err
 	}
 	backfill := semanticbackfill.Result{}
 	offset := 0
 	for {
+		stage = "backfill-page"
 		pageInput := semanticBackfillInput(in, rebuild)
 		pageInput.Offset = offset
 		page, runErr := m.BackfillIndex(ctx, pageInput)
@@ -715,22 +774,27 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 		offset = page.NextOffset
 	}
 	rebuild.BaselineFreshThrough = rebuild.PinnedTargetRevision
+	stage = "baseline-transition"
 	if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) {
 		current.BaselineFreshThrough = rebuild.BaselineFreshThrough
 		current.PinnedTargetRevision = rebuild.PinnedTargetRevision
 	}); err != nil {
 		return RebuildResult{Backfill: backfill}, err
 	}
+	stage = "supersede-cancelled-work"
 	if err := m.supersedeCancelledWorkThrough(ctx, in, rebuild.PinnedTargetRevision); err != nil {
 		return m.failRebuild(ctx, in, rebuild, backfill, err)
 	}
 	for iteration := 0; iteration < in.MaxCatchupIterations; iteration++ {
+		stage = "catchup-analyze"
 		if _, err := m.AnalyzeDirtyWork(ctx, AnalyzeInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, Limit: in.MaintenanceBatchLimit}); err != nil {
 			return m.failRebuild(ctx, in, rebuild, backfill, err)
 		}
+		stage = "catchup-process"
 		if _, err := m.ProcessDirtyWork(ctx, ProcessInput{SpaceID: in.SpaceID, Limit: in.MaintenanceBatchLimit}); err != nil {
 			return m.failRebuild(ctx, in, rebuild, backfill, err)
 		}
+		stage = "catchup-reliability-status"
 		status, err = m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: in.SpaceID, SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey})
 		if err != nil {
 			return m.failRebuild(ctx, in, rebuild, backfill, err)
@@ -750,6 +814,7 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 			rebuild.UnresolvedRanges = nil
 			rebuild.CapacityState = "ok"
 			rebuild.CapacityReason = ""
+			stage = "completion-transition"
 			if err := m.transitionReliabilityState(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, "running", func(current *domainsemantic.SemanticReliabilityState) { *current = rebuild }); err != nil {
 				return RebuildResult{Backfill: backfill}, err
 			}
@@ -762,6 +827,7 @@ func (m *Module) RebuildSemanticRule(ctx context.Context, in RebuildInput) (Rebu
 			if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 				return m.failRebuildFromState(ctx, in, rebuild, backfill, "completed", err)
 			}
+			stage = "projection-lease"
 			if err := m.saveProjectionLease(ctx, in.SpaceID, in.SemanticRuleID, in.EmbeddingBindingKey, rebuild.SemanticGeneration, rebuild.RebuildEpoch, rebuild.FreshThrough); err != nil {
 				return m.failRebuildFromState(ctx, in, rebuild, backfill, "completed", err)
 			}
@@ -833,7 +899,7 @@ func (m *Module) supersedeCancelledWorkThrough(ctx context.Context, in RebuildIn
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return err
 	}
-	unlockFence, err := m.lockSemanticPublication(ctx, in.SpaceID, in.SemanticRuleID)
+	unlockFence, err := m.lockSemanticPublication(ctx, "rebuild-supersede", in.SpaceID, in.SemanticRuleID)
 	if err != nil {
 		return err
 	}
@@ -881,7 +947,7 @@ func (m *Module) failRebuildFromState(ctx context.Context, in RebuildInput, rebu
 }
 
 func (m *Module) transitionReliabilityState(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID, bindingKey string, expectedGeneration uint64, expectedEpoch, expectedState string, mutate func(*domainsemantic.SemanticReliabilityState)) error {
-	unlockFence, err := m.lockSemanticPublication(ctx, spaceID, ruleID)
+	unlockFence, err := m.lockSemanticPublication(ctx, "reliability-transition", spaceID, ruleID)
 	if err != nil {
 		return err
 	}

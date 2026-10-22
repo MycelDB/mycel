@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,18 +25,18 @@ import (
 func TestRuleScopedPublicationFencesDoNotSerializeIndependentRules(t *testing.T) {
 	module := NewModule()
 	spaceID := domainspace.SpaceID(uuid.New())
-	unlockFirst, err := module.lockSemanticPublication(context.Background(), spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+	unlockFirst, err := module.lockSemanticPublication(context.Background(), "test-independent-first", spaceID, domainsemantic.SemanticRuleID(uuid.New()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	acquiredSecond := make(chan struct{}, 1)
 	go func() {
-		unlockSecond, lockErr := module.lockSemanticPublication(context.Background(), spaceID, domainsemantic.SemanticRuleID(uuid.New()))
+		unlockSecond, lockErr := module.lockSemanticPublication(context.Background(), "test-independent-second", spaceID, domainsemantic.SemanticRuleID(uuid.New()))
 		if lockErr != nil {
 			return
 		}
-		acquiredSecond <- struct{}{}
 		unlockSecond()
+		acquiredSecond <- struct{}{}
 	}()
 	select {
 	case <-acquiredSecond:
@@ -52,9 +54,11 @@ func TestRuleScopedPublicationFencesDoNotSerializeIndependentRules(t *testing.T)
 
 func TestRuleScopedPublicationFenceWaitHonorsContextCancellation(t *testing.T) {
 	module := NewModule()
+	var logs bytes.Buffer
+	module.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	spaceID := domainspace.SpaceID(uuid.New())
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
-	unlock, err := module.lockSemanticPublication(context.Background(), spaceID, ruleID)
+	unlock, err := module.lockSemanticPublication(context.Background(), "test-owner", spaceID, ruleID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +66,7 @@ func TestRuleScopedPublicationFenceWaitHonorsContextCancellation(t *testing.T) {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if waitingUnlock, lockErr := module.lockSemanticPublication(waitCtx, spaceID, ruleID); !errors.Is(lockErr, context.DeadlineExceeded) {
+	if waitingUnlock, lockErr := module.lockSemanticPublication(waitCtx, "test-waiter", spaceID, ruleID); !errors.Is(lockErr, context.DeadlineExceeded) {
 		if waitingUnlock != nil {
 			waitingUnlock()
 		}
@@ -70,6 +74,9 @@ func TestRuleScopedPublicationFenceWaitHonorsContextCancellation(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("contended publication fence ignored its context for %s", elapsed)
+	}
+	if got := logs.String(); !strings.Contains(got, `"operation":"test-waiter"`) || !strings.Contains(got, `"owner_operation":"test-owner"`) {
+		t.Fatalf("canceled fence diagnostic did not identify waiter and owner: %s", got)
 	}
 	unlock()
 
@@ -85,9 +92,11 @@ func TestRebuildSemanticRuleReturnsWhenPublicationFenceOwnerStalls(t *testing.T)
 	if result := module.Init(context.Background(), testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
 		t.Fatal(result.Error)
 	}
+	var logs bytes.Buffer
+	module.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	spaceID := domainspace.SpaceID(uuid.New())
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
-	unlock, err := module.lockSemanticPublication(context.Background(), spaceID, ruleID)
+	unlock, err := module.lockSemanticPublication(context.Background(), "test-stalled-owner", spaceID, ruleID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +110,9 @@ func TestRebuildSemanticRuleReturnsWhenPublicationFenceOwnerStalls(t *testing.T)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("RebuildSemanticRule() ignored the publication-fence deadline for %s", elapsed)
+	}
+	if got := logs.String(); !strings.Contains(got, `"stage":"initial-reliability-status"`) || !strings.Contains(got, `"owner_operation":"test-stalled-owner"`) {
+		t.Fatalf("rebuild failure diagnostics did not identify stage and fence owner: %s", got)
 	}
 	unlock()
 

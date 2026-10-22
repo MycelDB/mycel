@@ -718,7 +718,7 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 		if item.ID != in.WorkItemID {
 			continue
 		}
-		unlockFence, err := m.lockSemanticPublication(ctx, item.SpaceID, item.EffectiveSemanticRuleID())
+		unlockFence, err := m.lockSemanticPublication(ctx, "maintenance-control", item.SpaceID, item.EffectiveSemanticRuleID())
 		if err != nil {
 			return MaintenanceWorkItem{}, err
 		}
@@ -867,7 +867,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result 
 		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 	}
 	if in.SemanticRuleID != uuid.Nil {
-		unlockFence, lockErr := m.lockSemanticPublication(ctx, in.SpaceID, in.SemanticRuleID)
+		unlockFence, lockErr := m.lockSemanticPublication(ctx, "maintenance-analyze", in.SpaceID, in.SemanticRuleID)
 		if lockErr != nil {
 			return semanticmaintenance.AnalyzeResult{}, lockErr
 		}
@@ -887,7 +887,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result 
 				break
 			}
 		}
-		unlockFence, lockErr := m.lockSemanticPublication(ctx, in.SpaceID, rule.ID)
+		unlockFence, lockErr := m.lockSemanticPublication(ctx, "maintenance-analyze", in.SpaceID, rule.ID)
 		if lockErr != nil {
 			return result, lockErr
 		}
@@ -1011,7 +1011,7 @@ func (m *Module) syncSemanticDirtyCounts(ctx context.Context, spaceID domainspac
 		return err
 	}
 	for _, state := range ruleStates {
-		unlockFence, lockErr := m.lockSemanticPublication(ctx, spaceID, state.SemanticRuleID)
+		unlockFence, lockErr := m.lockSemanticPublication(ctx, "maintenance-dirty-counts", spaceID, state.SemanticRuleID)
 		if lockErr != nil {
 			return lockErr
 		}
