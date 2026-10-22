@@ -90,6 +90,9 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	query := strings.TrimSpace(req.GetQuery())
 	if query == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
@@ -115,6 +118,9 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	actorID, err := parseIdentityPrincipalID(principal.PrincipalID)
 	if err != nil {
 		return nil, err
@@ -124,10 +130,16 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if err != nil {
 		return nil, mapSemanticError(err, "read semantic graph revision")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	trace.setStage("read-semantic-view")
 	semanticView, err := s.semanticViewFingerprint(ctx, spaceID, domainID, selectedRuleIDs, bindingKey)
 	if err != nil {
 		return nil, mapSemanticError(err, "read semantic index view")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	offset, cursor, err := semanticPageOffsetWithKey(req, principal.PrincipalID, graphRevision, semanticView, s.cursorIntegrityKey())
 	if err != nil {
@@ -151,6 +163,9 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: semanticMaxCandidateExamination, MinScore: plannerMinScore, ActorPrincipalID: actorID})
 	if err != nil {
 		return nil, mapSemanticError(err, "semantic search")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	trace.setStage("hydrate-graph-results")
 	nodeByID, warnings := s.loadSearchNodes(ctx, principal.PrincipalID, spaceID, domainID, result.Results)
@@ -183,6 +198,9 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	finalGraphRevision, err := s.semanticGraphRevision(ctx, spaceID, domainID)
 	if err != nil {
 		return nil, mapSemanticError(err, "recheck semantic graph revision")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if finalGraphRevision != graphRevision {
 		return nil, status.Error(codes.Aborted, "semantic graph view changed while building the page")

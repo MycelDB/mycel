@@ -1438,6 +1438,9 @@ func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Res
 		if err := m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "search", SpaceID: in.SpaceID, Search: in}, &res); err != nil {
 			return semanticsearch.Result{}, err
 		}
+		if err := ctx.Err(); err != nil {
+			return semanticsearch.Result{}, err
+		}
 		return res.Result, nil
 	}
 	stopTrace()
@@ -1452,14 +1455,23 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return semanticsearch.Result{}, err
+	}
 	trace.setStage("validate-projection-before-search")
 	projectionSnapshot, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, true, nil)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return semanticsearch.Result{}, err
+	}
 	trace.setStage("open-space-manager")
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
+		return semanticsearch.Result{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
 	}
 	global := m.GlobalManager()
@@ -1477,6 +1489,9 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	if err != nil {
 		return result, err
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	trace.setStage("validate-projection-after-search")
 	if projectionSnapshot != nil {
 		searchedBindings := make(map[semanticProjectionBindingKey]semanticProjectionObservation, len(result.ProjectionSearchBindings))
@@ -1491,9 +1506,15 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 		if _, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, false, searchedBindings); err != nil {
 			return semanticsearch.Result{}, err
 		}
+		if err := ctx.Err(); err != nil {
+			return semanticsearch.Result{}, err
+		}
 	}
 	trace.setStage("validate-leadership-after-search")
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
+		return semanticsearch.Result{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
 	}
 	trace.setStage("complete")

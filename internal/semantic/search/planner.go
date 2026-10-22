@@ -43,12 +43,18 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	p.observeStage("select-rule-bindings")
 	selected, selectionWarnings, err := p.selectRuleBindings(ctx, in, vectorStores)
 	for _, warning := range selectionWarnings {
 		addWarning(&res, warning)
 	}
 	if err != nil {
+		return res, err
+	}
+	if err := ctx.Err(); err != nil {
 		return res, err
 	}
 	if len(selected) == 0 {
@@ -78,6 +84,9 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 		res.ProjectionSearchBindings = append(res.ProjectionSearchBindings, ProjectionSearchBinding{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key})
 		vectorSpaceKey := vectorSpaceForModel(query.ModelID, models)
 		p.observeStage("search-vector-index")
@@ -89,6 +98,9 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 			code := searchIndexWarningCode(err)
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q search skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return res, err
 		}
 		successfulSearches++
 		if len(results) > perBindingLimit {
