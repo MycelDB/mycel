@@ -1688,6 +1688,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	if err := m.validateBlobReferences(ctx, tx.SpaceID, record.PutNodes); err != nil {
 		return graphchange.CommitResult{}, err
 	}
+	if err := m.validateAutomationOutputFences(ctx, record); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	timing.BlobReferenceValidate = time.Since(stepStart)
 	var committedRevision int64
 	var info graphstorage.CommitInfo

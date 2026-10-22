@@ -181,7 +181,9 @@ func (f fakeConditionGraph) ListEdges(_ context.Context, _ sessionmodel.GraphTra
 func (f fakeConditionGraph) CreateEdge(context.Context, sessionmodel.GraphTransaction, graph.EdgeInput) (graph.Edge, error) {
 	panic("unused")
 }
-func (f fakeConditionGraph) CurrentRevision(context.Context, string) (int64, error) { panic("unused") }
+func (f fakeConditionGraph) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	panic("unused")
+}
 func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	panic("unused")
 }
