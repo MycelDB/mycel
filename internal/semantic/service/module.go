@@ -24,6 +24,7 @@ import (
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	semanticdiagnostics "github.com/myceldb/mycel/internal/semantic/diagnostics"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
@@ -718,7 +719,10 @@ func (m *Module) mutateMaintenanceWork(ctx context.Context, in MaintenanceWorkCo
 		if item.ID != in.WorkItemID {
 			continue
 		}
-		unlockFence := m.lockSemanticPublication(item.SpaceID, item.EffectiveSemanticRuleID())
+		unlockFence, err := m.lockSemanticPublication(ctx, "maintenance-control", item.SpaceID, item.EffectiveSemanticRuleID())
+		if err != nil {
+			return MaintenanceWorkItem{}, err
+		}
 		defer unlockFence()
 		// Reload after acquiring the rule fence so cancellation cannot overwrite a
 		// worker completion observed in the first read.
@@ -864,7 +868,10 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result 
 		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 	}
 	if in.SemanticRuleID != uuid.Nil {
-		unlockFence := m.lockSemanticPublication(in.SpaceID, in.SemanticRuleID)
+		unlockFence, lockErr := m.lockSemanticPublication(ctx, "maintenance-analyze", in.SpaceID, in.SemanticRuleID)
+		if lockErr != nil {
+			return semanticmaintenance.AnalyzeResult{}, lockErr
+		}
 		defer unlockFence()
 		return analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: in.SemanticRuleID, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID, Limit: in.Limit})
 	}
@@ -881,7 +888,10 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result 
 				break
 			}
 		}
-		unlockFence := m.lockSemanticPublication(in.SpaceID, rule.ID)
+		unlockFence, lockErr := m.lockSemanticPublication(ctx, "maintenance-analyze", in.SpaceID, rule.ID)
+		if lockErr != nil {
+			return result, lockErr
+		}
 		current, analyzeErr := analyzer.AnalyzeOnce(ctx, semanticmaintenance.AnalyzeInput{SemanticRuleID: rule.ID, EmbeddingBindingKey: in.EmbeddingBindingKey, Limit: limit})
 		unlockFence()
 		result.ProcessedEvents += current.ProcessedEvents
@@ -1002,7 +1012,10 @@ func (m *Module) syncSemanticDirtyCounts(ctx context.Context, spaceID domainspac
 		return err
 	}
 	for _, state := range ruleStates {
-		unlockFence := m.lockSemanticPublication(spaceID, state.SemanticRuleID)
+		unlockFence, lockErr := m.lockSemanticPublication(ctx, "maintenance-dirty-counts", spaceID, state.SemanticRuleID)
+		if lockErr != nil {
+			return lockErr
+		}
 		current, reloadErr := mgr.ListSemanticRuleStates(ctx)
 		if reloadErr != nil {
 			unlockFence()
@@ -1414,40 +1427,73 @@ func workerConfigFromDaemon(cfg MaintenanceConfig) semanticmaintenance.WorkerCon
 }
 
 func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {
+	trace, stopTrace := m.beginSemanticSearchCancellationTrace(ctx, "resolve-route")
+	defer stopTrace()
 	if leader, forward, err := m.shouldForwardRaftSemanticRead(in.SpaceID); err != nil {
 		return semanticsearch.Result{}, err
 	} else if m.raftGroups != nil && leader == 0 {
 		return semanticsearch.Result{}, fmt.Errorf("semantic raft partition for space %s has no leader", in.SpaceID)
 	} else if forward {
+		trace.SetStage("forward-to-leader")
 		var res raftSemanticSearchResponse
 		if err := m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "search", SpaceID: in.SpaceID, Search: in}, &res); err != nil {
 			return semanticsearch.Result{}, err
 		}
+		if err := ctx.Err(); err != nil {
+			return semanticsearch.Result{}, err
+		}
 		return res.Result, nil
 	}
+	stopTrace()
 	return m.searchLocal(ctx, in)
 }
 
 func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearch.Result, error) {
+	trace, stopTrace := m.beginSemanticSearchCancellationTrace(ctx, "bind-leadership")
+	defer stopTrace()
 	var err error
 	ctx, err = m.bindSemanticOperationLeadership(ctx, in.SpaceID)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return semanticsearch.Result{}, err
+	}
+	trace.SetStage("validate-projection-before-search")
 	projectionSnapshot, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, true, nil)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return semanticsearch.Result{}, err
+	}
+	trace.SetStage("open-space-manager")
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticsearch.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return semanticsearch.Result{}, err
+	}
 	global := m.GlobalManager()
-	planner := semanticsearch.Planner{GlobalManager: global, SpaceManager: mgr, Connector: m.semanticEmbeddingConnector(global, in.ActorPrincipalID), VectorBackend: m.localVectorBackend()}
+	planner := semanticsearch.Planner{
+		GlobalManager: global,
+		SpaceManager:  mgr,
+		Connector:     m.semanticEmbeddingConnector(global, in.ActorPrincipalID),
+		VectorBackend: m.localVectorBackend(),
+		ObserveStage: func(plannerStage string) {
+			trace.SetStage("planner-" + plannerStage)
+		},
+	}
+	trace.SetStage("planner-search")
 	result, err := planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
 	if err != nil {
 		return result, err
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	trace.SetStage("validate-projection-after-search")
 	if projectionSnapshot != nil {
 		searchedBindings := make(map[semanticProjectionBindingKey]semanticProjectionObservation, len(result.ProjectionSearchBindings))
 		for _, binding := range result.ProjectionSearchBindings {
@@ -1461,9 +1507,21 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 		if _, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, false, searchedBindings); err != nil {
 			return semanticsearch.Result{}, err
 		}
+		if err := ctx.Err(); err != nil {
+			return semanticsearch.Result{}, err
+		}
 	}
+	trace.SetStage("validate-leadership-after-search")
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return semanticsearch.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return semanticsearch.Result{}, err
+	}
+	trace.SetStage("complete")
 	return result, nil
+}
+
+func (m *Module) beginSemanticSearchCancellationTrace(ctx context.Context, stage string) (*semanticdiagnostics.CancellationTrace, func()) {
+	return semanticdiagnostics.BeginCancellationTrace(ctx, m.logger, stage, "semantic search canceled")
 }

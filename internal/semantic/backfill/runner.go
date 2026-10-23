@@ -393,7 +393,7 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 	actorPrincipalID := semanticRuleActorPrincipal(rule)
 	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, ActorPrincipalID: actorPrincipalID, InferenceProfile: binding.IntelligenceProfile, InferenceProfileID: uuid.UUID(binding.IntelligenceProfileID), Input: source.Text, Reason: "semantic_backfill"})
 	if err != nil {
-		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+		return domainsemantic.AdvancedEmbeddingRecord{}, nil, failureForError(root.ID, err)
 	}
 	vectorSpaceKey, err := r.vectorSpaceKey(ctx, resp.ModelID)
 	if err != nil {
@@ -456,7 +456,7 @@ func (r Runner) processRoot(ctx context.Context, index domainsemantic.SemanticIn
 	profileRef, profileID := semanticInferenceProfileRef(index)
 	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, TargetNodeID: root.ID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: source.Text, Reason: "semantic_backfill"})
 	if err != nil {
-		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
+		return domainsemantic.AdvancedEmbeddingRecord{}, nil, failureForError(root.ID, err)
 	}
 	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: index.SpaceID, DomainID: index.DomainID, SemanticIndexID: index.ID, NodeID: root.ID, SourceHash: source.Hash, SourceMode: string(mode), ModelEndpointID: endpoint.ID, ModelID: model.ID, ModelEndpointCapabilityID: cap.ID, CredentialID: resp.CredentialID, CredentialGrantID: resp.CredentialGrantID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: index.VectorStoreID, VectorSpaceKey: model.VectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
 	if err != nil {
@@ -684,6 +684,18 @@ func (r Runner) resolveBindingVectorStore(ctx context.Context, binding domainsem
 		}
 	}
 	return uuid.Nil, fmt.Errorf("enabled vector store %q not found", binding.VectorStore)
+}
+
+func failureForError(nodeID graph.NodeID, err error) *Failure {
+	failure := &Failure{NodeID: nodeID, Error: err.Error()}
+	var embeddingFailure connectors.EmbeddingFailure
+	if errors.As(err, &embeddingFailure) {
+		failure.Error = embeddingFailure.Error()
+		failure.Category = strings.TrimSpace(embeddingFailure.Category)
+		failure.Retryable = embeddingFailure.Retryable
+		failure.RetryAfter = embeddingFailure.RetryAfter
+	}
+	return failure
 }
 
 func (r Runner) vectorSpaceKey(ctx context.Context, modelID domainsemantic.InferenceModelID) (string, error) {

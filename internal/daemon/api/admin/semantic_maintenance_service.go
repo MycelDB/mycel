@@ -293,7 +293,7 @@ func sanitizeSemanticBackfillError(value string) string {
 	switch {
 	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline"):
 		return "semantic provider timeout"
-	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "429"):
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limited") || strings.Contains(lower, "429"):
 		return "semantic provider rate limited"
 	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy"):
 		return "semantic provider authorization failed"

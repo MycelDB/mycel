@@ -24,6 +24,7 @@ type selectedBinding struct {
 }
 
 func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
+	p.observeStage("validate-input")
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -37,15 +38,23 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		in.Limit = 10
 	}
 	res := Result{Results: []SearchResult{}, Warnings: []string{}, WarningDetails: []Warning{}, Groups: []GroupSummary{}}
+	p.observeStage("load-global-definitions")
 	models, vectorStores, err := p.globalSearchDefinitions(ctx)
 	if err != nil {
 		return Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	p.observeStage("select-rule-bindings")
 	selected, selectionWarnings, err := p.selectRuleBindings(ctx, in, vectorStores)
 	for _, warning := range selectionWarnings {
 		addWarning(&res, warning)
 	}
 	if err != nil {
+		return res, err
+	}
+	if err := ctx.Err(); err != nil {
 		return res, err
 	}
 	if len(selected) == 0 {
@@ -65,19 +74,33 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 			continue
 		}
 		profileRef, profileID := bindingProfile(item.binding)
+		p.observeStage("embed-query")
 		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), ActorPrincipalID: in.ActorPrincipalID, OnBehalfOfPrincipalID: item.rule.OwnerPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return res, ctxErr
+			}
 			code := embeddingWarningCode(err)
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
 		res.ProjectionSearchBindings = append(res.ProjectionSearchBindings, ProjectionSearchBinding{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key})
 		vectorSpaceKey := vectorSpaceForModel(query.ModelID, models)
+		p.observeStage("search-vector-index")
 		results, err := p.VectorBackend.Search(ctx, vectorstore.SearchInput{SpaceID: item.rule.SpaceID, DomainID: item.rule.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), VectorStoreID: item.vectorStore.ID, VectorSpaceKey: vectorSpaceKey, Query: query.Vector, Limit: perBindingScanLimit, MinScore: in.MinScore})
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return res, ctxErr
+			}
 			code := searchIndexWarningCode(err)
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q search skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return res, err
 		}
 		successfulSearches++
 		if len(results) > perBindingLimit {
@@ -113,11 +136,19 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		}
 		res.Groups = append(res.Groups, GroupSummary{SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, VectorSpaceKey: vectorSpaceKey, ModelEndpointID: query.EndpointID, ModelID: query.ModelID, CredentialGrantID: query.CredentialGrantID, SemanticIndexIDs: []domainsemantic.SemanticIndexID{domainsemantic.SemanticIndexID(item.rule.ID)}, SemanticRuleIDs: []domainsemantic.SemanticRuleID{item.rule.ID}, ResultCount: groupCount})
 	}
+	p.observeStage("merge-rank-results")
 	res.Results = mergeAndRank(res.Results, in.Limit)
 	if successfulSearches == 0 {
 		return res, fmt.Errorf("all semantic search bindings were skipped or unavailable")
 	}
+	p.observeStage("complete")
 	return res, nil
+}
+
+func (p Planner) observeStage(stage string) {
+	if p.ObserveStage != nil {
+		p.ObserveStage(stage)
+	}
 }
 
 func (p Planner) selectRuleBindings(ctx context.Context, in Input, vectorStores []domainsemantic.VectorStoreBackend) ([]selectedBinding, []Warning, error) {

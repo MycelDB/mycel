@@ -18,6 +18,7 @@ type Planner struct {
 	SpaceManager  storesemantic.SpaceManager
 	Connector     ConnectorService
 	VectorBackend vectorstore.Backend
+	ObserveStage  func(string)
 }
 
 type ConnectorService interface {

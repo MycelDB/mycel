@@ -1693,6 +1693,23 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	}, func() bool { return leaderForPartition() == followerID }); err != nil {
 		t.Fatalf("semantic leader did not transfer to node %d: %v", followerID, err)
 	}
+	readers[followerID].setResponse(t, "search", raftSemanticSearchResponse{})
+	for nodeID, module := range modules {
+		if nodeID == followerID {
+			continue
+		}
+		query := fmt.Sprintf("query-from-node-%d", nodeID)
+		searchCtx, searchCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, searchErr := module.Search(searchCtx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: query, Limit: 1})
+		searchCancel()
+		if searchErr != nil {
+			t.Fatalf("node %d did not route bounded search to recovered leader %d: %v", nodeID, followerID, searchErr)
+		}
+		request, ok := readers[followerID].lastRequest("search")
+		if !ok || request.Search.Text != query || request.SpaceID != spaceID {
+			t.Fatalf("recovered leader %d did not receive search from node %d: %+v", followerID, nodeID, request)
+		}
+	}
 	if _, err := modules[followerID].Search(ctx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: "query", Limit: 1}); err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("promoted empty leader search error=%v, want projection readiness rejection", err)
 	}

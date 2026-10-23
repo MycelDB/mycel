@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -334,7 +335,31 @@ func decodeProviderError(res *http.Response, prefix string) error {
 		} `json:"error"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&payload)
-	return providerPayloadError(res.StatusCode, res.Status, payload.Error, prefix)
+	err := providerPayloadError(res.StatusCode, res.Status, payload.Error, prefix)
+	connectorErr, ok := err.(ConnectorError)
+	if ok && connectorErr.Retryable {
+		connectorErr.RetryAfter = parseRetryAfter(res.Header.Get("Retry-After"), time.Now())
+		return connectorErr
+	}
+	return err
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	const maxRetryAfter = 24 * time.Hour
+	var delay time.Duration
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+		delay = time.Duration(seconds * float64(time.Second))
+	} else if retryAt, err := http.ParseTime(value); err == nil && retryAt.After(now) {
+		delay = retryAt.Sub(now)
+	}
+	if delay <= 0 || delay > maxRetryAfter {
+		return 0
+	}
+	return delay
 }
 
 func providerPayloadError(statusCode int, status string, payload *struct {
@@ -354,7 +379,7 @@ func providerPayloadError(statusCode int, status string, payload *struct {
 			code = payload.Type
 		}
 	}
-	return ConnectorError{Code: code, Retryable: statusCode == http.StatusTooManyRequests || statusCode >= 500, Err: fmt.Errorf("%s returned %s: %s", prefix, status, msg)}
+	return ConnectorError{Code: code, StatusCode: statusCode, Retryable: statusCode == http.StatusTooManyRequests || statusCode >= 500, Err: fmt.Errorf("%s returned %s: %s", prefix, status, msg)}
 }
 
 func firstHeader(res *http.Response, names ...string) string {
