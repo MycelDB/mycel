@@ -47,7 +47,7 @@ func TestAutomationExecutionRaftReplicatesInvocationClaimRunAndIdempotency(t *te
 	leader := cluster.managers[leaderID]
 	seedDisabledProcedureBindingOnAll(t, ctx, cluster.managers, domainID, spaceID, "binding-a")
 
-	inv := invocationForRunnable(leader.now, domainID, runnableAutomation{Procedure: automation.Procedure{ID: "proc", Version: 1, DomainID: domainID, Status: automation.StatusDisabled}, Binding: automation.Binding{ID: "binding-a", Version: 1, DomainID: domainID, ProcedureID: "proc", ProcedureVersion: 1, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}}}, automation.Invocation{ID: graphTriggeredInvocationID(spaceID.String(), domainID, "event-a", "binding-a", "node-a"), SpaceID: spaceID.String(), EventID: "event-a", ChangedElementID: "node-a", ChangedElementKind: "node", EventType: automation.EventNodeUpdated}, "operator")
+	inv := invocationForRunnable(leader.now, domainID, runnableAutomation{Procedure: automation.Procedure{ID: "proc", Version: 1, DomainID: domainID, Status: automation.StatusDisabled}, Binding: automation.Binding{ID: "binding-a", Version: 1, DomainID: domainID, ProcedureID: "proc", ProcedureVersion: 1, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}}}}, automation.Invocation{ID: graphTriggeredInvocationID(spaceID.String(), domainID, "event-a", "binding-a", "node-a"), SpaceID: spaceID.String(), EventID: "event-a", ChangedElementID: "node-a", ChangedElementKind: "node", EventType: automation.EventNodeUpdated}, "operator")
 	if err := leader.putInvocationRuntime(ctx, inv); err != nil {
 		t.Fatalf("putInvocationRuntime() error = %v", err)
 	}
@@ -57,7 +57,8 @@ func TestAutomationExecutionRaftReplicatesInvocationClaimRunAndIdempotency(t *te
 		processed, err := mgr.ProcessPending(ctx, domainID, 10)
 		if id == leaderID {
 			if err != nil || processed != 1 {
-				t.Fatalf("leader ProcessPending() processed=%d err=%v", processed, err)
+				got, _ := mgr.store.GetInvocation(ctx, domainID, inv.ID)
+				t.Fatalf("leader ProcessPending() processed=%d err=%v invocation=%+v", processed, err, got)
 			}
 			continue
 		}
@@ -743,6 +744,10 @@ func TestAutomationExecutionSnapshotIncludesRuntimeState(t *testing.T) {
 	if err := source.store.PutGraphReplayCursor(ctx, cursor); err != nil {
 		t.Fatal(err)
 	}
+	attempt := automation.ProcedureInferenceAttempt{ID: "attempt-a", RecordVersion: 1, SpaceID: spaceID.String(), DomainID: domainID, ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding-a", BindingVersion: 1, InvocationID: inv.ID, RunID: run.ID, RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateRequested, RequestedAt: time.Now().UTC()}
+	if err := source.applyProcedureInferenceAttemptTransition(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
 
 	snap, err := source.snapshotAutomationPartition(ctx, partitionID, partitionCount)
 	if err != nil {
@@ -774,6 +779,10 @@ func TestAutomationExecutionSnapshotIncludesRuntimeState(t *testing.T) {
 	gotCursor, err := target.store.GetGraphReplayCursor(ctx, spaceID.String(), domainID)
 	if err != nil || gotCursor.Revision != 42 {
 		t.Fatalf("restored graph replay cursor missing: cursor=%+v err=%v", gotCursor, err)
+	}
+	gotLedger, err := target.store.GetProcedureInferenceLedger(ctx, spaceID.String())
+	if err != nil || gotLedger.HighWaterSequence != 1 || len(gotLedger.Attempts) != 1 || gotLedger.Attempts[0].ID != attempt.ID {
+		t.Fatalf("restored procedure inference ledger missing: ledger=%+v err=%v", gotLedger, err)
 	}
 }
 
@@ -1181,6 +1190,17 @@ func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceru
 		callback = nil
 	}
 	f.mu.Unlock()
+	resolved := inferenceruntime.ResolveResult{Allowed: true}
+	if req.AfterAuthorization != nil {
+		if err := req.AfterAuthorization(ctx, resolved); err != nil {
+			return inferenceruntime.InvokeResponse{}, err
+		}
+	}
+	if req.BeforeProviderAttempt != nil {
+		if err := req.BeforeProviderAttempt(ctx, resolved); err != nil {
+			return inferenceruntime.InvokeResponse{}, err
+		}
+	}
 	if callback != nil {
 		if err := callback(ctx); err != nil {
 			return inferenceruntime.InvokeResponse{}, err

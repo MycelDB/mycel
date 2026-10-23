@@ -188,6 +188,8 @@ type Invocation struct {
 	BindingVersion             int            `json:"binding_version,omitempty"`
 	ProcedureID                string         `json:"procedure_id,omitempty"`
 	ProcedureVersion           int            `json:"procedure_version,omitempty"`
+	PinnedProcedure            *Procedure     `json:"pinned_procedure,omitempty"`
+	PinnedBinding              *Binding       `json:"pinned_binding,omitempty"`
 	EventID                    string         `json:"event_id"`
 	ChangedElementID           string         `json:"changed_element_id"`
 	ChangedElementKind         string         `json:"changed_element_kind"`
@@ -292,6 +294,7 @@ type Run struct {
 	CredentialID               string                       `json:"credential_id,omitempty"`
 	CredentialGrantID          string                       `json:"credential_grant_id,omitempty"`
 	PolicyDecisionID           string                       `json:"policy_decision_id,omitempty"`
+	InferenceAttemptIDs        []string                     `json:"inference_attempt_ids,omitempty"`
 	OutputHash                 string                       `json:"output_hash,omitempty"`
 	ProviderRequestID          string                       `json:"provider_request_id,omitempty"`
 	Usage                      TokenUsage                   `json:"usage,omitempty"`

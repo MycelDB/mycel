@@ -19,11 +19,25 @@ func TestInvokeFakeChatRecordsSuccessUsage(t *testing.T) {
 	module.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	module.SetSecretResolver(resolver)
 
-	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", RequestID: "req-1"})
+	authorized := false
+	started := false
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", RequestID: "req-1", AfterAuthorization: func(_ context.Context, resolved inferenceruntime.ResolveResult) error {
+		if !resolved.Allowed || resolver.calls != 0 {
+			t.Fatalf("authorization hook ran after credential resolution: resolved=%+v secret_calls=%d", resolved, resolver.calls)
+		}
+		authorized = true
+		return nil
+	}, BeforeProviderAttempt: func(_ context.Context, _ inferenceruntime.ResolveResult) error {
+		if !authorized || resolver.calls != 1 {
+			t.Fatalf("provider-start hook order: authorized=%v secret_calls=%d", authorized, resolver.calls)
+		}
+		started = true
+		return nil
+	}})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
-	if !resp.Allowed || resp.Text != "hello from fake" || resp.Decision.Action != domaininference.PolicyDecisionAllowed {
+	if !resp.Allowed || resp.Text != "hello from fake" || resp.Decision.Action != domaininference.PolicyDecisionAllowed || !authorized || !started {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 	_, chatCalls := fake.Calls()

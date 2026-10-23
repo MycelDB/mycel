@@ -33,6 +33,15 @@ func (m *Module) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest)
 		}
 		return resp, inferenceruntime.ErrDenied
 	}
+	if req.AfterAuthorization != nil {
+		if err := req.AfterAuthorization(ctx, resolved); err != nil {
+			_, appendErr := m.appendUsage(context.WithoutCancel(ctx), req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusFailed, "authorization_fence_failed", "authorization_fence_failed", started)
+			if appendErr != nil {
+				return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, errors.Join(err, appendErr)
+			}
+			return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		_, appendErr := m.appendUsage(context.Background(), req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusCanceled, "canceled", err.Error(), started)
 		if appendErr != nil {
@@ -99,6 +108,21 @@ func (m *Module) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest)
 			return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, appendErr
 		}
 		return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusCanceled}, err
+	}
+	if req.BeforeProviderAttempt != nil {
+		if err := req.BeforeProviderAttempt(providerCtx, resolved); err != nil {
+			providerCancel()
+			if req.BudgetScopeID != "" {
+				if completionErr := m.failReservedInvocationBudget(req, "provider_start_fence_failed"); completionErr != nil {
+					return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, fmt.Errorf("%w; budget completion failed: %v", err, completionErr)
+				}
+			}
+			_, appendErr := m.appendUsage(context.WithoutCancel(ctx), req, resolved, domaininference.Usage{}, "", domaininference.UsageStatusFailed, "provider_start_fence_failed", "provider_start_fence_failed", started)
+			if appendErr != nil {
+				return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, errors.Join(err, appendErr)
+			}
+			return inferenceruntime.InvokeResponse{Allowed: true, Decision: resolved.Decision, Status: domaininference.UsageStatusFailed}, err
+		}
 	}
 	providerStarted := time.Now().UTC()
 	resp, err := m.invokeConnector(providerCtx, connector, req, resolved, secretValue)

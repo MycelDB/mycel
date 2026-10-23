@@ -271,6 +271,9 @@ func ValidateBinding(binding Binding, procedure *Procedure) error {
 		if binding.ProcedureID != p.ID {
 			return fmt.Errorf("graph automation binding procedure_id does not match procedure")
 		}
+		if binding.ProcedureVersion != 0 && binding.ProcedureVersion != p.Version {
+			return fmt.Errorf("graph automation binding procedure_version does not match procedure version")
+		}
 		if binding.Status == StatusEnabled && p.Status != StatusEnabled {
 			return fmt.Errorf("graph automation binding cannot be enabled for a disabled procedure")
 		}

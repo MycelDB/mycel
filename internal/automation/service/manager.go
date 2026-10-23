@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -85,6 +86,9 @@ type AutomationManager struct {
 	metricsClaimAbandoned                 int64
 	writeAllowed                          func() error
 	gate                                  *quiesce.Gate
+	localExecutionMu                      sync.Mutex
+	inferenceAttemptMu                    sync.Mutex
+	definitionMutationMu                  sync.Mutex
 }
 
 func NewManager(store storage.Store) *AutomationManager {
@@ -285,6 +289,9 @@ func (m *AutomationManager) CreateProcedureAs(ctx context.Context, domainID grap
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return procedure, mapStoreError(err)
 	}
+	if procedure.Version != 1 {
+		return procedure, fmt.Errorf("new graph procedure version must be 1")
+	}
 	now := m.now()
 	principalID = strings.TrimSpace(principalID)
 	procedure.CreatedByPrincipalID = principalID
@@ -307,6 +314,7 @@ func (m *AutomationManager) UpdateProcedureAs(ctx context.Context, domainID grap
 		return procedure, err
 	}
 	procedure.ID = strings.TrimSpace(id)
+	procedure.Version = current.Normalize().Version + 1
 	procedure.CreatedByPrincipalID = current.CreatedByPrincipalID
 	procedure.CreatedAt = current.CreatedAt
 	procedure.UpdatedByPrincipalID = strings.TrimSpace(principalID)
@@ -363,6 +371,9 @@ func (m *AutomationManager) ValidateBinding(ctx context.Context, domainID graph.
 	}
 	procedure.DomainID = domainID
 	procedure = procedure.Normalize()
+	if binding.ProcedureVersion == 0 {
+		binding.ProcedureVersion = procedure.Version
+	}
 	if err := automation.ValidateBinding(binding, &procedure); err != nil {
 		return binding, err
 	}
@@ -378,6 +389,9 @@ func (m *AutomationManager) CreateBindingAs(ctx context.Context, domainID graph.
 		return binding, fmt.Errorf("graph automation binding %q already exists", binding.ID)
 	} else if !errors.Is(err, storage.ErrNotFound) {
 		return binding, mapStoreError(err)
+	}
+	if binding.Version != 1 {
+		return binding, fmt.Errorf("new graph automation binding version must be 1")
 	}
 	now := m.now()
 	principalID = strings.TrimSpace(principalID)
@@ -401,6 +415,7 @@ func (m *AutomationManager) UpdateBindingAs(ctx context.Context, domainID graph.
 		return binding, err
 	}
 	binding.ID = strings.TrimSpace(id)
+	binding.Version = current.Normalize().Version + 1
 	binding.CreatedByPrincipalID = current.CreatedByPrincipalID
 	binding.CreatedAt = current.CreatedAt
 	binding.UpdatedByPrincipalID = strings.TrimSpace(principalID)
@@ -454,7 +469,12 @@ func (m *AutomationManager) SetBindingStatusAs(ctx context.Context, domainID gra
 	if err != nil {
 		return binding, mapStoreError(err)
 	}
+	binding = binding.Normalize()
+	if binding.Status == status {
+		return binding, ctx.Err()
+	}
 	binding.Status = status
+	binding.Version++
 	binding.UpdatedByPrincipalID = strings.TrimSpace(principalID)
 	binding.UpdatedAt = m.now()
 	if status == automation.StatusEnabled {
@@ -579,6 +599,19 @@ func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.
 	inv, err := m.store.GetInvocation(ctx, domainID, strings.TrimSpace(invocationID))
 	if err != nil {
 		return inv, mapStoreError(err)
+	}
+	ledger, ledgerErr := m.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if ledgerErr != nil && !errors.Is(ledgerErr, storage.ErrNotFound) {
+		return inv, mapStoreError(ledgerErr)
+	}
+	for _, attempt := range ledger.Attempts {
+		if attempt.InvocationID != inv.ID {
+			continue
+		}
+		switch attempt.State {
+		case automation.InferenceAttemptStateStarted, automation.InferenceAttemptStateSucceeded, automation.InferenceAttemptStateAmbiguous:
+			return inv, fmt.Errorf("%w: invocation %s has provider attempt %s in state %s", ErrInferenceAttemptAlreadyStarted, inv.ID, attempt.ID, attempt.State)
+		}
 	}
 	inv.Status = "pending"
 	inv.SkipReason = ""
@@ -779,12 +812,21 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			continue
 		}
 		def := item.Definition
+		stopAfterRecoveredAttempt, err := m.reconcilePreProviderTerminalAttempt(ctx, &inv, def)
+		if err != nil {
+			return processed, err
+		}
+		if stopAfterRecoveredAttempt {
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
 		if def.Status != automation.StatusEnabled {
 			now := m.now()
 			inv.Status = "skipped"
 			inv.SkipReason = "automation_disabled"
 			inv.UpdatedAt = now
-			runID := newRunID()
+			runID := automationRunID(inv, inv.AttemptCount+1)
 			run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: inv.SkipReason, ActorPrincipalID: inv.ActorPrincipalID, OnBehalfOfPrincipalID: inv.OnBehalfOfPrincipalID, OwnerPrincipalID: inv.OwnerPrincipalID, AutomationOwnerPrincipalID: inv.AutomationOwnerPrincipalID, EventOriginPrincipalID: inv.EventOriginPrincipalID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: automationOutputIdempotencyKey(inv, runID), StartedAt: now, CompletedAt: now}
 			if err := m.putInvocationRuntime(ctx, inv); err != nil {
 				return processed, err
@@ -801,7 +843,7 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			inv.Status = "skipped"
 			inv.SkipReason = skipReasonCoalesced
 			inv.UpdatedAt = now
-			runID := newRunID()
+			runID := automationRunID(inv, inv.AttemptCount+1)
 			run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: inv.AttemptCount + 1, Status: "skipped", Error: skipReasonCoalesced, ActorPrincipalID: inv.ActorPrincipalID, OnBehalfOfPrincipalID: inv.OnBehalfOfPrincipalID, OwnerPrincipalID: inv.OwnerPrincipalID, AutomationOwnerPrincipalID: inv.AutomationOwnerPrincipalID, EventOriginPrincipalID: inv.EventOriginPrincipalID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: automationOutputIdempotencyKey(inv, runID), TargetAlias: debounce.TargetAlias, TargetNodeID: debounce.TargetNodeID, CoalescedInvocationIDs: debounce.CoalescedByIDs, StartedAt: now, CompletedAt: now}
 			if err := m.putInvocationRuntime(ctx, inv); err != nil {
 				return processed, err
@@ -844,7 +886,7 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 				inv.Status = "failed"
 			}
 			if run.ID == "" {
-				run.ID = uuid.NewString()
+				run.ID = automationRunID(inv, inv.AttemptCount)
 			}
 			run.DomainID = domainID
 			run.InvocationID = inv.ID

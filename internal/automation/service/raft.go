@@ -31,16 +31,17 @@ type automationMutationRecord struct {
 }
 
 type automationSnapshot struct {
-	Version                int                            `json:"version"`
-	Procedures             []automation.Procedure         `json:"procedures,omitempty"`
-	Bindings               []automation.Binding           `json:"bindings,omitempty"`
-	Invocations            []automation.Invocation        `json:"invocations,omitempty"`
-	Runs                   []automation.Run               `json:"runs,omitempty"`
-	SuccessfulInputIndexes []storage.SuccessfulInputIndex `json:"successful_input_indexes,omitempty"`
-	WorkflowInstances      []automation.WorkflowInstance  `json:"workflow_instances,omitempty"`
-	WorkflowStepRuns       []automation.WorkflowStepRun   `json:"workflow_step_runs,omitempty"`
-	ScheduleCheckpoints    []storage.ScheduleCheckpoint   `json:"schedule_checkpoints,omitempty"`
-	GraphReplayCursors     []storage.GraphReplayCursor    `json:"graph_replay_cursors,omitempty"`
+	Version                   int                                   `json:"version"`
+	Procedures                []automation.Procedure                `json:"procedures,omitempty"`
+	Bindings                  []automation.Binding                  `json:"bindings,omitempty"`
+	Invocations               []automation.Invocation               `json:"invocations,omitempty"`
+	Runs                      []automation.Run                      `json:"runs,omitempty"`
+	ProcedureInferenceLedgers []automation.ProcedureInferenceLedger `json:"procedure_inference_ledgers,omitempty"`
+	SuccessfulInputIndexes    []storage.SuccessfulInputIndex        `json:"successful_input_indexes,omitempty"`
+	WorkflowInstances         []automation.WorkflowInstance         `json:"workflow_instances,omitempty"`
+	WorkflowStepRuns          []automation.WorkflowStepRun          `json:"workflow_step_runs,omitempty"`
+	ScheduleCheckpoints       []storage.ScheduleCheckpoint          `json:"schedule_checkpoints,omitempty"`
+	GraphReplayCursors        []storage.GraphReplayCursor           `json:"graph_replay_cursors,omitempty"`
 }
 
 type RaftStateMachine struct {
@@ -188,6 +189,14 @@ func (m *AutomationManager) applyAutomationMutation(ctx context.Context, rec aut
 
 func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Context, apply consensus.ApplyContext, rec automationMutationRecord) error {
 	switch rec.Kind {
+	case "procedure.create", "procedure.update", "procedure.delete", "binding.create", "binding.update", "binding.delete":
+		// Raft serializes each partition, but standalone mutations also require
+		// one atomic check-and-write section so conflicting N+1 definitions
+		// cannot both report success.
+		m.definitionMutationMu.Lock()
+		defer m.definitionMutationMu.Unlock()
+	}
+	switch rec.Kind {
 	case "procedure.create", "procedure.update":
 		var procedure automation.Procedure
 		if err := json.Unmarshal(rec.Payload, &procedure); err != nil {
@@ -208,8 +217,22 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 			} else if err != storage.ErrNotFound {
 				return mapStoreError(err)
 			}
-		} else if _, err := m.store.GetProcedure(ctx, rec.DomainID, procedure.ID); err != nil {
-			return mapStoreError(err)
+		} else {
+			existing, err := m.store.GetProcedure(ctx, rec.DomainID, procedure.ID)
+			if err != nil {
+				return mapStoreError(err)
+			}
+			existing = existing.Normalize()
+			procedure = procedure.Normalize()
+			if automationJSONEqual(existing, procedure) {
+				return nil
+			}
+			if apply.Replay && existing.Version > procedure.Version {
+				return nil
+			}
+			if procedure.Version != existing.Version+1 {
+				return fmt.Errorf("graph procedure %q version must advance from %d to %d", procedure.ID, existing.Version, existing.Version+1)
+			}
 		}
 		return mapStoreError(m.store.PutProcedure(ctx, procedure.Normalize()))
 	case "procedure.delete":
@@ -238,8 +261,22 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 			} else if err != storage.ErrNotFound {
 				return mapStoreError(err)
 			}
-		} else if _, err := m.store.GetBinding(ctx, rec.DomainID, binding.ID); err != nil {
-			return mapStoreError(err)
+		} else {
+			existing, err := m.store.GetBinding(ctx, rec.DomainID, binding.ID)
+			if err != nil {
+				return mapStoreError(err)
+			}
+			existing = existing.Normalize()
+			binding = binding.Normalize()
+			if automationJSONEqual(existing, binding) {
+				return nil
+			}
+			if apply.Replay && existing.Version > binding.Version {
+				return nil
+			}
+			if binding.Version != existing.Version+1 {
+				return fmt.Errorf("graph automation binding %q version must advance from %d to %d", binding.ID, existing.Version, existing.Version+1)
+			}
 		}
 		return mapStoreError(m.store.PutBinding(ctx, binding.Normalize()))
 	case "binding.delete":
@@ -283,6 +320,16 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 			return mapStoreError(err)
 		}
 		return mapStoreError(m.store.PutRun(ctx, run))
+	case "procedure_inference_attempt.transition":
+		var attempt automation.ProcedureInferenceAttempt
+		if err := json.Unmarshal(rec.Payload, &attempt); err != nil {
+			return err
+		}
+		attempt.DomainID = rec.DomainID
+		if strings.TrimSpace(attempt.SpaceID) == "" {
+			attempt.SpaceID = strings.TrimSpace(rec.SpaceID)
+		}
+		return m.applyProcedureInferenceAttemptTransition(ctx, attempt)
 	case "workflow_instance.upsert":
 		var instance automation.WorkflowInstance
 		if err := json.Unmarshal(rec.Payload, &instance); err != nil {
@@ -465,6 +512,11 @@ func (m *AutomationManager) restoreAutomationPartition(ctx context.Context, data
 	}
 	for _, run := range snap.Runs {
 		if err := m.store.PutRun(ctx, run); err != nil {
+			return mapStoreError(err)
+		}
+	}
+	for _, ledger := range snap.ProcedureInferenceLedgers {
+		if err := m.store.PutProcedureInferenceLedger(ctx, ledger); err != nil {
 			return mapStoreError(err)
 		}
 	}

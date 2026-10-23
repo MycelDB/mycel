@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,10 +42,10 @@ func TestGenerateTextRequiresConfiguredInference(t *testing.T) {
 func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
-	mgr := NewManager(nil).WithInferenceInvoker(inference)
-	run := automation.Run{ID: uuid.NewString()}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithInferenceInvoker(inference)
+	run := automation.Run{ID: uuid.NewString(), BindingID: "summarize-binding", BindingVersion: 1, ProcedureID: "summarize", ProcedureVersion: 1, AttemptNumber: 1}
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, OwnerPrincipalID: "owner-a", Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
-	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a", AutomationOwnerPrincipalID: "owner-a"}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, BindingID: run.BindingID, BindingVersion: run.BindingVersion, ProcedureID: run.ProcedureID, ProcedureVersion: run.ProcedureVersion, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation", OnBehalfOfPrincipalID: "principal-a", AutomationOwnerPrincipalID: "owner-a"}
 	text, err := mgr.generateWithInference(ctx, def, inv, "input words", &run)
 	if err != nil {
 		t.Fatal(err)
@@ -66,15 +67,28 @@ func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].AutomationID != def.ID || events[0].AutomationRunID != run.ID || events[0].OnBehalfOfPrincipalID != "principal-a" {
 		t.Fatalf("unexpected usage events: %#v err=%v", events, err)
 	}
+	ledger, err := mgr.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if err != nil || ledger.HighWaterSequence != 4 || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateSucceeded {
+		t.Fatalf("unexpected procedure inference ledger: %+v err=%v", ledger, err)
+	}
+	encoded, err := json.Marshal(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prohibited := range []string{"input words", "result text", "\"provider_request_id\"", "\"credential_id\"", "\"error\""} {
+		if strings.Contains(string(encoded), prohibited) {
+			t.Fatalf("procedure inference ledger contains prohibited value %q: %s", prohibited, encoded)
+		}
+	}
 }
 
 func TestGenerateTextRecordsDenialWithoutConnectorCall(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, true)
-	mgr := NewManager(nil).WithInferenceInvoker(inference)
-	run := automation.Run{ID: uuid.NewString()}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithInferenceInvoker(inference)
+	run := automation.Run{ID: uuid.NewString(), BindingID: "summarize-binding", BindingVersion: 1, ProcedureID: "summarize", ProcedureVersion: 1, AttemptNumber: 1}
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
-	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation"}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, BindingID: run.BindingID, BindingVersion: run.BindingVersion, ProcedureID: run.ProcedureID, ProcedureVersion: run.ProcedureVersion, ChangedElementID: uuid.NewString(), ActorPrincipalID: "automation"}
 	_, err := mgr.generateWithInference(ctx, def, inv, "input words", &run)
 	if !errors.Is(err, inferenceruntime.ErrDenied) {
 		t.Fatalf("generateWithInference() error = %v, want denied", err)
@@ -96,6 +110,38 @@ func TestGenerateTextRecordsDenialWithoutConnectorCall(t *testing.T) {
 	if err != nil || len(events) != 1 || events[0].Status != domaininference.UsageStatusDenied || events[0].PolicyDecisionID.String() != run.PolicyDecisionID {
 		t.Fatalf("unexpected denied usage event: %#v err=%v", events, err)
 	}
+	ledger, err := mgr.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if err != nil || ledger.HighWaterSequence != 2 || len(ledger.Attempts) != 1 {
+		t.Fatalf("unexpected denied attempt ledger: %+v err=%v", ledger, err)
+	}
+	attempt := ledger.Attempts[0]
+	if attempt.State != automation.InferenceAttemptStateDenied || !attempt.StartedAt.IsZero() || attempt.PolicyDecisionID != run.PolicyDecisionID {
+		t.Fatalf("denied attempt incorrectly crossed provider boundary: %+v", attempt)
+	}
+}
+
+func TestGenerateTextPreservesPreProviderFailureAsRetryableEvidence(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	mgr := NewManager(store).WithInferenceInvoker(preProviderFailureInference{})
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, ChangedElementID: uuid.NewString()}
+	run := automation.Run{ID: uuid.NewString(), BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1}
+	def := automation.Definition{ID: "proc", Version: 1, DomainID: domainID, Inference: automation.InferenceRef{Operation: "chat", Profile: "profile"}}
+	_, err := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if err == nil || errors.Is(err, ErrInferenceAttemptAlreadyStarted) || !strings.Contains(err.Error(), "routing unavailable") {
+		t.Fatalf("generateWithInference() error=%v", err)
+	}
+	ledger, ledgerErr := store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateFailed || !ledger.Attempts[0].StartedAt.IsZero() {
+		t.Fatalf("unexpected pre-provider evidence: %+v err=%v", ledger, ledgerErr)
+	}
+}
+
+type preProviderFailureInference struct{}
+
+func (preProviderFailureInference) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	return inferenceruntime.InvokeResponse{Status: domaininference.UsageStatusFailed}, errors.New("routing unavailable")
 }
 
 func TestAutomationDefinitionStableAcrossCredentialRotation(t *testing.T) {
@@ -114,10 +160,10 @@ func TestAutomationDefinitionStableAcrossCredentialRotation(t *testing.T) {
 func TestGenerateTextEnforcesTokenCeilings(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
-	mgr := NewManager(nil).WithInferenceInvoker(inference).WithRunCeilings(1, 1)
-	run := automation.Run{ID: uuid.NewString()}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithInferenceInvoker(inference).WithRunCeilings(1, 1)
+	run := automation.Run{ID: uuid.NewString(), BindingID: "summarize-binding", BindingVersion: 1, ProcedureID: "summarize", ProcedureVersion: 1, AttemptNumber: 1}
 	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
-	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, BindingID: run.BindingID, BindingVersion: run.BindingVersion, ProcedureID: run.ProcedureID, ProcedureVersion: run.ProcedureVersion}
 	_, err := mgr.generateWithInference(ctx, def, inv, "input words", &run)
 	if err == nil {
 		t.Fatal("expected token ceiling error")
@@ -131,6 +177,59 @@ func TestGenerateTextEnforcesTokenCeilings(t *testing.T) {
 	_, chatCalls := fake.Calls()
 	if chatCalls != 1 {
 		t.Fatalf("definition ceiling should not make another connector call, got %d", chatCalls)
+	}
+}
+
+func TestAutomationSuppressesPublicationWhenProviderInputChanges(t *testing.T) {
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := uuid.NewString()
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "before"}, Properties: map[string]any{}}
+	graphs := &automationE2EGraph{node: node}
+	sessions := automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}
+	inference := &conflictInjectingInference{text: "stale summary"}
+	inference.onFirstInvoke = func(context.Context) error {
+		graphs.node.Payload["text"] = "after"
+		return nil
+	}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
+	def := automation.Definition{ID: "summary", Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: automation.InferenceRef{Operation: "chat", Profile: "summary"}, Prompt: "Summarize", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}}}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, AutomationID: def.ID, AutomationVersion: 1, BindingID: def.ID, BindingVersion: 1, ProcedureID: def.ID, ProcedureVersion: 1, ChangedElementID: node.ID.String(), ChangedElementKind: "node", EventType: automation.EventNodeUpdated, ActorPrincipalID: automationActor}
+	if _, err := mgr.executeInvocation(ctx, def, inv); err == nil || !strings.Contains(err.Error(), "provider input changed") {
+		t.Fatalf("executeInvocation() error=%v, want stale provider input fence", err)
+	}
+	if _, ok := graphs.node.Payload["summary"]; ok {
+		t.Fatalf("stale provider output was published: %+v", graphs.node)
+	}
+	inference.mu.Lock()
+	calls := inference.invocations
+	inference.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("provider calls=%d, want 1", calls)
+	}
+}
+
+func TestAutomationSuppressesPublicationWhenImageContentChanges(t *testing.T) {
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := uuid.NewString()
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Image"}, Payload: map[string]any{"blob_id": "blob-a", "mime_type": "image/png"}, Properties: map[string]any{}}
+	graphs := &automationE2EGraph{node: node}
+	sessions := automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}
+	blobs := fakeAutomationBlobReader{blobs: map[string]fakeAutomationBlob{"blob-a": {data: []byte("before")}}}
+	inference := &conflictInjectingInference{text: "stale image description"}
+	inference.onFirstInvoke = func(context.Context) error {
+		blobs.blobs["blob-a"] = fakeAutomationBlob{data: []byte("after")}
+		return nil
+	}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference).WithBlobReader(blobs)
+	def := automation.Definition{ID: "describe", Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.blob_id"}}, Inference: automation.InferenceRef{Operation: string(domaininference.OperationImageAnalysis), Profile: "image"}, Prompt: "Describe", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.description": "$result.text"}}}}}}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, AutomationID: def.ID, AutomationVersion: 1, BindingID: def.ID, BindingVersion: 1, ProcedureID: def.ID, ProcedureVersion: 1, ChangedElementID: node.ID.String(), ChangedElementKind: "node", EventType: automation.EventNodeUpdated, ActorPrincipalID: automationActor}
+	if _, err := mgr.executeInvocation(ctx, def, inv); err == nil || !strings.Contains(err.Error(), "provider input changed") {
+		t.Fatalf("executeInvocation() error=%v, want stale image input fence", err)
+	}
+	if _, ok := graphs.node.Payload["description"]; ok {
+		t.Fatalf("stale image output was published: %+v", graphs.node)
 	}
 }
 
@@ -179,8 +278,8 @@ func TestAutomationFinalizesAfterGraphCommitCancelsRequest(t *testing.T) {
 	if commitContextError != nil {
 		t.Fatalf("session commit context error = %v, want nil", commitContextError)
 	}
-	if acknowledgements != 1 {
-		t.Fatalf("graph finalization acknowledgements = %d, want 1", acknowledgements)
+	if acknowledgements != 2 {
+		t.Fatalf("graph finalization acknowledgements = %d, want input rollback and publication commit", acknowledgements)
 	}
 }
 
@@ -222,11 +321,21 @@ func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	if processed != 1 {
 		t.Fatalf("processed = %d", processed)
 	}
-	if len(domainRevisionCalls) != 1 || domainRevisionCalls[0] != [2]string{ids.spaceID, ids.domainID.String()} {
-		t.Fatalf("domain revision calls = %#v, want target space/domain", domainRevisionCalls)
+	if len(domainRevisionCalls) != 2 {
+		t.Fatalf("domain revision calls = %#v, want input and publication revisions", domainRevisionCalls)
 	}
-	if len(beginInputs) != 1 || beginInputs[0].BaseRevision == nil || *beginInputs[0].BaseRevision != 7 {
-		t.Fatalf("begin transaction inputs = %#v, want target domain revision 7 instead of space revision 99", beginInputs)
+	for _, call := range domainRevisionCalls {
+		if call != [2]string{ids.spaceID, ids.domainID.String()} {
+			t.Fatalf("domain revision calls = %#v, want target space/domain", domainRevisionCalls)
+		}
+	}
+	if len(beginInputs) != 2 {
+		t.Fatalf("begin transaction inputs = %#v, want separate input and publication transactions", beginInputs)
+	}
+	for _, input := range beginInputs {
+		if input.BaseRevision == nil || *input.BaseRevision != 7 {
+			t.Fatalf("begin transaction inputs = %#v, want target domain revision 7 instead of space revision 99", beginInputs)
+		}
 	}
 	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
 	if err != nil {

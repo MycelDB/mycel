@@ -38,6 +38,10 @@ type Store interface {
 	DeleteRun(ctx context.Context, domainID graph.DomainID, runID string) error
 	ListRunDomains(ctx context.Context) ([]graph.DomainID, error)
 	ListRuns(ctx context.Context, domainID graph.DomainID) ([]automation.Run, error)
+	PutProcedureInferenceLedger(ctx context.Context, ledger automation.ProcedureInferenceLedger) error
+	GetProcedureInferenceLedger(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error)
+	DeleteProcedureInferenceLedger(ctx context.Context, spaceID string) error
+	ListProcedureInferenceLedgers(ctx context.Context) ([]automation.ProcedureInferenceLedger, error)
 	PutSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error
 	GetSuccessfulInputIndex(ctx context.Context, domainID graph.DomainID, automationID string, version int, elementID string, inputHash string) (SuccessfulInputIndex, error)
 	DeleteSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error

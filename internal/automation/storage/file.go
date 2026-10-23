@@ -435,6 +435,48 @@ func (s *FileStore) ListRuns(ctx context.Context, domainID graph.DomainID) ([]au
 	return out, nil
 }
 
+func (s *FileStore) PutProcedureInferenceLedger(ctx context.Context, ledger automation.ProcedureInferenceLedger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(ledger.SpaceID) == "" {
+		return fmt.Errorf("procedure inference ledger space_id is required")
+	}
+	return writeJSONAtomic(s.procedureInferenceLedgerPath(ledger.SpaceID), ledger)
+}
+
+func (s *FileStore) GetProcedureInferenceLedger(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.ProcedureInferenceLedger{}, err
+	}
+	var out automation.ProcedureInferenceLedger
+	if err := readJSON(s.procedureInferenceLedgerPath(spaceID), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteProcedureInferenceLedger(ctx context.Context, spaceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.procedureInferenceLedgerPath(spaceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListProcedureInferenceLedgers(ctx context.Context) ([]automation.ProcedureInferenceLedger, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[automation.ProcedureInferenceLedger](filepath.Join(s.root, "procedure-inference-ledgers"))
+}
+
 func (s *FileStore) PutProposal(ctx context.Context, proposal automation.Proposal) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -807,6 +849,10 @@ func (s *FileStore) bindingPath(domainID graph.DomainID, id string) string {
 
 func (s *FileStore) definitionPath(domainID graph.DomainID, id string) string {
 	return filepath.Join(s.root, "definitions", domainID.String(), safeName(id)+".json")
+}
+
+func (s *FileStore) procedureInferenceLedgerPath(spaceID string) string {
+	return filepath.Join(s.root, "procedure-inference-ledgers", safeName(spaceID)+".json")
 }
 
 func (s *FileStore) scheduleCheckpointPath(domainID graph.DomainID, automationID string) string {
