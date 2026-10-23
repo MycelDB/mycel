@@ -7,4 +7,5 @@ Automation docs cover graph-triggered and GQL-conditioned automation workflows.
 - [Clustered automation execution](clustered-automation-execution.md)
 - [Graph context automations](graph-context-automations.md)
 - [Graph procedures and automation bindings](graph-procedures-and-automation-bindings.md)
+- [Procedure inference observability and control](procedure-inference-observability-and-control.md)
 - [Standalone inference model for graph automations](../semantic/inference-for-graph-automations.md)
