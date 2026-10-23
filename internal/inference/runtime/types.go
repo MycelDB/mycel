@@ -60,6 +60,10 @@ type InvokeRequest struct {
 	SemanticRuleID      string
 	EmbeddingBindingKey string
 	SemanticIndexID     string
+	BudgetScopeID       domaininference.BudgetScopeID
+	BudgetAttemptID     domaininference.BudgetAttemptID
+	BudgetRetry         bool
+	BatchItems          int64
 	Metadata            map[string]any
 }
 

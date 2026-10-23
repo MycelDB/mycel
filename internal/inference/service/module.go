@@ -25,6 +25,8 @@ var _ Manager = (*Module)(nil)
 
 type Module struct {
 	mu                   sync.Mutex
+	budgetMu             sync.Mutex
+	budgetPersistenceErr error
 	dataDir              string
 	globalBase           inferencestorage.GlobalManager
 	global               inferencestorage.GlobalManager
@@ -123,6 +125,9 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 			}
 			if err := registry.Register(recordTypeInferenceUsage, wal.ApplierFunc(m.applyInferenceUsage)); err != nil {
 				return mycelruntime.Abort(ModuleName, "wal", "register inference usage WAL applier", err)
+			}
+			if err := registry.Register(recordTypeInferenceBudget, wal.ApplierFunc(m.applyInferenceBudget)); err != nil {
+				return mycelruntime.Abort(ModuleName, "wal", "register inference budget WAL applier", err)
 			}
 		}
 	}
@@ -463,7 +468,6 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.globalBase = global
 	m.usageBase = usage
 	if m.useMutationWrappers {
@@ -474,6 +478,10 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 		m.usage = usage
 	}
 	m.spaces = map[string]inferencestorage.SpaceManager{}
+	m.mu.Unlock()
+	m.budgetMu.Lock()
+	m.budgetPersistenceErr = nil
+	m.budgetMu.Unlock()
 	return nil
 }
 

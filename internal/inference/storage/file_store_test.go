@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
@@ -125,5 +127,43 @@ func TestSpaceManagerAndUsageLedgerRoundTrip(t *testing.T) {
 	events, err := reloadedLedger.ListUsageEvents(ctx)
 	if err != nil || len(events) != 1 || events[0].Status != domaininference.UsageStatusSucceeded {
 		t.Fatalf("unexpected usage events: %#v err=%v", events, err)
+	}
+}
+
+func TestUsageLedgerBudgetScopeRoundTripAndIsolation(t *testing.T) {
+	ctx := context.Background()
+	location := t.TempDir()
+	ledger := NewUsageLedger()
+	if err := ledger.Init(ctx, location); err != nil {
+		t.Fatalf("Init() error=%v", err)
+	}
+	now := time.Now().UTC()
+	scope := domaininference.BudgetScope{ID: "scope-1", State: domaininference.BudgetScopeActive, Limits: domaininference.BudgetLimits{MaxRequests: 1, MaxAttempts: 1, BatchingMode: domaininference.BatchingModeSingle, MaxBatchItems: 1, Deadline: now.Add(time.Hour)}, Attempts: []domaininference.BudgetAttempt{{ID: "attempt-1", RequestID: "request-1", State: domaininference.BudgetAttemptReserved}}, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour), RetentionUntil: now.Add(2 * time.Hour)}
+	if _, err := ledger.UpsertBudgetScope(ctx, scope); err != nil {
+		t.Fatalf("UpsertBudgetScope() error=%v", err)
+	}
+	scope.Attempts[0].RequestID = "mutated"
+	stored, err := ledger.GetBudgetScope(ctx, "scope-1")
+	if err != nil || stored.Attempts[0].RequestID != "request-1" {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	stored.Attempts[0].RequestID = "mutated-again"
+	stored, _ = ledger.GetBudgetScope(ctx, "scope-1")
+	if stored.Attempts[0].RequestID != "request-1" {
+		t.Fatalf("GetBudgetScope() leaked mutable state: %+v", stored)
+	}
+	reloaded := NewUsageLedger()
+	if err := reloaded.Init(ctx, location); err != nil {
+		t.Fatalf("reload Init() error=%v", err)
+	}
+	stored, err = reloaded.GetBudgetScope(ctx, "scope-1")
+	if err != nil || stored.ID != "scope-1" || len(stored.Attempts) != 1 {
+		t.Fatalf("reloaded=%+v err=%v", stored, err)
+	}
+	if err := reloaded.DeleteBudgetScope(ctx, "scope-1"); err != nil {
+		t.Fatalf("DeleteBudgetScope() error=%v", err)
+	}
+	if _, err := reloaded.GetBudgetScope(ctx, "scope-1"); !errors.Is(err, ErrBudgetScopeNotFound) {
+		t.Fatalf("GetBudgetScope() error=%v", err)
 	}
 }

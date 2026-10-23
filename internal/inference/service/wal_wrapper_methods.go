@@ -222,3 +222,18 @@ func (w *walUsageLedger) AppendUsageEvent(ctx context.Context, v model.UsageEven
 	}
 	return v, nil
 }
+func (w *walUsageLedger) UpsertBudgetScope(ctx context.Context, v model.BudgetScope) (model.BudgetScope, error) {
+	if err := w.module.commitInferenceMutation(ctx, recordTypeInferenceBudget, inferenceMutationRecord{Kind: "budget_scope.upsert", Payload: rawInference(v)}); err != nil {
+		return model.BudgetScope{}, err
+	}
+	return v, nil
+}
+func (w *walUsageLedger) GetBudgetScope(ctx context.Context, id model.BudgetScopeID) (model.BudgetScope, error) {
+	return w.inner.GetBudgetScope(ctx, id)
+}
+func (w *walUsageLedger) ListBudgetScopes(ctx context.Context) ([]model.BudgetScope, error) {
+	return w.inner.ListBudgetScopes(ctx)
+}
+func (w *walUsageLedger) DeleteBudgetScope(ctx context.Context, id model.BudgetScopeID) error {
+	return w.module.commitInferenceMutation(ctx, recordTypeInferenceBudget, inferenceMutationRecord{Kind: "budget_scope.delete", Payload: rawInference(id)})
+}

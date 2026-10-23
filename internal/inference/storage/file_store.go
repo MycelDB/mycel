@@ -21,7 +21,10 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
 
-var ErrInvalidInput = errors.New("invalid inference storage input")
+var (
+	ErrInvalidInput        = errors.New("invalid inference storage input")
+	ErrBudgetScopeNotFound = errors.New("inference budget scope not found")
+)
 
 const (
 	inferenceDirName     = "inference"
@@ -39,6 +42,7 @@ const (
 	policiesFileName     = "policies.json"
 	decisionsFileName    = "policy_decisions.json"
 	usageFileName        = "usage_events.json"
+	budgetScopesFileName = "budget_scopes.json"
 )
 
 type packagesState struct {
@@ -76,6 +80,10 @@ type decisionsState struct {
 }
 type usageState struct {
 	Events []domaininference.UsageEvent `json:"usage_events"`
+}
+
+type budgetScopesState struct {
+	Scopes []domaininference.BudgetScope `json:"budget_scopes"`
 }
 
 type globalManager struct {
@@ -601,6 +609,7 @@ type usageLedger struct {
 	encryption *encryption.Service
 	location   string
 	state      usageState
+	budgets    budgetScopesState
 }
 
 func (m *usageLedger) Init(ctx context.Context, location string) error {
@@ -616,9 +625,15 @@ func (m *usageLedger) Init(ctx context.Context, location string) error {
 	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
-	return m.readJSON(ctx, m.path(), &m.state)
+	if err := m.readJSON(ctx, m.path(), &m.state); err != nil {
+		return err
+	}
+	return m.readJSON(ctx, m.budgetScopesPath(), &m.budgets)
 }
 func (m *usageLedger) path() string { return filepath.Join(m.location, usageFileName) }
+func (m *usageLedger) budgetScopesPath() string {
+	return filepath.Join(m.location, budgetScopesFileName)
+}
 func (m *usageLedger) AppendUsageEvent(ctx context.Context, item domaininference.UsageEvent) (domaininference.UsageEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -647,6 +662,74 @@ func (m *usageLedger) ListUsageEvents(ctx context.Context) ([]domaininference.Us
 		return nil, err
 	}
 	return append([]domaininference.UsageEvent(nil), m.state.Events...), nil
+}
+
+func (m *usageLedger) UpsertBudgetScope(ctx context.Context, scope domaininference.BudgetScope) (domaininference.BudgetScope, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return scope, err
+	}
+	if strings.TrimSpace(string(scope.ID)) == "" {
+		return scope, fmt.Errorf("%w: budget scope id is required", ErrInvalidInput)
+	}
+	scope = cloneBudgetScope(scope)
+	for i, existing := range m.budgets.Scopes {
+		if existing.ID == scope.ID {
+			m.budgets.Scopes[i] = scope
+			return cloneBudgetScope(scope), m.writeJSON(ctx, m.budgetScopesPath(), m.budgets)
+		}
+	}
+	m.budgets.Scopes = append(m.budgets.Scopes, scope)
+	return cloneBudgetScope(scope), m.writeJSON(ctx, m.budgetScopesPath(), m.budgets)
+}
+
+func (m *usageLedger) GetBudgetScope(ctx context.Context, id domaininference.BudgetScopeID) (domaininference.BudgetScope, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	for _, scope := range m.budgets.Scopes {
+		if scope.ID == id {
+			return cloneBudgetScope(scope), nil
+		}
+	}
+	return domaininference.BudgetScope{}, ErrBudgetScopeNotFound
+}
+
+func (m *usageLedger) ListBudgetScopes(ctx context.Context) ([]domaininference.BudgetScope, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]domaininference.BudgetScope, 0, len(m.budgets.Scopes))
+	for _, scope := range m.budgets.Scopes {
+		out = append(out, cloneBudgetScope(scope))
+	}
+	return out, nil
+}
+
+func (m *usageLedger) DeleteBudgetScope(ctx context.Context, id domaininference.BudgetScopeID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	out := m.budgets.Scopes[:0]
+	for _, scope := range m.budgets.Scopes {
+		if scope.ID != id {
+			out = append(out, scope)
+		}
+	}
+	m.budgets.Scopes = out
+	return m.writeJSON(ctx, m.budgetScopesPath(), m.budgets)
+}
+
+func cloneBudgetScope(scope domaininference.BudgetScope) domaininference.BudgetScope {
+	scope.Attempts = append([]domaininference.BudgetAttempt(nil), scope.Attempts...)
+	return scope
 }
 
 func upsert[T any](items []T, item T, id func(T) uuid.UUID) []T {

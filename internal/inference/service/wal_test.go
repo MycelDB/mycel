@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	model "github.com/myceldb/mycel/internal/inference/model"
@@ -67,6 +68,14 @@ func TestInferenceWALWrapsGlobalSpaceAndUsageStores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
+	now := time.Now().UTC()
+	budget, err := module.CreateBudgetScope(ctx, model.BudgetScope{ID: "wal-budget", Route: model.BudgetRoute{EndpointID: endpoint.ID, ModelID: uuid.New(), CapabilityID: uuid.New(), Operation: model.OperationChat}, Limits: model.BudgetLimits{MaxRequests: 1, MaxAttempts: 1, MaxConcurrentProviderCalls: 1, BatchingMode: model.BatchingModeSingle, MaxBatchItems: 1, MaxProviderMillisPerRequest: 1000, MaxProviderMillis: 1000, Deadline: now.Add(time.Hour)}, ExpiresAt: now.Add(time.Hour), RetentionUntil: now.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("create budget: %v", err)
+	}
+	if _, _, err := module.ReserveProviderAttempt(ctx, model.BudgetReservationRequest{ScopeID: budget.ID, AttemptID: "wal-attempt", RequestID: "wal-request", Route: budget.Route, BatchItems: 1, ProviderMillis: 1000, Now: now}); err != nil {
+		t.Fatalf("reserve budget: %v", err)
+	}
 	if endpoint.ID == uuid.Nil || profile.ID == uuid.Nil || usage.ID == uuid.Nil {
 		t.Fatalf("expected ids from wal wrappers: endpoint=%s profile=%s usage=%s", endpoint.ID, profile.ID, usage.ID)
 	}
@@ -100,6 +109,10 @@ func TestInferenceWALWrapsGlobalSpaceAndUsageStores(t *testing.T) {
 	if len(events) != 1 || events[0].ID != usage.ID {
 		t.Fatalf("unexpected usage after reload: %#v", events)
 	}
+	budgetAfterReload, err := module2.GetBudgetScope(ctx, budget.ID)
+	if err != nil || budgetAfterReload.Usage.Attempts != 1 || len(budgetAfterReload.Attempts) != 1 || budgetAfterReload.Attempts[0].ID != "wal-attempt" {
+		t.Fatalf("unexpected budget after reload: %#v err=%v", budgetAfterReload, err)
+	}
 }
 
 func TestInferenceMutationRespectsLocalWriteGate(t *testing.T) {
@@ -112,6 +125,20 @@ func TestInferenceMutationRespectsLocalWriteGate(t *testing.T) {
 	}
 	if _, err := module.GlobalManager().UpsertEndpoint(ctx, model.Endpoint{Key: "openai"}); err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("expected local write gate rejection, got %v", err)
+	}
+}
+
+func TestInferenceBudgetAccountingRespectsLocalWriteGate(t *testing.T) {
+	ctx := context.Background()
+	host := runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	module := NewModule()
+	if result := module.Init(ctx, &rejectingWriteHost{Host: host}); !result.OK {
+		t.Fatalf("init: %#v", result)
+	}
+	now := time.Now().UTC()
+	_, err := module.CreateBudgetScope(ctx, model.BudgetScope{ID: "runtime-budget", Route: model.BudgetRoute{EndpointID: uuid.New(), ModelID: uuid.New(), CapabilityID: uuid.New(), Operation: model.OperationChat}, Limits: model.BudgetLimits{MaxRequests: 1, MaxAttempts: 1, MaxConcurrentProviderCalls: 1, BatchingMode: model.BatchingModeSingle, MaxBatchItems: 1, MaxProviderMillisPerRequest: 100, MaxProviderMillis: 100, Deadline: now.Add(time.Minute)}, ExpiresAt: now.Add(time.Minute), RetentionUntil: now.Add(time.Hour)})
+	if err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("CreateBudgetScope() error=%v, want local write rejection", err)
 	}
 }
 
@@ -210,6 +237,14 @@ func TestInferenceWALRecoveryReplaysMissingFiles(t *testing.T) {
 	if _, err := module.UsageLedger().AppendUsageEvent(ctx, model.UsageEvent{SpaceID: "space-1", Operation: model.OperationChat, Status: model.UsageStatusSucceeded}); err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
+	now := time.Now().UTC()
+	budget, err := module.CreateBudgetScope(ctx, model.BudgetScope{ID: "replay-budget", Route: model.BudgetRoute{EndpointID: uuid.New(), ModelID: uuid.New(), CapabilityID: uuid.New(), Operation: model.OperationChat}, Limits: model.BudgetLimits{MaxRequests: 1, MaxAttempts: 1, MaxConcurrentProviderCalls: 1, BatchingMode: model.BatchingModeSingle, MaxBatchItems: 1, MaxProviderMillisPerRequest: 1000, MaxProviderMillis: 1000, Deadline: now.Add(time.Hour)}, ExpiresAt: now.Add(time.Hour), RetentionUntil: now.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("create replay budget: %v", err)
+	}
+	if _, _, err := module.ReserveProviderAttempt(ctx, model.BudgetReservationRequest{ScopeID: budget.ID, AttemptID: "replay-attempt", RequestID: "replay-request", Route: budget.Route, BatchItems: 1, ProviderMillis: 1000, Now: now}); err != nil {
+		t.Fatalf("reserve replay budget: %v", err)
+	}
 	last := wm.LastCommittedLSN()
 	if err := wm.Close(); err != nil {
 		t.Fatalf("close wal: %v", err)
@@ -262,6 +297,59 @@ func TestInferenceWALRecoveryReplaysMissingFiles(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Operation != model.OperationChat {
 		t.Fatalf("unexpected events after replay: %#v", events)
+	}
+	budgetAfterReplay, err := module2.GetBudgetScope(ctx, budget.ID)
+	if err != nil || budgetAfterReplay.Usage.Attempts != 1 || budgetAfterReplay.Attempts[0].ID != "replay-attempt" {
+		t.Fatalf("unexpected budget after replay: %#v err=%v", budgetAfterReplay, err)
+	}
+}
+
+func TestInferenceBudgetWALFailsClosedForLegacyRecovery(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	wm, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal")})
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	defer wm.Close()
+	payload := rawInference(inferenceMutationRecord{Kind: "budget_scope.upsert", Payload: rawInference(model.BudgetScope{ID: "scope-1"})})
+	lsn, err := wm.Append(ctx, wal.PendingRecord{Type: recordTypeInferenceBudget, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		t.Fatalf("append budget record: %v", err)
+	}
+	if err := wm.Sync(ctx, lsn); err != nil {
+		t.Fatalf("sync budget record: %v", err)
+	}
+	legacyRegistry := wal.NewRegistry()
+	if err := legacyRegistry.Register(recordTypeInferenceUsage, wal.ApplierFunc(func(context.Context, wal.Record) error { return nil })); err != nil {
+		t.Fatalf("register legacy usage applier: %v", err)
+	}
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "progress", "applied.json"))
+	if _, err := wal.NewRecovery(wm, legacyRegistry, progress).Recover(ctx); err == nil || !strings.Contains(err.Error(), string(recordTypeInferenceBudget)) {
+		t.Fatalf("legacy recovery error=%v, want unsupported budget record", err)
+	}
+	applied, err := progress.AppliedLSN(ctx)
+	if err != nil || applied != 0 {
+		t.Fatalf("legacy recovery advanced progress to %s, err=%v", applied, err)
+	}
+}
+
+func TestInferenceBudgetWALRejectsUnsupportedSchemaAndMutationKinds(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))); !result.OK {
+		t.Fatalf("init: %#v", result)
+	}
+	budgetPayload := rawInference(inferenceMutationRecord{Kind: "budget_scope.upsert", Payload: rawInference(model.BudgetScope{ID: "scope-1"})})
+	if err := module.applyInferenceBudget(ctx, wal.Record{Type: recordTypeInferenceBudget, SchemaVersion: 2, Encoding: wal.PayloadEncodingJSON, Payload: budgetPayload}); err == nil || !strings.Contains(err.Error(), "schema version") {
+		t.Fatalf("unsupported budget schema error=%v", err)
+	}
+	unknownPayload := rawInference(inferenceMutationRecord{Kind: "future.mutation"})
+	if err := module.applyInferenceBudget(ctx, wal.Record{Type: recordTypeInferenceBudget, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: unknownPayload}); err == nil || !strings.Contains(err.Error(), "unsupported inference budget mutation") {
+		t.Fatalf("unknown budget mutation error=%v", err)
+	}
+	if err := module.applyInferenceUsage(ctx, wal.Record{Type: recordTypeInferenceUsage, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: unknownPayload}); err == nil || !strings.Contains(err.Error(), "unsupported inference usage mutation") {
+		t.Fatalf("unknown usage mutation error=%v", err)
 	}
 }
 
