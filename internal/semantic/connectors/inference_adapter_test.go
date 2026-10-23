@@ -66,6 +66,29 @@ func TestInferenceAdapterPreservesSanitizedRetryMetadata(t *testing.T) {
 	}
 }
 
+func TestInferenceAdapterPreservesCancellationIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := InferenceAdapter{Invoker: failingInferenceInvoker{err: inferenceconnectors.ConnectorError{Code: "network_error", Retryable: true, Err: tt.err}}}
+			_, err := adapter.Embed(context.Background(), EmbedInput{InferenceProfileID: uuid.New(), Input: "semantic text"})
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("Embed() error=%T %v, want %v identity", err, err, tt.err)
+			}
+			var failure EmbeddingFailure
+			if errors.As(err, &failure) {
+				t.Fatalf("cancellation was reclassified as provider failure: %#v", failure)
+			}
+		})
+	}
+}
+
 func TestInferenceAdapterClassifiesRateLimitFromStatusNotSubstring(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -37,6 +37,15 @@ func (a InferenceAdapter) Embed(ctx context.Context, in EmbedInput) (EmbeddingRe
 	}
 	resp, err := a.Invoker.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: in.SpaceID.String(), DomainID: in.DomainID.String(), SemanticRuleID: in.SemanticRuleID.String(), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID.String(), NodeID: in.TargetNodeID.String(), Operation: domaininference.OperationEmbeddings, UsageMode: domaininference.UsageModeSemantic, ProfileRef: in.InferenceProfile, ProfileID: domaininference.ProfileID(in.InferenceProfileID), EndpointID: domaininference.EndpointID(in.ModelEndpointID), ModelID: domaininference.ModelID(in.ModelID), CapabilityID: domaininference.CapabilityID(in.ModelEndpointCapabilityID), ActorPrincipalID: inferencePrincipalString(in.ActorPrincipalID), OnBehalfOfPrincipalID: inferencePrincipalString(in.OnBehalfOfPrincipalID), Metadata: map[string]any{"semantic_reason": in.Reason, "embedding_binding_key": in.EmbeddingBindingKey}}, Input: in.Input, SemanticRuleID: in.SemanticRuleID.String(), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: in.SemanticIndexID.String(), Metadata: map[string]any{"semantic_connector": "inference"}})
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return EmbeddingResponse{PolicyDecisionID: domainsemantic.PolicyDecisionID(resp.Decision.ID)}, ctxErr
+		}
+		if errors.Is(err, context.Canceled) {
+			return EmbeddingResponse{PolicyDecisionID: domainsemantic.PolicyDecisionID(resp.Decision.ID)}, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return EmbeddingResponse{PolicyDecisionID: domainsemantic.PolicyDecisionID(resp.Decision.ID)}, context.DeadlineExceeded
+		}
 		var connectorErr inferenceconnectors.ConnectorError
 		if errors.As(err, &connectorErr) {
 			return EmbeddingResponse{PolicyDecisionID: domainsemantic.PolicyDecisionID(resp.Decision.ID)}, EmbeddingFailure{Category: inferenceFailureCategory(connectorErr), Retryable: connectorErr.Retryable, RetryAfter: connectorErr.RetryAfter}

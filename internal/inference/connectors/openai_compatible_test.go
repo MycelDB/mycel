@@ -25,6 +25,15 @@ func TestParseRetryAfterSupportsBoundedFractionalSeconds(t *testing.T) {
 	if got := parseRetryAfter(now.Add(3*time.Second).Format(http.TimeFormat), now); got != 3*time.Second {
 		t.Fatalf("date retry-after=%s, want 3s", got)
 	}
+	if got := parseRetryAfter("86401", now); got != 0 {
+		t.Fatalf("over-limit integer retry-after=%s, want zero", got)
+	}
+	if got := parseRetryAfter("86401.0", now); got != 0 {
+		t.Fatalf("over-limit fractional retry-after=%s, want zero", got)
+	}
+	if got := parseRetryAfter(now.Add(25*time.Hour).Format(http.TimeFormat), now); got != 0 {
+		t.Fatalf("over-limit date retry-after=%s, want zero", got)
+	}
 	if got := parseRetryAfter("invalid", now); got != 0 {
 		t.Fatalf("invalid retry-after=%s, want zero", got)
 	}

@@ -349,16 +349,17 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 	if value == "" {
 		return 0
 	}
-	if seconds, err := strconv.ParseUint(value, 10, 31); err == nil {
-		return time.Duration(seconds) * time.Second
+	const maxRetryAfter = 24 * time.Hour
+	var delay time.Duration
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+		delay = time.Duration(seconds * float64(time.Second))
+	} else if retryAt, err := http.ParseTime(value); err == nil && retryAt.After(now) {
+		delay = retryAt.Sub(now)
 	}
-	if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds > 0 && seconds <= float64((24*time.Hour)/time.Second) {
-		return time.Duration(seconds * float64(time.Second))
+	if delay <= 0 || delay > maxRetryAfter {
+		return 0
 	}
-	if retryAt, err := http.ParseTime(value); err == nil && retryAt.After(now) {
-		return retryAt.Sub(now)
-	}
-	return 0
+	return delay
 }
 
 func providerPayloadError(statusCode int, status string, payload *struct {
