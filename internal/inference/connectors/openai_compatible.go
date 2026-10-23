@@ -45,8 +45,8 @@ func (c OpenAICompatible) Embed(ctx context.Context, req EmbeddingRequest) (Embe
 			Embedding []float64 `json:"embedding"`
 		} `json:"data"`
 		Usage struct {
-			PromptTokens int64 `json:"prompt_tokens"`
-			TotalTokens  int64 `json:"total_tokens"`
+			PromptTokens *int64 `json:"prompt_tokens"`
+			TotalTokens  *int64 `json:"total_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
@@ -55,12 +55,9 @@ func (c OpenAICompatible) Embed(ctx context.Context, req EmbeddingRequest) (Embe
 	if len(decoded.Data) == 0 || len(decoded.Data[0].Embedding) == 0 {
 		return EmbeddingResponse{}, ConnectorError{Code: "empty_embedding", Err: fmt.Errorf("embedding provider returned empty vector")}
 	}
-	usage := domaininference.Usage{InputTokens: decoded.Usage.PromptTokens, TotalTokens: decoded.Usage.TotalTokens, TokenCountSource: "provider_reported"}
-	if usage.TotalTokens == 0 && usage.InputTokens > 0 {
-		usage.TotalTokens = usage.InputTokens
-	}
-	if usage.TotalTokens == 0 {
-		usage.TokenCountSource = "unavailable"
+	usage := domaininference.Usage{InputTokens: openAIUsageValue(decoded.Usage.PromptTokens), TotalTokens: openAIUsageValue(decoded.Usage.TotalTokens), TokenCountSource: "unavailable"}
+	if decoded.Usage.PromptTokens != nil && decoded.Usage.TotalTokens != nil && usage.InputTokens >= 0 && usage.TotalTokens > 0 && usage.TotalTokens == usage.InputTokens {
+		usage.TokenCountSource = "provider_reported"
 	}
 	return EmbeddingResponse{Vector: decoded.Data[0].Embedding, ProviderRequestID: requestID, Usage: usage}, nil
 }
@@ -102,9 +99,9 @@ func (c OpenAICompatible) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-			TotalTokens      int64 `json:"total_tokens"`
+			PromptTokens     *int64 `json:"prompt_tokens"`
+			CompletionTokens *int64 `json:"completion_tokens"`
+			TotalTokens      *int64 `json:"total_tokens"`
 		} `json:"usage"`
 		Error *struct {
 			Message string `json:"message"`
@@ -125,12 +122,9 @@ func (c OpenAICompatible) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 		return ChatResponse{ProviderRequestID: requestID}, ConnectorError{Code: "empty_chat_response", Err: fmt.Errorf("chat provider returned no choices")}
 	}
 	text := decoded.Choices[0].Message.Content
-	usage := domaininference.Usage{InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens, TotalTokens: decoded.Usage.TotalTokens, TokenCountSource: "provider_reported"}
-	if usage.TotalTokens == 0 && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
-		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	}
-	if usage.TotalTokens == 0 {
-		usage.TokenCountSource = "unavailable"
+	usage := domaininference.Usage{InputTokens: openAIUsageValue(decoded.Usage.PromptTokens), OutputTokens: openAIUsageValue(decoded.Usage.CompletionTokens), TotalTokens: openAIUsageValue(decoded.Usage.TotalTokens), TokenCountSource: "unavailable"}
+	if decoded.Usage.PromptTokens != nil && decoded.Usage.CompletionTokens != nil && decoded.Usage.TotalTokens != nil && usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.TotalTokens > 0 && usage.TotalTokens == usage.InputTokens+usage.OutputTokens {
+		usage.TokenCountSource = "provider_reported"
 	}
 	out := ChatResponse{Text: text, ProviderRequestID: requestID, Usage: usage}
 	if responseFormat := strings.ToLower(strings.TrimSpace(req.Parameters.ResponseFormat)); responseFormat == "json" || responseFormat == "json_object" {
@@ -140,6 +134,13 @@ func (c OpenAICompatible) Chat(ctx context.Context, req ChatRequest) (ChatRespon
 		}
 	}
 	return out, nil
+}
+
+func openAIUsageValue(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func validateEmbeddingRequest(req EmbeddingRequest) error {
@@ -392,8 +393,14 @@ func firstHeader(res *http.Response, names ...string) string {
 }
 
 func (c OpenAICompatible) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 90 * time.Second}
 	}
-	return &http.Client{Timeout: 90 * time.Second}
+	// A followed 307/308 would create an unreserved second provider attempt and
+	// can forward credentials to another origin. Return the redirect response to
+	// the caller instead; retries require a new daemon budget reservation.
+	bounded := *client
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &bounded
 }

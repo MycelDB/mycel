@@ -3,10 +3,12 @@ package connectors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,8 +71,30 @@ func TestOpenAICompatibleEmbeddingRequestShape(t *testing.T) {
 	if gotPath != "/embeddings" || gotAuth != "Bearer secret" || gotBody["model"] != "provider-model" || gotBody["input"] != "hello world" {
 		t.Fatalf("unexpected request path=%s auth=%s body=%#v", gotPath, gotAuth, gotBody)
 	}
-	if resp.ProviderRequestID != "req-embed" || len(resp.Vector) != 2 || resp.Usage.TotalTokens != 3 {
+	if resp.ProviderRequestID != "req-embed" || len(resp.Vector) != 2 || resp.Usage.TotalTokens != 3 || resp.Usage.TokenCountSource != "provider_reported" {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestOpenAICompatibleDoesNotFollowProviderRedirects(t *testing.T) {
+	var targetCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetCalls.Add(1)
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+
+	_, err := OpenAICompatible{}.Embed(context.Background(), EmbeddingRequest{Endpoint: endpoint(redirect.URL, domaininference.OperationEmbeddings), Model: model(domaininference.OperationEmbeddings), Capability: capability(domaininference.OperationEmbeddings), Credential: credential(domaininference.CredentialAuthNone), Input: "hello"})
+	var connectorErr ConnectorError
+	if !errors.As(err, &connectorErr) || connectorErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("Embed() error=%T %v", err, err)
+	}
+	if targetCalls.Load() != 0 {
+		t.Fatalf("redirect target calls=%d", targetCalls.Load())
 	}
 }
 
@@ -97,8 +121,45 @@ func TestOpenAICompatibleChatRequestShape(t *testing.T) {
 	if _, ok := gotBody["response_format"].(map[string]any); !ok {
 		t.Fatalf("expected response_format json_object, body=%#v", gotBody)
 	}
-	if resp.ProviderRequestID != "chatcmpl-test" || resp.Text == "" || resp.JSON["ok"] != true || resp.Usage.TotalTokens != 6 {
+	if resp.ProviderRequestID != "chatcmpl-test" || resp.Text == "" || resp.JSON["ok"] != true || resp.Usage.TotalTokens != 6 || resp.Usage.TokenCountSource != "provider_reported" {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestOpenAICompatibleIncompleteUsageIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation domaininference.Operation
+		payload   string
+	}{
+		{name: "embedding total only", operation: domaininference.OperationEmbeddings, payload: `{"data":[{"embedding":[0.1]}],"usage":{"total_tokens":3}}`},
+		{name: "embedding inconsistent", operation: domaininference.OperationEmbeddings, payload: `{"data":[{"embedding":[0.1]}],"usage":{"prompt_tokens":2,"total_tokens":3}}`},
+		{name: "chat total only", operation: domaininference.OperationChat, payload: `{"choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":3}}`},
+		{name: "chat inconsistent", operation: domaininference.OperationChat, payload: `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":3}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(tt.payload)) }))
+			defer srv.Close()
+			connector := OpenAICompatible{}
+			var usage domaininference.Usage
+			if tt.operation == domaininference.OperationEmbeddings {
+				response, err := connector.Embed(context.Background(), EmbeddingRequest{Endpoint: endpoint(srv.URL, tt.operation), Model: model(tt.operation), Capability: capability(tt.operation), Credential: credential(domaininference.CredentialAuthNone), Input: "hello"})
+				if err != nil {
+					t.Fatalf("Embed() error=%v", err)
+				}
+				usage = response.Usage
+			} else {
+				response, err := connector.Chat(context.Background(), ChatRequest{Endpoint: endpoint(srv.URL, tt.operation), Model: model(tt.operation), Capability: capability(tt.operation), Credential: credential(domaininference.CredentialAuthNone), Messages: []domaininference.Message{{Role: "user", Content: "hello"}}})
+				if err != nil {
+					t.Fatalf("Chat() error=%v", err)
+				}
+				usage = response.Usage
+			}
+			if usage.TokenCountSource != "unavailable" {
+				t.Fatalf("usage=%+v, want unavailable source", usage)
+			}
+		})
 	}
 }
 

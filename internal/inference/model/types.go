@@ -194,6 +194,8 @@ type Capability struct {
 	ProviderModelOverride string         `json:"provider_model_override,omitempty"`
 	SupportsJSONMode      bool           `json:"supports_json_mode,omitempty"`
 	SupportsToolCalls     bool           `json:"supports_tool_calls,omitempty"`
+	BatchingMode          BatchingMode   `json:"batching_mode,omitempty"`
+	MaxBatchItems         int            `json:"max_batch_items,omitempty"`
 	MaxInputTokens        int            `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens       int            `json:"max_output_tokens,omitempty"`
 	DefaultParameters     map[string]any `json:"default_parameters,omitempty"`
@@ -371,6 +373,8 @@ type PolicyDecision struct {
 type UsageEvent struct {
 	ID                    UsageEventID      `json:"id"`
 	RequestID             string            `json:"request_id,omitempty"`
+	BudgetScopeID         BudgetScopeID     `json:"budget_scope_id,omitempty"`
+	BudgetAttemptID       BudgetAttemptID   `json:"budget_attempt_id,omitempty"`
 	Operation             Operation         `json:"operation"`
 	UsageMode             UsageMode         `json:"usage_mode"`
 	Status                UsageStatus       `json:"status"`

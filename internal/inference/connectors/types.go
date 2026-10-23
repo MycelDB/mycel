@@ -55,6 +55,25 @@ type Connector interface {
 	ChatConnector
 }
 
+type BatchingDescriptor struct {
+	Mode     domaininference.BatchingMode
+	MaxItems int64
+}
+
+type BatchingDescriptorProvider interface {
+	BatchingDescriptor() BatchingDescriptor
+}
+
+func ConnectorBatchingDescriptor(connector Connector) BatchingDescriptor {
+	if provider, ok := connector.(BatchingDescriptorProvider); ok {
+		descriptor := provider.BatchingDescriptor()
+		if descriptor.Mode != "" && descriptor.MaxItems > 0 {
+			return descriptor
+		}
+	}
+	return BatchingDescriptor{Mode: domaininference.BatchingModeSingle, MaxItems: 1}
+}
+
 type ConnectorError struct {
 	Code       string
 	StatusCode int
