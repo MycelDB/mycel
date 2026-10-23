@@ -24,6 +24,7 @@ import (
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
+	semanticdiagnostics "github.com/myceldb/mycel/internal/semantic/diagnostics"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
@@ -1433,7 +1434,7 @@ func (m *Module) Search(ctx context.Context, in SearchInput) (semanticsearch.Res
 	} else if m.raftGroups != nil && leader == 0 {
 		return semanticsearch.Result{}, fmt.Errorf("semantic raft partition for space %s has no leader", in.SpaceID)
 	} else if forward {
-		trace.setStage("forward-to-leader")
+		trace.SetStage("forward-to-leader")
 		var res raftSemanticSearchResponse
 		if err := m.forwardRaftSemanticRead(ctx, leader, raftSemanticReadRequest{Op: "search", SpaceID: in.SpaceID, Search: in}, &res); err != nil {
 			return semanticsearch.Result{}, err
@@ -1458,7 +1459,7 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
 	}
-	trace.setStage("validate-projection-before-search")
+	trace.SetStage("validate-projection-before-search")
 	projectionSnapshot, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, true, nil)
 	if err != nil {
 		return semanticsearch.Result{}, err
@@ -1466,7 +1467,7 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
 	}
-	trace.setStage("open-space-manager")
+	trace.SetStage("open-space-manager")
 	mgr, err := m.baseSpaceManager(ctx, in.SpaceID)
 	if err != nil {
 		return semanticsearch.Result{}, err
@@ -1481,10 +1482,10 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 		Connector:     m.semanticEmbeddingConnector(global, in.ActorPrincipalID),
 		VectorBackend: m.localVectorBackend(),
 		ObserveStage: func(plannerStage string) {
-			trace.setStage("planner-" + plannerStage)
+			trace.SetStage("planner-" + plannerStage)
 		},
 	}
-	trace.setStage("planner-search")
+	trace.SetStage("planner-search")
 	result, err := planner.Search(ctx, semanticsearch.Input{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleIDs: in.SemanticRuleIDs, EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexIDs: in.SemanticIndexIDs, Text: in.Text, Limit: in.Limit, MinScore: in.MinScore, ActorPrincipalID: in.ActorPrincipalID})
 	if err != nil {
 		return result, err
@@ -1492,7 +1493,7 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	trace.setStage("validate-projection-after-search")
+	trace.SetStage("validate-projection-after-search")
 	if projectionSnapshot != nil {
 		searchedBindings := make(map[semanticProjectionBindingKey]semanticProjectionObservation, len(result.ProjectionSearchBindings))
 		for _, binding := range result.ProjectionSearchBindings {
@@ -1510,60 +1511,17 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 			return semanticsearch.Result{}, err
 		}
 	}
-	trace.setStage("validate-leadership-after-search")
+	trace.SetStage("validate-leadership-after-search")
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return semanticsearch.Result{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
 	}
-	trace.setStage("complete")
+	trace.SetStage("complete")
 	return result, nil
 }
 
-type semanticSearchCancellationTrace struct {
-	mu      sync.Mutex
-	once    sync.Once
-	logger  *slog.Logger
-	stage   string
-	started time.Time
-	done    chan struct{}
-}
-
-func (m *Module) beginSemanticSearchCancellationTrace(ctx context.Context, stage string) (*semanticSearchCancellationTrace, func()) {
-	trace := &semanticSearchCancellationTrace{logger: m.logger, stage: stage, started: time.Now(), done: make(chan struct{})}
-	stopCallback := context.AfterFunc(ctx, func() { trace.log(ctx.Err()) })
-	return trace, func() {
-		if stopCallback() {
-			trace.finishWithoutLog()
-		}
-		<-trace.done
-	}
-}
-
-func (t *semanticSearchCancellationTrace) setStage(stage string) {
-	t.mu.Lock()
-	t.stage = stage
-	t.mu.Unlock()
-}
-
-func (t *semanticSearchCancellationTrace) log(err error) {
-	t.once.Do(func() {
-		defer close(t.done)
-		if t.logger == nil {
-			return
-		}
-		t.mu.Lock()
-		stage := t.stage
-		t.mu.Unlock()
-		failureClass := "canceled"
-		if errors.Is(err, context.DeadlineExceeded) {
-			failureClass = "deadline_exceeded"
-		}
-		t.logger.Warn("semantic search canceled", "stage", stage, "duration", time.Since(t.started).Round(time.Millisecond), "failure_class", failureClass)
-	})
-}
-
-func (t *semanticSearchCancellationTrace) finishWithoutLog() {
-	t.once.Do(func() { close(t.done) })
+func (m *Module) beginSemanticSearchCancellationTrace(ctx context.Context, stage string) (*semanticdiagnostics.CancellationTrace, func()) {
+	return semanticdiagnostics.BeginCancellationTrace(ctx, m.logger, stage, "semantic search canceled")
 }

@@ -14,6 +14,7 @@ import (
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphsvc "github.com/myceldb/mycel/internal/graph/service"
 	hybridsearch "github.com/myceldb/mycel/internal/search/hybrid"
+	semanticdiagnostics "github.com/myceldb/mycel/internal/semantic/diagnostics"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
@@ -25,10 +26,10 @@ func TestSemanticSearchCancellationDiagnosticUsesBoundedStageWhileRequestRemains
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	ctx, cancel := context.WithCancel(context.Background())
-	trace, _ := beginSemanticSearchCancellationTrace(ctx, logger, "authorize-domain", "semantic search request canceled")
-	trace.setStage("hydrate-graph-results")
+	trace, _ := semanticdiagnostics.BeginCancellationTrace(ctx, logger, "authorize-domain", "semantic search request canceled")
+	trace.SetStage("hydrate-graph-results")
 	cancel()
-	<-trace.done
+	<-trace.Done()
 	got := logs.String()
 	if !strings.Contains(got, "semantic search request canceled") || !strings.Contains(got, "stage=hydrate-graph-results") || !strings.Contains(got, "failure_class=canceled") {
 		t.Fatalf("cancellation diagnostic = %q", got)

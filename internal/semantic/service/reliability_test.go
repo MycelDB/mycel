@@ -29,7 +29,7 @@ func TestSemanticSearchCancellationDiagnosticUsesBoundedStageWhileForwardRemains
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	trace, _ := module.beginSemanticSearchCancellationTrace(ctx, "forward-to-leader")
-	<-trace.done
+	<-trace.Done()
 	got := logs.String()
 	if !strings.Contains(got, "semantic search canceled") || !strings.Contains(got, "stage=forward-to-leader") || !strings.Contains(got, "failure_class=deadline_exceeded") {
 		t.Fatalf("semantic search diagnostic = %q", got)

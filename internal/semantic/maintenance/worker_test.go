@@ -20,15 +20,7 @@ import (
 
 func TestWorkerCompletesRefreshWithNonForcedBackfill(t *testing.T) {
 	ctx := context.Background()
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	indexID := domainsemantic.SemanticIndexID(uuid.New())
-	nodeID := graph.NodeID(uuid.New())
-	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
-	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
-	if err != nil {
-		t.Fatalf("upsert work: %v", err)
-	}
+	_, _, _, nodeID, spaceMgr, maintenanceMgr, item := newWorkerTestItem(t, ctx, domainsemantic.SemanticDirtyWorkActionRefresh)
 	runner := &fakeBackfillRunner{}
 	res, err := (Worker{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, Config: WorkerConfig{MaxBatchSize: 10}}).ProcessOnce(ctx, 0)
 	if err != nil {
@@ -48,15 +40,7 @@ func TestWorkerCompletesRefreshWithNonForcedBackfill(t *testing.T) {
 
 func TestWorkerReauthorizesBeforeDurableCompletion(t *testing.T) {
 	ctx := context.Background()
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	indexID := domainsemantic.SemanticIndexID(uuid.New())
-	nodeID := graph.NodeID(uuid.New())
-	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
-	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
-	if err != nil {
-		t.Fatalf("upsert work: %v", err)
-	}
+	_, _, _, _, spaceMgr, maintenanceMgr, item := newWorkerTestItem(t, ctx, domainsemantic.SemanticDirtyWorkActionRefresh)
 	authorizeCalls := 0
 	worker := Worker{
 		SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: &fakeBackfillRunner{}, Config: WorkerConfig{MaxBatchSize: 1},
@@ -84,15 +68,7 @@ func TestWorkerReauthorizesBeforeDurableCompletion(t *testing.T) {
 
 func TestWorkerRetryableFailureUsesBackoff(t *testing.T) {
 	ctx := context.Background()
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	indexID := domainsemantic.SemanticIndexID(uuid.New())
-	nodeID := graph.NodeID(uuid.New())
-	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
-	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
-	if err != nil {
-		t.Fatalf("upsert work: %v", err)
-	}
+	_, _, _, _, spaceMgr, maintenanceMgr, item := newWorkerTestItem(t, ctx, domainsemantic.SemanticDirtyWorkActionRefresh)
 	runner := &fakeBackfillRunner{err: errors.New("rate limit exceeded")}
 	res, err := (Worker{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, Config: WorkerConfig{RetryBaseDelay: time.Minute, RetryMaxDelay: time.Hour}}).ProcessOnce(ctx, 1)
 	if err != nil {
@@ -183,15 +159,7 @@ func TestSemanticBackfillFailureNormalizesUnknownTypedCategory(t *testing.T) {
 
 func TestWorkerPreservesRetryableBackfillRecordFailure(t *testing.T) {
 	ctx := context.Background()
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	indexID := domainsemantic.SemanticIndexID(uuid.New())
-	nodeID := graph.NodeID(uuid.New())
-	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
-	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
-	if err != nil {
-		t.Fatalf("upsert work: %v", err)
-	}
+	_, _, _, nodeID, spaceMgr, maintenanceMgr, item := newWorkerTestItem(t, ctx, domainsemantic.SemanticDirtyWorkActionRefresh)
 	retryStarted := time.Now()
 	runner := &fakeBackfillRunner{result: backfill.Result{FailedCount: 1, Failures: []backfill.Failure{{NodeID: nodeID, Error: "semantic embedding failed (rate_limited)", Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond}}}}
 	res, err := (Worker{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, Config: WorkerConfig{RetryBaseDelay: time.Minute, RetryMaxDelay: time.Hour}}).ProcessOnce(ctx, 1)
@@ -216,15 +184,7 @@ func TestWorkerPreservesRetryableBackfillRecordFailure(t *testing.T) {
 
 func TestWorkerPermanentFailureMarksFailed(t *testing.T) {
 	ctx := context.Background()
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	indexID := domainsemantic.SemanticIndexID(uuid.New())
-	nodeID := graph.NodeID(uuid.New())
-	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
-	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
-	if err != nil {
-		t.Fatalf("upsert work: %v", err)
-	}
+	_, _, _, _, spaceMgr, maintenanceMgr, item := newWorkerTestItem(t, ctx, domainsemantic.SemanticDirtyWorkActionRefresh)
 	runner := &fakeBackfillRunner{err: errors.New("semantic index disabled")}
 	res, err := (Worker{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner}).ProcessOnce(ctx, 1)
 	if err != nil {
@@ -411,6 +371,20 @@ func (b *countingLatestRecordBackend) EnsureSearchIndexRecord(ctx context.Contex
 func (b *countingLatestRecordBackend) ListRecords(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
 	b.HistoricalLists++
 	return b.Lister.ListRecords(ctx, spaceID, semanticIndexID)
+}
+
+func newWorkerTestItem(t *testing.T, ctx context.Context, action domainsemantic.SemanticDirtyWorkAction) (domainspace.SpaceID, graph.DomainID, domainsemantic.SemanticIndexID, graph.NodeID, storesemantic.SpaceManager, storesemantic.MaintenanceManager, domainsemantic.SemanticDirtyWorkItem) {
+	t.Helper()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
+	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: action})
+	if err != nil {
+		t.Fatalf("upsert work: %v", err)
+	}
+	return spaceID, domainID, indexID, nodeID, spaceMgr, maintenanceMgr, item
 }
 
 func newWorkerManagers(t *testing.T, ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, indexID domainsemantic.SemanticIndexID) (storesemantic.SpaceManager, storesemantic.MaintenanceManager) {

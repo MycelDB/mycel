@@ -56,67 +56,38 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	}
 }
 
-func TestPlannerRetainsEmbeddingCancellationStage(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	env := newSearchEnv(t)
-	env.addRule(t, "cancel-embedding", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
-	env.planner.Connector = cancelingSearchConnector{cancel: cancel}
-	var stages []string
-	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
-	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Search() error = %v, want context cancellation", err)
+func TestPlannerRetainsDependencyCancellationStage(t *testing.T) {
+	tests := []struct {
+		name       string
+		dependency string
+		succeed    bool
+		wantStage  string
+	}{
+		{name: "embedding failure", dependency: "embedding", wantStage: "embed-query"},
+		{name: "embedding success", dependency: "embedding", succeed: true, wantStage: "embed-query"},
+		{name: "vector failure", dependency: "vector", wantStage: "search-vector-index"},
+		{name: "vector success", dependency: "vector", succeed: true, wantStage: "search-vector-index"},
 	}
-	if got := stages[len(stages)-1]; got != "embed-query" {
-		t.Fatalf("last stage = %q, want embed-query (all=%v)", got, stages)
-	}
-}
-
-func TestPlannerRetainsEmbeddingStageWhenDependencySucceedsAfterCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	env := newSearchEnv(t)
-	env.addRule(t, "cancel-embedding-success", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
-	env.planner.Connector = cancelingSearchConnector{cancel: cancel, succeed: true}
-	var stages []string
-	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
-	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Search() error = %v, want context cancellation", err)
-	}
-	if got := stages[len(stages)-1]; got != "embed-query" {
-		t.Fatalf("last stage = %q, want embed-query (all=%v)", got, stages)
-	}
-}
-
-func TestPlannerRetainsVectorSearchCancellationStage(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	env := newSearchEnv(t)
-	env.addRule(t, "cancel-vector", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
-	env.planner.VectorBackend = cancelingSearchBackend{cancel: cancel}
-	var stages []string
-	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
-	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Search() error = %v, want context cancellation", err)
-	}
-	if got := stages[len(stages)-1]; got != "search-vector-index" {
-		t.Fatalf("last stage = %q, want search-vector-index (all=%v)", got, stages)
-	}
-}
-
-func TestPlannerRetainsVectorStageWhenDependencySucceedsAfterCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	env := newSearchEnv(t)
-	env.addRule(t, "cancel-vector-success", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
-	env.planner.VectorBackend = cancelingSearchBackend{cancel: cancel, succeed: true}
-	var stages []string
-	env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
-	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Search() error = %v, want context cancellation", err)
-	}
-	if got := stages[len(stages)-1]; got != "search-vector-index" {
-		t.Fatalf("last stage = %q, want search-vector-index (all=%v)", got, stages)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			env := newSearchEnv(t)
+			env.addRule(t, "cancel-dependency", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+			if tt.dependency == "embedding" {
+				env.planner.Connector = cancelingSearchConnector{cancel: cancel, succeed: tt.succeed}
+			} else {
+				env.planner.VectorBackend = cancelingSearchBackend{cancel: cancel, succeed: tt.succeed}
+			}
+			var stages []string
+			env.planner.ObserveStage = func(stage string) { stages = append(stages, stage) }
+			_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 1})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Search() error = %v, want context cancellation", err)
+			}
+			if got := stages[len(stages)-1]; got != tt.wantStage {
+				t.Fatalf("last stage = %q, want %s (all=%v)", got, tt.wantStage, stages)
+			}
+		})
 	}
 }
 
