@@ -1,6 +1,10 @@
 package connectors
 
 import (
+	"fmt"
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	identity "github.com/myceldb/mycel/internal/identity/model"
@@ -28,6 +32,20 @@ type EmbedInput struct {
 	OnBehalfOfPrincipalID     identity.PrincipalID
 	Input                     string
 	Reason                    string
+}
+
+type EmbeddingFailure struct {
+	Category   string
+	Retryable  bool
+	RetryAfter time.Duration
+}
+
+func (e EmbeddingFailure) Error() string {
+	category := strings.TrimSpace(e.Category)
+	if category == "" {
+		category = "provider_error"
+	}
+	return fmt.Sprintf("semantic embedding failed (%s)", category)
 }
 
 type EmbeddingResponse struct {

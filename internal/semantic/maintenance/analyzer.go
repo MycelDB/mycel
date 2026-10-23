@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -1042,7 +1043,7 @@ func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWo
 			return err
 		}
 		if result.FailedCount > 0 {
-			return fmt.Errorf("semantic work produced %d failed records", result.FailedCount)
+			return semanticBackfillFailure(result)
 		}
 		return nil
 	}
@@ -1182,27 +1183,57 @@ func (w Worker) logFailure(item domainsemantic.SemanticDirtyWorkItem, failure st
 	w.Logger.Warn("semantic maintenance work failed", "work_item_id", item.ID.String(), "space_id", item.SpaceID.String(), "domain_id", item.DomainID.String(), "semantic_index_id", item.SemanticIndexID.String(), "target_node_id", item.TargetNodeID.String(), "category", failure.Category, "retryable", failure.Retryable, "attempts", item.Attempts)
 }
 
+type semanticWorkFailure struct {
+	category   string
+	retryable  bool
+	retryAfter time.Duration
+}
+
+func (e semanticWorkFailure) Error() string {
+	if e.category == "rate_limited" {
+		return "semantic work failed (rate_limited)"
+	}
+	return "semantic work failed (provider temporarily unavailable)"
+}
+
+func semanticBackfillFailure(result backfill.Result) error {
+	permanentCategory := ""
+	retryableCategory := ""
+	var maxRetryAfter time.Duration
+	for _, failure := range result.Failures {
+		category, retryable := classifyFailureMessage(failure.Error)
+		if strings.TrimSpace(failure.Category) != "" {
+			category = normalizeFailureCategory(failure.Category)
+			retryable = failure.Retryable
+		}
+		if !retryable {
+			permanentCategory = preferredFailureCategory(permanentCategory, category)
+			continue
+		}
+		retryableCategory = preferredFailureCategory(retryableCategory, category)
+		if failure.RetryAfter > maxRetryAfter {
+			maxRetryAfter = failure.RetryAfter
+		}
+	}
+	if permanentCategory != "" {
+		return semanticWorkFailure{category: permanentCategory}
+	}
+	if retryableCategory != "" {
+		return semanticWorkFailure{category: retryableCategory, retryable: true, retryAfter: maxRetryAfter}
+	}
+	return fmt.Errorf("semantic work produced %d failed records", result.FailedCount)
+}
+
 func DefaultClassifyFailure(err error, item domainsemantic.SemanticDirtyWorkItem, cfg WorkerConfig, now time.Time) storesemantic.WorkFailure {
 	message := ""
 	if err != nil {
 		message = err.Error()
 	}
-	category := "internal_error"
-	retryable := false
-	lower := strings.ToLower(message)
-	switch {
-	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limited") || strings.Contains(lower, "429"):
-		category = "rate_limited"
-		retryable = true
-	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") || strings.Contains(lower, "temporar") || strings.Contains(lower, "unavailable") || strings.Contains(lower, "connection reset"):
-		category = "provider_error"
-		retryable = true
-	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy denies") || strings.Contains(lower, "inference profile") || strings.Contains(lower, "inference policy"):
-		category = "authorization_error"
-	case strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "required") || strings.Contains(lower, "invalid"):
-		category = "configuration_error"
-	case strings.Contains(lower, "vector"):
-		category = "vector_store_error"
+	category, retryable := classifyFailureMessage(message)
+	var typed semanticWorkFailure
+	if errors.As(err, &typed) {
+		category = typed.category
+		retryable = typed.retryable
 	}
 	// Provider and connector errors may contain echoed request content, secrets,
 	// or response bodies. Persist only an allowlisted category diagnostic.
@@ -1210,10 +1241,70 @@ func DefaultClassifyFailure(err error, item domainsemantic.SemanticDirtyWorkItem
 	failure := storesemantic.WorkFailure{FailedAt: now, Category: category, Message: safeMessage, Retryable: retryable}
 	if retryable {
 		delay := backoffDelay(item.Attempts, cfg.RetryBaseDelay, cfg.RetryMaxDelay)
+		if errors.As(err, &typed) && typed.retryAfter > 0 {
+			delay = typed.retryAfter
+			if cfg.RetryMaxDelay > 0 && delay > cfg.RetryMaxDelay {
+				delay = cfg.RetryMaxDelay
+			}
+		}
 		next := now.Add(delay)
 		failure.NextRunAt = &next
 	}
 	return failure
+}
+
+func normalizeFailureCategory(category string) string {
+	switch strings.TrimSpace(category) {
+	case "rate_limited", "provider_error", "provider_rejected", "authorization_error", "configuration_error", "vector_store_error", "internal_error":
+		return strings.TrimSpace(category)
+	default:
+		return "internal_error"
+	}
+}
+
+func preferredFailureCategory(current, candidate string) string {
+	candidate = normalizeFailureCategory(candidate)
+	if current == "" || failureCategoryPriority(candidate) < failureCategoryPriority(current) {
+		return candidate
+	}
+	return current
+}
+
+func failureCategoryPriority(category string) int {
+	switch normalizeFailureCategory(category) {
+	case "authorization_error":
+		return 0
+	case "configuration_error":
+		return 1
+	case "provider_rejected":
+		return 2
+	case "vector_store_error":
+		return 3
+	case "rate_limited":
+		return 4
+	case "provider_error":
+		return 5
+	default:
+		return 6
+	}
+}
+
+func classifyFailureMessage(message string) (string, bool) {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limited") || strings.Contains(lower, "429"):
+		return "rate_limited", true
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline") || strings.Contains(lower, "temporar") || strings.Contains(lower, "unavailable") || strings.Contains(lower, "connection reset"):
+		return "provider_error", true
+	case strings.Contains(lower, "credential") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission") || strings.Contains(lower, "policy denies") || strings.Contains(lower, "inference profile") || strings.Contains(lower, "inference policy"):
+		return "authorization_error", false
+	case strings.Contains(lower, "not found") || strings.Contains(lower, "disabled") || strings.Contains(lower, "required") || strings.Contains(lower, "invalid"):
+		return "configuration_error", false
+	case strings.Contains(lower, "vector"):
+		return "vector_store_error", false
+	default:
+		return "internal_error", false
+	}
 }
 
 func backoffDelay(attempts int, base time.Duration, max time.Duration) time.Duration {

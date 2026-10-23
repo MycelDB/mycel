@@ -3,6 +3,7 @@ package backfill
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
@@ -83,6 +84,9 @@ type Skipped struct {
 }
 
 type Failure struct {
-	NodeID graph.NodeID `json:"node_id"`
-	Error  string       `json:"error"`
+	NodeID     graph.NodeID  `json:"node_id"`
+	Error      string        `json:"error"`
+	Category   string        `json:"category,omitempty"`
+	Retryable  bool          `json:"retryable,omitempty"`
+	RetryAfter time.Duration `json:"retry_after,omitempty"`
 }

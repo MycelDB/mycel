@@ -3,13 +3,41 @@ package connectors
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
+
+func TestParseRetryAfterSupportsBoundedFractionalSeconds(t *testing.T) {
+	now := time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC)
+	if got := parseRetryAfter("0.250", now); got != 250*time.Millisecond {
+		t.Fatalf("fractional retry-after=%s, want 250ms", got)
+	}
+	if got := parseRetryAfter("2", now); got != 2*time.Second {
+		t.Fatalf("integer retry-after=%s, want 2s", got)
+	}
+	if got := parseRetryAfter(now.Add(3*time.Second).Format(http.TimeFormat), now); got != 3*time.Second {
+		t.Fatalf("date retry-after=%s, want 3s", got)
+	}
+	if got := parseRetryAfter("invalid", now); got != 0 {
+		t.Fatalf("invalid retry-after=%s, want zero", got)
+	}
+}
+
+func TestDecodeProviderErrorPreservesRetryAfter(t *testing.T) {
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: http.Header{"Retry-After": []string{"0.250"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"scripted","code":"insufficient_quota"}}`))}
+	err := decodeProviderError(response, "embedding provider")
+	connectorErr, ok := err.(ConnectorError)
+	if !ok || connectorErr.StatusCode != http.StatusTooManyRequests || !connectorErr.Retryable || connectorErr.RetryAfter != 250*time.Millisecond || connectorErr.Code != "insufficient_quota" {
+		t.Fatalf("provider error=%T %#v, want retryable 250ms metadata", err, err)
+	}
+}
 
 func TestOpenAICompatibleEmbeddingRequestShape(t *testing.T) {
 	var gotPath, gotAuth string

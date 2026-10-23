@@ -108,6 +108,112 @@ func TestWorkerRetryableFailureUsesBackoff(t *testing.T) {
 	}
 }
 
+func TestSemanticBackfillFailureTreatsTypedPermanentMetadataAsAuthoritative(t *testing.T) {
+	tests := []struct {
+		name     string
+		failure  backfill.Failure
+		category string
+	}{
+		{
+			name:     "rate limited category cannot override explicit permanent disposition",
+			failure:  backfill.Failure{Category: "rate_limited", Retryable: false, Error: "semantic embedding failed (rate_limited)", RetryAfter: 250 * time.Millisecond},
+			category: "rate_limited",
+		},
+		{
+			name:     "provider rejection category is preserved",
+			failure:  backfill.Failure{Category: "provider_rejected", Retryable: false, Error: "semantic embedding failed (provider_rejected)"},
+			category: "provider_rejected",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := semanticBackfillFailure(backfill.Result{FailedCount: 1, Failures: []backfill.Failure{tt.failure}})
+			var typed semanticWorkFailure
+			if !errors.As(err, &typed) {
+				t.Fatalf("failure=%T %v, want semanticWorkFailure", err, err)
+			}
+			if typed.category != tt.category || typed.retryable {
+				t.Fatalf("typed failure=%#v, want category=%q retryable=false", typed, tt.category)
+			}
+			classified := DefaultClassifyFailure(err, domainsemantic.SemanticDirtyWorkItem{Attempts: 1}, WorkerConfig{RetryBaseDelay: time.Second, RetryMaxDelay: time.Minute}, time.Now())
+			if classified.Category != tt.category || classified.Retryable || classified.NextRunAt != nil {
+				t.Fatalf("classified failure=%#v", classified)
+			}
+		})
+	}
+}
+
+func TestSemanticBackfillFailurePermanentFailureWinsRegardlessOfOrder(t *testing.T) {
+	retryable := backfill.Failure{Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond}
+	permanent := backfill.Failure{Category: "provider_rejected", Retryable: false}
+	for _, failures := range [][]backfill.Failure{{retryable, permanent}, {permanent, retryable}} {
+		err := semanticBackfillFailure(backfill.Result{FailedCount: len(failures), Failures: failures})
+		var typed semanticWorkFailure
+		if !errors.As(err, &typed) {
+			t.Fatalf("failure=%T %v, want semanticWorkFailure", err, err)
+		}
+		if typed.category != "provider_rejected" || typed.retryable || typed.retryAfter != 0 {
+			t.Fatalf("order-dependent aggregate failure: %#v", typed)
+		}
+	}
+}
+
+func TestSemanticBackfillFailureUsesMaximumRetryAfterRegardlessOfOrder(t *testing.T) {
+	short := backfill.Failure{Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond}
+	long := backfill.Failure{Category: "provider_error", Retryable: true, RetryAfter: 2 * time.Second}
+	for _, failures := range [][]backfill.Failure{{short, long}, {long, short}} {
+		err := semanticBackfillFailure(backfill.Result{FailedCount: len(failures), Failures: failures})
+		var typed semanticWorkFailure
+		if !errors.As(err, &typed) {
+			t.Fatalf("failure=%T %v, want semanticWorkFailure", err, err)
+		}
+		if typed.category != "rate_limited" || !typed.retryable || typed.retryAfter != 2*time.Second {
+			t.Fatalf("order-dependent aggregate failure: %#v", typed)
+		}
+	}
+}
+
+func TestSemanticBackfillFailureNormalizesUnknownTypedCategory(t *testing.T) {
+	err := semanticBackfillFailure(backfill.Result{FailedCount: 1, Failures: []backfill.Failure{{Category: "provider-body-secret", Retryable: false}}})
+	classified := DefaultClassifyFailure(err, domainsemantic.SemanticDirtyWorkItem{Attempts: 1}, WorkerConfig{}, time.Now())
+	if classified.Category != "internal_error" || strings.Contains(classified.Message, "provider-body-secret") {
+		t.Fatalf("unsafe classified failure=%#v", classified)
+	}
+}
+
+func TestWorkerPreservesRetryableBackfillRecordFailure(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	indexID := domainsemantic.SemanticIndexID(uuid.New())
+	nodeID := graph.NodeID(uuid.New())
+	spaceMgr, maintenanceMgr := newWorkerManagers(t, ctx, spaceID, domainID, indexID)
+	item, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SpaceID: spaceID, DomainID: domainID, SemanticIndexID: indexID, TargetNodeID: nodeID, Action: domainsemantic.SemanticDirtyWorkActionRefresh})
+	if err != nil {
+		t.Fatalf("upsert work: %v", err)
+	}
+	retryStarted := time.Now()
+	runner := &fakeBackfillRunner{result: backfill.Result{FailedCount: 1, Failures: []backfill.Failure{{NodeID: nodeID, Error: "semantic embedding failed (rate_limited)", Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond}}}}
+	res, err := (Worker{SpaceManager: spaceMgr, MaintenanceManager: maintenanceMgr, Backfill: runner, Config: WorkerConfig{RetryBaseDelay: time.Minute, RetryMaxDelay: time.Hour}}).ProcessOnce(ctx, 1)
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if res.Processed != 1 || res.Completed != 0 || res.Failed != 1 {
+		t.Fatalf("unexpected result: %+v", res)
+	}
+	items, _ := maintenanceMgr.ListDirtyWorkItems(ctx)
+	got := findWorkItem(items, item.ID)
+	if got.Status != domainsemantic.SemanticDirtyWorkStatusPending || got.LastErrorCategory != "rate_limited" || got.EarliestRunAt == nil || got.Attempts != 1 {
+		t.Fatalf("unexpected retry item: %+v", got)
+	}
+	if delay := got.EarliestRunAt.Sub(retryStarted); delay < 200*time.Millisecond || delay > time.Second {
+		t.Fatalf("retry-after delay=%s, want bounded provider delay", delay)
+	}
+	if strings.Contains(got.LastError, "provider response") || got.LastError != "semantic maintenance failed (rate_limited)" {
+		t.Fatalf("unsafe persisted retry error: %q", got.LastError)
+	}
+}
+
 func TestWorkerPermanentFailureMarksFailed(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -329,6 +435,7 @@ func findWorkItem(items []domainsemantic.SemanticDirtyWorkItem, id uuid.UUID) do
 type fakeBackfillRunner struct {
 	mu     sync.Mutex
 	inputs []backfill.Input
+	result backfill.Result
 	err    error
 }
 
@@ -336,7 +443,7 @@ func (r *fakeBackfillRunner) Run(_ context.Context, in backfill.Input) (backfill
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.inputs = append(r.inputs, in)
-	return backfill.Result{}, r.err
+	return r.result, r.err
 }
 
 func (r *fakeBackfillRunner) callCount() int {

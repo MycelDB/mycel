@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
@@ -55,9 +56,11 @@ type Connector interface {
 }
 
 type ConnectorError struct {
-	Code      string
-	Retryable bool
-	Err       error
+	Code       string
+	StatusCode int
+	Retryable  bool
+	RetryAfter time.Duration
+	Err        error
 }
 
 func (e ConnectorError) Error() string {

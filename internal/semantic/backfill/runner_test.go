@@ -26,6 +26,17 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func TestFailureForErrorPreservesSafeRetryMetadata(t *testing.T) {
+	nodeID := graph.NodeID(uuid.New())
+	failure := failureForError(nodeID, connectors.EmbeddingFailure{Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond})
+	if failure.NodeID != nodeID || failure.Category != "rate_limited" || !failure.Retryable || failure.RetryAfter != 250*time.Millisecond {
+		t.Fatalf("unexpected failure: %#v", failure)
+	}
+	if failure.Error != "semantic embedding failed (rate_limited)" {
+		t.Fatalf("unsafe failure error: %q", failure.Error)
+	}
+}
+
 func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)
