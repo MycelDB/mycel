@@ -258,38 +258,81 @@ func TestProcessPendingDoesNotRetryTerminalPersistenceAmbiguity(t *testing.T) {
 	}
 }
 
-func TestProcessPendingCrashRecoveryFinalizesAmbiguousRunBeforeInvocation(t *testing.T) {
+func TestProcessPendingCrashBetweenAmbiguousRunAndInvocationWritesReconcilesWithoutProvider(t *testing.T) {
 	ctx := context.Background()
-	store := storage.NewFileStore(t.TempDir())
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &failTerminalInvocationStore{Store: baseStore, remainingFailures: 1}
 	now := time.Now().UTC()
 	domainID := graph.DomainID(uuid.New())
 	spaceID := uuid.NewString()
-	inv := automation.Invocation{ID: "inv-crash-window", SpaceID: spaceID, DomainID: domainID, AutomationID: "procedure", AutomationVersion: 1, Status: "running", ClaimVersion: 1, ClaimToken: "expired", ClaimProcessID: "old-process", ClaimExpiresAt: now.Add(-time.Minute)}
-	run := automation.Run{ID: "run-crash-window", DomainID: domainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "running", StartedAt: now.Add(-time.Minute)}
+	inv := automation.Invocation{ID: "inv-crash-window", SpaceID: spaceID, DomainID: domainID, AutomationID: "procedure", AutomationVersion: 1, BindingVersion: 1, ProcedureVersion: 1, Status: "running", ClaimVersion: 1, ClaimToken: "expired", ClaimProcessID: "old-process", ClaimExpiresAt: now.Add(-time.Minute)}
+	runID := automationRunID(inv, 1)
+	run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "running", StartedAt: now.Add(-time.Minute)}
 	attempt := automation.ProcedureInferenceAttempt{ID: "attempt-crash-window", InvocationID: inv.ID, RunID: run.ID, SpaceID: spaceID, DomainID: domainID, State: automation.InferenceAttemptStateStarted, RunAttemptNumber: 1, StartedAt: now.Add(-30 * time.Second)}
-	if err := store.PutInvocation(ctx, inv); err != nil {
+	definition := automation.Definition{ID: inv.AutomationID, Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Inference: automation.InferenceRef{Operation: "chat", Profile: "callable"}}
+	if err := baseStore.PutDefinition(ctx, definition); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutRun(ctx, run); err != nil {
+	if err := baseStore.PutInvocation(ctx, inv); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutProcedureInferenceLedger(ctx, automation.ProcedureInferenceLedger{SpaceID: spaceID, Attempts: []automation.ProcedureInferenceAttempt{attempt}}); err != nil {
+	if err := baseStore.PutRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewManager(store)
+	if err := baseStore.PutProcedureInferenceLedger(ctx, automation.ProcedureInferenceLedger{SpaceID: spaceID, Attempts: []automation.ProcedureInferenceAttempt{attempt}}); err != nil {
+		t.Fatal(err)
+	}
+	inference := &countingFailureInference{}
+	mgr := NewManager(store).WithInferenceInvoker(inference)
 	mgr.now = func() time.Time { return now }
 	processed, err := mgr.ProcessPending(ctx, domainID, 10)
-	if err != nil || processed != 1 {
-		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	if err == nil || processed != 0 {
+		t.Fatalf("first ProcessPending() processed=%d err=%v, want injected invocation-write failure", processed, err)
 	}
-	persistedRun, runErr := store.GetRun(ctx, domainID, run.ID)
-	persistedInvocation, invocationErr := store.GetInvocation(ctx, domainID, inv.ID)
+	persistedRun, runErr := baseStore.GetRun(ctx, domainID, run.ID)
+	persistedInvocation, invocationErr := baseStore.GetInvocation(ctx, domainID, inv.ID)
 	if runErr != nil || persistedRun.Status != "failed" || persistedRun.Error != "provider_outcome_ambiguous" || persistedRun.CompletedAt.IsZero() || persistedRun.ClaimToken == "expired" {
-		t.Fatalf("run not finalized under recovery claim: %+v err=%v", persistedRun, runErr)
+		t.Fatalf("run was not durably finalized before invocation failure: %+v err=%v", persistedRun, runErr)
 	}
-	if invocationErr != nil || persistedInvocation.Status != "failed" || persistedInvocation.SkipReason != "provider_outcome_ambiguous" || persistedInvocation.AttemptCount != 1 || persistedInvocation.ClaimToken != persistedRun.ClaimToken {
-		t.Fatalf("invocation not finalized: %+v err=%v", persistedInvocation, invocationErr)
+	if invocationErr != nil || persistedInvocation.Status != "running" {
+		t.Fatalf("injected crash window did not preserve nonterminal invocation: %+v err=%v", persistedInvocation, invocationErr)
 	}
+
+	restarted := NewManager(store).WithInferenceInvoker(inference)
+	restarted.now = func() time.Time { return now.Add(automationClaimLease + time.Second) }
+	processed, err = restarted.ProcessPending(ctx, domainID, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("recovery ProcessPending() processed=%d err=%v", processed, err)
+	}
+	persistedInvocation, invocationErr = baseStore.GetInvocation(ctx, domainID, inv.ID)
+	if invocationErr != nil || persistedInvocation.Status != "failed" || persistedInvocation.SkipReason != "provider_outcome_ambiguous" || persistedInvocation.AttemptCount != 1 {
+		t.Fatalf("terminal-run reconciliation did not finalize invocation: %+v err=%v", persistedInvocation, invocationErr)
+	}
+	if inference.calls != 0 {
+		t.Fatalf("provider invoked during crash recovery: calls=%d", inference.calls)
+	}
+}
+
+type failTerminalInvocationStore struct {
+	storage.Store
+	remainingFailures int
+}
+
+func (s *failTerminalInvocationStore) PutInvocation(ctx context.Context, inv automation.Invocation) error {
+	if inv.Status == "failed" && s.remainingFailures > 0 {
+		s.remainingFailures--
+		return errors.New("injected terminal invocation persistence failure")
+	}
+	return s.Store.PutInvocation(ctx, inv)
+}
+
+type countingFailureInference struct {
+	calls int
+}
+
+func (f *countingFailureInference) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	f.calls++
+	return inferenceruntime.InvokeResponse{}, errors.New("provider must not be invoked")
 }
 
 func TestPostStartInfrastructureFailurePreservesCauseAndAmbiguity(t *testing.T) {
