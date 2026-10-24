@@ -27,6 +27,8 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestGenerateTextRequiresConfiguredInference(t *testing.T) {
@@ -197,11 +199,101 @@ func (s *terminalAttemptFailureStore) PutProcedureInferenceLedger(ctx context.Co
 		for _, attempt := range ledger.Attempts {
 			if automation.IsTerminalProcedureInferenceAttemptState(attempt.State) {
 				s.remainingFailures--
-				return errors.New("terminal attempt persistence unavailable")
+				return errors.New("temporary terminal attempt persistence unavailable")
 			}
 		}
 	}
 	return s.Store.PutProcedureInferenceLedger(ctx, ledger)
+}
+
+func TestProcessPendingDoesNotRetryTerminalPersistenceAmbiguity(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &terminalAttemptFailureStore{Store: baseStore, remainingFailures: 1}
+	now := time.Now().UTC()
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	mgr := NewManager(store).
+		WithGraphRuntime(automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}, &automationE2EGraph{node: node}).
+		WithInferenceInvoker(inference)
+	mgr.now = func() time.Time { return now }
+	def := automation.Definition{
+		ID: "terminal-persistence", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 3},
+	}
+	if err := baseStore.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("first ProcessPending() processed=%d err=%v", processed, err)
+	}
+	invocations, err := baseStore.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invocations) != 1 || invocations[0].Status != "failed" || invocations[0].NextAttemptAt != (time.Time{}) {
+		t.Fatalf("ambiguous invocation remained retryable: %+v err=%v", invocations, err)
+	}
+	// Even if stale external state incorrectly makes the invocation pending,
+	// durable started evidence must fence allocation of a new run identity.
+	invocations[0].Status = "pending"
+	invocations[0].SkipReason = ""
+	if err := baseStore.PutInvocation(ctx, invocations[0]); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("fenced ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 0 {
+		t.Fatalf("final ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider replayed through automatic retry: calls=%d", calls)
+	}
+}
+
+func TestPostStartInfrastructureFailurePreservesCauseAndAmbiguity(t *testing.T) {
+	ctx := context.Background()
+	infrastructureErr := status.Error(codes.Unavailable, "authorization authority unavailable")
+	inference := &postStartFailureInference{err: infrastructureErr}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithInferenceInvoker(inference)
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, ChangedElementID: uuid.NewString()}
+	run := automation.Run{ID: uuid.NewString(), BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1}
+	def := automation.Definition{ID: "proc", Version: 1, DomainID: domainID, Inference: automation.InferenceRef{Operation: "chat", Profile: "profile"}}
+	_, err := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if status.Code(err) != codes.Unavailable || !inferenceProviderOutcomeAmbiguous(err) || inference.providerCalls != 0 {
+		t.Fatalf("post-start error=%v code=%v ambiguous=%v providerCalls=%d", err, status.Code(err), inferenceProviderOutcomeAmbiguous(err), inference.providerCalls)
+	}
+	ledger, ledgerErr := mgr.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateAmbiguous {
+		t.Fatalf("post-start evidence=%+v err=%v", ledger, ledgerErr)
+	}
+}
+
+type postStartFailureInference struct {
+	err           error
+	providerCalls int
+}
+
+func (f *postStartFailureInference) Invoke(ctx context.Context, request inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	decision := domaininference.PolicyDecision{ID: uuid.New(), AuthorizationRevision: 1}
+	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: decision}
+	if err := request.AfterAuthorization(ctx, resolved); err != nil {
+		return inferenceruntime.InvokeResponse{Decision: decision}, err
+	}
+	if err := request.BeforeProviderAttempt(ctx, resolved); err != nil {
+		return inferenceruntime.InvokeResponse{Decision: decision}, err
+	}
+	// Simulates a post-start authorization/infrastructure fence failing before
+	// the connector is entered.
+	return inferenceruntime.InvokeResponse{Decision: decision}, f.err
 }
 
 func TestAutomationDefinitionStableAcrossCredentialRotation(t *testing.T) {

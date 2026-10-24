@@ -618,13 +618,21 @@ func markInferenceGenerationError(err error, providerStarted, providerOutcomeAmb
 
 func inferenceFailurePublicationDisposition(err error) string {
 	var generationErr *inferenceGenerationError
-	if errors.Is(err, ErrInferenceAttemptAlreadyStarted) || (errors.As(err, &generationErr) && generationErr.providerOutcomeAmbiguous) {
+	if inferenceProviderOutcomeAmbiguous(err) {
 		return "not_published_provider_ambiguous"
 	}
-	if generationErr != nil && generationErr.providerStarted {
+	if errors.As(err, &generationErr) && generationErr.providerStarted {
 		return "not_published_provider_failure"
 	}
 	return "not_published_pre_provider_failure"
+}
+
+func inferenceProviderOutcomeAmbiguous(err error) bool {
+	if errors.Is(err, ErrInferenceAttemptAlreadyStarted) {
+		return true
+	}
+	var generationErr *inferenceGenerationError
+	return errors.As(err, &generationErr) && generationErr.providerOutcomeAmbiguous
 }
 
 func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run, imageInputs ...domaininference.ImageInput) (string, error) {
@@ -724,7 +732,9 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	}
 	if invokeErr != nil {
 		if attemptState == automation.InferenceAttemptStateAmbiguous {
-			return "", markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true, true)
+			// Preserve the infrastructure/provider cause for classification while
+			// separately fencing retries through explicit ambiguity metadata.
+			return "", markInferenceGenerationError(invokeErr, true, true)
 		}
 		if errors.Is(invokeErr, inferenceruntime.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
 			return "", markInferenceGenerationError(fmt.Errorf("%w: %s", invokeErr, resp.Decision.Reason), providerStarted, false)

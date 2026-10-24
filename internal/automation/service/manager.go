@@ -939,6 +939,25 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			processed++
 			continue
 		}
+		providerFenced, fencedAttemptNumber, err := m.invocationHasUnresolvedProviderAttempt(ctx, inv)
+		if err != nil {
+			return processed, err
+		}
+		if providerFenced {
+			if fencedAttemptNumber > inv.AttemptCount {
+				inv.AttemptCount = fencedAttemptNumber
+			}
+			inv.Status = "failed"
+			inv.SkipReason = "provider_outcome_ambiguous"
+			inv.NextAttemptAt = time.Time{}
+			inv.UpdatedAt = m.now()
+			if err := m.putInvocationRuntime(ctx, inv); err != nil {
+				return processed, err
+			}
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
 		recoveringRunning := strings.EqualFold(strings.TrimSpace(inv.Status), "running")
 		item, resolveErr := m.resolveInvocationAutomation(ctx, domainID, inv)
 		var debounce debounceDecision
@@ -1059,6 +1078,11 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 				// publication reconciliation regardless of the provider retry ceiling.
 				inv.Status = "retryable"
 				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))
+			} else if inferenceProviderOutcomeAmbiguous(err) {
+				// Durable started/ambiguous evidence is an absorbing provider fence;
+				// cause-text retry heuristics must never allocate another attempt.
+				inv.Status = "failed"
+				inv.NextAttemptAt = time.Time{}
 			} else if inv.AttemptCount < maxAttempts(def) && retryableAutomationError(err) {
 				inv.Status = "retryable"
 				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))

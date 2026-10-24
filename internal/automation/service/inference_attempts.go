@@ -593,6 +593,29 @@ func (m *AutomationManager) completeProcedureInferenceAttempt(ctx context.Contex
 	return completed.State, nil
 }
 
+func (m *AutomationManager) invocationHasUnresolvedProviderAttempt(ctx context.Context, inv automation.Invocation) (bool, int, error) {
+	ledger, err := m.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, mapStoreError(err)
+	}
+	attemptNumber := 0
+	for _, attempt := range ledger.Attempts {
+		if attempt.InvocationID != inv.ID {
+			continue
+		}
+		if attempt.State != automation.InferenceAttemptStateStarted && attempt.State != automation.InferenceAttemptStateAmbiguous {
+			continue
+		}
+		if attempt.RunAttemptNumber > attemptNumber {
+			attemptNumber = attempt.RunAttemptNumber
+		}
+	}
+	return attemptNumber > 0, attemptNumber, nil
+}
+
 func (m *AutomationManager) reconcilePreProviderTerminalAttempt(ctx context.Context, inv *automation.Invocation, def automation.Definition) (bool, error) {
 	if inv == nil {
 		return false, nil
