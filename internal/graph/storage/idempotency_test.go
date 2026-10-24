@@ -182,7 +182,7 @@ func TestLocalStorePromotesLegacyReceiptUntilAcknowledged(t *testing.T) {
 	if _, err := tx.CommitWithInfo(); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RetainIdempotencyUntilAcknowledged(ctx, "principal", "automation-publication"); err != nil {
+	if err := store.RetainIdempotencyUntilAcknowledged(ctx, "principal", "automation-publication", "digest", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -195,7 +195,7 @@ func TestLocalStorePromotesLegacyReceiptUntilAcknowledged(t *testing.T) {
 	if _, found, err := store.GetIdempotencyRecord(ctx, "principal", "automation-publication"); err != nil || !found {
 		t.Fatalf("retained receipt found=%v err=%v", found, err)
 	}
-	if err := store.MarkIdempotencyPublicationAcknowledged(ctx, "principal", "automation-publication"); err != nil {
+	if err := store.MarkIdempotencyPublicationAcknowledged(ctx, "principal", "automation-publication", "digest", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -205,9 +205,44 @@ func TestLocalStorePromotesLegacyReceiptUntilAcknowledged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	if _, found, err := store.GetIdempotencyRecord(ctx, "principal", "automation-publication"); err != nil || found {
 		t.Fatalf("acknowledged expired receipt found=%v err=%v", found, err)
+	}
+
+	secondMetadata := json.RawMessage(`{"commit_id":"second"}`)
+	second, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	second.SetIdempotency(IdempotencyRecord{Scope: "principal", Key: "automation-publication", Digest: "digest-2", Metadata: secondMetadata, CommittedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)})
+	if _, err := second.CommitWithInfo(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetainIdempotencyUntilAcknowledged(ctx, "principal", "automation-publication", "digest", json.RawMessage(`{}`)); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("old-generation promotion error=%v, want conflict", err)
+	}
+	if err := store.RetainIdempotencyUntilAcknowledged(ctx, "principal", "automation-publication", "digest-2", secondMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained, found, err := store.GetIdempotencyRecord(ctx, "principal", "automation-publication"); err != nil || !found || !retained.RetainUntilAcknowledged {
+		t.Fatalf("second-generation retained receipt=%+v found=%v err=%v", retained, found, err)
+	}
+	if err := store.MarkIdempotencyPublicationAcknowledged(ctx, "principal", "automation-publication", "digest", json.RawMessage(`{}`)); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("old-generation acknowledgement error=%v, want conflict", err)
+	}
+	if err := store.MarkIdempotencyPublicationAcknowledged(ctx, "principal", "automation-publication", "digest-2", secondMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

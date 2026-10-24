@@ -72,6 +72,7 @@ type ProcedureInferenceAttempt struct {
 	TokenCountAuthority         string         `json:"token_count_authority,omitempty"`
 	ProviderDurationMillis      int64          `json:"provider_duration_millis,omitempty"`
 	PublicationDisposition      string         `json:"publication_disposition,omitempty"`
+	PublicationReceiptCommitID  string         `json:"publication_receipt_commit_id,omitempty"`
 	RequestedAt                 time.Time      `json:"requested_at"`
 	AuthorizedAt                time.Time      `json:"authorized_at,omitempty"`
 	StartedAt                   time.Time      `json:"started_at,omitempty"`
@@ -130,6 +131,7 @@ func NormalizeProcedureInferenceAttempt(in ProcedureInferenceAttempt) ProcedureI
 	in.OutcomeCategory = strings.ToLower(strings.TrimSpace(in.OutcomeCategory))
 	in.TokenCountAuthority = strings.ToLower(strings.TrimSpace(in.TokenCountAuthority))
 	in.PublicationDisposition = strings.ToLower(strings.TrimSpace(in.PublicationDisposition))
+	in.PublicationReceiptCommitID = strings.TrimSpace(in.PublicationReceiptCommitID)
 	return in
 }
 
@@ -166,6 +168,7 @@ func ValidateProcedureInferenceAttempt(in ProcedureInferenceAttempt) error {
 		{name: "profile_id", value: in.ProfileID}, {name: "endpoint_id", value: in.EndpointID}, {name: "model_id", value: in.ModelID},
 		{name: "capability_id", value: in.CapabilityID}, {name: "policy_decision_id", value: in.PolicyDecisionID},
 		{name: "credential_grant_id", value: in.CredentialGrantID},
+		{name: "publication_receipt_commit_id", value: in.PublicationReceiptCommitID},
 	}
 	for _, field := range boundedStrings {
 		if len(field.value) > ProcedureInferenceEvidenceStringMaxBytes {
@@ -180,6 +183,9 @@ func ValidateProcedureInferenceAttempt(in ProcedureInferenceAttempt) error {
 	}
 	if !validInferencePublicationDisposition(in.PublicationDisposition) {
 		return fmt.Errorf("unsupported procedure inference publication disposition %q", in.PublicationDisposition)
+	}
+	if in.PublicationReceiptCommitID != "" && in.PublicationDisposition != "published" {
+		return fmt.Errorf("procedure inference publication receipt commit id requires published disposition")
 	}
 	encoded, err := json.Marshal(in)
 	if err != nil {
@@ -228,6 +234,7 @@ func ValidateProcedureInferenceAttemptTransition(current *ProcedureInferenceAtte
 		before, after := cur, next
 		before.RecordVersion, after.RecordVersion = 0, 0
 		before.PublicationDisposition, after.PublicationDisposition = "", ""
+		before.PublicationReceiptCommitID, after.PublicationReceiptCommitID = "", ""
 		if !reflect.DeepEqual(before, after) {
 			return fmt.Errorf("terminal procedure inference attempt may only add publication disposition")
 		}

@@ -881,7 +881,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	if _, err := modules[writer].CommitTransactionGraph(ctx, mismatchTx); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("idempotency mismatch after failover error = %v, want ErrIdempotencyConflict", err)
 	}
-	if err := modules[writer].AcknowledgeIdempotentCommit(ctx, principalID, spaceID, idempotencyDomainID, "failover-capture"); err != nil {
+	if err := modules[writer].AcknowledgeIdempotentCommit(ctx, principalID, spaceID, idempotencyDomainID, "failover-capture", firstCommit.CommitID); err != nil {
 		t.Fatalf("AcknowledgeIdempotentCommit() error = %v", err)
 	}
 	for id, module := range modules {
@@ -961,7 +961,7 @@ func TestGraphRaftStateMachinePromotesLegacyIdempotencyReceipt(t *testing.T) {
 		t.Fatalf("legacy receipt=%+v found=%v err=%v", record, found, err)
 	}
 	record.RetainUntilAcknowledged = true
-	retainRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, IdempotencyRetention: &graphIdempotencyRetention{Scope: principalID, Key: "legacy-receipt", Record: record}}
+	retainRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, IdempotencyRetention: &graphIdempotencyRetention{Scope: principalID, Key: "legacy-receipt", Digest: record.Digest, Metadata: record.Metadata, Record: record}}
 	retainCommand, err := m.buildGraphCommitRaftCommand(retainRecord, 64, "retain-legacy-receipt")
 	if err != nil {
 		t.Fatal(err)

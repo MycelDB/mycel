@@ -37,23 +37,23 @@ func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProvi
 	acknowledgements := 0
 	graphs.idempotencyRetentions = &retentions
 	graphs.idempotencyAcknowledgements = &acknowledgements
-	graphs.retainIdempotency = func(_ context.Context, _, _, _, key string) error {
+	graphs.retainIdempotency = func(_ context.Context, _, _, _, key, commitID string) error {
 		persisted := requireProcedureInferenceAttempt(t, ctx, store, spaceID, attempt.ID)
 		if persisted.PublicationDisposition != "publication_pending" {
 			t.Fatalf("legacy receipt promoted after terminal disposition: %q", persisted.PublicationDisposition)
 		}
-		if key != outputKey {
-			t.Fatalf("retained key=%q want=%q", key, outputKey)
+		if key != outputKey || commitID != "commit-"+outputKey {
+			t.Fatalf("retained key=%q commit=%q", key, commitID)
 		}
 		return nil
 	}
-	graphs.acknowledgeIdempotency = func(_ context.Context, _, _, _, key string) error {
+	graphs.acknowledgeIdempotency = func(_ context.Context, _, _, _, key, commitID string) error {
 		persisted := requireProcedureInferenceAttempt(t, ctx, store, spaceID, attempt.ID)
 		if persisted.PublicationDisposition != "published" {
 			t.Fatalf("receipt acknowledged before terminal disposition: %q", persisted.PublicationDisposition)
 		}
-		if key != outputKey {
-			t.Fatalf("acknowledged key=%q want=%q", key, outputKey)
+		if key != outputKey || commitID != "commit-"+outputKey {
+			t.Fatalf("acknowledged key=%q commit=%q", key, commitID)
 		}
 		return nil
 	}
@@ -63,8 +63,8 @@ func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProvi
 		t.Fatalf("reconcileProviderStartedPublication() reconciled=%v err=%v", reconciled, err)
 	}
 	persistedAttempt := requireProcedureInferenceAttempt(t, ctx, store, spaceID, attempt.ID)
-	if persistedAttempt.PublicationDisposition != "published" {
-		t.Fatalf("publication disposition=%q", persistedAttempt.PublicationDisposition)
+	if persistedAttempt.PublicationDisposition != "published" || persistedAttempt.PublicationReceiptCommitID != "commit-"+outputKey {
+		t.Fatalf("publication disposition=%q receipt=%q", persistedAttempt.PublicationDisposition, persistedAttempt.PublicationReceiptCommitID)
 	}
 	persistedRun, err := store.GetRun(ctx, domainID, run.ID)
 	if err != nil || persistedRun.Status != "succeeded" || len(persistedRun.InferenceAttemptIDs) != 1 || persistedRun.InferenceAttemptIDs[0] != attempt.ID {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -62,10 +63,10 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 	timing.StoreOpen = time.Since(stepStart)
 	if payload.IdempotencyRetention != nil {
 		retain := payload.IdempotencyRetention
-		if retain.Record.Scope != retain.Scope || retain.Record.Key != retain.Key || !retain.Record.RetainUntilAcknowledged {
+		if retain.Record.Scope != retain.Scope || retain.Record.Key != retain.Key || retain.Record.Digest != retain.Digest || !bytes.Equal(retain.Record.Metadata, retain.Metadata) || !retain.Record.RetainUntilAcknowledged {
 			return 0, payload, graphstorage.CommitInfo{}, fmt.Errorf("invalid idempotency retention record")
 		}
-		err := store.RetainIdempotencyUntilAcknowledged(ctx, retain.Scope, retain.Key)
+		err := store.RetainIdempotencyUntilAcknowledged(ctx, retain.Scope, retain.Key, retain.Digest, retain.Metadata)
 		if errors.Is(err, graphstorage.ErrNotFound) {
 			err = store.RestoreIdempotencyRecords(ctx, []graphstorage.IdempotencyRecord{retain.Record})
 		}
@@ -73,7 +74,7 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 	}
 	if payload.IdempotencyAcknowledgment != nil {
 		ack := payload.IdempotencyAcknowledgment
-		err := store.MarkIdempotencyPublicationAcknowledged(ctx, ack.Scope, ack.Key)
+		err := store.MarkIdempotencyPublicationAcknowledged(ctx, ack.Scope, ack.Key, ack.Digest, ack.Metadata)
 		return int64(store.Revision()), payload, graphstorage.CommitInfo{}, mapStorageError(err)
 	}
 	stepStart = time.Now()

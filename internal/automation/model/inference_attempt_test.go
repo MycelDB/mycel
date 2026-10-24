@@ -26,6 +26,7 @@ func TestValidateProcedureInferenceAttemptRejectsUnboundedOrUnclassifiedEvidence
 		{name: "unknown outcome", mutate: func(in *ProcedureInferenceAttempt) { in.OutcomeCategory = "raw-provider-error" }},
 		{name: "unknown token authority", mutate: func(in *ProcedureInferenceAttempt) { in.TokenCountAuthority = "provider-body" }},
 		{name: "unknown publication disposition", mutate: func(in *ProcedureInferenceAttempt) { in.PublicationDisposition = "raw-publication-error" }},
+		{name: "receipt without publication", mutate: func(in *ProcedureInferenceAttempt) { in.PublicationReceiptCommitID = "commit" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +84,14 @@ func TestValidateProcedureInferenceAttemptTransition(t *testing.T) {
 	}
 	if !IsTerminalProcedureInferenceAttemptState(succeeded.State) {
 		t.Fatal("succeeded state should be terminal")
+	}
+
+	published := succeeded
+	published.RecordVersion = 5
+	published.PublicationDisposition = "published"
+	published.PublicationReceiptCommitID = "graph-commit"
+	if err := ValidateProcedureInferenceAttemptTransition(&succeeded, published); err != nil {
+		t.Fatalf("published receipt transition: %v", err)
 	}
 
 	mutated := started

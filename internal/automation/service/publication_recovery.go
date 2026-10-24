@@ -181,23 +181,23 @@ func (m *AutomationManager) claimPublicationRecovery(ctx context.Context, inv au
 	return claimed, true, nil
 }
 
-func (m *AutomationManager) publicationOutputApplied(ctx context.Context, inv automation.Invocation, run automation.Run) (bool, error) {
+func (m *AutomationManager) publicationOutputApplied(ctx context.Context, inv automation.Invocation, run automation.Run) (bool, string, error) {
 	if m.graphs == nil {
-		return false, ErrPublicationReconciliationRequired
+		return false, "", ErrPublicationReconciliationRequired
 	}
 	principal := firstNonEmptyString(run.ActorPrincipalID, inv.ActorPrincipalID, automationActor)
 	key := automationOutputIdempotencyKey(inv, run.ID)
-	found, err := m.automationOutputAlreadyApplied(ctx, principal, inv, key)
+	commit, found, err := m.automationOutputAlreadyApplied(ctx, principal, inv, key)
 	if err != nil || !found {
-		return found, err
+		return found, "", err
 	}
 	// Promote legacy matching receipts before relying on them. A crash after
 	// this point cannot let generic idempotency expiry erase the publication
 	// proof before the terminal attempt disposition is durable.
-	if err := m.graphs.RetainIdempotentCommitUntilAcknowledged(ctx, principal, inv.SpaceID, inv.DomainID.String(), key); err != nil {
-		return false, err
+	if err := m.graphs.RetainIdempotentCommitUntilAcknowledged(ctx, principal, inv.SpaceID, inv.DomainID.String(), key, commit.CommitID); err != nil {
+		return false, "", err
 	}
-	return true, nil
+	return true, commit.CommitID, nil
 }
 
 func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Context, inv *automation.Invocation) (bool, error) {
@@ -254,29 +254,49 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 	run.ClaimToken = inv.ClaimToken
 
 	disposition := strings.ToLower(strings.TrimSpace(attempt.PublicationDisposition))
+	receiptCommitID := strings.TrimSpace(attempt.PublicationReceiptCommitID)
 	if disposition == "" || disposition == "publication_pending" {
 		m.logPublicationStage(run, "recovery_output_probe", "started", "none")
-		applied, probeErr := m.publicationOutputApplied(recoveryCtx, *inv, run)
+		applied, observedCommitID, probeErr := m.publicationOutputApplied(recoveryCtx, *inv, run)
 		if probeErr != nil {
 			m.logPublicationStage(run, "recovery_output_probe", "failed", publicationFailureCategory(probeErr))
 			return false, probeErr
 		}
 		if applied {
 			disposition = "published"
+			receiptCommitID = observedCommitID
 		} else {
 			disposition = "publication_failed"
 		}
 		attempt.RecordVersion++
 		attempt.PublicationDisposition = disposition
+		attempt.PublicationReceiptCommitID = receiptCommitID
 		if err := m.putProcedureInferenceAttemptRuntime(recoveryCtx, attempt); err != nil {
 			return false, err
 		}
 		m.logPublicationStage(run, "recovery_output_probe", "completed", disposition)
 	}
 
-	if disposition == "published" {
+	if disposition == "published" && receiptCommitID == "" {
+		// Backfill generation identity for a legacy terminal disposition when its
+		// retained receipt still exists. If it was already acknowledged and
+		// expired, no further maintenance mutation is needed.
+		applied, observedCommitID, probeErr := m.publicationOutputApplied(recoveryCtx, *inv, run)
+		if probeErr != nil {
+			return false, probeErr
+		}
+		if applied {
+			receiptCommitID = observedCommitID
+			attempt.RecordVersion++
+			attempt.PublicationReceiptCommitID = receiptCommitID
+			if err := m.putProcedureInferenceAttemptRuntime(recoveryCtx, attempt); err != nil {
+				return false, err
+			}
+		}
+	}
+	if disposition == "published" && receiptCommitID != "" {
 		principal := firstNonEmptyString(run.ActorPrincipalID, inv.ActorPrincipalID, automationActor)
-		if err := m.acknowledgePublicationReceipt(recoveryCtx, principal, *inv, run); err != nil {
+		if err := m.acknowledgePublicationReceipt(recoveryCtx, principal, *inv, run, receiptCommitID); err != nil {
 			m.logPublicationStage(run, "recovery_receipt_acknowledgement", "failed", publicationFailureCategory(err))
 			return false, err
 		}

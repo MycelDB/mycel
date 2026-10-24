@@ -1658,7 +1658,11 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		} else {
 			m.idempotencyReplayHits.Add(1)
 			if tx.RetainIdempotencyUntilAcknowledged && !existing.RetainUntilAcknowledged {
-				if err := m.RetainIdempotentCommitUntilAcknowledged(ctx, idempotency.Scope, tx.SpaceID, tx.DomainID, idempotency.Key); err != nil {
+				commitID, err := idempotencyRecordCommitID(existing)
+				if err != nil {
+					return graphchange.CommitResult{}, err
+				}
+				if err := m.RetainIdempotentCommitUntilAcknowledged(ctx, idempotency.Scope, tx.SpaceID, tx.DomainID, idempotency.Key, commitID); err != nil {
 					return graphchange.CommitResult{}, err
 				}
 			}

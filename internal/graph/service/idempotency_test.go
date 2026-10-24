@@ -35,6 +35,16 @@ func TestGraphMutationDigestCanonicalizesSetOrderAndEmptyCollections(t *testing.
 	}
 }
 
+func TestGraphIdempotencyMaintenanceCommandIDsIncludeReceiptGeneration(t *testing.T) {
+	firstRetain := graphIdempotencyMaintenanceCommandID("retain-", "principal", "space", "domain", "key", "same-digest", "commit-1")
+	secondRetain := graphIdempotencyMaintenanceCommandID("retain-", "principal", "space", "domain", "key", "same-digest", "commit-2")
+	firstAck := graphIdempotencyMaintenanceCommandID("ack-", "principal", "space", "domain", "key", "same-digest", "commit-1")
+	secondAck := graphIdempotencyMaintenanceCommandID("ack-", "principal", "space", "domain", "key", "same-digest", "commit-2")
+	if firstRetain == secondRetain || firstAck == secondAck || firstRetain == firstAck {
+		t.Fatalf("maintenance command IDs are not generation/action bound: %q %q %q %q", firstRetain, secondRetain, firstAck, secondAck)
+	}
+}
+
 func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	ctx := context.Background()
 	m, dataDir := newTestGraphModuleWithDataDir(t, ctx)
@@ -85,6 +95,9 @@ func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	promoted, found, err := store.GetIdempotencyRecord(ctx, principalID, "capture-1")
 	if err != nil || !found || !promoted.RetainUntilAcknowledged {
 		t.Fatalf("promoted receipt=%+v found=%v err=%v", promoted, found, err)
+	}
+	if err := m.AcknowledgeIdempotentCommit(ctx, principalID, spaceID, domainID, "capture-1", "replacement-generation"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("replacement-generation acknowledgement error=%v, want conflict", err)
 	}
 
 	conflictTx := idempotencyGraphTx(spaceID, domainID, principalID, 1, "capture-1")

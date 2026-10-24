@@ -33,10 +33,11 @@ func TestGraphRaftSnapshotPreservesDeliveredAndPromotedIdempotencyState(t *testi
 	if _, err := m.UpsertNode(ctx, tx, input); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+	originalCommit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.RetainIdempotentCommitUntilAcknowledged(ctx, principalID, spaceID, domainID, "delivered-snapshot"); err != nil {
+	if err := m.RetainIdempotentCommitUntilAcknowledged(ctx, principalID, spaceID, domainID, "delivered-snapshot", originalCommit.CommitID); err != nil {
 		t.Fatal(err)
 	}
 	if initialSinkCalls != 1 {

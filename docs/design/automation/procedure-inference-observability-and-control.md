@@ -291,7 +291,9 @@ A procedure provider call follows this order:
     from generic idempotency expiry until terminal publication disposition is
     durable; matching legacy receipts are first promoted by a replicated
     retention record, and a replicated acknowledgement then releases them to
-    normal expiry.
+    normal expiry. Retention and acknowledgement commands bind the logical key
+    to the receipt digest and graph commit ID so key reuse creates a distinct
+    Raft command generation and cannot mutate a replacement receipt.
 12. The already durable run records the attempt IDs and publication disposition.
 
 All stages after durable provider success share one cancellation-detached,

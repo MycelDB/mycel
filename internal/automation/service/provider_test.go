@@ -813,8 +813,8 @@ type automationE2EGraph struct {
 	idempotentCommits           map[string]graphchange.CommitResult
 	idempotencyAcknowledgements *int
 	idempotencyRetentions       *int
-	acknowledgeIdempotency      func(context.Context, string, string, string, string) error
-	retainIdempotency           func(context.Context, string, string, string, string) error
+	acknowledgeIdempotency      func(context.Context, string, string, string, string, string) error
+	retainIdempotency           func(context.Context, string, string, string, string, string) error
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -897,7 +897,7 @@ func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, tx sess
 	if g.cancelOnCommit != nil {
 		g.cancelOnCommit()
 	}
-	result := graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1, IdempotencyKey: tx.IdempotencyKey}
+	result := graphchange.CommitResult{CommitID: "commit-" + tx.IdempotencyKey, OperationCount: 1, CommittedRevision: 1, IdempotencyKey: tx.IdempotencyKey}
 	if tx.IdempotencyKey != "" {
 		if g.idempotentCommits == nil {
 			g.idempotentCommits = map[string]graphchange.CommitResult{}
@@ -912,14 +912,17 @@ func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, tx sess
 }
 func (g *automationE2EGraph) LookupIdempotentCommit(_ context.Context, principalID, _, _, key string) (graphchange.CommitResult, bool, error) {
 	result, ok := g.idempotentCommits[principalID+"\x00"+key]
+	if ok && result.CommitID == "" {
+		result.CommitID = "commit-" + key
+	}
 	return result, ok, nil
 }
-func (g *automationE2EGraph) RetainIdempotentCommitUntilAcknowledged(ctx context.Context, principalID, spaceID, domainID, key string) error {
+func (g *automationE2EGraph) RetainIdempotentCommitUntilAcknowledged(ctx context.Context, principalID, spaceID, domainID, key, commitID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if g.retainIdempotency != nil {
-		if err := g.retainIdempotency(ctx, principalID, spaceID, domainID, key); err != nil {
+		if err := g.retainIdempotency(ctx, principalID, spaceID, domainID, key, commitID); err != nil {
 			return err
 		}
 	}
@@ -928,12 +931,12 @@ func (g *automationE2EGraph) RetainIdempotentCommitUntilAcknowledged(ctx context
 	}
 	return nil
 }
-func (g *automationE2EGraph) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) error {
+func (g *automationE2EGraph) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key, commitID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if g.acknowledgeIdempotency != nil {
-		if err := g.acknowledgeIdempotency(ctx, principalID, spaceID, domainID, key); err != nil {
+		if err := g.acknowledgeIdempotency(ctx, principalID, spaceID, domainID, key, commitID); err != nil {
 			return err
 		}
 	}

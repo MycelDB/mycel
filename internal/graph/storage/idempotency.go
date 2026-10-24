@@ -1,6 +1,7 @@
 package graphstorage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -215,7 +216,7 @@ func (s *LocalStore) MarkIdempotencyDelivered(ctx context.Context, scope, key, d
 	return nil
 }
 
-func (s *LocalStore) RetainIdempotencyUntilAcknowledged(ctx context.Context, scope, key string) error {
+func (s *LocalStore) RetainIdempotencyUntilAcknowledged(ctx context.Context, scope, key, digest string, metadata json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -228,6 +229,9 @@ func (s *LocalStore) RetainIdempotencyUntilAcknowledged(ctx context.Context, sco
 	record, ok := s.idempotencyRecords[identity]
 	if !ok {
 		return ErrNotFound
+	}
+	if record.Digest != digest || !bytes.Equal(record.Metadata, metadata) {
+		return ErrIdempotencyConflict
 	}
 	if record.RetainUntilAcknowledged {
 		return nil
@@ -247,7 +251,7 @@ func (s *LocalStore) RetainIdempotencyUntilAcknowledged(ctx context.Context, sco
 	return nil
 }
 
-func (s *LocalStore) MarkIdempotencyPublicationAcknowledged(ctx context.Context, scope, key string) error {
+func (s *LocalStore) MarkIdempotencyPublicationAcknowledged(ctx context.Context, scope, key, digest string, metadata json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -260,6 +264,9 @@ func (s *LocalStore) MarkIdempotencyPublicationAcknowledged(ctx context.Context,
 	record, ok := s.idempotencyRecords[identity]
 	if !ok {
 		return ErrNotFound
+	}
+	if record.Digest != digest || !bytes.Equal(record.Metadata, metadata) {
+		return ErrIdempotencyConflict
 	}
 	if !record.RetainUntilAcknowledged || record.PublicationAcknowledged {
 		return nil
