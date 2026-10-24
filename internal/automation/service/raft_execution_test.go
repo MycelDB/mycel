@@ -236,6 +236,151 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	}
 }
 
+func TestClusteredGraphAutomationOutputRetriesTransientUnavailableWithoutProviderReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		commitBeforeFailure bool
+		expectedCommitCalls int
+	}{
+		{name: "rejected before commit", expectedCommitCalls: 2},
+		{name: "response lost after commit", commitBeforeFailure: true, expectedCommitCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testClusteredGraphAutomationOutputTransientUnavailable(t, tc.commitBeforeFailure, tc.expectedCommitCalls)
+		})
+	}
+}
+
+func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, commitBeforeFailure bool, expectedCommitCalls int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	inference := &conflictInjectingInference{text: "generated summary"}
+	cluster := newAutomationGraphExecutionRaftCluster(t, ctx, 8, inference)
+	defer cluster.stop()
+	defer cancel()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
+	leaderID := cluster.leaderForSpace(t, spaceID)
+	procedure := automation.Procedure{ID: "page-summary", Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: automation.InferenceRef{Operation: "chat", Profile: "summary"}, Prompt: "Summarize this page", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.summary": "$result.text"}}}}}}
+	binding := automation.Binding{ID: "page-summary-binding", Version: 1, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "owner", OnBehalfOfPrincipalID: "owner", InferenceProfile: "summary"}}
+	pageID := graph.NodeID(uuid.New())
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graph.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{"text": "original"}, Properties: map[string]any{}})
+		return err
+	})
+	cluster.enableGraphAutomationSinks()
+	binding.CreatedAt = time.Now().UTC()
+	for _, mgr := range cluster.managers {
+		if err := mgr.store.PutProcedure(ctx, procedure); err != nil {
+			t.Fatalf("seed procedure: %v", err)
+		}
+		if err := mgr.store.PutBinding(ctx, binding); err != nil {
+			t.Fatalf("seed binding: %v", err)
+		}
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+			t.Fatalf("seed authorization revision: %v", err)
+		}
+	}
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+		node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
+		if err != nil {
+			return err
+		}
+		node.Payload["text"] = "updated before automation"
+		_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+		return err
+	})
+	cluster.waitForInvocationCount(t, domainID, 1)
+	state := &transientUnavailableCommitState{remaining: 1, commitBeforeFailure: commitBeforeFailure}
+	var processed int
+	var err error
+	for attempt := 1; attempt <= 8; attempt++ {
+		leaderID = cluster.leaderForSpace(t, spaceID)
+		flakyGraph := &transientUnavailableCommitGraph{GraphRuntime: cluster.graphs[leaderID], state: state}
+		cluster.managers[leaderID].WithGraphRuntime(cluster.sessions[leaderID], flakyGraph)
+		processed, err = cluster.managers[leaderID].ProcessPending(ctx, domainID, 10)
+		if err == nil {
+			break
+		}
+		if status.Code(err) != codes.Unavailable || !strings.Contains(strings.ToLower(err.Error()), "not local to partition leader") {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+	}
+	if err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	inference.mu.Lock()
+	providerCalls := inference.invocations
+	inference.mu.Unlock()
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want exactly 1", providerCalls)
+	}
+	state.mu.Lock()
+	commitCalls := state.commitCalls
+	state.mu.Unlock()
+	if commitCalls != expectedCommitCalls {
+		t.Fatalf("graph commit calls=%d, want %d", commitCalls, expectedCommitCalls)
+	}
+	invs, err := cluster.managers[leaderID].store.ListInvocations(ctx, domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 {
+		t.Fatalf("ListInvocations()=%+v err=%v, want one invocation", invs, err)
+	}
+	cluster.waitForInvocationStatus(t, domainID, invs[0].ID, "succeeded")
+	cluster.waitForRun(t, domainID, invs[0].ID)
+	readTx := cluster.beginReadOnlyTransaction(t, ctx, leaderID, spaceID, domainID)
+	got, err := cluster.graphs[leaderID].GetNode(ctx, readTx, pageID.String())
+	if err != nil {
+		t.Fatalf("GetNode(final): %v", err)
+	}
+	state.mu.Lock()
+	committed := state.committed
+	state.mu.Unlock()
+	var committedProperties map[string]any
+	if len(committed.Changes) > 0 && committed.Changes[0].Node != nil {
+		committedProperties = committed.Changes[0].Node.Properties
+	}
+	if got.Properties["summary"] != "generated summary" && committedProperties["summary"] != "generated summary" {
+		t.Fatalf("final page properties=%+v committed properties=%+v, want published summary", got.Properties, committedProperties)
+	}
+}
+
+type transientUnavailableCommitState struct {
+	mu                  sync.Mutex
+	remaining           int
+	commitCalls         int
+	commitBeforeFailure bool
+	committed           graphchange.CommitResult
+}
+
+type transientUnavailableCommitGraph struct {
+	GraphRuntime
+	state *transientUnavailableCommitState
+}
+
+func (g *transientUnavailableCommitGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	g.state.mu.Lock()
+	g.state.commitCalls++
+	inject := g.state.remaining > 0
+	if inject {
+		g.state.remaining--
+	}
+	commitBeforeFailure := g.state.commitBeforeFailure
+	g.state.mu.Unlock()
+	if inject {
+		if commitBeforeFailure {
+			committed, err := g.GraphRuntime.CommitTransactionGraph(ctx, tx)
+			if err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			g.state.mu.Lock()
+			g.state.committed = committed
+			g.state.mu.Unlock()
+		}
+		return graphchange.CommitResult{}, status.Error(codes.Unavailable, "injected transient graph commit unavailability")
+	}
+	return g.GraphRuntime.CommitTransactionGraph(ctx, tx)
+}
+
 func TestAutomationGraphReplayRecoveryEnqueuesMissedEventAndAdvancesCursor(t *testing.T) {
 	ctx := context.Background()
 	cluster := newAutomationExecutionRaftCluster(t, ctx, 8)

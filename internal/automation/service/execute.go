@@ -302,7 +302,7 @@ func (m *AutomationManager) recordRunPublicationDisposition(ctx context.Context,
 }
 
 func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, firstTx sessionmodel.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result, expectedRenderedInputHash string, expectedImageInputHash string) (bool, string, error) {
-	const maxAttempts = 3
+	const maxAttempts = 5
 	engine := actions.Engine{Graphs: m.graphs}
 	tx := firstTx
 	node := firstNode
@@ -350,7 +350,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		run.ClaimToken = inv.ClaimToken
 		m.logPublicationStage(*run, "claim_renewal", "completed", "none")
 		m.logPublicationStage(*run, "receipt_probe", "started", "none")
-		_, applied, err := m.automationOutputAlreadyApplied(ctx, executionPrincipal, *inv, run.OutputIdempotencyKey)
+		existingCommit, applied, err := m.automationOutputAlreadyApplied(ctx, executionPrincipal, *inv, run.OutputIdempotencyKey)
 		if err != nil {
 			m.logPublicationStage(*run, "receipt_probe", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
@@ -359,9 +359,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		m.logPublicationStage(*run, "receipt_probe", "completed", "none")
 		if applied {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-			run.Status = "skipped"
-			run.Error = skipReasonDuplicateOutput
-			return false, "", nil
+			return true, existingCommit.CommitID, nil
 		}
 		m.logPublicationStage(*run, "action_apply", "started", "none")
 		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, ProcedureID: inv.ProcedureID, AuthorizationRevision: run.AuthorizationRevision, GlobalAuthorizationRevision: run.GlobalAuthorizationRevision, SpaceAuthorizationRevision: run.SpaceAuthorizationRevision, Changed: node, Aliases: aliases, Result: parsed})
@@ -417,7 +415,10 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		if err != nil {
 			m.logPublicationStage(*run, "graph_commit", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-			if isGraphConflict(err) && attempt < maxAttempts {
+			if attempt < maxAttempts && (isGraphConflict(err) || isTransientGraphPublicationError(ctx, err)) {
+				if !waitGraphPublicationRetry(ctx, attempt, isGraphConflict(err)) {
+					return false, "", ctx.Err()
+				}
 				continue
 			}
 			return false, "", err
@@ -553,6 +554,24 @@ func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Cont
 
 func isGraphConflict(err error) bool {
 	return errors.Is(err, graphchange.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
+}
+
+func isTransientGraphPublicationError(ctx context.Context, err error) bool {
+	return ctx.Err() == nil && status.Code(err) == codes.Unavailable
+}
+
+func waitGraphPublicationRetry(ctx context.Context, attempt int, conflict bool) bool {
+	if conflict {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(time.Duration(attempt) * 100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func mapGlobalAuthorizationAssertionError(err error) error {
