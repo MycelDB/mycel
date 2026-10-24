@@ -139,7 +139,19 @@ func (s *AdminInferenceService) DeleteIntelligenceProfile(ctx context.Context, r
 	if _, err := s.requireInferenceCapability(ctx, capIntelligenceProfileManage, inferenceScope(req.GetSpaceId(), "")); err != nil {
 		return nil, err
 	}
-	profile, err := s.resolveSemanticIntelligenceProfile(ctx, req.GetSpaceId(), firstNonEmptyAdmin(req.GetIntelligenceProfileId(), req.GetIntelligenceProfile()))
+	profileRef := firstNonEmptyAdmin(req.GetIntelligenceProfileId(), req.GetIntelligenceProfile())
+	profile, err := s.resolveSemanticIntelligenceProfile(ctx, req.GetSpaceId(), profileRef)
+	standaloneOnly := false
+	if status.Code(err) == codes.NotFound && s.semantic != nil && s.inference != nil {
+		standalone, standaloneErr := s.resolveStandaloneIntelligenceProfile(ctx, req.GetSpaceId(), profileRef)
+		if standaloneErr == nil {
+			profile = semanticProfileFromInference(standalone)
+			standaloneOnly = true
+			err = nil
+		} else if status.Code(standaloneErr) != codes.NotFound {
+			return nil, standaloneErr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +162,7 @@ func (s *AdminInferenceService) DeleteIntelligenceProfile(ctx context.Context, r
 	if len(refs) > 0 {
 		return nil, referencedPrecondition("inference profile", refs)
 	}
-	if s.semantic == nil {
+	if s.semantic == nil || standaloneOnly {
 		mgr, err := s.inference.SpaceManager(ctx, profile.SpaceID.String())
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "open inference space manager")
