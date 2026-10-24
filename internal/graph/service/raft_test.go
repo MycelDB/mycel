@@ -755,9 +755,15 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		}
 	}()
 	active := map[consensus.NodeID]bool{1: true, 2: true, 3: true}
+	var activeMu sync.RWMutex
+	isActive := func(id consensus.NodeID) bool {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		return active[id]
+	}
 	tickActive := func() {
 		for id, mg := range groupsByNode {
-			if active[id] {
+			if isActive(id) {
 				mg.Tick()
 			}
 		}
@@ -784,7 +790,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	leaderForPartition := func() consensus.NodeID {
 		counts := map[consensus.NodeID]int{}
 		for id, mg := range groupsByNode {
-			if !active[id] {
+			if !isActive(id) {
 				continue
 			}
 			if g, ok := mg.Group(consensus.PartitionGroupID(probe.PartitionID)); ok && g.Leader() != 0 {
@@ -792,7 +798,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 			}
 		}
 		for leader, count := range counts {
-			if active[leader] && count >= 2 {
+			if isActive(leader) && count >= 2 {
 				return leader
 			}
 		}
@@ -806,6 +812,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	principalID := uuid.NewString()
 	idempotencyNodeID := uuid.NewString()
 	firstTx := idempotencyGraphTx(spaceID, idempotencyDomainID, principalID, 0, "failover-capture")
+	firstTx.RetainIdempotencyUntilAcknowledged = true
 	if _, err := modules[oldLeader].UpsertNode(ctx, firstTx, domaingraph.NodeInput{NodeID: idempotencyNodeID, Content: "before failover"}); err != nil {
 		t.Fatalf("UpsertNode() before failover error = %v", err)
 	}
@@ -839,7 +846,9 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		sinkCallsAfterFirstCommit[id] = raftSinkCalls[id]
 	}
 	raftSinkMu.Unlock()
+	activeMu.Lock()
 	active[oldLeader] = false
+	activeMu.Unlock()
 	groupsByNode[oldLeader].Stop()
 	for _, router := range routers {
 		router.UnregisterNode(oldLeader)
@@ -872,6 +881,24 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	if _, err := modules[writer].CommitTransactionGraph(ctx, mismatchTx); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("idempotency mismatch after failover error = %v, want ErrIdempotencyConflict", err)
 	}
+	if err := modules[writer].AcknowledgeIdempotentCommit(ctx, principalID, spaceID, idempotencyDomainID, "failover-capture"); err != nil {
+		t.Fatalf("AcknowledgeIdempotentCommit() error = %v", err)
+	}
+	for id, module := range modules {
+		if !isActive(id) {
+			continue
+		}
+		store, err := module.store(ctx, spaceID, idempotencyDomainID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			record, found, err := store.GetIdempotencyRecord(ctx, principalID, "failover-capture")
+			return err == nil && found && record.PublicationAcknowledged
+		}); err != nil {
+			t.Fatalf("node %d did not apply receipt acknowledgement: %v", id, err)
+		}
+	}
 	raftSinkMu.Lock()
 	for id, calls := range raftSinkCalls {
 		if calls != sinkCallsAfterFirstCommit[id] {
@@ -891,7 +918,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	}
 	readTx := graphTx(spaceID, domainID, 1)
 	for id, m := range modules {
-		if !active[id] {
+		if !isActive(id) {
 			continue
 		}
 		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {

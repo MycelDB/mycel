@@ -132,8 +132,12 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		run.Status = "skipped"
 		run.Error = skipReasonDuplicateOutput
 		run.CompletedAt = m.now()
-		if err := m.recordRunPublicationDisposition(ctx, run, "published"); err != nil && !errors.Is(err, ErrAutomationNotFound) {
-			return run, err
+		if err := m.recordRunPublicationDisposition(ctx, run, "published"); err != nil {
+			if !errors.Is(err, ErrAutomationNotFound) {
+				return run, err
+			}
+		} else if err := m.acknowledgePublicationReceipt(ctx, executionPrincipal, inv, run); err != nil {
+			return run, errors.Join(ErrPublicationReconciliationRequired, err)
 		}
 		return run, nil
 	}
@@ -201,6 +205,10 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		m.logPublicationStage(run, "final_disposition", "failed", publicationFailureCategory(err))
 		return run, errors.Join(ErrPublicationReconciliationRequired, err)
 	}
+	if err := m.acknowledgePublicationReceipt(publicationCtx, executionPrincipal, inv, run); err != nil {
+		m.logPublicationStage(run, "receipt_acknowledgement", "failed", publicationFailureCategory(err))
+		return run, errors.Join(ErrPublicationReconciliationRequired, err)
+	}
 	m.logPublicationStage(run, "final_disposition", "completed", "published")
 	return run, nil
 }
@@ -211,6 +219,17 @@ func (m *AutomationManager) automationOutputAlreadyApplied(ctx context.Context, 
 	}
 	_, found, err := m.graphs.LookupIdempotentCommit(ctx, principal, inv.SpaceID, inv.DomainID.String(), key)
 	return found, err
+}
+
+func (m *AutomationManager) acknowledgePublicationReceipt(ctx context.Context, principal string, inv automation.Invocation, run automation.Run) error {
+	if m.graphs == nil {
+		return ErrPublicationReconciliationRequired
+	}
+	key := automationOutputIdempotencyKey(inv, run.ID)
+	if strings.TrimSpace(key) == "" {
+		return ErrPublicationReconciliationRequired
+	}
+	return m.graphs.AcknowledgeIdempotentCommit(ctx, principal, inv.SpaceID, inv.DomainID.String(), key)
 }
 
 func (m *AutomationManager) recordRunPublicationDisposition(ctx context.Context, run automation.Run, disposition string) error {
@@ -378,6 +397,7 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
 	tx.IdempotencyKey = automationOutputIdempotencyKey(inv, run.ID)
+	tx.RetainIdempotencyUntilAcknowledged = len(run.InferenceAttemptIDs) > 0
 	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)

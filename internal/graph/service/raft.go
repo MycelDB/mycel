@@ -243,6 +243,13 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 		}
 		return err
 	}
+	if record.IdempotencyAcknowledgment != nil {
+		_, _, _, err := m.applyGraphCommitRecord(ctx, record)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+	}
 	event, changes, err := m.graphChangeEventFromRaftRecord(ctx, record, cmd.CommandID)
 	if err != nil {
 		return err

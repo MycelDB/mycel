@@ -159,6 +159,56 @@ func TestLocalStoreIdempotencyStatsExcludeExpiredRecords(t *testing.T) {
 	}
 }
 
+func TestLocalStoreRetainsExpiredPublicationReceiptUntilAcknowledged(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committedAt := time.Now().UTC().Add(-31 * 24 * time.Hour)
+	tx, err := store.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.SetIdempotency(IdempotencyRecord{
+		Scope:                   "principal",
+		Key:                     "automation-publication",
+		Digest:                  "digest",
+		Metadata:                json.RawMessage(`{}`),
+		CommittedAt:             committedAt,
+		ExpiresAt:               committedAt.Add(30 * 24 * time.Hour),
+		RetainUntilAcknowledged: true,
+	})
+	if _, err := tx.CommitWithInfo(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.GetIdempotencyRecord(ctx, "principal", "automation-publication"); err != nil || !found {
+		t.Fatalf("retained receipt found=%v err=%v", found, err)
+	}
+	if err := store.MarkIdempotencyPublicationAcknowledged(ctx, "principal", "automation-publication"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, found, err := store.GetIdempotencyRecord(ctx, "principal", "automation-publication"); err != nil || found {
+		t.Fatalf("acknowledged expired receipt found=%v err=%v", found, err)
+	}
+}
+
 func TestLocalStoreIdempotencyExpiryIsEvicted(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, t.TempDir())

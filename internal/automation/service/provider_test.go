@@ -801,16 +801,18 @@ func (s automationE2ESessions) RollbackTransaction(context.Context, string, stri
 }
 
 type automationE2EGraph struct {
-	node                 graph.Node
-	nodes                map[string]graph.Node
-	edges                []graph.Edge
-	cancelOnCommit       context.CancelFunc
-	waitForCommitContext bool
-	acknowledgements     *int
-	spaceRevision        int64
-	domainRevision       int64
-	domainRevisionCalls  *[][2]string
-	idempotentCommits    map[string]graphchange.CommitResult
+	node                        graph.Node
+	nodes                       map[string]graph.Node
+	edges                       []graph.Edge
+	cancelOnCommit              context.CancelFunc
+	waitForCommitContext        bool
+	acknowledgements            *int
+	spaceRevision               int64
+	domainRevision              int64
+	domainRevisionCalls         *[][2]string
+	idempotentCommits           map[string]graphchange.CommitResult
+	idempotencyAcknowledgements *int
+	acknowledgeIdempotency      func(context.Context, string, string, string, string) error
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -909,6 +911,20 @@ func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, tx sess
 func (g *automationE2EGraph) LookupIdempotentCommit(_ context.Context, principalID, _, _, key string) (graphchange.CommitResult, bool, error) {
 	result, ok := g.idempotentCommits[principalID+"\x00"+key]
 	return result, ok, nil
+}
+func (g *automationE2EGraph) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if g.acknowledgeIdempotency != nil {
+		if err := g.acknowledgeIdempotency(ctx, principalID, spaceID, domainID, key); err != nil {
+			return err
+		}
+	}
+	if g.idempotencyAcknowledgements != nil {
+		(*g.idempotencyAcknowledgements)++
+	}
+	return nil
 }
 func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) error { return nil }
 func (g *automationE2EGraph) AcknowledgeTransactionFinalization(ctx context.Context, _ sessionmodel.GraphTransaction) error {

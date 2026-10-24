@@ -57,6 +57,7 @@ type GraphRuntime interface {
 	actions.Graphs
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
 	LookupIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) (graphchange.CommitResult, bool, error)
+	AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) error
 	ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error)
 	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string) error

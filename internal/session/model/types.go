@@ -63,20 +63,21 @@ type GraphSession struct {
 }
 
 type GraphTransaction struct {
-	ID             string
-	SessionID      string
-	PrincipalID    string
-	SpaceID        string
-	DomainID       string
-	HomeNodeID     consensus.NodeID
-	Mode           TransactionMode
-	State          TransactionState
-	BaseRevision   int64
-	Origin         graphchange.OriginMetadata
-	IdempotencyKey string
-	CreatedAt      time.Time
-	LastSeen       time.Time
-	ExpiresAt      time.Time
+	ID                                 string
+	SessionID                          string
+	PrincipalID                        string
+	SpaceID                            string
+	DomainID                           string
+	HomeNodeID                         consensus.NodeID
+	Mode                               TransactionMode
+	State                              TransactionState
+	BaseRevision                       int64
+	Origin                             graphchange.OriginMetadata
+	IdempotencyKey                     string
+	RetainIdempotencyUntilAcknowledged bool
+	CreatedAt                          time.Time
+	LastSeen                           time.Time
+	ExpiresAt                          time.Time
 }
 
 type SessionRouteRecord struct {

@@ -263,6 +263,15 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 		m.logPublicationStage(run, "recovery_output_probe", "completed", disposition)
 	}
 
+	if disposition == "published" {
+		principal := firstNonEmptyString(run.ActorPrincipalID, inv.ActorPrincipalID, automationActor)
+		if err := m.acknowledgePublicationReceipt(recoveryCtx, principal, *inv, run); err != nil {
+			m.logPublicationStage(run, "recovery_receipt_acknowledgement", "failed", publicationFailureCategory(err))
+			return false, err
+		}
+		m.logPublicationStage(run, "recovery_receipt_acknowledgement", "completed", "none")
+	}
+
 	now := m.now()
 	run.CompletedAt = now
 	inv.AttemptCount = max(inv.AttemptCount, attempt.RunAttemptNumber)

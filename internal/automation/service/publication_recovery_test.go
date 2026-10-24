@@ -33,6 +33,18 @@ func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProvi
 		t.Fatal(err)
 	}
 	attempt := persistSucceededPublicationAttempt(t, ctx, mgr, inv, run, "publication_pending")
+	acknowledgements := 0
+	graphs.idempotencyAcknowledgements = &acknowledgements
+	graphs.acknowledgeIdempotency = func(_ context.Context, _, _, _, key string) error {
+		persisted := requireProcedureInferenceAttempt(t, ctx, store, spaceID, attempt.ID)
+		if persisted.PublicationDisposition != "published" {
+			t.Fatalf("receipt acknowledged before terminal disposition: %q", persisted.PublicationDisposition)
+		}
+		if key != outputKey {
+			t.Fatalf("acknowledged key=%q want=%q", key, outputKey)
+		}
+		return nil
+	}
 
 	reconciled, err := mgr.reconcileProviderStartedPublication(ctx, &inv)
 	if err != nil || !reconciled {
@@ -49,6 +61,9 @@ func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProvi
 	persistedInvocation, err := store.GetInvocation(ctx, domainID, inv.ID)
 	if err != nil || persistedInvocation.Status != "succeeded" || persistedInvocation.AttemptCount != 1 {
 		t.Fatalf("persisted invocation=%+v err=%v", persistedInvocation, err)
+	}
+	if acknowledgements != 1 {
+		t.Fatalf("receipt acknowledgements=%d want=1", acknowledgements)
 	}
 }
 

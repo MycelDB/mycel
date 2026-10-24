@@ -34,13 +34,19 @@ type IdempotencyMetrics struct {
 	CapacityRecords    uint64
 }
 
+type graphIdempotencyAcknowledgment struct {
+	Scope string `json:"scope"`
+	Key   string `json:"key"`
+}
+
 type graphCommitIdempotency struct {
-	Scope       string                         `json:"scope"`
-	Key         string                         `json:"key"`
-	Digest      string                         `json:"digest"`
-	Metadata    graphCommitIdempotencyMetadata `json:"metadata"`
-	CommittedAt time.Time                      `json:"committed_at"`
-	ExpiresAt   time.Time                      `json:"expires_at"`
+	Scope                   string                         `json:"scope"`
+	Key                     string                         `json:"key"`
+	Digest                  string                         `json:"digest"`
+	Metadata                graphCommitIdempotencyMetadata `json:"metadata"`
+	CommittedAt             time.Time                      `json:"committed_at"`
+	ExpiresAt               time.Time                      `json:"expires_at"`
+	RetainUntilAcknowledged bool                           `json:"retain_until_acknowledged,omitempty"`
 }
 
 type graphCommitIdempotencyMetadata struct {
@@ -128,8 +134,9 @@ func newGraphCommitIdempotency(tx sessionmodel.GraphTransaction, record graphCom
 			OperationCount: record.OperationCount,
 			OperationID:    tx.Origin.OperationID,
 		},
-		CommittedAt: committedAt,
-		ExpiresAt:   committedAt.Add(GraphCommitIdempotencyRetention),
+		CommittedAt:             committedAt,
+		ExpiresAt:               committedAt.Add(GraphCommitIdempotencyRetention),
+		RetainUntilAcknowledged: tx.RetainIdempotencyUntilAcknowledged,
 	}, nil
 }
 
@@ -293,13 +300,58 @@ func (record graphCommitIdempotency) storageRecord() (graphstorage.IdempotencyRe
 		return graphstorage.IdempotencyRecord{}, err
 	}
 	return graphstorage.IdempotencyRecord{
-		Scope:       record.Scope,
-		Key:         record.Key,
-		Digest:      record.Digest,
-		Metadata:    metadata,
-		CommittedAt: record.CommittedAt,
-		ExpiresAt:   record.ExpiresAt,
+		Scope:                   record.Scope,
+		Key:                     record.Key,
+		Digest:                  record.Digest,
+		Metadata:                metadata,
+		CommittedAt:             record.CommittedAt,
+		ExpiresAt:               record.ExpiresAt,
+		RetainUntilAcknowledged: record.RetainUntilAcknowledged,
 	}, nil
+}
+
+// AcknowledgeIdempotentCommit durably releases a retained publication receipt
+// only after its caller has persisted the terminal publication disposition.
+func (m *Module) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) error {
+	principalID = strings.TrimSpace(principalID)
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	key = strings.TrimSpace(key)
+	if principalID == "" || spaceID == "" || domainID == "" || key == "" {
+		return fmt.Errorf("%w: idempotency acknowledgement scope is required", ErrInvalidInput)
+	}
+	if len(key) > MaxGraphCommitIdempotencyKeyBytes || !utf8.ValidString(key) {
+		return fmt.Errorf("%w: invalid idempotency acknowledgement key", ErrInvalidInput)
+	}
+	if err := m.requireRaftGraphWriteRoute(spaceID); err != nil {
+		return err
+	}
+	record := graphCommitRecord{
+		SpaceID:  spaceID,
+		DomainID: domainID,
+		IdempotencyAcknowledgment: &graphIdempotencyAcknowledgment{
+			Scope: principalID,
+			Key:   key,
+		},
+	}
+	if m.raftGroups != nil {
+		sum := sha256.Sum256([]byte(principalID + "\x00" + spaceID + "\x00" + domainID + "\x00" + key))
+		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, "graph-idempotency-ack-"+hex.EncodeToString(sum[:]))
+		if err != nil {
+			return err
+		}
+		_, err = m.proposeGraphRaftCommand(ctx, cmd)
+		return err
+	}
+	store, err := m.store(ctx, spaceID, domainID)
+	if err != nil {
+		return err
+	}
+	err = store.MarkIdempotencyPublicationAcknowledged(ctx, principalID, key)
+	if errors.Is(err, graphstorage.ErrNotFound) {
+		return nil
+	}
+	return mapStorageError(err)
 }
 
 func (m *Module) observeIdempotencyError(record *graphCommitIdempotency, err error) error {
