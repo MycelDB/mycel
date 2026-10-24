@@ -265,11 +265,26 @@ func TestProcessPendingCrashBetweenAmbiguousRunAndInvocationWritesReconcilesWith
 	now := time.Now().UTC()
 	domainID := graph.DomainID(uuid.New())
 	spaceID := uuid.NewString()
-	inv := automation.Invocation{ID: "inv-crash-window", SpaceID: spaceID, DomainID: domainID, AutomationID: "procedure", AutomationVersion: 1, BindingVersion: 1, ProcedureVersion: 1, Status: "running", ClaimVersion: 1, ClaimToken: "expired", ClaimProcessID: "old-process", ClaimExpiresAt: now.Add(-time.Minute)}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "callable input"}}
+	definition := automation.Definition{
+		ID: "procedure", Version: 1, DomainID: domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", Profile: "callable"}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 3},
+	}
+	procedure, binding := automation.ExpandDefinition(definition)
+	inv := automation.Invocation{ID: "inv-crash-window", SpaceID: spaceID, DomainID: domainID, AutomationID: definition.ID, AutomationVersion: definition.Version, BindingID: binding.ID, BindingVersion: binding.Version, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, ChangedElementID: node.ID.String(), ChangedElementKind: "node", EventType: automation.EventNodeUpdated, Status: "running", ClaimVersion: 1, ClaimToken: "expired", ClaimProcessID: "old-process", ClaimExpiresAt: now.Add(-time.Minute)}
 	runID := automationRunID(inv, 1)
-	run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "running", StartedAt: now.Add(-time.Minute)}
-	attempt := automation.ProcedureInferenceAttempt{ID: "attempt-crash-window", InvocationID: inv.ID, RunID: run.ID, SpaceID: spaceID, DomainID: domainID, State: automation.InferenceAttemptStateStarted, RunAttemptNumber: 1, StartedAt: now.Add(-30 * time.Second)}
-	definition := automation.Definition{ID: inv.AutomationID, Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Inference: automation.InferenceRef{Operation: "chat", Profile: "callable"}}
+	run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, BindingID: binding.ID, BindingVersion: binding.Version, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, AttemptNumber: 1, Status: "running", StartedAt: now.Add(-time.Minute)}
+	attempt := automation.ProcedureInferenceAttempt{ID: "noncanonical-attempt-crash-window", RecordVersion: 3, InvocationID: inv.ID, RunID: run.ID, SpaceID: spaceID, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, BindingID: binding.ID, BindingVersion: binding.Version, State: automation.InferenceAttemptStateStarted, RunAttemptNumber: 1, ProviderAttemptNumber: 1, Operation: "chat", RequestedAt: now.Add(-time.Minute), AuthorizedAt: now.Add(-45 * time.Second), StartedAt: now.Add(-30 * time.Second)}
+	if err := automation.ValidateDefinition(definition); err != nil {
+		t.Fatalf("callable definition is invalid: %v", err)
+	}
+	if err := automation.ValidateProcedureInferenceAttempt(attempt); err != nil {
+		t.Fatalf("started attempt is invalid: %v", err)
+	}
 	if err := baseStore.PutDefinition(ctx, definition); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +298,9 @@ func TestProcessPendingCrashBetweenAmbiguousRunAndInvocationWritesReconcilesWith
 		t.Fatal(err)
 	}
 	inference := &countingFailureInference{}
-	mgr := NewManager(store).WithInferenceInvoker(inference)
+	mgr := NewManager(store).
+		WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, &automationE2EGraph{node: node}).
+		WithInferenceInvoker(inference)
 	mgr.now = func() time.Time { return now }
 	processed, err := mgr.ProcessPending(ctx, domainID, 10)
 	if err == nil || processed != 0 {
@@ -298,7 +315,9 @@ func TestProcessPendingCrashBetweenAmbiguousRunAndInvocationWritesReconcilesWith
 		t.Fatalf("injected crash window did not preserve nonterminal invocation: %+v err=%v", persistedInvocation, invocationErr)
 	}
 
-	restarted := NewManager(store).WithInferenceInvoker(inference)
+	restarted := NewManager(store).
+		WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, &automationE2EGraph{node: node}).
+		WithInferenceInvoker(inference)
 	restarted.now = func() time.Time { return now.Add(automationClaimLease + time.Second) }
 	processed, err = restarted.ProcessPending(ctx, domainID, 10)
 	if err != nil || processed != 1 {
