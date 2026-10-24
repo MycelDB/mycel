@@ -152,6 +152,58 @@ func (preProviderFailureInference) Invoke(context.Context, inferenceruntime.Invo
 	return inferenceruntime.InvokeResponse{Status: domaininference.UsageStatusFailed}, errors.New("routing unavailable")
 }
 
+func TestTerminalAttemptPersistenceFailureIsAmbiguousAndDoesNotReplayProvider(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &terminalAttemptFailureStore{Store: baseStore, remainingFailures: 1}
+	var logs bytes.Buffer
+	mgr := NewManager(store).WithInferenceInvoker(inference).WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	run := automation.Run{ID: uuid.NewString(), BindingID: "summarize-binding", BindingVersion: 1, ProcedureID: "summarize", ProcedureVersion: 1, AttemptNumber: 1}
+	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, BindingID: run.BindingID, BindingVersion: run.BindingVersion, ProcedureID: run.ProcedureID, ProcedureVersion: run.ProcedureVersion, ChangedElementID: uuid.NewString(), ActorPrincipalID: automationActor}
+
+	_, err := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if err == nil || inferenceFailurePublicationDisposition(err) != "not_published_provider_ambiguous" {
+		t.Fatalf("terminal persistence error=%v disposition=%q", err, inferenceFailurePublicationDisposition(err))
+	}
+	if err := mgr.recordRunPublicationDispositionWithDiagnostics(ctx, run, inferenceFailurePublicationDisposition(err)); err == nil {
+		t.Fatal("started attempt unexpectedly accepted a terminal publication disposition")
+	}
+	ledger, ledgerErr := baseStore.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateStarted {
+		t.Fatalf("durable attempt is not started after ambiguous persistence: %+v err=%v", ledger, ledgerErr)
+	}
+	if !strings.Contains(logs.String(), `"stage":"disposition_not_published_provider_ambiguous"`) || !strings.Contains(logs.String(), `"result":"failed"`) {
+		t.Fatalf("ambiguous persistence diagnostic missing: %s", logs.String())
+	}
+
+	_, secondErr := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if secondErr == nil {
+		t.Fatal("reprocessing a durable started attempt unexpectedly succeeded")
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider replayed after terminal persistence ambiguity: calls=%d", calls)
+	}
+}
+
+type terminalAttemptFailureStore struct {
+	storage.Store
+	remainingFailures int
+}
+
+func (s *terminalAttemptFailureStore) PutProcedureInferenceLedger(ctx context.Context, ledger automation.ProcedureInferenceLedger) error {
+	if s.remainingFailures > 0 {
+		for _, attempt := range ledger.Attempts {
+			if automation.IsTerminalProcedureInferenceAttemptState(attempt.State) {
+				s.remainingFailures--
+				return errors.New("terminal attempt persistence unavailable")
+			}
+		}
+	}
+	return s.Store.PutProcedureInferenceLedger(ctx, ledger)
+}
+
 func TestAutomationDefinitionStableAcrossCredentialRotation(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, _ := newAutomationInferenceRuntime(t, ctx, false)

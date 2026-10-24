@@ -601,26 +601,27 @@ func idempotencyElementID(def automation.Definition, run automation.Run, inv aut
 }
 
 type inferenceGenerationError struct {
-	cause           error
-	providerStarted bool
+	cause                    error
+	providerStarted          bool
+	providerOutcomeAmbiguous bool
 }
 
 func (e *inferenceGenerationError) Error() string { return e.cause.Error() }
 func (e *inferenceGenerationError) Unwrap() error { return e.cause }
 
-func markInferenceGenerationError(err error, providerStarted bool) error {
+func markInferenceGenerationError(err error, providerStarted, providerOutcomeAmbiguous bool) error {
 	if err == nil {
 		return nil
 	}
-	return &inferenceGenerationError{cause: err, providerStarted: providerStarted}
+	return &inferenceGenerationError{cause: err, providerStarted: providerStarted, providerOutcomeAmbiguous: providerOutcomeAmbiguous}
 }
 
 func inferenceFailurePublicationDisposition(err error) string {
-	if errors.Is(err, ErrInferenceAttemptAlreadyStarted) {
+	var generationErr *inferenceGenerationError
+	if errors.Is(err, ErrInferenceAttemptAlreadyStarted) || (errors.As(err, &generationErr) && generationErr.providerOutcomeAmbiguous) {
 		return "not_published_provider_ambiguous"
 	}
-	var generationErr *inferenceGenerationError
-	if errors.As(err, &generationErr) && generationErr.providerStarted {
+	if generationErr != nil && generationErr.providerStarted {
 		return "not_published_provider_failure"
 	}
 	return "not_published_pre_provider_failure"
@@ -717,22 +718,24 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	attemptState, completionErr := m.completeProcedureInferenceAttempt(ctx, attempt, resp, invokeErr)
 	providerStarted := !attempt.StartedAt.IsZero()
 	if completionErr != nil {
-		return "", markInferenceGenerationError(completionErr, providerStarted)
+		// Once provider access may have occurred, failure to commit the terminal
+		// transition leaves the durable started attempt explicitly ambiguous.
+		return "", markInferenceGenerationError(completionErr, providerStarted, providerStarted)
 	}
 	if invokeErr != nil {
 		if attemptState == automation.InferenceAttemptStateAmbiguous {
-			return "", markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true)
+			return "", markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true, true)
 		}
 		if errors.Is(invokeErr, inferenceruntime.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
-			return "", markInferenceGenerationError(fmt.Errorf("%w: %s", invokeErr, resp.Decision.Reason), providerStarted)
+			return "", markInferenceGenerationError(fmt.Errorf("%w: %s", invokeErr, resp.Decision.Reason), providerStarted, false)
 		}
-		return "", markInferenceGenerationError(invokeErr, providerStarted)
+		return "", markInferenceGenerationError(invokeErr, providerStarted, false)
 	}
 	if m.maxInputTokens > 0 && run.Usage.InputTokens > m.maxInputTokens {
-		return "", markInferenceGenerationError(fmt.Errorf("automation input token ceiling exceeded: %d > %d", run.Usage.InputTokens, m.maxInputTokens), true)
+		return "", markInferenceGenerationError(fmt.Errorf("automation input token ceiling exceeded: %d > %d", run.Usage.InputTokens, m.maxInputTokens), true, false)
 	}
 	if m.maxOutputTokens > 0 && run.Usage.OutputTokens > m.maxOutputTokens {
-		return "", markInferenceGenerationError(fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens), true)
+		return "", markInferenceGenerationError(fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens), true, false)
 	}
 	return resp.Text, nil
 }

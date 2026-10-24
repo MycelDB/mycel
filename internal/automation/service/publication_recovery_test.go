@@ -343,8 +343,9 @@ func TestInferenceFailurePublicationDispositionPreservesProviderBoundary(t *test
 		expected string
 	}{
 		{name: "pre provider", err: errors.New("routing unavailable"), expected: "not_published_pre_provider_failure"},
-		{name: "provider started", err: markInferenceGenerationError(errors.New("provider failed"), true), expected: "not_published_provider_failure"},
-		{name: "ambiguous", err: markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true), expected: "not_published_provider_ambiguous"},
+		{name: "provider started", err: markInferenceGenerationError(errors.New("provider failed"), true, false), expected: "not_published_provider_failure"},
+		{name: "ambiguous", err: markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true, true), expected: "not_published_provider_ambiguous"},
+		{name: "terminal persistence ambiguous", err: markInferenceGenerationError(errors.New("persistence unavailable"), true, true), expected: "not_published_provider_ambiguous"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
