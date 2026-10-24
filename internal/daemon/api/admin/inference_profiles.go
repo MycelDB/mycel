@@ -140,6 +140,15 @@ func (s *AdminInferenceService) DeleteIntelligenceProfile(ctx context.Context, r
 		return nil, err
 	}
 	profileRef := firstNonEmptyAdmin(req.GetIntelligenceProfileId(), req.GetIntelligenceProfile())
+	if s.semantic != nil {
+		exists, err := s.semanticSpaceExists(ctx, req.GetSpaceId())
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return s.deleteCachedProfileFromMissingSemanticSpace(ctx, req.GetSpaceId(), profileRef)
+		}
+	}
 	profile, err := s.resolveSemanticIntelligenceProfile(ctx, req.GetSpaceId(), profileRef)
 	standaloneOnly := false
 	if status.Code(err) == codes.NotFound && s.semantic != nil && s.inference != nil {
@@ -162,7 +171,13 @@ func (s *AdminInferenceService) DeleteIntelligenceProfile(ctx context.Context, r
 	if len(refs) > 0 {
 		return nil, referencedPrecondition("inference profile", refs)
 	}
-	if s.semantic == nil || standaloneOnly {
+	if standaloneOnly {
+		if err := s.deleteSyncedIntelligenceProfile(ctx, profile.SpaceID.String(), profile.ID); err != nil {
+			return nil, mapAdminInferenceError(err, "delete orphaned inference profile projection")
+		}
+		return &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileResponse{IntelligenceProfileId: profile.ID.String()}, nil
+	}
+	if s.semantic == nil {
 		mgr, err := s.inference.SpaceManager(ctx, profile.SpaceID.String())
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "open inference space manager")
@@ -186,6 +201,52 @@ func (s *AdminInferenceService) DeleteIntelligenceProfile(ctx context.Context, r
 	}
 	if err := s.deleteSyncedIntelligenceProfile(ctx, profile.SpaceID.String(), profile.ID); err != nil {
 		return nil, mapAdminInferenceError(err, "delete synced intelligence profile")
+	}
+	return &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileResponse{IntelligenceProfileId: profile.ID.String()}, nil
+}
+
+func (s *AdminInferenceService) semanticSpaceExists(ctx context.Context, spaceID string) (bool, error) {
+	parsed, err := parseSemanticUUID[domainspace.SpaceID](strings.TrimSpace(spaceID), "space_id")
+	if err != nil {
+		return false, err
+	}
+	spaces, err := s.semantic.ListSpaceManagers(ctx)
+	if err != nil {
+		return false, mapAdminInferenceError(err, "list semantic spaces")
+	}
+	for _, space := range spaces {
+		if space.SpaceID == parsed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *AdminInferenceService) deleteCachedProfileFromMissingSemanticSpace(ctx context.Context, spaceID, ref string) (*adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileResponse, error) {
+	cache, ok := s.inference.(derivedInferenceSpaceCache)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "inference projection cache is unavailable")
+	}
+	profiles, cached, err := cache.ListCachedDerivedProfiles(ctx, strings.TrimSpace(spaceID))
+	if err != nil {
+		return nil, mapAdminInferenceError(err, "list cached inference profiles")
+	}
+	if !cached {
+		return nil, status.Error(codes.NotFound, "inference profile not found")
+	}
+	profile, err := resolveStandaloneIntelligenceProfileFromItems(profiles, ref)
+	if err != nil {
+		return nil, err
+	}
+	refs, err := s.profileReferences(ctx, profile)
+	if err != nil {
+		return nil, err
+	}
+	if len(refs) > 0 {
+		return nil, referencedPrecondition("inference profile", refs)
+	}
+	if err := cache.DeleteCachedDerivedProfile(ctx, strings.TrimSpace(spaceID), profile.ID); err != nil {
+		return nil, mapAdminInferenceError(err, "delete orphaned cached inference profile")
 	}
 	return &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileResponse{IntelligenceProfileId: profile.ID.String()}, nil
 }
@@ -287,6 +348,10 @@ func (s *AdminInferenceService) resolveStandaloneIntelligenceProfile(ctx context
 	if err != nil {
 		return domaininference.Profile{}, mapAdminInferenceError(err, "list inference profiles")
 	}
+	return resolveStandaloneIntelligenceProfileFromItems(items, ref)
+}
+
+func resolveStandaloneIntelligenceProfileFromItems(items []domaininference.Profile, ref string) (domaininference.Profile, error) {
 	if id, err := uuid.Parse(strings.TrimSpace(ref)); err == nil && id != uuid.Nil {
 		for _, item := range items {
 			if item.ID == id {

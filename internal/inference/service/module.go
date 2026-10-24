@@ -370,6 +370,53 @@ func (m *Module) DeleteDerivedProfile(ctx context.Context, spaceID string, id do
 	return m.markDerivedProjectionError(mgr.DeleteProfile(ctx, id))
 }
 
+func (m *Module) ListCachedDerivedProfiles(ctx context.Context, spaceID string) ([]domaininference.Profile, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return nil, false, fmt.Errorf("%w: spaceID is required", inferencestorage.ErrInvalidInput)
+	}
+	m.mu.Lock()
+	mgr, ok := m.spaces[spaceID]
+	if wrapped, wrappedOK := mgr.(*walSpaceManager); wrappedOK {
+		mgr = wrapped.inner
+	}
+	m.mu.Unlock()
+	if !ok {
+		return nil, false, nil
+	}
+	profiles, err := mgr.ListProfiles(ctx)
+	return profiles, true, err
+}
+
+func (m *Module) DeleteCachedDerivedProfile(ctx context.Context, spaceID string, id domaininference.ProfileID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return fmt.Errorf("%w: spaceID is required", inferencestorage.ErrInvalidInput)
+	}
+	m.mu.Lock()
+	mgr, ok := m.spaces[spaceID]
+	if wrapped, wrappedOK := mgr.(*walSpaceManager); wrappedOK {
+		mgr = wrapped.inner
+	}
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("cached inference space not found")
+	}
+	deleter, ok := mgr.(interface {
+		DeleteCachedProfile(context.Context, domaininference.ProfileID) error
+	})
+	if !ok {
+		return fmt.Errorf("cached inference profile deletion is unsupported")
+	}
+	return deleter.DeleteCachedProfile(ctx, id)
+}
+
 func (m *Module) UpsertDerivedCredentialGrant(ctx context.Context, spaceID string, grant domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
 	mgr, err := m.baseSpaceManager(ctx, spaceID)
 	if err != nil {

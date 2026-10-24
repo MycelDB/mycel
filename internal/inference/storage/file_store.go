@@ -494,6 +494,16 @@ func (m *spaceManager) DeleteProfile(ctx context.Context, id domaininference.Pro
 	return m.writeJSON(ctx, m.profilesPath(), m.profiles)
 }
 
+func (m *spaceManager) DeleteCachedProfile(ctx context.Context, id domaininference.ProfileID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.profiles.Profiles = deleteByID(m.profiles.Profiles, id, func(v domaininference.Profile) uuid.UUID { return v.ID })
+	return nil
+}
+
 func (m *spaceManager) UpsertCredentialGrant(ctx context.Context, item domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

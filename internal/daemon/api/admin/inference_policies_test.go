@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,10 +101,13 @@ func TestAdminIntelligenceProfileDeleteReconcilesMissingSemanticProjection(t *te
 	if _, err := inference.UsageLedger().AppendUsageEvent(ctx, domaininference.UsageEvent{SpaceID: spaceID, Operation: domaininference.OperationChat, Status: domaininference.UsageStatusSucceeded, ProfileID: referencedUUID}); err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
+	if _, err := inferenceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: spaceID, Scope: domaininference.Scope{SpaceID: spaceID}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{"ReFeReNcEd-PrOfIlE"}, Action: domaininference.PolicyActionAllow, State: domaininference.PolicyStateActive}); err != nil {
+		t.Fatalf("upsert mixed-case profile policy: %v", err)
+	}
 	deleteSemanticProfile(referencedID)
-	_, err = svc.DeleteIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest{SpaceId: spaceID, IntelligenceProfileId: referencedID})
-	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "policy_decision") || !strings.Contains(err.Error(), "usage_event") {
-		t.Fatalf("DeleteIntelligenceProfile(referenced) = %v, want complete FailedPrecondition refs", err)
+	_, err = svc.DeleteIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest{SpaceId: spaceID, IntelligenceProfile: "REFERENCED-PROFILE"})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "policy_decision") || !strings.Contains(err.Error(), "usage_event") || !strings.Contains(err.Error(), "inference_policy") {
+		t.Fatalf("DeleteIntelligenceProfile(referenced) = %v, want complete ID and case-insensitive key refs", err)
 	}
 
 	unreferencedID := createProfile("unreferenced-profile")
@@ -122,6 +127,88 @@ func TestAdminIntelligenceProfileDeleteReconcilesMissingSemanticProjection(t *te
 		if profile.ID.String() == unreferencedID {
 			t.Fatalf("unreferenced standalone profile was not removed: %#v", profile)
 		}
+	}
+}
+
+func TestAdminIntelligenceProfileDeleteDropsCachedProjectionWithoutRecreatingHardDeletedSpace(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dataDir := t.TempDir()
+	semantic := semanticservice.NewModule()
+	if result := semantic.Init(ctx, runtimetest.New(dataDir, logger)); !result.OK {
+		t.Fatalf("init semantic module: %#v", result)
+	}
+	inference := inferenceservice.NewModule()
+	if result := inference.Init(ctx, rejectingAdminWriteHost{Host: runtimetest.New(dataDir, logger)}); !result.OK {
+		t.Fatalf("init inference module: %#v", result)
+	}
+	spaceID := "8e603d31-3f2f-4d35-9362-22854399cb27"
+	spaceUUID := domainspace.SpaceID(uuid.MustParse(spaceID))
+	svc := NewAdminInferenceService(semantic, inference, fakeAuthorizer{allowed: true})
+	projectionOnly, err := svc.CreateIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest{
+		SpaceId: spaceID, Key: "projection-only", Operation: commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT, Purpose: "automation", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIntelligenceProfile(projection-only): %v", err)
+	}
+	projectionOnlyID := projectionOnly.GetIntelligenceProfile().GetIntelligenceProfileId()
+	semanticMgr, err := semantic.SpaceManager(ctx, spaceUUID)
+	if err != nil {
+		t.Fatalf("semantic space manager: %v", err)
+	}
+	if err := semanticMgr.DeleteIntelligenceProfile(ctx, domainsemantic.IntelligenceProfileID(uuid.MustParse(projectionOnlyID))); err != nil {
+		t.Fatalf("delete semantic projection-only profile: %v", err)
+	}
+	if _, err := svc.DeleteIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest{SpaceId: spaceID, IntelligenceProfileId: projectionOnlyID}); err != nil {
+		t.Fatalf("DeleteIntelligenceProfile(projection-only) used gated normal write: %v", err)
+	}
+
+	created, err := svc.CreateIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest{
+		SpaceId: spaceID, Key: "orphan-profile", Operation: commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT, Purpose: "automation", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIntelligenceProfile(): %v", err)
+	}
+	profileID := created.GetIntelligenceProfile().GetIntelligenceProfileId()
+	graphDir := filepath.Join(dataDir, "graphs", spaceID)
+	if err := os.RemoveAll(graphDir); err != nil {
+		t.Fatalf("remove graph directory: %v", err)
+	}
+	response, err := svc.DeleteIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest{SpaceId: spaceID, IntelligenceProfileId: profileID})
+	if err != nil {
+		t.Fatalf("DeleteIntelligenceProfile(): %v", err)
+	}
+	if response.GetIntelligenceProfileId() != profileID {
+		t.Fatalf("deleted profile id = %q, want %q", response.GetIntelligenceProfileId(), profileID)
+	}
+	if _, err := os.Stat(graphDir); !os.IsNotExist(err) {
+		t.Fatalf("hard-deleted graph directory was recreated: err=%v", err)
+	}
+	if profiles, cached, err := inference.ListCachedDerivedProfiles(ctx, spaceID); err != nil || !cached || len(profiles) != 0 {
+		t.Fatalf("orphaned profile remains in cache: cached=%t profiles=%v err=%v", cached, profiles, err)
+	}
+
+	referenced, err := svc.CreateIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest{
+		SpaceId: spaceID, Key: "referenced-orphan", Operation: commonv1.InferenceOperation_INFERENCE_OPERATION_CHAT, Purpose: "automation", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateIntelligenceProfile(referenced): %v", err)
+	}
+	if _, err := inference.UpsertDerivedPolicy(ctx, spaceID, domaininference.Policy{SpaceID: spaceID, Scope: domaininference.Scope{SpaceID: spaceID}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{"REFERENCED-ORPHAN"}, Action: domaininference.PolicyActionAllow, State: domaininference.PolicyStateActive}); err != nil {
+		t.Fatalf("upsert derived profile policy: %v", err)
+	}
+	if err := os.RemoveAll(graphDir); err != nil {
+		t.Fatalf("remove referenced graph directory: %v", err)
+	}
+	_, err = svc.DeleteIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest{SpaceId: spaceID, IntelligenceProfile: "referenced-orphan"})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "inference_policy") {
+		t.Fatalf("DeleteIntelligenceProfile(referenced hard-delete) = %v, want FailedPrecondition", err)
+	}
+	if _, err := os.Stat(graphDir); !os.IsNotExist(err) {
+		t.Fatalf("referenced hard-deleted graph directory was recreated: err=%v", err)
+	}
+	if referenced.GetIntelligenceProfile().GetIntelligenceProfileId() == "" {
+		t.Fatal("referenced profile ID is empty")
 	}
 }
 
