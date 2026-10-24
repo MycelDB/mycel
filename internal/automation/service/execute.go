@@ -160,7 +160,8 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run, imageInputs...)
 	if err != nil {
-		return run, errors.Join(err, m.recordRunPublicationDispositionWithDiagnostics(ctx, run, "not_published_provider_failure"))
+		disposition := inferenceFailurePublicationDisposition(err)
+		return run, errors.Join(err, m.recordRunPublicationDispositionWithDiagnostics(ctx, run, disposition))
 	}
 	// Every stage after durable provider success shares one detached, bounded
 	// publication budget. No graph/session/store call can strand the worker.
@@ -599,6 +600,32 @@ func idempotencyElementID(def automation.Definition, run automation.Run, inv aut
 	return inv.ChangedElementID
 }
 
+type inferenceGenerationError struct {
+	cause           error
+	providerStarted bool
+}
+
+func (e *inferenceGenerationError) Error() string { return e.cause.Error() }
+func (e *inferenceGenerationError) Unwrap() error { return e.cause }
+
+func markInferenceGenerationError(err error, providerStarted bool) error {
+	if err == nil {
+		return nil
+	}
+	return &inferenceGenerationError{cause: err, providerStarted: providerStarted}
+}
+
+func inferenceFailurePublicationDisposition(err error) string {
+	if errors.Is(err, ErrInferenceAttemptAlreadyStarted) {
+		return "not_published_provider_ambiguous"
+	}
+	var generationErr *inferenceGenerationError
+	if errors.As(err, &generationErr) && generationErr.providerStarted {
+		return "not_published_provider_failure"
+	}
+	return "not_published_pre_provider_failure"
+}
+
 func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run, imageInputs ...domaininference.ImageInput) (string, error) {
 	if err := m.requireProcedureEnabledRuntime(ctx, inv); err != nil {
 		return "", err
@@ -688,23 +715,24 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	resp, invokeErr := m.inference.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, InvocationID: inv.ID, RunID: run.ID, NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, ImageInputs: imageInputs, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata, AfterAuthorization: afterAuthorization, BeforeProviderAttempt: beforeProviderAttempt})
 	populateRunFromInference(run, ref, resp)
 	attemptState, completionErr := m.completeProcedureInferenceAttempt(ctx, attempt, resp, invokeErr)
+	providerStarted := !attempt.StartedAt.IsZero()
 	if completionErr != nil {
-		return "", completionErr
+		return "", markInferenceGenerationError(completionErr, providerStarted)
 	}
 	if invokeErr != nil {
 		if attemptState == automation.InferenceAttemptStateAmbiguous {
-			return "", ErrInferenceAttemptAlreadyStarted
+			return "", markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true)
 		}
 		if errors.Is(invokeErr, inferenceruntime.ErrDenied) && strings.TrimSpace(resp.Decision.Reason) != "" {
-			return "", fmt.Errorf("%w: %s", invokeErr, resp.Decision.Reason)
+			return "", markInferenceGenerationError(fmt.Errorf("%w: %s", invokeErr, resp.Decision.Reason), providerStarted)
 		}
-		return "", invokeErr
+		return "", markInferenceGenerationError(invokeErr, providerStarted)
 	}
 	if m.maxInputTokens > 0 && run.Usage.InputTokens > m.maxInputTokens {
-		return "", fmt.Errorf("automation input token ceiling exceeded: %d > %d", run.Usage.InputTokens, m.maxInputTokens)
+		return "", markInferenceGenerationError(fmt.Errorf("automation input token ceiling exceeded: %d > %d", run.Usage.InputTokens, m.maxInputTokens), true)
 	}
 	if m.maxOutputTokens > 0 && run.Usage.OutputTokens > m.maxOutputTokens {
-		return "", fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens)
+		return "", markInferenceGenerationError(fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens), true)
 	}
 	return resp.Text, nil
 }
@@ -742,7 +770,7 @@ func (m *AutomationManager) revalidateProcedureAuthorization(ctx context.Context
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return ErrProcedureAuthorizationRevoked
+		return err
 	}
 	if !resolved.Allowed || resolved.Endpoint.ID != endpointID || resolved.Model.ID != modelID || resolved.Capability.ID != capabilityID || uuidString(resolved.CredentialGrant.ID) != run.CredentialGrantID {
 		return ErrProcedureAuthorizationRevoked

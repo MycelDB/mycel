@@ -71,17 +71,26 @@ func (m *AutomationManager) logPublicationStageAtRevision(run automation.Run, st
 }
 
 func (m *AutomationManager) recordRunPublicationDispositionWithDiagnostics(ctx context.Context, run automation.Run, disposition string, receiptCommitID ...string) error {
-	stage := publicationDispositionStage(disposition)
+	return m.runPublicationPersistenceStage(run, publicationDispositionStage(disposition), func() error {
+		return m.recordRunPublicationDisposition(ctx, run, disposition, receiptCommitID...)
+	})
+}
+
+func (m *AutomationManager) runPublicationPersistenceStage(run automation.Run, stage string, persist func() error) error {
 	m.logPublicationStage(run, stage, "started", "none")
-	err := m.recordRunPublicationDisposition(ctx, run, disposition, receiptCommitID...)
+	err := persist()
 	m.logPublicationStage(run, stage, publicationLogResult(err), publicationFailureCategory(err))
 	return err
 }
 
 func publicationDispositionStage(disposition string) string {
 	switch strings.ToLower(strings.TrimSpace(disposition)) {
+	case "not_published_pre_provider_failure":
+		return "disposition_not_published_pre_provider_failure"
 	case "not_published_provider_failure":
 		return "disposition_not_published_provider_failure"
+	case "not_published_provider_ambiguous":
+		return "disposition_not_published_provider_ambiguous"
 	case "suppressed_procedure_control":
 		return "disposition_suppressed_procedure_control"
 	case "rejected_invalid_output":
@@ -350,7 +359,9 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 		attempt.RecordVersion++
 		attempt.PublicationDisposition = disposition
 		attempt.PublicationReceiptCommitID = receiptCommitID
-		if err := m.putProcedureInferenceAttemptRuntime(recoveryCtx, attempt); err != nil {
+		if err := m.runPublicationPersistenceStage(run, "recovery_disposition_persistence", func() error {
+			return m.putProcedureInferenceAttemptRuntime(recoveryCtx, attempt)
+		}); err != nil {
 			return false, err
 		}
 		m.logPublicationStage(run, "recovery_output_probe", "completed", disposition)
@@ -360,21 +371,28 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 		// Backfill generation identity for a legacy terminal disposition when its
 		// retained receipt still exists. If it was already acknowledged and
 		// expired, no further maintenance mutation is needed.
+		m.logPublicationStage(run, "recovery_receipt_backfill", "started", "none")
 		applied, observedCommitID, probeErr := m.publicationOutputApplied(recoveryCtx, *inv, run)
 		if probeErr != nil {
+			m.logPublicationStage(run, "recovery_receipt_backfill", "failed", publicationFailureCategory(probeErr))
 			return false, probeErr
 		}
 		if applied {
 			receiptCommitID = observedCommitID
 			attempt.RecordVersion++
 			attempt.PublicationReceiptCommitID = receiptCommitID
-			if err := m.putProcedureInferenceAttemptRuntime(recoveryCtx, attempt); err != nil {
+			if err := m.runPublicationPersistenceStage(run, "recovery_receipt_backfill_persistence", func() error {
+				return m.putProcedureInferenceAttemptRuntime(recoveryCtx, attempt)
+			}); err != nil {
+				m.logPublicationStage(run, "recovery_receipt_backfill", "failed", publicationFailureCategory(err))
 				return false, err
 			}
 		}
+		m.logPublicationStage(run, "recovery_receipt_backfill", "completed", "none")
 	}
 	if disposition == "published" && receiptCommitID != "" {
 		principal := firstNonEmptyString(run.ActorPrincipalID, inv.ActorPrincipalID, automationActor)
+		m.logPublicationStage(run, "recovery_receipt_acknowledgement", "started", "none")
 		if err := m.acknowledgePublicationReceipt(recoveryCtx, principal, *inv, run, receiptCommitID); err != nil {
 			m.logPublicationStage(run, "recovery_receipt_acknowledgement", "failed", publicationFailureCategory(err))
 			return false, err
@@ -414,11 +432,15 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 		persistRun = false
 	}
 	if persistRun {
-		if err := m.putRunRuntime(recoveryCtx, inv.SpaceID, run); err != nil {
+		if err := m.runPublicationPersistenceStage(run, "recovery_run_persistence", func() error {
+			return m.putRunRuntime(recoveryCtx, inv.SpaceID, run)
+		}); err != nil {
 			return false, err
 		}
 	}
-	if err := m.putInvocationRuntime(recoveryCtx, *inv); err != nil {
+	if err := m.runPublicationPersistenceStage(run, "recovery_invocation_persistence", func() error {
+		return m.putInvocationRuntime(recoveryCtx, *inv)
+	}); err != nil {
 		return false, err
 	}
 	return true, nil

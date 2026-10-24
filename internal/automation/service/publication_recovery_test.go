@@ -14,6 +14,7 @@ import (
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -263,7 +264,9 @@ func TestPublicationDiagnosticsUseClosedCategories(t *testing.T) {
 func TestDispositionPersistenceDiagnosticsCoverEveryPostProviderBranch(t *testing.T) {
 	run := automation.Run{ID: "run", DomainID: graph.DomainID(uuid.New()), InferenceAttemptIDs: []string{"attempt"}}
 	for _, disposition := range []string{
+		"not_published_pre_provider_failure",
 		"not_published_provider_failure",
+		"not_published_provider_ambiguous",
 		"suppressed_procedure_control",
 		"rejected_invalid_output",
 		"publication_precondition_failed",
@@ -308,6 +311,85 @@ func TestDispositionPersistenceDiagnosticsCoverEveryPostProviderBranch(t *testin
 			}
 		}
 	})
+}
+
+func TestRecoveryPersistenceStagesObserveSanitizedFailures(t *testing.T) {
+	for _, stage := range []string{"recovery_disposition_persistence", "recovery_receipt_backfill_persistence", "recovery_run_persistence", "recovery_invocation_persistence"} {
+		t.Run(stage, func(t *testing.T) {
+			var output bytes.Buffer
+			mgr := NewManager(storage.NewFileStore(t.TempDir())).WithLogger(slog.New(slog.NewJSONHandler(&output, nil)))
+			rawErr := status.Error(codes.Unavailable, "secret infrastructure detail")
+			err := mgr.runPublicationPersistenceStage(automation.Run{ID: "run", InferenceAttemptIDs: []string{"attempt"}}, stage, func() error { return rawErr })
+			if !errors.Is(err, rawErr) {
+				t.Fatalf("stage error=%v", err)
+			}
+			logged := output.String()
+			for _, required := range []string{`"stage":"` + stage + `"`, `"result":"started"`, `"result":"failed"`, `"category":"unavailable"`} {
+				if !strings.Contains(logged, required) {
+					t.Fatalf("diagnostic missing %s: %s", required, logged)
+				}
+			}
+			if strings.Contains(logged, "secret infrastructure detail") {
+				t.Fatalf("raw persistence error leaked: %s", logged)
+			}
+		})
+	}
+}
+
+func TestInferenceFailurePublicationDispositionPreservesProviderBoundary(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{name: "pre provider", err: errors.New("routing unavailable"), expected: "not_published_pre_provider_failure"},
+		{name: "provider started", err: markInferenceGenerationError(errors.New("provider failed"), true), expected: "not_published_provider_failure"},
+		{name: "ambiguous", err: markInferenceGenerationError(ErrInferenceAttemptAlreadyStarted, true), expected: "not_published_provider_ambiguous"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if actual := inferenceFailurePublicationDisposition(tc.err); actual != tc.expected {
+				t.Fatalf("disposition=%q, want %q", actual, tc.expected)
+			}
+		})
+	}
+}
+
+func TestCommittedSpaceAuthorizationRevisionPreservesReadFailures(t *testing.T) {
+	readErr := status.Error(codes.Unavailable, "storage unavailable")
+	if err := validateCommittedSpaceAuthorizationRevision(0, readErr, 7); !errors.Is(err, readErr) {
+		t.Fatalf("read failure=%v, want original %v", err, readErr)
+	}
+	if err := validateCommittedSpaceAuthorizationRevision(6, nil, 7); !errors.Is(err, ErrProcedureAuthorizationRevoked) {
+		t.Fatalf("mismatch error=%v", err)
+	}
+	if err := validateCommittedSpaceAuthorizationRevision(7, nil, 7); err != nil {
+		t.Fatalf("matching revision error=%v", err)
+	}
+}
+
+type failingAuthorizationResolver struct{ err error }
+
+func (f failingAuthorizationResolver) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	return inferenceruntime.InvokeResponse{}, f.err
+}
+
+func (f failingAuthorizationResolver) Resolve(context.Context, inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
+	return inferenceruntime.ResolveResult{}, f.err
+}
+
+func TestAuthorizationRevalidationPreservesResolverInfrastructureFailure(t *testing.T) {
+	infrastructureErr := status.Error(codes.Unavailable, "projection unavailable")
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithInferenceInvoker(failingAuthorizationResolver{err: infrastructureErr})
+	domainID := graph.DomainID(uuid.New())
+	run := automation.Run{ID: "run"}
+	err := mgr.revalidateProcedureAuthorization(context.Background(), automation.Definition{DomainID: domainID}, automation.Invocation{ID: "invocation", SpaceID: uuid.NewString(), DomainID: domainID, ProcedureID: "procedure", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1}, &run)
+	if !errors.Is(err, infrastructureErr) || errors.Is(err, ErrProcedureAuthorizationRevoked) {
+		t.Fatalf("revalidation error=%v, want preserved infrastructure failure", err)
+	}
+	if category := publicationFailureCategory(err); category != "unavailable" {
+		t.Fatalf("category=%q, want unavailable", category)
+	}
 }
 
 func TestGlobalAuthorizationAssertionErrorsPreserveInfrastructureCategories(t *testing.T) {

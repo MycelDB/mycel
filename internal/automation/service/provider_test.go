@@ -134,8 +134,14 @@ func TestGenerateTextPreservesPreProviderFailureAsRetryableEvidence(t *testing.T
 	if err == nil || errors.Is(err, ErrInferenceAttemptAlreadyStarted) || !strings.Contains(err.Error(), "routing unavailable") {
 		t.Fatalf("generateWithInference() error=%v", err)
 	}
+	if disposition := inferenceFailurePublicationDisposition(err); disposition != "not_published_pre_provider_failure" {
+		t.Fatalf("pre-provider disposition=%q", disposition)
+	}
+	if err := mgr.recordRunPublicationDispositionWithDiagnostics(ctx, run, inferenceFailurePublicationDisposition(err)); err != nil {
+		t.Fatalf("record pre-provider disposition: %v", err)
+	}
 	ledger, ledgerErr := store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
-	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateFailed || !ledger.Attempts[0].StartedAt.IsZero() {
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateFailed || !ledger.Attempts[0].StartedAt.IsZero() || ledger.Attempts[0].PublicationDisposition != "not_published_pre_provider_failure" {
 		t.Fatalf("unexpected pre-provider evidence: %+v err=%v", ledger, ledgerErr)
 	}
 }

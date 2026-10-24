@@ -278,7 +278,7 @@ func validInferenceTokenCountAuthority(value string) bool {
 
 func validInferencePublicationDisposition(value string) bool {
 	switch value {
-	case "", "published", "not_published_provider_failure", "suppressed_procedure_control", "rejected_invalid_output",
+	case "", "published", "not_published_pre_provider_failure", "not_published_provider_failure", "not_published_provider_ambiguous", "suppressed_procedure_control", "rejected_invalid_output",
 		"publication_precondition_failed", "publication_pending", "publication_failed", "suppressed_authorization_or_control",
 		"not_changed_or_duplicate":
 		return true

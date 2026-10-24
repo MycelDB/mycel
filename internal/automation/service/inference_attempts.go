@@ -149,8 +149,8 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		}
 		if m.raftGroups != nil {
 			currentRevision, err := m.currentCommittedSpaceAuthorizationRevision(ctx, incoming.SpaceID)
-			if err != nil || currentRevision == 0 || currentRevision != incoming.SpaceAuthorizationRevision {
-				return ErrProcedureAuthorizationRevoked
+			if err := validateCommittedSpaceAuthorizationRevision(currentRevision, err, incoming.SpaceAuthorizationRevision); err != nil {
+				return err
 			}
 		}
 	}
