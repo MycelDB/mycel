@@ -960,28 +960,6 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			continue
 		}
 		inv = claimed
-		// Claim acquisition rereads and validates current state. Only after this
-		// point may unresolved provider evidence finalize the invocation; doing so
-		// from the earlier list snapshot could overwrite a concurrent live claim.
-		providerFenced, fencedAttemptNumber, err := m.invocationHasUnresolvedProviderAttempt(ctx, inv)
-		if err != nil {
-			return processed, err
-		}
-		if providerFenced {
-			if fencedAttemptNumber > inv.AttemptCount {
-				inv.AttemptCount = fencedAttemptNumber
-			}
-			inv.Status = "failed"
-			inv.SkipReason = "provider_outcome_ambiguous"
-			inv.NextAttemptAt = time.Time{}
-			inv.UpdatedAt = m.now()
-			if err := m.putInvocationRuntime(ctx, inv); err != nil {
-				return processed, err
-			}
-			m.recordMetric(inv.Status)
-			processed++
-			continue
-		}
 		var resolvedDefinition *automation.Definition
 		if resolveErr == nil {
 			resolvedDefinition = &item.Definition
@@ -991,6 +969,33 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			return processed, err
 		}
 		if reconciledTerminalRun {
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
+		// Claim acquisition rereads and validates current state. Only after this
+		// point may unresolved provider evidence finalize the invocation; doing so
+		// from the earlier list snapshot could overwrite a concurrent live claim.
+		fencedAttempt, providerFenced, err := m.invocationUnresolvedProviderAttempt(ctx, inv)
+		if err != nil {
+			return processed, err
+		}
+		if providerFenced {
+			// Finalize the run before the invocation. If the process crashes between
+			// writes, terminal-run reconciliation completes the invocation later.
+			if err := m.finalizeUnresolvedProviderAttemptRun(ctx, inv, fencedAttempt); err != nil {
+				return processed, err
+			}
+			if fencedAttempt.RunAttemptNumber > inv.AttemptCount {
+				inv.AttemptCount = fencedAttempt.RunAttemptNumber
+			}
+			inv.Status = "failed"
+			inv.SkipReason = "provider_outcome_ambiguous"
+			inv.NextAttemptAt = time.Time{}
+			inv.UpdatedAt = m.now()
+			if err := m.putInvocationRuntime(ctx, inv); err != nil {
+				return processed, err
+			}
 			m.recordMetric(inv.Status)
 			processed++
 			continue

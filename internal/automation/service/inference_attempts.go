@@ -593,15 +593,15 @@ func (m *AutomationManager) completeProcedureInferenceAttempt(ctx context.Contex
 	return completed.State, nil
 }
 
-func (m *AutomationManager) invocationHasUnresolvedProviderAttempt(ctx context.Context, inv automation.Invocation) (bool, int, error) {
+func (m *AutomationManager) invocationUnresolvedProviderAttempt(ctx context.Context, inv automation.Invocation) (automation.ProcedureInferenceAttempt, bool, error) {
 	ledger, err := m.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
 	if errors.Is(err, storage.ErrNotFound) {
-		return false, 0, nil
+		return automation.ProcedureInferenceAttempt{}, false, nil
 	}
 	if err != nil {
-		return false, 0, mapStoreError(err)
+		return automation.ProcedureInferenceAttempt{}, false, mapStoreError(err)
 	}
-	attemptNumber := 0
+	var selected automation.ProcedureInferenceAttempt
 	for _, attempt := range ledger.Attempts {
 		if attempt.InvocationID != inv.ID {
 			continue
@@ -609,11 +609,32 @@ func (m *AutomationManager) invocationHasUnresolvedProviderAttempt(ctx context.C
 		if attempt.State != automation.InferenceAttemptStateStarted && attempt.State != automation.InferenceAttemptStateAmbiguous {
 			continue
 		}
-		if attempt.RunAttemptNumber > attemptNumber {
-			attemptNumber = attempt.RunAttemptNumber
+		if selected.ID == "" || attempt.RunAttemptNumber > selected.RunAttemptNumber {
+			selected = attempt
 		}
 	}
-	return attemptNumber > 0, attemptNumber, nil
+	return selected, selected.ID != "", nil
+}
+
+func (m *AutomationManager) finalizeUnresolvedProviderAttemptRun(ctx context.Context, inv automation.Invocation, attempt automation.ProcedureInferenceAttempt) error {
+	run, err := m.store.GetRun(ctx, inv.DomainID, attempt.RunID)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	if status != "" && status != "running" && status != "retryable" {
+		return nil
+	}
+	run.Status = "failed"
+	run.Error = "provider_outcome_ambiguous"
+	run.CompletedAt = m.now()
+	run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
+	run.ClaimVersion = inv.ClaimVersion
+	run.ClaimToken = inv.ClaimToken
+	if run.AttemptNumber < attempt.RunAttemptNumber {
+		run.AttemptNumber = attempt.RunAttemptNumber
+	}
+	return m.putRunRuntime(ctx, inv.SpaceID, run)
 }
 
 func (m *AutomationManager) reconcilePreProviderTerminalAttempt(ctx context.Context, inv *automation.Invocation, def automation.Definition) (bool, error) {
