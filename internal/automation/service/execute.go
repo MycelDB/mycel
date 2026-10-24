@@ -302,12 +302,15 @@ func (m *AutomationManager) recordRunPublicationDisposition(ctx context.Context,
 }
 
 func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, firstTx sessionmodel.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result, expectedRenderedInputHash string, expectedImageInputHash string) (bool, string, error) {
-	const maxAttempts = 5
+	const (
+		maxConflictAttempts  = 3
+		maxTransientAttempts = 5
+	)
 	engine := actions.Engine{Graphs: m.graphs}
 	tx := firstTx
 	node := firstNode
 	aliases := firstAliases
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxTransientAttempts; attempt++ {
 		m.logPublicationStage(*run, "procedure_control_recheck", "started", "none")
 		if err := m.requireProcedureEnabledRuntime(ctx, *inv); err != nil {
 			m.logPublicationStage(*run, "procedure_control_recheck", "failed", publicationFailureCategory(err))
@@ -322,16 +325,6 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			return false, "", err
 		}
 		m.logPublicationStage(*run, "authorization_recheck", "completed", "none")
-		if attempt > 1 {
-			m.logPublicationStage(*run, "conflict_transaction_reopen", "started", "none")
-			var err error
-			tx, node, aliases, err = m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, *inv, run, expectedRenderedInputHash, expectedImageInputHash)
-			if err != nil {
-				m.logPublicationStage(*run, "conflict_transaction_reopen", "failed", publicationFailureCategory(err))
-				return false, "", err
-			}
-			m.logPublicationStage(*run, "conflict_transaction_reopen", "completed", "none")
-		}
 		m.logPublicationStage(*run, "claim_check", "started", "none")
 		if err := m.ensureClaimStillOwned(ctx, *inv); err != nil {
 			m.logPublicationStage(*run, "claim_check", "failed", publicationFailureCategory(err))
@@ -358,8 +351,22 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		}
 		m.logPublicationStage(*run, "receipt_probe", "completed", "none")
 		if applied {
-			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			mutationID, err := m.reconcileAppliedAutomationOutputSession(ctx, executionPrincipal, sess, tx, existingCommit)
+			if err != nil {
+				return false, "", err
+			}
+			run.MutationID = mutationID
 			return true, existingCommit.CommitID, nil
+		}
+		if attempt > 1 {
+			m.logPublicationStage(*run, "conflict_transaction_reopen", "started", "none")
+			var err error
+			tx, node, aliases, err = m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, *inv, run, expectedRenderedInputHash, expectedImageInputHash)
+			if err != nil {
+				m.logPublicationStage(*run, "conflict_transaction_reopen", "failed", publicationFailureCategory(err))
+				return false, "", err
+			}
+			m.logPublicationStage(*run, "conflict_transaction_reopen", "completed", "none")
 		}
 		m.logPublicationStage(*run, "action_apply", "started", "none")
 		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, ProcedureID: inv.ProcedureID, AuthorizationRevision: run.AuthorizationRevision, GlobalAuthorizationRevision: run.GlobalAuthorizationRevision, SpaceAuthorizationRevision: run.SpaceAuthorizationRevision, Changed: node, Aliases: aliases, Result: parsed})
@@ -415,8 +422,10 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		if err != nil {
 			m.logPublicationStage(*run, "graph_commit", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-			if attempt < maxAttempts && (isGraphConflict(err) || isTransientGraphPublicationError(ctx, err)) {
-				if !waitGraphPublicationRetry(ctx, attempt, isGraphConflict(err)) {
+			conflict := isGraphConflict(err)
+			transient := !conflict && isTransientGraphPublicationError(ctx, err)
+			if (conflict && attempt < maxConflictAttempts) || (transient && attempt < maxTransientAttempts) {
+				if !waitGraphPublicationRetry(ctx, attempt, conflict) {
 					return false, "", ctx.Err()
 				}
 				continue
@@ -510,6 +519,28 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, fmt.Errorf("automation provider input changed before publication")
 	}
 	return tx, node, condition.Aliases, nil
+}
+
+func (m *AutomationManager) reconcileAppliedAutomationOutputSession(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, currentTx sessionmodel.GraphTransaction, existingCommit graphchange.CommitResult) (string, error) {
+	m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, currentTx.ID)
+	baseRevision := existingCommit.CommittedRevision
+	reconcileTx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: executionPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
+	if err != nil {
+		return "", err
+	}
+	if err := m.graphs.DiscardTransactionGraph(ctx, reconcileTx.ID); err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, reconcileTx.ID)
+		return "", err
+	}
+	commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, reconcileTx.ID, existingCommit.OperationCount, existingCommit.CommittedRevision)
+	if err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, reconcileTx.ID)
+		return "", err
+	}
+	if err := m.graphs.AcknowledgeTransactionFinalization(ctx, reconcileTx); err != nil {
+		return "", err
+	}
+	return commit.ID, nil
 }
 
 func automationImageInputsHash(images []domaininference.ImageInput) string {
