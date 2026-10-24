@@ -242,22 +242,24 @@ func TestClusteredGraphAutomationOutputRetriesTransientUnavailableWithoutProvide
 		failures             int
 		failureCode          codes.Code
 		commitBeforeFailure  bool
+		advanceSession       bool
 		expectedCommitCalls  int
 		expectedStatus       string
 		expectPublishedInput bool
 	}{
 		{name: "rejected before commit", failures: 1, failureCode: codes.Unavailable, expectedCommitCalls: 2, expectedStatus: "succeeded", expectPublishedInput: true},
 		{name: "response lost after commit", failures: 1, failureCode: codes.Unavailable, commitBeforeFailure: true, expectedCommitCalls: 1, expectedStatus: "succeeded", expectPublishedInput: true},
+		{name: "response lost after session revision advances", failures: 1, failureCode: codes.Unavailable, commitBeforeFailure: true, advanceSession: true, expectedCommitCalls: 1, expectedStatus: "succeeded", expectPublishedInput: true},
 		{name: "non transient is not retried", failures: 1, failureCode: codes.FailedPrecondition, expectedCommitCalls: 1, expectedStatus: "retryable"},
 		{name: "transient retries are bounded", failures: 10, failureCode: codes.Unavailable, expectedCommitCalls: 5, expectedStatus: "retryable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testClusteredGraphAutomationOutputTransientUnavailable(t, tc.failures, tc.failureCode, tc.commitBeforeFailure, tc.expectedCommitCalls, tc.expectedStatus, tc.expectPublishedInput)
+			testClusteredGraphAutomationOutputTransientUnavailable(t, tc.failures, tc.failureCode, tc.commitBeforeFailure, tc.advanceSession, tc.expectedCommitCalls, tc.expectedStatus, tc.expectPublishedInput)
 		})
 	}
 }
 
-func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, failures int, failureCode codes.Code, commitBeforeFailure bool, expectedCommitCalls int, expectedStatus string, expectPublishedInput bool) {
+func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, failures int, failureCode codes.Code, commitBeforeFailure bool, advanceSession bool, expectedCommitCalls int, expectedStatus string, expectPublishedInput bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	inference := &conflictInjectingInference{text: "generated summary"}
 	cluster := newAutomationGraphExecutionRaftCluster(t, ctx, 8, inference)
@@ -297,6 +299,28 @@ func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, failur
 	})
 	cluster.waitForInvocationCount(t, domainID, 1)
 	state := &transientUnavailableCommitState{remaining: failures, failureCode: failureCode, commitBeforeFailure: commitBeforeFailure}
+	if advanceSession {
+		state.afterCommit = func(committed graphchange.CommitResult) error {
+			advanceSession, err := cluster.sessions[leaderID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "revision-advancer", SpaceID: spaceID.String(), DomainID: domainID.String()})
+			if err != nil {
+				return err
+			}
+			baseRevision := committed.CommittedRevision
+			advanceTx, err := cluster.sessions[leaderID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "revision-advancer", SessionID: advanceSession.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
+			if err != nil {
+				return err
+			}
+			if _, err := cluster.sessions[leaderID].CommitTransactionAtRevision(ctx, "revision-advancer", advanceTx.ID, committed.OperationCount, committed.CommittedRevision); err != nil {
+				return err
+			}
+			otherID := graph.NodeID(uuid.New())
+			cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+				_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graph.NodeInput{NodeID: otherID.String(), Labels: []string{"Other"}, Payload: map[string]any{}, Properties: map[string]any{}})
+				return err
+			})
+			return nil
+		}
+	}
 	var processed int
 	var err error
 	for attempt := 1; attempt <= 8; attempt++ {
@@ -354,6 +378,7 @@ type transientUnavailableCommitState struct {
 	commitCalls         int
 	failureCode         codes.Code
 	commitBeforeFailure bool
+	afterCommit         func(graphchange.CommitResult) error
 }
 
 type transientUnavailableCommitGraph struct {
@@ -370,11 +395,18 @@ func (g *transientUnavailableCommitGraph) CommitTransactionGraph(ctx context.Con
 	}
 	commitBeforeFailure := g.state.commitBeforeFailure
 	failureCode := g.state.failureCode
+	afterCommit := g.state.afterCommit
 	g.state.mu.Unlock()
 	if inject {
 		if commitBeforeFailure {
-			if _, err := g.GraphRuntime.CommitTransactionGraph(ctx, tx); err != nil {
+			committed, err := g.GraphRuntime.CommitTransactionGraph(ctx, tx)
+			if err != nil {
 				return graphchange.CommitResult{}, err
+			}
+			if afterCommit != nil {
+				if err := afterCommit(committed); err != nil {
+					return graphchange.CommitResult{}, err
+				}
 			}
 		}
 		return graphchange.CommitResult{}, status.Error(failureCode, "injected graph commit failure")

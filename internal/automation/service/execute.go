@@ -532,7 +532,14 @@ func (m *AutomationManager) reconcileAppliedAutomationOutputSession(ctx context.
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, reconcileTx.ID)
 		return "", err
 	}
-	commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, reconcileTx.ID, existingCommit.OperationCount, existingCommit.CommittedRevision)
+	// Another same-domain transaction may have advanced the session revision
+	// after the graph commit whose receipt we are reconciling. Preserve that
+	// monotonic frontier instead of trying to move it back to the receipt.
+	commitRevision := existingCommit.CommittedRevision
+	if reconcileTx.BaseRevision > commitRevision {
+		commitRevision = reconcileTx.BaseRevision
+	}
+	commit, err := m.sessions.CommitTransactionAtRevision(ctx, executionPrincipal, reconcileTx.ID, existingCommit.OperationCount, commitRevision)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, reconcileTx.ID)
 		return "", err
