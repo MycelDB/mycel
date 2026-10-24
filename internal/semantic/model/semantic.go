@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -628,6 +629,25 @@ type SemanticIndex struct {
 	Metadata                  map[string]any            `json:"metadata,omitempty"`
 	CreatedAt                 time.Time                 `json:"created_at"`
 	UpdatedAt                 time.Time                 `json:"updated_at"`
+}
+
+func SemanticIndexInferenceProfileReference(metadata map[string]any) (string, IntelligenceProfileID) {
+	if len(metadata) == 0 {
+		return "", uuid.Nil
+	}
+	if raw, ok := metadata["inference_profile_id"]; ok {
+		if id, err := uuid.Parse(strings.TrimSpace(fmt.Sprint(raw))); err == nil {
+			return "", id
+		}
+	}
+	for _, field := range []string{"inference_profile", "inference_profile_key", "embedding_profile"} {
+		if raw, ok := metadata[field]; ok {
+			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
+				return value, uuid.Nil
+			}
+		}
+	}
+	return "", uuid.Nil
 }
 
 // SemanticVectorRecord is the rule-native vector record with binding and

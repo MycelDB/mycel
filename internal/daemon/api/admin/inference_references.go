@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"google.golang.org/grpc/codes"
@@ -617,24 +618,19 @@ func semanticStringRefsContain(values []string, id string, key string) bool {
 }
 
 func semanticIndexReferencesProfile(metadata map[string]any, id string, key string) bool {
+	selectedKey, selectedID := domainsemantic.SemanticIndexInferenceProfileReference(metadata)
 	id = strings.TrimSpace(id)
-	key = strings.TrimSpace(key)
-	for _, field := range []string{"intelligence_profile_id", "inference_profile_id"} {
-		if raw, ok := metadata[field]; ok && id != "" && strings.TrimSpace(fmt.Sprint(raw)) == id {
-			return true
-		}
+	if id != "" && selectedID.String() == id {
+		return true
 	}
-	for _, field := range []string{"intelligence_profile", "intelligence_profile_key", "inference_profile", "inference_profile_key", "embedding_profile"} {
-		raw, ok := metadata[field]
-		if !ok {
-			continue
-		}
-		value := strings.TrimSpace(fmt.Sprint(raw))
-		if (id != "" && value == id) || (key != "" && strings.EqualFold(value, key)) {
-			return true
-		}
+	selectedKey = strings.TrimSpace(selectedKey)
+	if selectedKey == "" {
+		return false
 	}
-	return false
+	if parsed, err := uuid.Parse(selectedKey); err == nil {
+		return id != "" && parsed.String() == id
+	}
+	return strings.TrimSpace(key) != "" && strings.EqualFold(selectedKey, strings.TrimSpace(key))
 }
 
 func metadataMatchesAny(metadata map[string]any, keys []string, values ...string) bool {

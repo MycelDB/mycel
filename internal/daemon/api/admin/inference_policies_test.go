@@ -224,6 +224,40 @@ func TestAdminIntelligenceProfileDeleteDropsCachedProjectionWithoutRecreatingHar
 	}
 }
 
+func TestSemanticIndexReferencesProfileMatchesRuntimeMetadataPrecedence(t *testing.T) {
+	const (
+		targetID  = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+		otherID   = "77777777-7777-4777-8777-777777777777"
+		targetKey = "referenced-profile"
+	)
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		want     bool
+	}{
+		{name: "id", metadata: map[string]any{"inference_profile_id": targetID}, want: true},
+		{name: "canonicalized-id", metadata: map[string]any{"inference_profile_id": strings.ToUpper(targetID)}, want: true},
+		{name: "different-id", metadata: map[string]any{"inference_profile_id": otherID}, want: false},
+		{name: "profile-key", metadata: map[string]any{"inference_profile": "ReFeReNcEd-PrOfIlE"}, want: true},
+		{name: "explicit-key", metadata: map[string]any{"inference_profile_key": "ReFeReNcEd-PrOfIlE"}, want: true},
+		{name: "embedding-profile", metadata: map[string]any{"embedding_profile": "ReFeReNcEd-PrOfIlE"}, want: true},
+		{name: "uuid-in-key-field", metadata: map[string]any{"inference_profile": targetID}, want: true},
+		{name: "unsupported-id-alias", metadata: map[string]any{"intelligence_profile_id": targetID}, want: false},
+		{name: "unsupported-key-alias", metadata: map[string]any{"intelligence_profile_key": targetKey}, want: false},
+		{name: "valid-id-precedes-matching-key", metadata: map[string]any{"inference_profile_id": otherID, "inference_profile": targetKey}, want: false},
+		{name: "first-key-precedes-later-match", metadata: map[string]any{"inference_profile": "other-profile", "inference_profile_key": targetKey}, want: false},
+		{name: "empty-first-key-falls-through", metadata: map[string]any{"inference_profile": " ", "inference_profile_key": targetKey}, want: true},
+		{name: "invalid-id-falls-through", metadata: map[string]any{"inference_profile_id": "not-a-uuid", "embedding_profile": targetKey}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := semanticIndexReferencesProfile(test.metadata, targetID, targetKey); got != test.want {
+				t.Fatalf("semanticIndexReferencesProfile() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAdminInferenceGetPolicyDecisionReadsStandaloneStore(t *testing.T) {
 	ctx := context.Background()
 	inference := inferenceservice.NewModule()
