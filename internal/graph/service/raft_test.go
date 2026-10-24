@@ -930,6 +930,51 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	}
 }
 
+func TestGraphRaftStateMachinePromotesLegacyIdempotencyReceipt(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphRaftModule(t, ctx, t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	principalID := uuid.NewString()
+	nodeID := domaingraph.NodeID(uuid.New())
+	tx := idempotencyGraphTx(spaceID, domainID, principalID, 0, "legacy-receipt")
+	commitRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Content: "first"}}, OperationCount: 1}
+	idempotency, err := newGraphCommitIdempotency(tx, commitRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitRecord.Idempotency = idempotency
+	commitCommand, err := m.buildGraphCommitRaftCommand(commitRecord, 64, graphRaftCommandIDForRecord(ctx, tx.ID, commitRecord))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateMachine := RaftStateMachine{Module: m, PartitionCount: 64}
+	if err := stateMachine.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, commitCommand); err != nil {
+		t.Fatal(err)
+	}
+	store, err := m.store(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := store.GetIdempotencyRecord(ctx, principalID, "legacy-receipt")
+	if err != nil || !found || record.RetainUntilAcknowledged {
+		t.Fatalf("legacy receipt=%+v found=%v err=%v", record, found, err)
+	}
+	record.RetainUntilAcknowledged = true
+	retainRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, IdempotencyRetention: &graphIdempotencyRetention{Scope: principalID, Key: "legacy-receipt", Record: record}}
+	retainCommand, err := m.buildGraphCommitRaftCommand(retainRecord, 64, "retain-legacy-receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stateMachine.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, retainCommand); err != nil {
+		t.Fatal(err)
+	}
+	promoted, found, err := store.GetIdempotencyRecord(ctx, principalID, "legacy-receipt")
+	if err != nil || !found || !promoted.RetainUntilAcknowledged {
+		t.Fatalf("promoted receipt=%+v found=%v err=%v", promoted, found, err)
+	}
+}
+
 func TestGraphRaftStateMachineTreatsIdempotencyMismatchAsDurableNoop(t *testing.T) {
 	ctx := context.Background()
 	m := newTestGraphRaftModule(t, ctx, t.TempDir())

@@ -812,7 +812,9 @@ type automationE2EGraph struct {
 	domainRevisionCalls         *[][2]string
 	idempotentCommits           map[string]graphchange.CommitResult
 	idempotencyAcknowledgements *int
+	idempotencyRetentions       *int
 	acknowledgeIdempotency      func(context.Context, string, string, string, string) error
+	retainIdempotency           func(context.Context, string, string, string, string) error
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -911,6 +913,20 @@ func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, tx sess
 func (g *automationE2EGraph) LookupIdempotentCommit(_ context.Context, principalID, _, _, key string) (graphchange.CommitResult, bool, error) {
 	result, ok := g.idempotentCommits[principalID+"\x00"+key]
 	return result, ok, nil
+}
+func (g *automationE2EGraph) RetainIdempotentCommitUntilAcknowledged(ctx context.Context, principalID, spaceID, domainID, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if g.retainIdempotency != nil {
+		if err := g.retainIdempotency(ctx, principalID, spaceID, domainID, key); err != nil {
+			return err
+		}
+	}
+	if g.idempotencyRetentions != nil {
+		(*g.idempotencyRetentions)++
+	}
+	return nil
 }
 func (g *automationE2EGraph) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) error {
 	if err := ctx.Err(); err != nil {

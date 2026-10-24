@@ -289,7 +289,9 @@ A procedure provider call follows this order:
 11. The graph commit atomically records a graph-owned idempotency receipt keyed
     by the invocation-stable output key. Automation receipts remain protected
     from generic idempotency expiry until terminal publication disposition is
-    durable; a replicated acknowledgement then releases them to normal expiry.
+    durable; matching legacy receipts are first promoted by a replicated
+    retention record, and a replicated acknowledgement then releases them to
+    normal expiry.
 12. The already durable run records the attempt IDs and publication disposition.
 
 All stages after durable provider success share one cancellation-detached,

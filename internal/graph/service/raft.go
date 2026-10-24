@@ -243,9 +243,9 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 		}
 		return err
 	}
-	if record.IdempotencyAcknowledgment != nil {
+	if record.IdempotencyRetention != nil || record.IdempotencyAcknowledgment != nil {
 		_, _, _, err := m.applyGraphCommitRecord(ctx, record)
-		if err != nil && !errors.Is(err, ErrNotFound) {
+		if err != nil && !(record.IdempotencyAcknowledgment != nil && errors.Is(err, ErrNotFound)) {
 			return err
 		}
 		return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)

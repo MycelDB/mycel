@@ -187,6 +187,9 @@ func (f fakeConditionGraph) CurrentDomainRevision(context.Context, string, strin
 func (f fakeConditionGraph) LookupIdempotentCommit(context.Context, string, string, string, string) (graphchange.CommitResult, bool, error) {
 	panic("unused")
 }
+func (f fakeConditionGraph) RetainIdempotentCommitUntilAcknowledged(context.Context, string, string, string, string) error {
+	panic("unused")
+}
 func (f fakeConditionGraph) AcknowledgeIdempotentCommit(context.Context, string, string, string, string) error {
 	panic("unused")
 }

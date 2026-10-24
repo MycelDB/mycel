@@ -64,6 +64,7 @@ func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	}
 
 	retryTx := idempotencyGraphTx(spaceID, domainID, principalID, 1, "capture-1")
+	retryTx.RetainIdempotencyUntilAcknowledged = true
 	if _, err := m.UpsertNode(ctx, retryTx, domaingraph.NodeInput{NodeID: nodeID, Content: "stable mutation", Props: map[string]any{"rank": int64(1)}}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +77,14 @@ func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	}
 	if len(replay.Changes) != 0 {
 		t.Fatalf("replay changes = %#v, want none", replay.Changes)
+	}
+	store, err := m.store(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, found, err := store.GetIdempotencyRecord(ctx, principalID, "capture-1")
+	if err != nil || !found || !promoted.RetainUntilAcknowledged {
+		t.Fatalf("promoted receipt=%+v found=%v err=%v", promoted, found, err)
 	}
 
 	conflictTx := idempotencyGraphTx(spaceID, domainID, principalID, 1, "capture-1")

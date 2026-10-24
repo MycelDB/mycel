@@ -40,6 +40,7 @@ const (
 	RecordKindIdempotencyRestore      RecordKind = 3
 	RecordKindIdempotencyDelivered    RecordKind = 4
 	RecordKindIdempotencyAcknowledged RecordKind = 5
+	RecordKindIdempotencyRetained     RecordKind = 6
 	RecordKindNodePut                 RecordKind = 10
 	RecordKindNodeTombstone           RecordKind = 11
 	RecordKindEdgePut                 RecordKind = 20

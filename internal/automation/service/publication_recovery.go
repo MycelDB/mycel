@@ -186,7 +186,18 @@ func (m *AutomationManager) publicationOutputApplied(ctx context.Context, inv au
 		return false, ErrPublicationReconciliationRequired
 	}
 	principal := firstNonEmptyString(run.ActorPrincipalID, inv.ActorPrincipalID, automationActor)
-	return m.automationOutputAlreadyApplied(ctx, principal, inv, automationOutputIdempotencyKey(inv, run.ID))
+	key := automationOutputIdempotencyKey(inv, run.ID)
+	found, err := m.automationOutputAlreadyApplied(ctx, principal, inv, key)
+	if err != nil || !found {
+		return found, err
+	}
+	// Promote legacy matching receipts before relying on them. A crash after
+	// this point cannot let generic idempotency expiry erase the publication
+	// proof before the terminal attempt disposition is durable.
+	if err := m.graphs.RetainIdempotentCommitUntilAcknowledged(ctx, principal, inv.SpaceID, inv.DomainID.String(), key); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Context, inv *automation.Invocation) (bool, error) {
