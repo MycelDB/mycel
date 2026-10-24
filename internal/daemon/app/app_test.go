@@ -13,9 +13,27 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	"github.com/myceldb/mycel/internal/encryption"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
+
+func TestAutomationGraphConsumerProjectionPreservesAuthenticatedOrigin(t *testing.T) {
+	spec := automationGraphConsumerSpec()
+	if spec.ConsumerName != "automation" || !spec.Lossless {
+		t.Fatalf("consumer spec=%+v", spec)
+	}
+	if !spec.Projection.IncludeRevision || !spec.Projection.IncludeOrigin || !spec.Projection.IncludeNewNodeSnapshot || !spec.Projection.IncludeOldNodeSnapshot {
+		t.Fatalf("automation projection=%+v", spec.Projection)
+	}
+	if len(spec.Filter.EventTypes) != 2 {
+		t.Fatalf("event types=%v", spec.Filter.EventTypes)
+	}
+	projected := (graphchange.CommittedEvent{Origin: graphchange.OriginMetadata{PrincipalID: "authenticated-writer"}}).ApplyProjection(spec.Projection)
+	if projected.Origin.PrincipalID != "authenticated-writer" {
+		t.Fatalf("projected origin=%+v", projected.Origin)
+	}
+}
 
 func TestInitializeCreatesDataAndLogDirs(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "mycel-data")
