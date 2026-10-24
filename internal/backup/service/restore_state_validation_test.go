@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
+	automationstorage "github.com/myceldb/mycel/internal/automation/storage"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -81,7 +82,7 @@ func TestBackupRestoreValidatesSchemaAutomationAndDerivedState(t *testing.T) {
 		t.Fatalf("init restored services: %v", err)
 	}
 
-	validateRestoredSchemaAndAutomation(t, ctx, restoredSchema, restoredAutomation, domainID)
+	validateRestoredSchemaAndAutomation(t, ctx, restoreDataDir, restoredSchema, restoredAutomation, spaceID, domainID)
 	validateRestoredLexicalDerivedState(t, ctx, restoredLexical, spaceID, domainID, nodeID)
 	validateRestoredSemanticDerivedState(t, ctx, restoredSemantic, spaceID, domainID, nodeID)
 }
@@ -110,6 +111,12 @@ func seedBackupRestoreFixture(t *testing.T, ctx context.Context, dataDir string,
 	binding := automation.Binding{ID: "backup-restore-binding", Version: 1, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeSchedule, Schedule: &automation.ScheduleTrigger{Interval: "1h"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: "automation", OwnerPrincipalID: "operator", OnBehalfOfPrincipalID: "operator"}}
 	if _, err := automationMod.CreateBindingAs(ctx, domainID, mustJSON(t, binding), "operator"); err != nil {
 		t.Fatalf("seed automation binding: %v", err)
+	}
+	attempt := automation.ProcedureInferenceAttempt{ID: "backup-attempt", RecordVersion: 1, SpaceID: spaceID.String(), DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: 1, BindingID: binding.ID, BindingVersion: 1, InvocationID: "backup-invocation", RunID: "backup-run", RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateRequested, RequestedAt: time.Unix(1_700_000_000, 0).UTC()}
+	change := automation.ProcedureInferenceAttemptChange{EventID: "backup-change", SchemaVersion: automation.InferenceAttemptChangeSchemaV1, SpaceID: spaceID.String(), Sequence: 7, ChangeKind: attempt.State, AttemptID: attempt.ID, RecordVersion: attempt.RecordVersion, Attempt: attempt, OccurredAt: attempt.RequestedAt, CommittedAt: attempt.RequestedAt}
+	ledger := automation.ProcedureInferenceLedger{SpaceID: spaceID.String(), HighWaterSequence: 7, EarliestRetainedSequence: 7, EarliestRetainedStateSequence: 7, Attempts: []automation.ProcedureInferenceAttempt{attempt}, Changes: []automation.ProcedureInferenceAttemptChange{change}}
+	if err := automationstorage.NewFileStore(filepath.Join(dataDir, "automation")).PutProcedureInferenceLedger(ctx, ledger); err != nil {
+		t.Fatalf("seed procedure inference ledger: %v", err)
 	}
 
 	if err := lexicalMod.Rebuild(ctx, spaceID.String(), domainID.String(), []lexicalindex.IndexedDocument{{Document: lexicalanalyzer.Document{NodeID: nodeID.String(), DomainID: domainID.String(), Fields: []lexicalanalyzer.Field{{Path: "properties.title", Text: "restore validation unique phrase"}}}, GraphRevision: 7}}, 7); err != nil {
@@ -140,7 +147,7 @@ func seedBackupRestoreFixture(t *testing.T, ctx context.Context, dataDir string,
 	}
 }
 
-func validateRestoredSchemaAndAutomation(t *testing.T, ctx context.Context, schemaMod *schemaservice.Module, automationMod *automationservice.Module, domainID graph.DomainID) {
+func validateRestoredSchemaAndAutomation(t *testing.T, ctx context.Context, dataDir string, schemaMod *schemaservice.Module, automationMod *automationservice.Module, spaceID domainspace.SpaceID, domainID graph.DomainID) {
 	t.Helper()
 	restoredSchema, err := schemaMod.GetDomainSchema(ctx, domainID)
 	if err != nil {
@@ -162,6 +169,13 @@ func validateRestoredSchemaAndAutomation(t *testing.T, ctx context.Context, sche
 	}
 	if len(bindings) != 1 || bindings[0].ID != "backup-restore-binding" || bindings[0].Trigger.Schedule == nil {
 		t.Fatalf("unexpected restored bindings: %+v", bindings)
+	}
+	ledger, err := automationstorage.NewFileStore(filepath.Join(dataDir, "automation")).GetProcedureInferenceLedger(ctx, spaceID.String())
+	if err != nil {
+		t.Fatalf("restored procedure inference ledger missing: %v", err)
+	}
+	if ledger.HighWaterSequence != 7 || ledger.EarliestRetainedSequence != 7 || ledger.EarliestRetainedStateSequence != 7 || len(ledger.Attempts) != 1 || len(ledger.Changes) != 1 || ledger.Attempts[0].ID != "backup-attempt" {
+		t.Fatalf("unexpected restored procedure inference ledger: %+v", ledger)
 	}
 }
 

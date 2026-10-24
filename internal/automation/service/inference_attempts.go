@@ -18,15 +18,34 @@ import (
 )
 
 const (
-	maxProcedureInferenceAttemptsPerSpace = 10_000
-	maxProcedureInferenceChangesPerSpace  = 50_000
-	retainedProcedureInferenceAttempts    = 8_000
-	retainedProcedureInferenceChanges     = 20_000
-	procedureInferenceRetentionAge        = 30 * 24 * time.Hour
-	maxProcedureInferenceHistoryBytes     = 64 << 20
+	maxProcedureInferenceAttemptsPerSpace  = 10_000
+	maxProcedureInferenceChangesPerSpace   = 50_000
+	retainedProcedureInferenceAttempts     = 8_000
+	retainedProcedureInferenceChanges      = 20_000
+	procedureInferenceRetentionAge         = 30 * 24 * time.Hour
+	maxProcedureInferenceStateBytes        = 64 << 20
+	maxProcedureInferenceHistoryBytes      = 64 << 20
+	retainedProcedureInferenceStateBytes   = 48 << 20
+	retainedProcedureInferenceHistoryBytes = 48 << 20
 )
 
 var ErrInferenceAttemptAlreadyStarted = errors.New("procedure inference attempt may already have reached the provider")
+
+type procedureInferencePruneStats struct {
+	Attempts     int
+	Changes      int
+	StateBytes   int
+	HistoryBytes int
+	GapAdvanced  bool
+}
+
+func (s *procedureInferencePruneStats) add(other procedureInferencePruneStats) {
+	s.Attempts += other.Attempts
+	s.Changes += other.Changes
+	s.StateBytes += other.StateBytes
+	s.HistoryBytes += other.HistoryBytes
+	s.GapAdvanced = s.GapAdvanced || other.GapAdvanced
+}
 
 func automationRunID(inv automation.Invocation, runAttemptNumber int) string {
 	key := strings.Join([]string{
@@ -93,6 +112,7 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		committedAt = procedureInferenceAttemptOccurredAt(incoming)
 	}
 	ledger, err := m.store.GetProcedureInferenceLedger(ctx, incoming.SpaceID)
+	ledgerExists := err == nil
 	if errors.Is(err, storage.ErrNotFound) {
 		ledger = automation.ProcedureInferenceLedger{SpaceID: incoming.SpaceID}
 	} else if err != nil {
@@ -104,12 +124,15 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 	if ledger.SpaceID != incoming.SpaceID {
 		return fmt.Errorf("procedure inference ledger space mismatch")
 	}
+	if ledgerExists {
+		m.observeProcedureInferenceLedger(ledger)
+	}
 
 	referencedAttemptIDs, err := m.referencedProcedureInferenceAttemptIDs(ctx, ledger.Attempts)
 	if err != nil {
 		return err
 	}
-	pruneProcedureInferenceLedger(&ledger, incoming.ID, committedAt, referencedAttemptIDs)
+	pruneStats := pruneProcedureInferenceLedger(&ledger, incoming.ID, committedAt, referencedAttemptIDs)
 	index := -1
 	var current *automation.ProcedureInferenceAttempt
 	for i := range ledger.Attempts {
@@ -144,6 +167,7 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		return err
 	}
 	if current == nil && len(ledger.Attempts) >= maxProcedureInferenceAttemptsPerSpace {
+		m.recordProcedureInferenceAttemptCapacityRejection(ctx)
 		return fmt.Errorf("procedure inference attempt capacity reached for space %s", incoming.SpaceID)
 	}
 	otherActiveStates := make([]string, 0, len(ledger.Attempts))
@@ -153,6 +177,7 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		}
 	}
 	if !procedureInferenceTransitionFits(len(ledger.Changes), incoming.State, otherActiveStates) {
+		m.recordProcedureInferenceChangeCapacityRejection(ctx)
 		return fmt.Errorf("procedure inference change capacity reached for space %s", incoming.SpaceID)
 	}
 
@@ -183,12 +208,30 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		sort.Slice(ledger.Attempts, func(i, j int) bool { return ledger.Attempts[i].ID < ledger.Attempts[j].ID })
 	}
 	ledger.Changes = append(ledger.Changes, change)
-	return mapStoreError(m.store.PutProcedureInferenceLedger(ctx, ledger))
+	postAppendPrune := pruneProcedureInferenceLedger(&ledger, incoming.ID, committedAt, referencedAttemptIDs)
+	pruneStats.add(postAppendPrune)
+	stateBytes, historyBytes := procedureInferenceLedgerBytes(ledger)
+	if stateBytes > maxProcedureInferenceStateBytes {
+		m.recordProcedureInferenceStateByteCapacityRejection(ctx)
+		return fmt.Errorf("procedure inference state byte capacity reached for space %s", incoming.SpaceID)
+	}
+	if historyBytes > maxProcedureInferenceHistoryBytes {
+		m.recordProcedureInferenceHistoryByteCapacityRejection(ctx)
+		return fmt.Errorf("procedure inference history byte capacity reached for space %s", incoming.SpaceID)
+	}
+	if err := mapStoreError(m.store.PutProcedureInferenceLedger(ctx, ledger)); err != nil {
+		return err
+	}
+	m.observeProcedureInferenceLedger(ledger)
+	m.recordProcedureInferenceTransition(incoming.State)
+	m.recordProcedureInferencePrune(ctx, pruneStats)
+	return nil
 }
 
-func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, protectedAttemptID string, now time.Time, referencedAttemptIDs map[string]struct{}) {
+func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, protectedAttemptID string, now time.Time, referencedAttemptIDs map[string]struct{}) procedureInferencePruneStats {
+	stats := procedureInferencePruneStats{}
 	if ledger == nil {
-		return
+		return stats
 	}
 	drop := 0
 	if len(ledger.Changes) > retainedProcedureInferenceChanges {
@@ -200,20 +243,26 @@ func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, 
 			drop++
 		}
 	}
-	if len(ledger.Changes) >= 1_000 {
-		totalBytes := 0
-		sizes := make([]int, len(ledger.Changes))
-		for i := range ledger.Changes {
-			encoded, _ := json.Marshal(ledger.Changes[i])
-			sizes[i] = len(encoded)
-			totalBytes += sizes[i]
-		}
-		for drop < len(ledger.Changes) && totalBytes > maxProcedureInferenceHistoryBytes {
-			totalBytes -= sizes[drop]
-			drop++
-		}
+	totalHistoryBytes := 0
+	historySizes := make([]int, len(ledger.Changes))
+	for i := range ledger.Changes {
+		encoded, _ := json.Marshal(ledger.Changes[i])
+		historySizes[i] = len(encoded)
+		totalHistoryBytes += historySizes[i]
+	}
+	for i := 0; i < drop; i++ {
+		totalHistoryBytes -= historySizes[i]
+	}
+	for drop < len(ledger.Changes) && totalHistoryBytes > retainedProcedureInferenceHistoryBytes {
+		totalHistoryBytes -= historySizes[drop]
+		drop++
 	}
 	if drop > 0 {
+		stats.Changes = drop
+		stats.GapAdvanced = true
+		for i := 0; i < drop; i++ {
+			stats.HistoryBytes += historySizes[i]
+		}
 		ledger.Changes = append([]automation.ProcedureInferenceAttemptChange(nil), ledger.Changes[drop:]...)
 		if len(ledger.Changes) > 0 {
 			ledger.EarliestRetainedSequence = ledger.Changes[0].Sequence
@@ -239,9 +288,6 @@ func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, 
 			continue
 		}
 		occurredAt := procedureInferenceAttemptOccurredAt(attempt)
-		if len(ledger.Attempts) <= retainedProcedureInferenceAttempts && (cutoff.IsZero() || !occurredAt.Before(cutoff)) {
-			continue
-		}
 		candidates = append(candidates, candidate{index: i, at: occurredAt, id: attempt.ID})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -254,20 +300,35 @@ func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, 
 	if removeCount < 0 {
 		removeCount = 0
 	}
+	attemptSizes := make([]int, len(ledger.Attempts))
+	totalStateBytes := 0
+	for i := range ledger.Attempts {
+		encoded, _ := json.Marshal(ledger.Attempts[i])
+		attemptSizes[i] = len(encoded)
+		totalStateBytes += attemptSizes[i]
+	}
 	if !cutoff.IsZero() {
 		for removeCount < len(candidates) && candidates[removeCount].at.Before(cutoff) {
 			removeCount++
 		}
 	}
+	for i := 0; i < removeCount && i < len(candidates); i++ {
+		totalStateBytes -= attemptSizes[candidates[i].index]
+	}
+	for removeCount < len(candidates) && totalStateBytes > retainedProcedureInferenceStateBytes {
+		totalStateBytes -= attemptSizes[candidates[removeCount].index]
+		removeCount++
+	}
 	if removeCount > len(candidates) {
 		removeCount = len(candidates)
 	}
 	if removeCount == 0 {
-		return
+		return stats
 	}
 	remove := make(map[int]struct{}, removeCount)
 	for _, item := range candidates[:removeCount] {
 		remove[item.index] = struct{}{}
+		stats.StateBytes += attemptSizes[item.index]
 	}
 	kept := make([]automation.ProcedureInferenceAttempt, 0, len(ledger.Attempts)-removeCount)
 	for i, attempt := range ledger.Attempts {
@@ -276,8 +337,23 @@ func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, 
 		}
 	}
 	ledger.Attempts = kept
+	stats.Attempts = removeCount
+	stats.GapAdvanced = true
 	// Removing materialized terminal state invalidates every older state snapshot.
 	ledger.EarliestRetainedStateSequence = ledger.HighWaterSequence + 1
+	return stats
+}
+
+func procedureInferenceLedgerBytes(ledger automation.ProcedureInferenceLedger) (stateBytes int, historyBytes int) {
+	for i := range ledger.Attempts {
+		encoded, _ := json.Marshal(ledger.Attempts[i])
+		stateBytes += len(encoded)
+	}
+	for i := range ledger.Changes {
+		encoded, _ := json.Marshal(ledger.Changes[i])
+		historyBytes += len(encoded)
+	}
+	return stateBytes, historyBytes
 }
 
 func (m *AutomationManager) referencedProcedureInferenceAttemptIDs(ctx context.Context, attempts []automation.ProcedureInferenceAttempt) (map[string]struct{}, error) {
@@ -318,6 +394,15 @@ func procedureInferenceReservedTransitions(state string) int {
 		return 1 // terminal
 	default:
 		return 0
+	}
+}
+
+func safeProcedureInferenceTokenCountAuthority(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "provider_reported", "estimated", "unavailable":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "unavailable"
 	}
 }
 
@@ -480,7 +565,7 @@ func (m *AutomationManager) completeProcedureInferenceAttempt(ctx context.Contex
 	completed.InputTokens = resp.Usage.InputTokens
 	completed.OutputTokens = resp.Usage.OutputTokens
 	completed.TotalTokens = resp.Usage.TotalTokens
-	completed.TokenCountAuthority = strings.TrimSpace(resp.Usage.TokenCountSource)
+	completed.TokenCountAuthority = safeProcedureInferenceTokenCountAuthority(resp.Usage.TokenCountSource)
 	switch {
 	case invokeErr == nil && attempt.State == automation.InferenceAttemptStateStarted:
 		completed.State = automation.InferenceAttemptStateSucceeded

@@ -83,7 +83,7 @@ func newProcedureInferenceChangesCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		if res.GetHistoryGap() {
-			return fmt.Errorf("procedure inference history gap: earliest retained sequence is %d; obtain a fresh list snapshot", res.GetEarliestRetainedSequence())
+			return fmt.Errorf("procedure inference history gap: earliest retained sequence is %d and earliest retained state sequence is %d; stop cursor advancement, preserve the old cursor, alert, and record an explicit reconciliation decision before resuming (a fresh snapshot contains only retained state and cannot prove the missed interval complete)", res.GetEarliestRetainedSequence(), res.GetEarliestRetainedStateSequence())
 		}
 		return a.Print(res, "")
 	}}

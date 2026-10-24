@@ -440,10 +440,14 @@ control revisions.
 ## Retention and completeness
 
 Both materialized runs/attempts and attempt changes use Raft-owned bounded
-retention by age, count, and serialized bytes. The initial operational target is
-at least seven days, configurable upward within implementation bounds. An active
-attempt is never pruned. An ambiguous attempt is eligible only after the maximum
-provider deadline, reservation lease, and required audit window have elapsed.
+retention by age, count, and serialized bytes. The initial release uses hard
+per-space limits of 10,000 attempts, 50,000 changes, 64 MiB of materialized
+state, and 64 MiB of change history. Retention targets 8,000 attempts, 20,000
+changes, 30 days, 48 MiB of state, and 48 MiB of change history. Attempt records
+are limited to 64 KiB encoded and persisted evidence strings to 1,024 bytes. An
+active attempt is never pruned. The initial release also retains ambiguous
+attempts indefinitely; operators must resolve capacity pressure rather than lose
+uncertain provider-side-effect evidence.
 
 Pruning removes change history first, then run/attempt state in one referentially
 safe mutation after no retained invocation or run references it. Separate
@@ -496,8 +500,7 @@ Bounded policy-decision IDs, credential-grant IDs, and committed authorization
 revisions are classified correlation fields, not authorization secrets, and may
 be retained. Outcome and denial fields use closed allowlists. Configured route
 IDs are labeled as configured daemon identities. Token-count authority
-distinguishes provider reported, deterministic local, estimated, and unavailable
-counts.
+distinguishes provider-reported, estimated, and unavailable counts.
 
 ## Failure semantics
 
@@ -531,8 +534,5 @@ budget-scope service is not revived by this design.
 
 ## Open decisions
 
-- Exact default retention bounds beyond the seven-day target.
-- Whether client-space principals can read safe attempt evidence by default or
-  must always receive explicit `inference.audit.read`.
 - Whether source transaction ID/revision is mandatory for all trigger types or
   only graph-triggered attempts.
