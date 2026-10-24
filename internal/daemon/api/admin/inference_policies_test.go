@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -104,9 +105,20 @@ func TestAdminIntelligenceProfileDeleteReconcilesMissingSemanticProjection(t *te
 	if _, err := inferenceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: spaceID, Scope: domaininference.Scope{SpaceID: spaceID}, Operations: []domaininference.Operation{domaininference.OperationChat}, ProfileRefs: []string{"ReFeReNcEd-PrOfIlE"}, Action: domaininference.PolicyActionAllow, State: domaininference.PolicyStateActive}); err != nil {
 		t.Fatalf("upsert mixed-case profile policy: %v", err)
 	}
+	semanticMgr, err := semantic.SpaceManager(ctx, spaceUUID)
+	if err != nil {
+		t.Fatalf("semantic space manager: %v", err)
+	}
+	if _, err := semanticMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{
+		SpaceID: spaceUUID, DomainID: graph.DomainID(uuid.New()), Key: "mixed-profile-ref", Purpose: domainsemantic.SemanticIndexPurposeSearch,
+		SourcePolicy: domainsemantic.SemanticSourcePolicy{Extraction: domainsemantic.SourceExtractionSubtree}, ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()),
+		ModelID: domainsemantic.InferenceModelID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Metadata: map[string]any{"inference_profile_key": "ReFeReNcEd-PrOfIlE"},
+	}); err != nil {
+		t.Fatalf("upsert mixed-case semantic index profile reference: %v", err)
+	}
 	deleteSemanticProfile(referencedID)
 	_, err = svc.DeleteIntelligenceProfile(authenticatedContext(), &adminv1.AdminIntelligenceAccessProfileServiceDeleteIntelligenceProfileRequest{SpaceId: spaceID, IntelligenceProfile: "REFERENCED-PROFILE"})
-	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "policy_decision") || !strings.Contains(err.Error(), "usage_event") || !strings.Contains(err.Error(), "inference_policy") {
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "policy_decision") || !strings.Contains(err.Error(), "usage_event") || !strings.Contains(err.Error(), "inference_policy") || !strings.Contains(err.Error(), "semantic_index") {
 		t.Fatalf("DeleteIntelligenceProfile(referenced) = %v, want complete ID and case-insensitive key refs", err)
 	}
 

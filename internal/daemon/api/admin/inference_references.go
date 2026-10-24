@@ -386,7 +386,7 @@ func (s *AdminInferenceService) profileReferences(ctx context.Context, profile d
 				return nil, err
 			}
 			for _, index := range indexes {
-				if metadataMatchesAny(index.Metadata, []string{"intelligence_profile_id", "intelligence_profile", "intelligence_profile_key", "embedding_profile"}, idText, key) {
+				if semanticIndexReferencesProfile(index.Metadata, idText, key) {
 					refs = append(refs, "semantic_index:"+index.ID.String())
 				}
 			}
@@ -610,6 +610,27 @@ func semanticStringRefsContain(values []string, id string, key string) bool {
 			return true
 		}
 		if key != "" && strings.ToLower(value) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticIndexReferencesProfile(metadata map[string]any, id string, key string) bool {
+	id = strings.TrimSpace(id)
+	key = strings.TrimSpace(key)
+	for _, field := range []string{"intelligence_profile_id", "inference_profile_id"} {
+		if raw, ok := metadata[field]; ok && id != "" && strings.TrimSpace(fmt.Sprint(raw)) == id {
+			return true
+		}
+	}
+	for _, field := range []string{"intelligence_profile", "intelligence_profile_key", "inference_profile", "inference_profile_key", "embedding_profile"} {
+		raw, ok := metadata[field]
+		if !ok {
+			continue
+		}
+		value := strings.TrimSpace(fmt.Sprint(raw))
+		if (id != "" && value == id) || (key != "" && strings.EqualFold(value, key)) {
 			return true
 		}
 	}
