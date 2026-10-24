@@ -122,8 +122,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 			return run, nil
 		}
 	}
-	engine := actions.Engine{Graphs: m.graphs}
-	applied, err := engine.OutputAlreadyApplied(ctx, tx, run.OutputIdempotencyKey)
+	applied, err := m.automationOutputAlreadyApplied(ctx, executionPrincipal, inv, run.OutputIdempotencyKey)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 		return run, err
@@ -157,38 +156,40 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	if err != nil {
 		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "not_published_provider_failure"))
 	}
-	if err := m.requireProcedureEnabledRuntime(ctx, inv); err != nil {
-		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "suppressed_procedure_control"))
+	// Every stage after durable provider success shares one detached, bounded
+	// publication budget. No graph/session/store call can strand the worker.
+	publicationCtx, cancelPublication := m.publicationContext(ctx)
+	defer cancelPublication()
+	if err := m.requireProcedureEnabledRuntime(publicationCtx, inv); err != nil {
+		return run, errors.Join(err, m.recordRunPublicationDisposition(publicationCtx, run, "suppressed_procedure_control"))
 	}
 	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
 	if err != nil {
-		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "rejected_invalid_output"))
+		return run, errors.Join(err, m.recordRunPublicationDisposition(publicationCtx, run, "rejected_invalid_output"))
 	}
 	run.ActionFingerprint = actionFingerprint(def, parsed)
-	publicationTx, publicationNode, publicationAliases, err := m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, inv, &run, rendered.Hash, imageInputHash)
+	publicationTx, publicationNode, publicationAliases, err := m.reopenAutomationOutputTransaction(publicationCtx, executionPrincipal, sess, def, inv, &run, rendered.Hash, imageInputHash)
 	if err != nil {
-		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "publication_precondition_failed"))
+		return run, errors.Join(ErrPublicationReconciliationRequired, err, m.recordRunPublicationDisposition(publicationCtx, run, "publication_precondition_failed"))
 	}
-	if err := m.recordRunPublicationDisposition(ctx, run, "publication_pending"); err != nil {
-		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, publicationTx.ID)
-		return run, err
+	if err := m.recordRunPublicationDisposition(publicationCtx, run, "publication_pending"); err != nil {
+		m.rollbackAutomationOutputTransaction(publicationCtx, executionPrincipal, publicationTx.ID)
+		return run, errors.Join(ErrPublicationReconciliationRequired, err)
 	}
 	m.logPublicationStage(run, "pending_persisted", "completed", "none")
-	publicationCtx, cancelPublication := m.publicationContext(ctx)
 	changed, err := m.commitAutomationOutputWithConflictRetry(publicationCtx, executionPrincipal, sess, publicationTx, def, &inv, &run, publicationNode, publicationAliases, parsed, rendered.Hash, imageInputHash)
-	cancelPublication()
 	if err != nil {
 		m.logPublicationStage(run, "publication", "failed", publicationFailureCategory(err))
 		var dispositionErr error
 		if errors.Is(err, ErrProcedureDisabled) || errors.Is(err, ErrProcedureAuthorizationRevoked) {
-			dispositionErr = m.recordRunPublicationDisposition(ctx, run, "suppressed_authorization_or_control")
+			dispositionErr = m.recordRunPublicationDisposition(publicationCtx, run, "suppressed_authorization_or_control")
 		}
 		return run, errors.Join(ErrPublicationReconciliationRequired, err, dispositionErr)
 	}
 	if !changed {
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
-		err := m.recordRunPublicationDisposition(ctx, run, "not_changed_or_duplicate")
+		err := m.recordRunPublicationDisposition(publicationCtx, run, "not_changed_or_duplicate")
 		m.logPublicationStage(run, "final_disposition", publicationLogResult(err), publicationFailureCategory(err))
 		return run, err
 	}
@@ -196,7 +197,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	run.CompletedAt = m.now()
 	outSum := sha256.Sum256([]byte(output))
 	run.OutputHash = hex.EncodeToString(outSum[:])
-	if err := m.recordRunPublicationDisposition(ctx, run, "published"); err != nil {
+	if err := m.recordRunPublicationDisposition(publicationCtx, run, "published"); err != nil {
 		m.logPublicationStage(run, "final_disposition", "failed", publicationFailureCategory(err))
 		return run, errors.Join(ErrPublicationReconciliationRequired, err)
 	}
@@ -204,12 +205,22 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	return run, nil
 }
 
+func (m *AutomationManager) automationOutputAlreadyApplied(ctx context.Context, principal string, inv automation.Invocation, key string) (bool, error) {
+	if m.graphs == nil || strings.TrimSpace(key) == "" {
+		return false, nil
+	}
+	_, found, err := m.graphs.LookupIdempotentCommit(ctx, principal, inv.SpaceID, inv.DomainID.String(), key)
+	return found, err
+}
+
 func (m *AutomationManager) recordRunPublicationDisposition(ctx context.Context, run automation.Run, disposition string) error {
+	finalizeCtx, cancel := boundedDetachedContext(ctx, 5*time.Second)
+	defer cancel()
 	attemptID := ""
 	if len(run.InferenceAttemptIDs) > 0 {
 		attemptID = run.InferenceAttemptIDs[len(run.InferenceAttemptIDs)-1]
 	}
-	ledgers, err := m.store.ListProcedureInferenceLedgers(ctx)
+	ledgers, err := m.store.ListProcedureInferenceLedgers(finalizeCtx)
 	if err != nil {
 		return mapStoreError(err)
 	}
@@ -244,8 +255,6 @@ func (m *AutomationManager) recordRunPublicationDisposition(ctx context.Context,
 	}
 	attempt.RecordVersion++
 	attempt.PublicationDisposition = disposition
-	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
 	return m.putProcedureInferenceAttemptRuntime(finalizeCtx, attempt)
 }
 
@@ -282,7 +291,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
 		run.ClaimVersion = inv.ClaimVersion
 		run.ClaimToken = inv.ClaimToken
-		applied, err := engine.OutputAlreadyApplied(ctx, tx, run.OutputIdempotencyKey)
+		applied, err := m.automationOutputAlreadyApplied(ctx, executionPrincipal, *inv, run.OutputIdempotencyKey)
 		if err != nil {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, err
@@ -368,6 +377,7 @@ func (m *AutomationManager) reopenAutomationOutputTransaction(ctx context.Contex
 	if err != nil {
 		return sessionmodel.GraphTransaction{}, graph.Node{}, nil, err
 	}
+	tx.IdempotencyKey = automationOutputIdempotencyKey(inv, run.ID)
 	node, err := m.graphs.GetNode(ctx, tx, inv.ChangedElementID)
 	if err != nil {
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)

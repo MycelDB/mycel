@@ -118,6 +118,7 @@ type AutomationManager struct {
 	gate                                                   *quiesce.Gate
 	logger                                                 *slog.Logger
 	publicationTimeout                                     time.Duration
+	processID                                              string
 	localExecutionMu                                       sync.Mutex
 	inferenceAttemptMu                                     sync.Mutex
 	runMutationMu                                          sync.Mutex
@@ -135,6 +136,7 @@ func NewManager(store storage.Store) *AutomationManager {
 		store:              store,
 		now:                func() time.Time { return time.Now().UTC() },
 		publicationTimeout: 30 * time.Second,
+		processID:          uuid.NewString(),
 	}
 }
 
@@ -619,11 +621,18 @@ func (m *AutomationManager) ListAutomationDomains(ctx context.Context) ([]graph.
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
+	invocationIDs, err := m.store.ListInvocationDomains(ctx)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
 	seen := map[string]graph.DomainID{}
 	for _, id := range definitionIDs {
 		seen[id.String()] = id
 	}
 	for _, id := range bindingIDs {
+		seen[id.String()] = id
+	}
+	for _, id := range invocationIDs {
 		seen[id.String()] = id
 	}
 	out := make([]graph.DomainID, 0, len(seen))
@@ -754,6 +763,7 @@ func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.
 	inv.ClaimOwnerNodeID = 0
 	inv.ClaimVersion++
 	inv.ClaimToken = ""
+	inv.ClaimProcessID = ""
 	inv.ClaimExpiresAt = time.Time{}
 	inv.UpdatedAt = m.now()
 	if err := m.putInvocationRuntime(ctx, inv); err != nil {
@@ -779,6 +789,7 @@ func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph
 	inv.ClaimOwnerNodeID = 0
 	inv.ClaimVersion++
 	inv.ClaimToken = ""
+	inv.ClaimProcessID = ""
 	inv.ClaimExpiresAt = time.Time{}
 	inv.UpdatedAt = m.now()
 	if err := m.putInvocationRuntime(ctx, inv); err != nil {
@@ -1031,17 +1042,19 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			processed++
 			continue
 		}
+		publicationRecoveryRequired := false
 		run, err := m.executeInvocation(ctx, def, inv)
 		if err != nil {
 			now := m.now()
 			inv.AttemptCount++
+			publicationRecoveryRequired = errors.Is(err, ErrPublicationReconciliationRequired)
 			failureReason := err.Error()
-			if errors.Is(err, ErrPublicationReconciliationRequired) {
+			if publicationRecoveryRequired {
 				failureReason = publicationReconciliationRequired
 			}
 			inv.SkipReason = failureReason
 			inv.UpdatedAt = now
-			if errors.Is(err, ErrPublicationReconciliationRequired) {
+			if publicationRecoveryRequired {
 				// Provider work is already terminal. Keep this invocation visible to
 				// publication reconciliation regardless of the provider retry ceiling.
 				inv.Status = "retryable"
@@ -1063,7 +1076,14 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			if run.StartedAt.IsZero() {
 				run.StartedAt = now
 			}
-			run.CompletedAt = now
+			if publicationRecoveryRequired {
+				// Provider work is terminal, but publication is not. The run stays
+				// nonterminal so a later Raft mutation can finalize it.
+				run.Status = "running"
+				run.CompletedAt = time.Time{}
+			} else {
+				run.CompletedAt = now
+			}
 		} else {
 			inv.AttemptCount++
 			inv.NextAttemptAt = time.Time{}

@@ -33,6 +33,10 @@ func (m *AutomationManager) pendingInvocations(ctx context.Context, domainID gra
 	}
 	for _, inv := range running {
 		if m.hasRecoverableProviderPublication(ctx, inv) {
+			if inv.ClaimProcessID == m.processID && !inv.ClaimExpiresAt.IsZero() && inv.ClaimExpiresAt.After(now) {
+				// The current daemon incarnation still owns this publication lease.
+				continue
+			}
 			out = append(out, inv)
 			continue
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
@@ -23,7 +24,10 @@ func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProvi
 	inv := automation.Invocation{ID: "inv", SpaceID: spaceID, DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "procedure", ProcedureVersion: 1, Status: "retryable", ClaimVersion: 1, ClaimToken: "old-claim", AttemptCount: 0, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1, ActorPrincipalID: automationActor}
 	outputKey := automationOutputIdempotencyKey(inv, run.ID)
-	graphs := &automationE2EGraph{node: graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Meta: map[string]any{"automation": map[string]any{"output_idempotency_key": outputKey}}}}
+	graphs := &automationE2EGraph{
+		node:              graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID},
+		idempotentCommits: map[string]graphchange.CommitResult{automationActor + "\x00" + outputKey: {IdempotencyKey: outputKey, CommittedRevision: 1}},
+	}
 	mgr := NewManager(store).WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, graphs)
 	if err := mgr.putInvocationRuntime(ctx, inv); err != nil {
 		t.Fatal(err)
@@ -48,6 +52,43 @@ func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProvi
 	}
 }
 
+func TestAutomationDomainsIncludeInvocationOnlyDomain(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: "inv-only", SpaceID: uuid.NewString(), DomainID: domainID, Status: "retryable", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := store.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(store)
+	domains, err := mgr.ListAutomationDomains(ctx)
+	if err != nil || len(domains) != 1 || domains[0] != domainID {
+		t.Fatalf("ListAutomationDomains()=%v err=%v", domains, err)
+	}
+}
+
+func TestClaimPublicationRecoveryDoesNotPreemptCurrentProcessClaim(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	domainID := graph.DomainID(uuid.New())
+	now := time.Now().UTC()
+	mgr := NewManager(store)
+	inv := automation.Invocation{ID: "inv-active", SpaceID: uuid.NewString(), DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "procedure", ProcedureVersion: 1, Status: "running", ClaimVersion: 2, ClaimToken: "active", ClaimProcessID: mgr.processID, ClaimExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now}
+	if err := mgr.putInvocationRuntime(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: 1, ActorPrincipalID: automationActor}
+	persistSucceededPublicationAttempt(t, ctx, mgr, inv, run, "publication_pending")
+	pending, err := mgr.pendingInvocations(ctx, domainID, 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pendingInvocations()=%+v err=%v, want current publisher excluded", pending, err)
+	}
+	claimed, ok, err := mgr.claimPublicationRecovery(ctx, inv)
+	if err != nil || ok || claimed.ClaimToken != inv.ClaimToken || claimed.ClaimVersion != inv.ClaimVersion {
+		t.Fatalf("claimPublicationRecovery() claimed=%v invocation=%+v err=%v", ok, claimed, err)
+	}
+}
+
 func TestClaimPublicationRecoveryTakesOverUnexpiredLocalClaim(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewFileStore(t.TempDir())
@@ -60,6 +101,7 @@ func TestClaimPublicationRecoveryTakesOverUnexpiredLocalClaim(t *testing.T) {
 		Status:         "running",
 		ClaimVersion:   4,
 		ClaimToken:     "interrupted-worker",
+		ClaimProcessID: "obsolete-process",
 		ClaimExpiresAt: now.Add(automationClaimLease),
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -75,6 +117,62 @@ func TestClaimPublicationRecoveryTakesOverUnexpiredLocalClaim(t *testing.T) {
 	}
 	if claimed.ClaimVersion != inv.ClaimVersion+1 || claimed.ClaimToken == inv.ClaimToken || claimed.Status != "running" {
 		t.Fatalf("claim was not replaced: %+v", claimed)
+	}
+}
+
+func TestPublicationReceiptSurvivesLaterEntityMetadataReplacement(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: "inv-receipt", SpaceID: spaceID, DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "procedure", ProcedureVersion: 1, Status: "retryable", ClaimVersion: 1, ClaimToken: "old", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1, ActorPrincipalID: automationActor}
+	key := automationOutputIdempotencyKey(inv, run.ID)
+	graphs := &automationE2EGraph{
+		// Current entity metadata belongs to a later publication and no longer
+		// carries this run's key. The graph-owned receipt remains authoritative.
+		node:              graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Meta: map[string]any{"automation": map[string]any{"output_idempotency_key": "later-output"}}},
+		idempotentCommits: map[string]graphchange.CommitResult{automationActor + "\x00" + key: {IdempotencyKey: key, CommittedRevision: 1}},
+	}
+	mgr := NewManager(store).WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, graphs)
+	if err := mgr.putInvocationRuntime(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	attempt := persistSucceededPublicationAttempt(t, ctx, mgr, inv, run, "publication_pending")
+	if reconciled, err := mgr.reconcileProviderStartedPublication(ctx, &inv); err != nil || !reconciled {
+		t.Fatalf("reconcileProviderStartedPublication() reconciled=%v err=%v", reconciled, err)
+	}
+	if got := requireProcedureInferenceAttempt(t, ctx, store, spaceID, attempt.ID).PublicationDisposition; got != "published" {
+		t.Fatalf("publication disposition=%q", got)
+	}
+}
+
+func TestReconcileProviderStartedPublicationPreservesMatchingTerminalRun(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := graph.DomainID(uuid.New())
+	now := time.Now().UTC()
+	inv := automation.Invocation{ID: "inv-terminal-run", SpaceID: spaceID, DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "procedure", ProcedureVersion: 1, Status: "running", ClaimVersion: 1, ClaimToken: "old-claim", ClaimProcessID: "obsolete-process", ClaimExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, AttemptNumber: 1, Status: "succeeded", ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, ActorPrincipalID: automationActor, StartedAt: now, CompletedAt: now}
+	mgr := NewManager(store).WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, &automationE2EGraph{})
+	if err := mgr.putInvocationRuntime(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.putRunRuntime(ctx, spaceID, run); err != nil {
+		t.Fatal(err)
+	}
+	persistSucceededPublicationAttempt(t, ctx, mgr, inv, run, "published")
+	if reconciled, err := mgr.reconcileProviderStartedPublication(ctx, &inv); err != nil || !reconciled {
+		t.Fatalf("reconcileProviderStartedPublication() reconciled=%v err=%v", reconciled, err)
+	}
+	persistedRun, err := store.GetRun(ctx, domainID, run.ID)
+	if err != nil || persistedRun.ClaimToken != run.ClaimToken || persistedRun.ClaimVersion != run.ClaimVersion || persistedRun.Status != "succeeded" {
+		t.Fatalf("terminal run was rewritten: %+v err=%v", persistedRun, err)
+	}
+	persistedInvocation, err := store.GetInvocation(ctx, domainID, inv.ID)
+	if err != nil || persistedInvocation.Status != "succeeded" {
+		t.Fatalf("invocation was not finalized: %+v err=%v", persistedInvocation, err)
 	}
 }
 

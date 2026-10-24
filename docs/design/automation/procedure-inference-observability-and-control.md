@@ -286,7 +286,17 @@ A procedure provider call follows this order:
 9. Procedure output parsing and graph mutation preparation proceed.
 10. Before publishing graph output, the daemon revalidates claim ownership,
     procedure/binding status, and the required access-control revision.
-11. The already durable run records the attempt IDs and publication disposition.
+11. The graph commit atomically records a bounded-retention, graph-owned
+    idempotency receipt keyed by the invocation-stable output key.
+12. The already durable run records the attempt IDs and publication disposition.
+
+All stages after durable provider success share one cancellation-detached,
+bounded publication context. If the publisher is interrupted, the execution
+leader probes the graph-owned receipt and finalizes the attempt, run, and
+invocation without another provider request. Receipt lookup does not depend on
+mutable entity metadata. An unexpired claim is reclaimed only when its persisted
+process incarnation differs from the current daemon; an active publisher in the
+same incarnation retains its lease.
 
 Failure to commit the required pre-provider transition means the connector is
 not called. Failure to commit terminal evidence after a possible provider side

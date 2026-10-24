@@ -7,10 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/myceldb/mycel/internal/automation/actions"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
-	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const (
@@ -26,6 +24,19 @@ func (m *AutomationManager) publicationContext(ctx context.Context) (context.Con
 		timeout = 30 * time.Second
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+func boundedDetachedContext(ctx context.Context, maximum time.Duration) (context.Context, context.CancelFunc) {
+	if maximum <= 0 {
+		maximum = time.Second
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < maximum {
+			maximum = remaining
+		}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), maximum)
 }
 
 func (m *AutomationManager) logPublicationStage(run automation.Run, stage, result, category string) {
@@ -118,12 +129,15 @@ func (m *AutomationManager) claimPublicationRecovery(ctx context.Context, inv au
 		if err != nil {
 			return inv, false, mapStoreError(err)
 		}
-		// Provider work is durably terminal. Take over even an unexpired local
-		// claim: after restart there is no old worker to release it, and the new
-		// claim token fences any concurrently unwinding publication path.
+		if current.Status == "running" && current.ClaimProcessID == m.processID && !current.ClaimExpiresAt.IsZero() && current.ClaimExpiresAt.After(m.now()) {
+			return current, false, nil
+		}
+		// A different process incarnation cannot have a live local worker. The
+		// renewed token fences any concurrently unwinding obsolete publisher.
 		current.Status = "running"
 		current.ClaimVersion++
 		current.ClaimToken = uuid.NewString()
+		current.ClaimProcessID = m.processID
 		current.ClaimExpiresAt = m.now().Add(automationClaimLease)
 		current.UpdatedAt = m.now()
 		if err := m.putInvocationRuntime(ctx, current); err != nil {
@@ -142,13 +156,16 @@ func (m *AutomationManager) claimPublicationRecovery(ctx context.Context, inv au
 	if err != nil {
 		return inv, false, mapStoreError(err)
 	}
-	// Recovery is safe to reclaim an unexpired claim even when this node ID
-	// was also the former owner. Stable output idempotency plus the renewed
-	// claim token prevent provider replay and fence the interrupted publisher.
+	if current.Status == "running" && current.ClaimProcessID == m.processID && !current.ClaimExpiresAt.IsZero() && current.ClaimExpiresAt.After(m.now()) {
+		return current, false, nil
+	}
+	// A changed leader process incarnation proves the prior worker obsolete,
+	// including restart with the same durable Raft node ID.
 	current.Status = "running"
 	current.ClaimOwnerNodeID = uint64(local)
 	current.ClaimVersion++
 	current.ClaimToken = uuid.NewString()
+	current.ClaimProcessID = m.processID
 	current.ClaimExpiresAt = m.now().Add(automationClaimLease)
 	current.UpdatedAt = m.now()
 	if err := m.putInvocationRuntime(ctx, current); err != nil {
@@ -165,24 +182,11 @@ func (m *AutomationManager) claimPublicationRecovery(ctx context.Context, inv au
 }
 
 func (m *AutomationManager) publicationOutputApplied(ctx context.Context, inv automation.Invocation, run automation.Run) (bool, error) {
-	if m.sessions == nil || m.graphs == nil {
+	if m.graphs == nil {
 		return false, ErrPublicationReconciliationRequired
 	}
 	principal := firstNonEmptyString(run.ActorPrincipalID, inv.ActorPrincipalID, automationActor)
-	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: principal, SpaceID: inv.SpaceID, DomainID: inv.DomainID.String()})
-	if err != nil {
-		return false, err
-	}
-	baseRevision, err := m.graphs.CurrentDomainRevision(ctx, inv.SpaceID, inv.DomainID.String())
-	if err != nil {
-		return false, err
-	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: principal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly, BaseRevision: &baseRevision})
-	if err != nil {
-		return false, err
-	}
-	defer m.rollbackAutomationOutputTransaction(ctx, principal, tx.ID)
-	return (actions.Engine{Graphs: m.graphs}).OutputAlreadyApplied(ctx, tx, automationOutputIdempotencyKey(inv, run.ID))
+	return m.automationOutputAlreadyApplied(ctx, principal, inv, automationOutputIdempotencyKey(inv, run.ID))
 }
 
 func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Context, inv *automation.Invocation) (bool, error) {
@@ -201,6 +205,8 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 	}
 	*inv = claimed
 	run, err := m.store.GetRun(recoveryCtx, inv.DomainID, attempt.RunID)
+	runExisted := err == nil
+	existingRunStatus := strings.ToLower(strings.TrimSpace(run.Status))
 	if errors.Is(err, storage.ErrNotFound) {
 		run = automation.Run{
 			ID:                          attempt.RunID,
@@ -279,8 +285,19 @@ func (m *AutomationManager) reconcileProviderStartedPublication(ctx context.Cont
 		inv.Status = "failed"
 		inv.SkipReason = publicationRecoveryFailure
 	}
-	if err := m.putRunRuntime(recoveryCtx, inv.SpaceID, run); err != nil {
-		return false, err
+	persistRun := true
+	if runExisted && existingRunStatus != "" && existingRunStatus != "running" && existingRunStatus != "retryable" {
+		if existingRunStatus != run.Status {
+			return false, errors.New("automation publication recovery conflicts with terminal run")
+		}
+		// A prior apply completed the run before the invocation update. Preserve
+		// the immutable terminal run and finish only the invocation.
+		persistRun = false
+	}
+	if persistRun {
+		if err := m.putRunRuntime(recoveryCtx, inv.SpaceID, run); err != nil {
+			return false, err
+		}
 	}
 	if err := m.putInvocationRuntime(recoveryCtx, *inv); err != nil {
 		return false, err

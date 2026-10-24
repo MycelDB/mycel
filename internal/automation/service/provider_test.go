@@ -338,6 +338,90 @@ func TestAutomationPublicationTimeoutReconcilesWithoutProviderReplay(t *testing.
 	}
 }
 
+func TestAutomationPublicationReopenTimeoutIsBoundedWithoutProviderReplay(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	beginCalls := 0
+	graphs := &automationE2EGraph{node: node}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String(), beginCalls: &beginCalls, waitForBeginCall: 2}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
+	mgr.publicationTimeout = 100 * time.Millisecond
+	def := automation.Definition{
+		ID: "bounded-publication-reopen", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 1},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("publication reopen timeout was not bounded: %s", elapsed)
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider calls=%d, want 1", calls)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 || invs[0].Status != "retryable" {
+		t.Fatalf("invocations=%+v err=%v", invs, err)
+	}
+	runs, err := store.ListRuns(ctx, ids.domainID)
+	if err != nil || len(runs) != 1 || runs[0].Status != "running" || !runs[0].CompletedAt.IsZero() {
+		t.Fatalf("runs=%+v err=%v", runs, err)
+	}
+}
+
+func TestAutomationPublicationLedgerLookupTimeoutIsBoundedWithoutProviderReplay(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &blockingProcedureInferenceLedgerListStore{Store: baseStore}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	mgr := NewManager(store).WithGraphRuntime(automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}, &automationE2EGraph{node: node}).WithInferenceInvoker(inference)
+	mgr.publicationTimeout = 100 * time.Millisecond
+	def := automation.Definition{
+		ID: "bounded-publication-ledger", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 1},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("publication ledger lookup timeout was not bounded: %s", elapsed)
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider calls=%d, want 1", calls)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 || invs[0].Status != "retryable" {
+		t.Fatalf("invocations=%+v err=%v", invs, err)
+	}
+}
+
 func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
@@ -663,20 +747,36 @@ func newAutomationInferenceRuntime(t *testing.T, ctx context.Context, deny bool)
 	return module, ids, fake
 }
 
+type blockingProcedureInferenceLedgerListStore struct{ storage.Store }
+
+func (s *blockingProcedureInferenceLedgerListStore) ListProcedureInferenceLedgers(ctx context.Context) ([]automation.ProcedureInferenceLedger, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type automationE2ESessions struct {
 	spaceID            string
 	domainID           string
 	commitCalls        *int
 	commitContextError *error
 	beginInputs        *[]sessionmodel.BeginTransactionInput
+	beginCalls         *int
+	waitForBeginCall   int
 }
 
 func (s automationE2ESessions) OpenSession(context.Context, sessionmodel.OpenSessionInput) (sessionmodel.GraphSession, error) {
 	return sessionmodel.GraphSession{ID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, State: sessionmodel.SessionStateActive}, nil
 }
-func (s automationE2ESessions) BeginTransaction(_ context.Context, input sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
+func (s automationE2ESessions) BeginTransaction(ctx context.Context, input sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
 	if s.beginInputs != nil {
 		*s.beginInputs = append(*s.beginInputs, input)
+	}
+	if s.beginCalls != nil {
+		*s.beginCalls++
+		if s.waitForBeginCall > 0 && *s.beginCalls == s.waitForBeginCall {
+			<-ctx.Done()
+			return sessionmodel.GraphTransaction{}, ctx.Err()
+		}
 	}
 	baseRevision := int64(0)
 	if input.BaseRevision != nil {
@@ -710,6 +810,7 @@ type automationE2EGraph struct {
 	spaceRevision        int64
 	domainRevision       int64
 	domainRevisionCalls  *[][2]string
+	idempotentCommits    map[string]graphchange.CommitResult
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -788,15 +889,26 @@ func (g *automationE2EGraph) CurrentDomainRevision(_ context.Context, spaceID st
 	}
 	return 1, nil
 }
-func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, _ sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	if g.cancelOnCommit != nil {
 		g.cancelOnCommit()
+	}
+	result := graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1, IdempotencyKey: tx.IdempotencyKey}
+	if tx.IdempotencyKey != "" {
+		if g.idempotentCommits == nil {
+			g.idempotentCommits = map[string]graphchange.CommitResult{}
+		}
+		g.idempotentCommits[tx.PrincipalID+"\x00"+tx.IdempotencyKey] = result
 	}
 	if g.waitForCommitContext {
 		<-ctx.Done()
 		return graphchange.CommitResult{}, ctx.Err()
 	}
-	return graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
+	return result, nil
+}
+func (g *automationE2EGraph) LookupIdempotentCommit(_ context.Context, principalID, _, _, key string) (graphchange.CommitResult, bool, error) {
+	result, ok := g.idempotentCommits[principalID+"\x00"+key]
+	return result, ok, nil
 }
 func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) error { return nil }
 func (g *automationE2EGraph) AcknowledgeTransactionFinalization(ctx context.Context, _ sessionmodel.GraphTransaction) error {

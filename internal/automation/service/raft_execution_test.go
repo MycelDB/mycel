@@ -454,7 +454,7 @@ func TestProcedureInferencePublicationRecoveryTakesOverUnexpiredFailedLeaderClai
 	oldLeaderID := cluster.leaderForSpace(t, spaceID)
 	oldLeader := cluster.managers[oldLeaderID]
 	now := time.Now().UTC()
-	inv := automation.Invocation{ID: "inv-publication-failover", DomainID: domainID, SpaceID: spaceID.String(), BindingID: "binding-a", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, Status: "running", ClaimOwnerNodeID: uint64(oldLeaderID), ClaimVersion: 1, ClaimToken: "old-leader-claim", ClaimExpiresAt: now.Add(automationClaimLease), CreatedAt: now, UpdatedAt: now}
+	inv := automation.Invocation{ID: "inv-publication-failover", DomainID: domainID, SpaceID: spaceID.String(), BindingID: "binding-a", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, Status: "running", ClaimOwnerNodeID: uint64(oldLeaderID), ClaimVersion: 1, ClaimToken: "old-leader-claim", ClaimProcessID: oldLeader.processID, ClaimExpiresAt: now.Add(automationClaimLease), CreatedAt: now, UpdatedAt: now}
 	if err := oldLeader.putInvocationRuntime(ctx, inv); err != nil {
 		t.Fatalf("seed running invocation: %v", err)
 	}
@@ -463,11 +463,17 @@ func TestProcedureInferencePublicationRecoveryTakesOverUnexpiredFailedLeaderClai
 			t.Fatal(err)
 		}
 	}
-	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1, ActorPrincipalID: automationActor}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1, Status: "retryable", Error: publicationReconciliationRequired, ActorPrincipalID: automationActor, StartedAt: now}
+	if err := oldLeader.putRunRuntime(ctx, spaceID.String(), run); err != nil {
+		t.Fatalf("seed retryable publication run: %v", err)
+	}
 	attempt := persistSucceededPublicationAttempt(t, ctx, oldLeader, inv, run, "publication_pending")
 	outputKey := automationOutputIdempotencyKey(inv, run.ID)
 	for _, mgr := range cluster.managers {
-		graphs := &automationE2EGraph{node: graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Meta: map[string]any{"automation": map[string]any{"output_idempotency_key": outputKey}}}}
+		graphs := &automationE2EGraph{
+			node:              graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID},
+			idempotentCommits: map[string]graphchange.CommitResult{automationActor + "\x00" + outputKey: {IdempotencyKey: outputKey, CommittedRevision: 1}},
+		}
 		mgr.WithGraphRuntime(automationE2ESessions{spaceID: spaceID.String(), domainID: domainID.String()}, graphs)
 	}
 	cluster.waitForInvocation(t, domainID, inv.ID)

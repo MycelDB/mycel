@@ -184,6 +184,9 @@ func (f fakeConditionGraph) CreateEdge(context.Context, sessionmodel.GraphTransa
 func (f fakeConditionGraph) CurrentDomainRevision(context.Context, string, string) (int64, error) {
 	panic("unused")
 }
+func (f fakeConditionGraph) LookupIdempotentCommit(context.Context, string, string, string, string) (graphchange.CommitResult, bool, error) {
+	panic("unused")
+}
 func (f fakeConditionGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	panic("unused")
 }

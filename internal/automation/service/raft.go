@@ -462,7 +462,8 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 			if automationJSONEqual(existing, merged) {
 				return nil
 			}
-			if strings.ToLower(strings.TrimSpace(existing.Status)) != "running" {
+			existingStatus := strings.ToLower(strings.TrimSpace(existing.Status))
+			if existingStatus != "running" && existingStatus != "retryable" {
 				return fmt.Errorf("automation run %q terminal state is immutable", run.ID)
 			}
 			return mapStoreError(m.store.PutRun(ctx, merged))
