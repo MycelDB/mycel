@@ -164,23 +164,34 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	// publication budget. No graph/session/store call can strand the worker.
 	publicationCtx, cancelPublication := m.publicationContext(ctx)
 	defer cancelPublication()
+	m.logPublicationStage(run, "runtime_control", "started", "none")
 	if err := m.requireProcedureEnabledRuntime(publicationCtx, inv); err != nil {
+		m.logPublicationStage(run, "runtime_control", "failed", publicationFailureCategory(err))
 		return run, errors.Join(err, m.recordRunPublicationDisposition(publicationCtx, run, "suppressed_procedure_control"))
 	}
+	m.logPublicationStage(run, "runtime_control", "completed", "none")
+	m.logPublicationStage(run, "output_parse", "started", "none")
 	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
 	if err != nil {
+		m.logPublicationStage(run, "output_parse", "failed", publicationFailureCategory(err))
 		return run, errors.Join(err, m.recordRunPublicationDisposition(publicationCtx, run, "rejected_invalid_output"))
 	}
+	m.logPublicationStage(run, "output_parse", "completed", "none")
 	run.ActionFingerprint = actionFingerprint(def, parsed)
+	m.logPublicationStage(run, "transaction_reopen", "started", "none")
 	publicationTx, publicationNode, publicationAliases, err := m.reopenAutomationOutputTransaction(publicationCtx, executionPrincipal, sess, def, inv, &run, rendered.Hash, imageInputHash)
 	if err != nil {
+		m.logPublicationStage(run, "transaction_reopen", "failed", publicationFailureCategory(err))
 		return run, errors.Join(ErrPublicationReconciliationRequired, err, m.recordRunPublicationDisposition(publicationCtx, run, "publication_precondition_failed"))
 	}
+	m.logPublicationStage(run, "transaction_reopen", "completed", "none")
+	m.logPublicationStage(run, "pending_persistence", "started", "none")
 	if err := m.recordRunPublicationDisposition(publicationCtx, run, "publication_pending"); err != nil {
+		m.logPublicationStage(run, "pending_persistence", "failed", publicationFailureCategory(err))
 		m.rollbackAutomationOutputTransaction(publicationCtx, executionPrincipal, publicationTx.ID)
 		return run, errors.Join(ErrPublicationReconciliationRequired, err)
 	}
-	m.logPublicationStage(run, "pending_persisted", "completed", "none")
+	m.logPublicationStage(run, "pending_persistence", "completed", "none")
 	changed, publicationCommitID, err := m.commitAutomationOutputWithConflictRetry(publicationCtx, executionPrincipal, sess, publicationTx, def, &inv, &run, publicationNode, publicationAliases, parsed, rendered.Hash, imageInputHash)
 	if err != nil {
 		m.logPublicationStage(run, "publication", "failed", publicationFailureCategory(err))
@@ -294,77 +305,108 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 	node := firstNode
 	aliases := firstAliases
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		m.logPublicationStage(*run, "procedure_control_recheck", "started", "none")
 		if err := m.requireProcedureEnabledRuntime(ctx, *inv); err != nil {
+			m.logPublicationStage(*run, "procedure_control_recheck", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
+		m.logPublicationStage(*run, "procedure_control_recheck", "completed", "none")
+		m.logPublicationStage(*run, "authorization_recheck", "started", "none")
 		if err := m.revalidateProcedureAuthorization(ctx, def, *inv, run); err != nil {
+			m.logPublicationStage(*run, "authorization_recheck", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
+		m.logPublicationStage(*run, "authorization_recheck", "completed", "none")
 		if attempt > 1 {
+			m.logPublicationStage(*run, "conflict_transaction_reopen", "started", "none")
 			var err error
 			tx, node, aliases, err = m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, *inv, run, expectedRenderedInputHash, expectedImageInputHash)
 			if err != nil {
+				m.logPublicationStage(*run, "conflict_transaction_reopen", "failed", publicationFailureCategory(err))
 				return false, "", err
 			}
+			m.logPublicationStage(*run, "conflict_transaction_reopen", "completed", "none")
 		}
+		m.logPublicationStage(*run, "claim_check", "started", "none")
 		if err := m.ensureClaimStillOwned(ctx, *inv); err != nil {
+			m.logPublicationStage(*run, "claim_check", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
+		m.logPublicationStage(*run, "claim_check", "completed", "none")
+		m.logPublicationStage(*run, "claim_renewal", "started", "none")
 		if err := m.renewClaim(ctx, inv); err != nil {
+			m.logPublicationStage(*run, "claim_renewal", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
 		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
 		run.ClaimVersion = inv.ClaimVersion
 		run.ClaimToken = inv.ClaimToken
+		m.logPublicationStage(*run, "claim_renewal", "completed", "none")
+		m.logPublicationStage(*run, "receipt_probe", "started", "none")
 		_, applied, err := m.automationOutputAlreadyApplied(ctx, executionPrincipal, *inv, run.OutputIdempotencyKey)
 		if err != nil {
+			m.logPublicationStage(*run, "receipt_probe", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
+		m.logPublicationStage(*run, "receipt_probe", "completed", "none")
 		if applied {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			run.Status = "skipped"
 			run.Error = skipReasonDuplicateOutput
 			return false, "", nil
 		}
+		m.logPublicationStage(*run, "action_apply", "started", "none")
 		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, ProcedureID: inv.ProcedureID, AuthorizationRevision: run.AuthorizationRevision, GlobalAuthorizationRevision: run.GlobalAuthorizationRevision, SpaceAuthorizationRevision: run.SpaceAuthorizationRevision, Changed: node, Aliases: aliases, Result: parsed})
 		if err != nil {
+			m.logPublicationStage(*run, "action_apply", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
+		m.logPublicationStage(*run, "action_apply", "completed", "none")
 		if !summary.Changed {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", nil
 		}
+		m.logPublicationStage(*run, "precommit_claim_renewal", "started", "none")
 		if err := m.renewClaim(ctx, inv); err != nil {
+			m.logPublicationStage(*run, "precommit_claim_renewal", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", err
 		}
 		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
 		run.ClaimVersion = inv.ClaimVersion
 		run.ClaimToken = inv.ClaimToken
+		m.logPublicationStage(*run, "precommit_claim_renewal", "completed", "none")
+		m.logPublicationStage(*run, "global_authorization_fence", "started", "none")
 		if m.raftGroups != nil {
 			revisions, ok := m.inference.(inferenceAuthorizationRevisionReader)
 			if !ok || run.GlobalAuthorizationRevision == 0 {
+				m.logPublicationStage(*run, "global_authorization_fence", "failed", "authorization_revoked")
 				m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 				return false, "", ErrProcedureAuthorizationRevoked
 			}
 			if err := revisions.AssertGlobalAuthorizationRevision(ctx, run.GlobalAuthorizationRevision); err != nil {
+				m.logPublicationStage(*run, "global_authorization_fence", "failed", "authorization_revoked")
 				m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 				return false, "", ErrProcedureAuthorizationRevoked
 			}
 		}
+		m.logPublicationStage(*run, "global_authorization_fence", "completed", "none")
+		m.logPublicationStage(*run, "procedure_control_fence", "started", "none")
 		m.procedureControlMu.RLock()
 		controlErr := m.procedureFenceAllows(ctx, inv.SpaceID, inv.DomainID, inv.ProcedureID)
 		if controlErr != nil {
 			m.procedureControlMu.RUnlock()
+			m.logPublicationStage(*run, "procedure_control_fence", "failed", publicationFailureCategory(controlErr))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, "", controlErr
 		}
+		m.logPublicationStage(*run, "procedure_control_fence", "completed", "none")
 		m.logPublicationStage(*run, "graph_commit", "started", "none")
 		graphCommit, err := m.graphs.CommitTransactionGraph(ctx, tx)
 		m.procedureControlMu.RUnlock()
@@ -376,7 +418,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			}
 			return false, "", err
 		}
-		m.logPublicationStage(*run, "graph_commit", "completed", "committed")
+		m.logPublicationStageAtRevision(*run, "graph_commit", "completed", "committed", graphCommit.CommittedRevision)
 		finalizeCtx := ctx
 		m.logPublicationStage(*run, "session_finalize", "started", "none")
 		commit, err := m.sessions.CommitTransactionAtRevision(finalizeCtx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)

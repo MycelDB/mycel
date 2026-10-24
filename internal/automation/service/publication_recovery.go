@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -9,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -40,16 +44,38 @@ func boundedDetachedContext(ctx context.Context, maximum time.Duration) (context
 }
 
 func (m *AutomationManager) logPublicationStage(run automation.Run, stage, result, category string) {
+	m.logPublicationStageAtRevision(run, stage, result, category, 0)
+}
+
+func (m *AutomationManager) logPublicationStageAtRevision(run automation.Run, stage, result, category string, graphRevision int64) {
 	if m.logger == nil || lastString(run.InferenceAttemptIDs) == "" {
 		return
 	}
-	m.logger.Info("procedure_inference_publication_stage",
+	attributes := []any{
 		"stage", stage,
 		"result", result,
 		"category", category,
 		"run_id", run.ID,
 		"attempt_id", lastString(run.InferenceAttemptIDs),
-	)
+		"claim_owner_node_id", run.ClaimOwnerNodeID,
+		"claim_version", run.ClaimVersion,
+		"authorization_revision", run.AuthorizationRevision,
+		"global_authorization_revision", run.GlobalAuthorizationRevision,
+		"space_authorization_revision", run.SpaceAuthorizationRevision,
+		"output_key_hash", publicationOutputKeyHash(run.OutputIdempotencyKey),
+	}
+	if graphRevision > 0 {
+		attributes = append(attributes, "graph_revision", graphRevision)
+	}
+	m.logger.Info("procedure_inference_publication_stage", attributes...)
+}
+
+func publicationOutputKeyHash(key string) string {
+	if strings.TrimSpace(key) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
 }
 
 func publicationLogResult(err error) string {
@@ -67,6 +93,26 @@ func publicationFailureCategory(err error) string {
 		return "deadline_exceeded"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
+	case errors.Is(err, ErrProcedureDisabled):
+		return "procedure_disabled"
+	case errors.Is(err, ErrProcedureAuthorizationRevoked):
+		return "authorization_revoked"
+	case isGraphConflict(err):
+		return "graph_conflict"
+	}
+	switch status.Code(err) {
+	case codes.FailedPrecondition:
+		return "failed_precondition"
+	case codes.Unavailable:
+		return "unavailable"
+	case codes.Aborted:
+		return "conflict"
+	case codes.NotFound:
+		return "not_found"
+	case codes.PermissionDenied:
+		return "permission_denied"
+	case codes.ResourceExhausted:
+		return "resource_exhausted"
 	default:
 		return "operation_failed"
 	}

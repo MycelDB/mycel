@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -291,7 +292,8 @@ func TestAutomationPublicationTimeoutReconcilesWithoutProviderReplay(t *testing.
 	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
 	graphs := &automationE2EGraph{node: node, waitForCommitContext: true}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
-	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
+	var publicationLogs bytes.Buffer
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference).WithLogger(slog.New(slog.NewJSONHandler(&publicationLogs, nil)))
 	mgr.publicationTimeout = 500 * time.Millisecond
 	def := automation.Definition{
 		ID: "bounded-publication", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
@@ -322,6 +324,12 @@ func TestAutomationPublicationTimeoutReconcilesWithoutProviderReplay(t *testing.
 	}
 	if _, chatCalls := fake.Calls(); chatCalls != 1 {
 		t.Fatalf("provider calls=%d", chatCalls)
+	}
+	logged := publicationLogs.String()
+	for _, required := range []string{`"stage":"pending_persistence"`, `"stage":"graph_commit"`, `"result":"failed"`, `"category":"deadline_exceeded"`} {
+		if !strings.Contains(logged, required) {
+			t.Fatalf("publication diagnostics missing %s: %s", required, logged)
+		}
 	}
 	inv := invs[0]
 	mgr.publicationTimeout = 2 * time.Second

@@ -14,6 +14,8 @@ import (
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestReconcileProviderStartedPublicationFinalizesPublishedOutputWithoutProviderReplay(t *testing.T) {
@@ -234,12 +236,50 @@ func TestReconcileProviderStartedPublicationFinalizesAbsentOutputAsFailed(t *tes
 func TestPublicationDiagnosticsUseClosedCategories(t *testing.T) {
 	var output bytes.Buffer
 	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithLogger(slog.New(slog.NewJSONHandler(&output, nil)))
-	run := automation.Run{ID: "run", InferenceAttemptIDs: []string{"attempt"}}
+	run := automation.Run{
+		ID: "run", InferenceAttemptIDs: []string{"attempt"}, ClaimOwnerNodeID: 2, ClaimVersion: 3,
+		ClaimToken: "secret-claim-token", OutputIdempotencyKey: "secret-output-key", ActorPrincipalID: "secret-principal",
+		AuthorizationRevision: 4, GlobalAuthorizationRevision: 5, SpaceAuthorizationRevision: 6,
+	}
 	raw := errors.New("secret provider body")
-	mgr.logPublicationStage(run, "graph_commit", "failed", publicationFailureCategory(raw))
+	mgr.logPublicationStageAtRevision(run, "graph_commit", "failed", publicationFailureCategory(raw), 7)
 	logged := output.String()
-	if !strings.Contains(logged, `"category":"operation_failed"`) || strings.Contains(logged, raw.Error()) {
-		t.Fatalf("unsafe publication diagnostic: %s", logged)
+	for _, required := range []string{
+		`"category":"operation_failed"`, `"claim_owner_node_id":2`, `"claim_version":3`,
+		`"authorization_revision":4`, `"global_authorization_revision":5`, `"space_authorization_revision":6`,
+		`"output_key_hash":"` + publicationOutputKeyHash(run.OutputIdempotencyKey) + `"`, `"graph_revision":7`,
+	} {
+		if !strings.Contains(logged, required) {
+			t.Fatalf("publication diagnostic missing %s: %s", required, logged)
+		}
+	}
+	for _, prohibited := range []string{raw.Error(), run.ClaimToken, run.OutputIdempotencyKey, run.ActorPrincipalID, "provider", "principal"} {
+		if strings.Contains(logged, prohibited) {
+			t.Fatalf("publication diagnostic leaked %q: %s", prohibited, logged)
+		}
+	}
+}
+
+func TestPublicationFailureCategoriesAreClosed(t *testing.T) {
+	cases := []struct {
+		err      error
+		expected string
+	}{
+		{err: nil, expected: "none"},
+		{err: context.DeadlineExceeded, expected: "deadline_exceeded"},
+		{err: context.Canceled, expected: "canceled"},
+		{err: ErrProcedureDisabled, expected: "procedure_disabled"},
+		{err: ErrProcedureAuthorizationRevoked, expected: "authorization_revoked"},
+		{err: graphchange.ErrConflict, expected: "graph_conflict"},
+		{err: status.Error(codes.FailedPrecondition, "unsafe detail"), expected: "failed_precondition"},
+		{err: status.Error(codes.Unavailable, "unsafe detail"), expected: "unavailable"},
+		{err: status.Error(codes.PermissionDenied, "unsafe detail"), expected: "permission_denied"},
+		{err: errors.New("unsafe detail"), expected: "operation_failed"},
+	}
+	for _, tc := range cases {
+		if actual := publicationFailureCategory(tc.err); actual != tc.expected {
+			t.Fatalf("publicationFailureCategory(%v)=%q, want %q", tc.err, actual, tc.expected)
+		}
 	}
 }
 
