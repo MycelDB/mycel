@@ -487,6 +487,12 @@ type ProcessingScope struct {
 	SemanticIndexID     SemanticIndexID     `json:"semantic_index_id,omitempty"` // transitional alias for existing storage/runtime
 	NodeID              graph.NodeID        `json:"node_id,omitempty"`
 	IncludeDescendants  bool                `json:"include_descendants,omitempty"`
+	ProcedureID         string              `json:"procedure_id,omitempty"`
+	ProcedureVersion    int                 `json:"procedure_version,omitempty"`
+	BindingID           string              `json:"binding_id,omitempty"`
+	BindingVersion      int                 `json:"binding_version,omitempty"`
+	InvocationID        string              `json:"invocation_id,omitempty"`
+	RunID               string              `json:"run_id,omitempty"`
 }
 
 // CredentialGrant is a space-owned authorization to use one credential in one processing scope.
@@ -513,6 +519,9 @@ type InferencePolicy struct {
 	Scope                 ProcessingScope   `json:"scope"`
 	Effect                PolicyEffect      `json:"effect"`
 	Operations            []Operation       `json:"operations,omitempty"`
+	EndpointRefs          []string          `json:"endpoint_refs,omitempty"`
+	ModelRefs             []string          `json:"model_refs,omitempty"`
+	CapabilityRefs        []string          `json:"capability_refs,omitempty"`
 	NoInference           bool              `json:"no_inference,omitempty"`
 	AllowedPrivacyClasses []PrivacyClass    `json:"allowed_privacy_classes,omitempty"`
 	DisallowThirdParty    bool              `json:"disallow_third_party,omitempty"`

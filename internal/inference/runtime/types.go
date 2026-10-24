@@ -18,6 +18,12 @@ type ResolveRequest struct {
 	SemanticRuleID        string
 	EmbeddingBindingKey   string
 	SemanticIndexID       string
+	ProcedureID           string
+	ProcedureVersion      int
+	BindingID             string
+	BindingVersion        int
+	InvocationID          string
+	RunID                 string
 	NodeID                string
 	NodeAncestorIDs       []string
 	Operation             domaininference.Operation
@@ -86,4 +92,5 @@ type InvokeResponse struct {
 	Embedding         []float64
 	Usage             domaininference.Usage
 	Status            domaininference.UsageStatus
+	UsageEventID      string
 }

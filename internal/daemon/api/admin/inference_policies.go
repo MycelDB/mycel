@@ -29,6 +29,18 @@ func (s *AdminInferenceService) CreateAccessPolicy(ctx context.Context, req *adm
 	if err != nil {
 		return nil, err
 	}
+	positive := !req.GetNoIntelligence() && !strings.EqualFold(req.GetEffect(), string(domainsemantic.PolicyEffectDeny))
+	if positive && scope.BindingID != "" && scope.ProcedureID == "" {
+		return nil, status.Error(codes.InvalidArgument, "positive binding authorization requires an exact procedure_id and procedure_version")
+	}
+	if scope.ProcedureID != "" && positive {
+		if scope.ProcedureVersion <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "positive procedure authorization requires an exact procedure_version")
+		}
+		if scope.BindingID != "" && scope.BindingVersion <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "positive binding authorization requires an exact binding_version")
+		}
+	}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
 		return nil, err
@@ -38,7 +50,7 @@ func (s *AdminInferenceService) CreateAccessPolicy(ctx context.Context, req *adm
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "open semantic space manager")
 	}
-	policy, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: scope, Effect: domainsemantic.PolicyEffect(req.GetEffect()), Operations: operationsFromStringsAdmin(req.GetOperations()), NoInference: req.GetNoIntelligence(), AllowedPrivacyClasses: privacyClassesFromStringsAdmin(req.GetAllowedPrivacyClasses()), DisallowThirdParty: req.GetDisallowThirdParty(), RequireLocalEndpoint: req.GetRequireLocalEndpoint(), Reason: req.GetReason(), CreatedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
+	policy, err := spaceMgr.UpsertInferencePolicy(ctx, domainsemantic.InferencePolicy{Scope: scope, Effect: domainsemantic.PolicyEffect(req.GetEffect()), Operations: operationsFromStringsAdmin(req.GetOperations()), EndpointRefs: cleanStringListAdmin(req.GetEndpointRefs()), ModelRefs: cleanStringListAdmin(req.GetModelRefs()), CapabilityRefs: cleanStringListAdmin(req.GetCapabilityRefs()), NoInference: req.GetNoIntelligence(), AllowedPrivacyClasses: privacyClassesFromStringsAdmin(req.GetAllowedPrivacyClasses()), DisallowThirdParty: req.GetDisallowThirdParty(), RequireLocalEndpoint: req.GetRequireLocalEndpoint(), Reason: req.GetReason(), CreatedBy: principal.PrincipalID, ExpiresAt: timeFromProto(req.GetExpiresAt())})
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "upsert access policy")
 	}

@@ -46,6 +46,44 @@ func (m *AutomationManager) pendingInvocations(ctx context.Context, domainID gra
 	return out, nil
 }
 
+func (m *AutomationManager) reconcileTerminalRunFinalization(ctx context.Context, inv *automation.Invocation, def *automation.Definition) (bool, error) {
+	runID := automationRunID(*inv, inv.AttemptCount+1)
+	run, err := m.store.GetRun(ctx, inv.DomainID, runID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, mapStoreError(err)
+	}
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	if status == "" || status == "running" {
+		return false, nil
+	}
+	if !(status == "skipped" && (run.Error == "automation_disabled" || run.Error == skipReasonCoalesced)) {
+		inv.AttemptCount = run.AttemptNumber
+	}
+	inv.Status = run.Status
+	inv.InputHash = run.RenderedInputHash
+	inv.SkipReason = run.Error
+	inv.NextAttemptAt = time.Time{}
+	inv.UpdatedAt = run.CompletedAt
+	if inv.UpdatedAt.IsZero() {
+		inv.UpdatedAt = m.now()
+	}
+	if status == "retryable" {
+		inv.NextAttemptAt = inv.UpdatedAt.Add(retryBackoff(inv.AttemptCount))
+	}
+	if def != nil {
+		if err := m.recordSuccessfulInputHash(ctx, *def, *inv, run); err != nil {
+			return false, err
+		}
+	}
+	if err := m.putInvocationRuntime(ctx, *inv); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func maxAttempts(def automation.Definition) int {
 	if def.Safety.MaxAttempts > 0 {
 		return def.Safety.MaxAttempts

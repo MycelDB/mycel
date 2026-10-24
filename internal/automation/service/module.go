@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -40,6 +41,13 @@ type Module struct {
 
 func NewModule(dataDir string) *Module {
 	return &Module{dataDir: dataDir, worker: WorkerConfig{Enabled: true, Interval: time.Second, BatchSize: 25, Concurrency: 1}, gate: quiesce.NewGate(ModuleName)}
+}
+
+func (m *Module) ApplySpaceAuthorizationRevision(ctx context.Context, spaceID string, revision uint64) error {
+	if m == nil || m.AutomationManager == nil {
+		return fmt.Errorf("automation manager is not initialized")
+	}
+	return m.AutomationManager.ApplySpaceAuthorizationRevision(ctx, spaceID, revision)
 }
 
 func (m *Module) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *Module {

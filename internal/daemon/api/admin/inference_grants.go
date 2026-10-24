@@ -33,6 +33,17 @@ func (s *AdminInferenceService) CreateCredentialGrant(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	if scope.BindingID != "" && scope.ProcedureID == "" {
+		return nil, status.Error(codes.InvalidArgument, "binding credential grant requires an exact procedure_id and procedure_version")
+	}
+	if scope.ProcedureID != "" {
+		if scope.ProcedureVersion <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "procedure credential grant requires an exact procedure_version")
+		}
+		if scope.BindingID != "" && scope.BindingVersion <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "binding credential grant requires an exact binding_version")
+		}
+	}
 	var endpointID *domainsemantic.ModelEndpointID
 	if ref := firstNonEmptyAdmin(req.GetModelEndpointId(), req.GetModelEndpoint()); strings.TrimSpace(ref) != "" {
 		id, err := s.resolveModelEndpointID(ctx, ref)

@@ -36,6 +36,9 @@ type Procedure struct {
 	UpdatedByPrincipalID string         `json:"updated_by_principal_id,omitempty"`
 	CreatedAt            time.Time      `json:"created_at,omitempty"`
 	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
+	ControlEpoch         uint64         `json:"control_epoch,omitempty"`
+	ControlledBy         string         `json:"controlled_by,omitempty"`
+	ControlledAt         time.Time      `json:"controlled_at,omitempty"`
 }
 
 // Binding connects a graph procedure to trigger/schedule/manual runtime

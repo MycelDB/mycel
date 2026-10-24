@@ -18,6 +18,10 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+type AuthorizationRevisionSink interface {
+	ApplySpaceAuthorizationRevision(ctx context.Context, spaceID string, revision uint64) error
+}
+
 const ModuleName = "semantic"
 
 type ThrottleConfig struct {

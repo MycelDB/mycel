@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -26,47 +27,49 @@ const (
 // excludes prompts, outputs, graph values, credentials, provider request IDs,
 // raw errors, and arbitrary metadata.
 type ProcedureInferenceAttempt struct {
-	ID                     string         `json:"id"`
-	RecordVersion          uint64         `json:"record_version"`
-	SpaceID                string         `json:"space_id"`
-	DomainID               graph.DomainID `json:"domain_id"`
-	ProcedureID            string         `json:"procedure_id"`
-	ProcedureVersion       int            `json:"procedure_version"`
-	BindingID              string         `json:"binding_id"`
-	BindingVersion         int            `json:"binding_version"`
-	InvocationID           string         `json:"invocation_id"`
-	RunID                  string         `json:"run_id"`
-	RunAttemptNumber       int            `json:"run_attempt_number"`
-	WorkflowStepID         string         `json:"workflow_step_id,omitempty"`
-	ProviderAttemptNumber  int            `json:"provider_attempt_number"`
-	SourceEventID          string         `json:"source_event_id,omitempty"`
-	SourceTransactionID    string         `json:"source_transaction_id,omitempty"`
-	SourceGraphRevision    uint64         `json:"source_graph_revision,omitempty"`
-	EventOriginPrincipalID string         `json:"event_origin_principal_id,omitempty"`
-	ActorPrincipalID       string         `json:"actor_principal_id,omitempty"`
-	OwnerPrincipalID       string         `json:"owner_principal_id,omitempty"`
-	OnBehalfOfPrincipalID  string         `json:"on_behalf_of_principal_id,omitempty"`
-	Operation              string         `json:"operation,omitempty"`
-	ProfileID              string         `json:"profile_id,omitempty"`
-	EndpointID             string         `json:"endpoint_id,omitempty"`
-	ModelID                string         `json:"model_id,omitempty"`
-	CapabilityID           string         `json:"capability_id,omitempty"`
-	PolicyDecisionID       string         `json:"policy_decision_id,omitempty"`
-	CredentialGrantID      string         `json:"credential_grant_id,omitempty"`
-	AuthorizationRevision  uint64         `json:"authorization_revision,omitempty"`
-	ConfigurationRevision  uint64         `json:"configuration_revision,omitempty"`
-	State                  string         `json:"state"`
-	OutcomeCategory        string         `json:"outcome_category,omitempty"`
-	InputTokens            int64          `json:"input_tokens,omitempty"`
-	OutputTokens           int64          `json:"output_tokens,omitempty"`
-	TotalTokens            int64          `json:"total_tokens,omitempty"`
-	TokenCountAuthority    string         `json:"token_count_authority,omitempty"`
-	ProviderDurationMillis int64          `json:"provider_duration_millis,omitempty"`
-	PublicationDisposition string         `json:"publication_disposition,omitempty"`
-	RequestedAt            time.Time      `json:"requested_at"`
-	AuthorizedAt           time.Time      `json:"authorized_at,omitempty"`
-	StartedAt              time.Time      `json:"started_at,omitempty"`
-	CompletedAt            time.Time      `json:"completed_at,omitempty"`
+	ID                          string         `json:"id"`
+	RecordVersion               uint64         `json:"record_version"`
+	SpaceID                     string         `json:"space_id"`
+	DomainID                    graph.DomainID `json:"domain_id"`
+	ProcedureID                 string         `json:"procedure_id"`
+	ProcedureVersion            int            `json:"procedure_version"`
+	BindingID                   string         `json:"binding_id"`
+	BindingVersion              int            `json:"binding_version"`
+	InvocationID                string         `json:"invocation_id"`
+	RunID                       string         `json:"run_id"`
+	RunAttemptNumber            int            `json:"run_attempt_number"`
+	WorkflowStepID              string         `json:"workflow_step_id,omitempty"`
+	ProviderAttemptNumber       int            `json:"provider_attempt_number"`
+	SourceEventID               string         `json:"source_event_id,omitempty"`
+	SourceTransactionID         string         `json:"source_transaction_id,omitempty"`
+	SourceGraphRevision         uint64         `json:"source_graph_revision,omitempty"`
+	EventOriginPrincipalID      string         `json:"event_origin_principal_id,omitempty"`
+	ActorPrincipalID            string         `json:"actor_principal_id,omitempty"`
+	OwnerPrincipalID            string         `json:"owner_principal_id,omitempty"`
+	OnBehalfOfPrincipalID       string         `json:"on_behalf_of_principal_id,omitempty"`
+	Operation                   string         `json:"operation,omitempty"`
+	ProfileID                   string         `json:"profile_id,omitempty"`
+	EndpointID                  string         `json:"endpoint_id,omitempty"`
+	ModelID                     string         `json:"model_id,omitempty"`
+	CapabilityID                string         `json:"capability_id,omitempty"`
+	PolicyDecisionID            string         `json:"policy_decision_id,omitempty"`
+	CredentialGrantID           string         `json:"credential_grant_id,omitempty"`
+	AuthorizationRevision       uint64         `json:"authorization_revision,omitempty"`
+	GlobalAuthorizationRevision uint64         `json:"global_authorization_revision,omitempty"`
+	SpaceAuthorizationRevision  uint64         `json:"space_authorization_revision,omitempty"`
+	ConfigurationRevision       uint64         `json:"configuration_revision,omitempty"`
+	State                       string         `json:"state"`
+	OutcomeCategory             string         `json:"outcome_category,omitempty"`
+	InputTokens                 int64          `json:"input_tokens,omitempty"`
+	OutputTokens                int64          `json:"output_tokens,omitempty"`
+	TotalTokens                 int64          `json:"total_tokens,omitempty"`
+	TokenCountAuthority         string         `json:"token_count_authority,omitempty"`
+	ProviderDurationMillis      int64          `json:"provider_duration_millis,omitempty"`
+	PublicationDisposition      string         `json:"publication_disposition,omitempty"`
+	RequestedAt                 time.Time      `json:"requested_at"`
+	AuthorizedAt                time.Time      `json:"authorized_at,omitempty"`
+	StartedAt                   time.Time      `json:"started_at,omitempty"`
+	CompletedAt                 time.Time      `json:"completed_at,omitempty"`
 }
 
 // ProcedureInferenceAttemptChange is an immutable transition envelope. Sequence
@@ -167,6 +170,30 @@ func ValidateProcedureInferenceAttemptTransition(current *ProcedureInferenceAtte
 	}
 	if next.RecordVersion != cur.RecordVersion+1 {
 		return fmt.Errorf("procedure inference attempt record_version must advance by one")
+	}
+	if cur.State == InferenceAttemptStateAuthorized && next.State == InferenceAttemptStateAuthorized {
+		before, after := cur, next
+		before.RecordVersion, after.RecordVersion = 0, 0
+		before.PolicyDecisionID, after.PolicyDecisionID = "", ""
+		before.AuthorizationRevision, after.AuthorizationRevision = 0, 0
+		before.GlobalAuthorizationRevision, after.GlobalAuthorizationRevision = 0, 0
+		before.SpaceAuthorizationRevision, after.SpaceAuthorizationRevision = 0, 0
+		if !reflect.DeepEqual(before, after) || next.PolicyDecisionID == "" || next.AuthorizationRevision == 0 {
+			return fmt.Errorf("authorized procedure inference attempt refresh may only update committed authorization evidence")
+		}
+		return nil
+	}
+	if IsTerminalProcedureInferenceAttemptState(cur.State) && cur.State == next.State {
+		before, after := cur, next
+		before.RecordVersion, after.RecordVersion = 0, 0
+		before.PublicationDisposition, after.PublicationDisposition = "", ""
+		if !reflect.DeepEqual(before, after) {
+			return fmt.Errorf("terminal procedure inference attempt may only add publication disposition")
+		}
+		if next.PublicationDisposition == "" {
+			return fmt.Errorf("terminal procedure inference attempt disposition is required")
+		}
+		return nil
 	}
 	if !allowedInferenceAttemptTransition(cur.State, next.State) {
 		return fmt.Errorf("unsupported procedure inference attempt transition %s -> %s", cur.State, next.State)

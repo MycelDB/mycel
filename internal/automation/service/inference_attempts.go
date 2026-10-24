@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 )
@@ -18,6 +20,10 @@ import (
 const (
 	maxProcedureInferenceAttemptsPerSpace = 10_000
 	maxProcedureInferenceChangesPerSpace  = 50_000
+	retainedProcedureInferenceAttempts    = 8_000
+	retainedProcedureInferenceChanges     = 20_000
+	procedureInferenceRetentionAge        = 30 * 24 * time.Hour
+	maxProcedureInferenceHistoryBytes     = 64 << 20
 )
 
 var ErrInferenceAttemptAlreadyStarted = errors.New("procedure inference attempt may already have reached the provider")
@@ -77,10 +83,15 @@ func (m *AutomationManager) putProcedureInferenceAttemptRuntime(ctx context.Cont
 	}))
 }
 
-func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context.Context, incoming automation.ProcedureInferenceAttempt) error {
+func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context.Context, incoming automation.ProcedureInferenceAttempt, committedAt time.Time) error {
+	m.procedureControlMu.RLock()
+	defer m.procedureControlMu.RUnlock()
 	m.inferenceAttemptMu.Lock()
 	defer m.inferenceAttemptMu.Unlock()
 	incoming = automation.NormalizeProcedureInferenceAttempt(incoming)
+	if committedAt.IsZero() {
+		committedAt = procedureInferenceAttemptOccurredAt(incoming)
+	}
 	ledger, err := m.store.GetProcedureInferenceLedger(ctx, incoming.SpaceID)
 	if errors.Is(err, storage.ErrNotFound) {
 		ledger = automation.ProcedureInferenceLedger{SpaceID: incoming.SpaceID}
@@ -94,6 +105,11 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		return fmt.Errorf("procedure inference ledger space mismatch")
 	}
 
+	referencedAttemptIDs, err := m.referencedProcedureInferenceAttemptIDs(ctx, ledger.Attempts)
+	if err != nil {
+		return err
+	}
+	pruneProcedureInferenceLedger(&ledger, incoming.ID, committedAt, referencedAttemptIDs)
 	index := -1
 	var current *automation.ProcedureInferenceAttempt
 	for i := range ledger.Attempts {
@@ -102,6 +118,17 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 			copy := ledger.Attempts[i]
 			current = &copy
 			break
+		}
+	}
+	if incoming.State == automation.InferenceAttemptStateStarted {
+		if err := m.procedureFenceAllows(ctx, incoming.SpaceID, incoming.DomainID, incoming.ProcedureID); err != nil {
+			return err
+		}
+		if m.raftGroups != nil {
+			currentRevision, err := m.currentCommittedSpaceAuthorizationRevision(ctx, incoming.SpaceID)
+			if err != nil || currentRevision == 0 || currentRevision != incoming.SpaceAuthorizationRevision {
+				return ErrProcedureAuthorizationRevoked
+			}
 		}
 	}
 	if current != nil && current.RecordVersion == incoming.RecordVersion {
@@ -147,7 +174,7 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 		RecordVersion: incoming.RecordVersion,
 		Attempt:       incoming,
 		OccurredAt:    occurredAt,
-		CommittedAt:   occurredAt,
+		CommittedAt:   committedAt.UTC(),
 	}
 	if index >= 0 {
 		ledger.Attempts[index] = incoming
@@ -157,6 +184,120 @@ func (m *AutomationManager) applyProcedureInferenceAttemptTransition(ctx context
 	}
 	ledger.Changes = append(ledger.Changes, change)
 	return mapStoreError(m.store.PutProcedureInferenceLedger(ctx, ledger))
+}
+
+func pruneProcedureInferenceLedger(ledger *automation.ProcedureInferenceLedger, protectedAttemptID string, now time.Time, referencedAttemptIDs map[string]struct{}) {
+	if ledger == nil {
+		return
+	}
+	drop := 0
+	if len(ledger.Changes) > retainedProcedureInferenceChanges {
+		drop = len(ledger.Changes) - retainedProcedureInferenceChanges
+	}
+	if !now.IsZero() {
+		cutoff := now.Add(-procedureInferenceRetentionAge)
+		for drop < len(ledger.Changes) && !ledger.Changes[drop].CommittedAt.IsZero() && ledger.Changes[drop].CommittedAt.Before(cutoff) {
+			drop++
+		}
+	}
+	if len(ledger.Changes) >= 1_000 {
+		totalBytes := 0
+		sizes := make([]int, len(ledger.Changes))
+		for i := range ledger.Changes {
+			encoded, _ := json.Marshal(ledger.Changes[i])
+			sizes[i] = len(encoded)
+			totalBytes += sizes[i]
+		}
+		for drop < len(ledger.Changes) && totalBytes > maxProcedureInferenceHistoryBytes {
+			totalBytes -= sizes[drop]
+			drop++
+		}
+	}
+	if drop > 0 {
+		ledger.Changes = append([]automation.ProcedureInferenceAttemptChange(nil), ledger.Changes[drop:]...)
+		if len(ledger.Changes) > 0 {
+			ledger.EarliestRetainedSequence = ledger.Changes[0].Sequence
+			ledger.EarliestRetainedStateSequence = ledger.EarliestRetainedSequence
+		} else {
+			ledger.EarliestRetainedSequence = ledger.HighWaterSequence + 1
+			ledger.EarliestRetainedStateSequence = ledger.HighWaterSequence + 1
+		}
+	}
+	type candidate struct {
+		index int
+		at    time.Time
+		id    string
+	}
+	candidates := make([]candidate, 0, len(ledger.Attempts))
+	cutoff := time.Time{}
+	if !now.IsZero() {
+		cutoff = now.Add(-procedureInferenceRetentionAge)
+	}
+	for i, attempt := range ledger.Attempts {
+		_, referenced := referencedAttemptIDs[attempt.ID]
+		if attempt.ID == protectedAttemptID || referenced || attempt.State == automation.InferenceAttemptStateAmbiguous || !automation.IsTerminalProcedureInferenceAttemptState(attempt.State) {
+			continue
+		}
+		occurredAt := procedureInferenceAttemptOccurredAt(attempt)
+		if len(ledger.Attempts) <= retainedProcedureInferenceAttempts && (cutoff.IsZero() || !occurredAt.Before(cutoff)) {
+			continue
+		}
+		candidates = append(candidates, candidate{index: i, at: occurredAt, id: attempt.ID})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].at.Equal(candidates[j].at) {
+			return candidates[i].at.Before(candidates[j].at)
+		}
+		return candidates[i].id < candidates[j].id
+	})
+	removeCount := len(ledger.Attempts) - retainedProcedureInferenceAttempts
+	if removeCount < 0 {
+		removeCount = 0
+	}
+	if !cutoff.IsZero() {
+		for removeCount < len(candidates) && candidates[removeCount].at.Before(cutoff) {
+			removeCount++
+		}
+	}
+	if removeCount > len(candidates) {
+		removeCount = len(candidates)
+	}
+	if removeCount == 0 {
+		return
+	}
+	remove := make(map[int]struct{}, removeCount)
+	for _, item := range candidates[:removeCount] {
+		remove[item.index] = struct{}{}
+	}
+	kept := make([]automation.ProcedureInferenceAttempt, 0, len(ledger.Attempts)-removeCount)
+	for i, attempt := range ledger.Attempts {
+		if _, ok := remove[i]; !ok {
+			kept = append(kept, attempt)
+		}
+	}
+	ledger.Attempts = kept
+	// Removing materialized terminal state invalidates every older state snapshot.
+	ledger.EarliestRetainedStateSequence = ledger.HighWaterSequence + 1
+}
+
+func (m *AutomationManager) referencedProcedureInferenceAttemptIDs(ctx context.Context, attempts []automation.ProcedureInferenceAttempt) (map[string]struct{}, error) {
+	domains := map[graph.DomainID]struct{}{}
+	for _, attempt := range attempts {
+		domains[attempt.DomainID] = struct{}{}
+	}
+	referenced := map[string]struct{}{}
+	for domainID := range domains {
+		runs, err := m.store.ListRuns(ctx, domainID)
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		for _, run := range runs {
+			for _, attemptID := range run.InferenceAttemptIDs {
+				referenced[attemptID] = struct{}{}
+			}
+		}
+	}
+	return referenced, nil
 }
 
 func procedureInferenceTransitionFits(changeCount int, incomingState string, otherAttemptStates []string) bool {
@@ -227,6 +368,12 @@ func (m *AutomationManager) beginProcedureInferenceAttempt(ctx context.Context, 
 		return automation.ProcedureInferenceAttempt{}, mapStoreError(err)
 	}
 	run.InferenceAttemptIDs = appendUniqueString(run.InferenceAttemptIDs, requested.ID)
+	// Persist the run reference while the attempt is still non-terminal. This
+	// closes the retention window in which a terminal transition could otherwise
+	// become prune-eligible before ProcessPending writes the completed run.
+	if err := m.putRunRuntime(ctx, inv.SpaceID, *run); err != nil {
+		return automation.ProcedureInferenceAttempt{}, err
+	}
 	return requested, nil
 }
 
@@ -246,6 +393,12 @@ func (m *AutomationManager) authorizeProcedureInferenceAttempt(ctx context.Conte
 	authorized.ModelID = uuidString(resolved.Decision.ModelID)
 	authorized.CapabilityID = uuidString(resolved.Decision.CapabilityID)
 	authorized.PolicyDecisionID = uuidString(resolved.Decision.ID)
+	authorized.AuthorizationRevision = resolved.Decision.AuthorizationRevision
+	authorized.GlobalAuthorizationRevision = resolved.Decision.GlobalAuthorizationRevision
+	authorized.SpaceAuthorizationRevision = resolved.Decision.SpaceAuthorizationRevision
+	if authorized.AuthorizationRevision == 0 {
+		return attempt, fmt.Errorf("procedure inference authorization lacks a committed revision")
+	}
 	authorized.CredentialGrantID = uuidString(resolved.Decision.CredentialGrantID)
 	if err := m.putProcedureInferenceAttemptRuntime(ctx, authorized); err != nil {
 		return attempt, err
@@ -253,9 +406,43 @@ func (m *AutomationManager) authorizeProcedureInferenceAttempt(ctx context.Conte
 	return authorized, nil
 }
 
+func (m *AutomationManager) refreshProcedureInferenceAuthorization(ctx context.Context, attempt automation.ProcedureInferenceAttempt, resolved inferenceruntime.ResolveResult) (automation.ProcedureInferenceAttempt, error) {
+	if attempt.State != automation.InferenceAttemptStateAuthorized {
+		return attempt, fmt.Errorf("procedure inference authorization refresh requires authorized state")
+	}
+	if resolved.Decision.ID == uuid.Nil || resolved.Decision.AuthorizationRevision == 0 {
+		if m.raftGroups == nil {
+			return attempt, nil
+		}
+		return attempt, fmt.Errorf("procedure inference authorization refresh lacks committed evidence")
+	}
+	refreshed := attempt
+	refreshed.RecordVersion++
+	refreshed.PolicyDecisionID = resolved.Decision.ID.String()
+	refreshed.AuthorizationRevision = resolved.Decision.AuthorizationRevision
+	refreshed.GlobalAuthorizationRevision = resolved.Decision.GlobalAuthorizationRevision
+	refreshed.SpaceAuthorizationRevision = resolved.Decision.SpaceAuthorizationRevision
+	if err := m.putProcedureInferenceAttemptRuntime(ctx, refreshed); err != nil {
+		return attempt, err
+	}
+	return refreshed, nil
+}
+
 func (m *AutomationManager) startProcedureInferenceAttempt(ctx context.Context, attempt automation.ProcedureInferenceAttempt) (automation.ProcedureInferenceAttempt, error) {
 	if attempt.State != automation.InferenceAttemptStateAuthorized {
 		return attempt, fmt.Errorf("cannot start procedure inference attempt in state %q", attempt.State)
+	}
+	if attempt.ConfigurationRevision == 0 || attempt.AuthorizationRevision == 0 {
+		return attempt, fmt.Errorf("procedure inference attempt lacks committed configuration or authorization revision")
+	}
+	if m.raftGroups != nil {
+		revisions, ok := m.inference.(inferenceAuthorizationRevisionReader)
+		if !ok || attempt.GlobalAuthorizationRevision == 0 || attempt.SpaceAuthorizationRevision == 0 {
+			return attempt, ErrProcedureAuthorizationRevoked
+		}
+		if err := revisions.AssertGlobalAuthorizationRevision(ctx, attempt.GlobalAuthorizationRevision); err != nil {
+			return attempt, ErrProcedureAuthorizationRevoked
+		}
 	}
 	started := attempt
 	started.RecordVersion++
@@ -263,6 +450,12 @@ func (m *AutomationManager) startProcedureInferenceAttempt(ctx context.Context, 
 	started.StartedAt = m.now().UTC()
 	if err := m.putProcedureInferenceAttemptRuntime(ctx, started); err != nil {
 		return attempt, err
+	}
+	if m.raftGroups != nil {
+		revisions := m.inference.(inferenceAuthorizationRevisionReader)
+		if err := revisions.AssertGlobalAuthorizationRevision(ctx, attempt.GlobalAuthorizationRevision); err != nil {
+			return started, ErrProcedureAuthorizationRevoked
+		}
 	}
 	return started, nil
 }
@@ -278,8 +471,12 @@ func (m *AutomationManager) completeProcedureInferenceAttempt(ctx context.Contex
 	completed.EndpointID = uuidString(resp.Decision.EndpointID)
 	completed.ModelID = uuidString(resp.Decision.ModelID)
 	completed.CapabilityID = uuidString(resp.Decision.CapabilityID)
-	completed.PolicyDecisionID = uuidString(resp.Decision.ID)
-	completed.CredentialGrantID = uuidString(resp.Decision.CredentialGrantID)
+	if completed.PolicyDecisionID == "" {
+		completed.PolicyDecisionID = uuidString(resp.Decision.ID)
+	}
+	if completed.CredentialGrantID == "" {
+		completed.CredentialGrantID = uuidString(resp.Decision.CredentialGrantID)
+	}
 	completed.InputTokens = resp.Usage.InputTokens
 	completed.OutputTokens = resp.Usage.OutputTokens
 	completed.TotalTokens = resp.Usage.TotalTokens
@@ -376,6 +573,13 @@ func appendUniqueString(values []string, value string) []string {
 	return append(values, value)
 }
 
+func procedureConfigurationRevision(procedureVersion, bindingVersion int) uint64 {
+	if procedureVersion <= 0 || bindingVersion <= 0 {
+		return 0
+	}
+	return uint64(uint32(procedureVersion))<<32 | uint64(uint32(bindingVersion))
+}
+
 func newRequestedProcedureInferenceAttempt(inv automation.Invocation, run automation.Run, operation, profileID string, now time.Time) automation.ProcedureInferenceAttempt {
 	const providerAttemptNumber = 1
 	return automation.ProcedureInferenceAttempt{
@@ -385,6 +589,7 @@ func newRequestedProcedureInferenceAttempt(inv automation.Invocation, run automa
 		DomainID:               inv.DomainID,
 		ProcedureID:            inv.ProcedureID,
 		ProcedureVersion:       inv.ProcedureVersion,
+		ConfigurationRevision:  procedureConfigurationRevision(inv.ProcedureVersion, inv.BindingVersion),
 		BindingID:              inv.BindingID,
 		BindingVersion:         inv.BindingVersion,
 		InvocationID:           inv.ID,

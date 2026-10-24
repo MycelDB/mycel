@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 		t.Fatalf("unexpected usage events: %#v err=%v", events, err)
 	}
 	ledger, err := mgr.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
-	if err != nil || ledger.HighWaterSequence != 4 || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateSucceeded {
+	if err != nil || ledger.HighWaterSequence != 5 || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateSucceeded {
 		t.Fatalf("unexpected procedure inference ledger: %+v err=%v", ledger, err)
 	}
 	encoded, err := json.Marshal(ledger)
@@ -382,12 +383,15 @@ func TestGraphContextAutomationDebouncesByTarget(t *testing.T) {
 	journalID := uuid.New()
 	entryID1 := uuid.New()
 	entryID2 := uuid.New()
+	entryID3 := uuid.New()
 	journal := graph.Node{ID: graph.NodeID(journalID), DomainID: ids.domainID, Labels: []string{"Journal"}, Payload: map[string]any{}}
 	entry1 := graph.Node{ID: graph.NodeID(entryID1), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "one"}}
 	entry2 := graph.Node{ID: graph.NodeID(entryID2), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "two"}}
-	graphs := &automationE2EGraph{nodes: map[string]graph.Node{journal.ID.String(): journal, entry1.ID.String(): entry1, entry2.ID.String(): entry2}, edges: []graph.Edge{
+	entry3 := graph.Node{ID: graph.NodeID(entryID3), DomainID: ids.domainID, Labels: []string{"JournalEntry"}, Payload: map[string]any{"text": "three"}}
+	graphs := &automationE2EGraph{nodes: map[string]graph.Node{journal.ID.String(): journal, entry1.ID.String(): entry1, entry2.ID.String(): entry2, entry3.ID.String(): entry3}, edges: []graph.Edge{
 		{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry1.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 1}},
 		{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry2.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 2}},
+		{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: journal.ID, ToID: entry3.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 3}},
 	}}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
 	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
@@ -396,14 +400,31 @@ func TestGraphContextAutomationDebouncesByTarget(t *testing.T) {
 	if err := store.PutDefinition(ctx, def); err != nil {
 		t.Fatal(err)
 	}
-	for _, node := range []graph.Node{entry1, entry2} {
+	for _, node := range []graph.Node{entry1, entry2, entry3} {
 		event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
 		if err := mgr.HandleGraphChange(ctx, event); err != nil {
 			t.Fatalf("HandleGraphChange() error = %v", err)
 		}
 	}
-	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 0 {
-		t.Fatalf("early ProcessPending() processed=%d err=%v", processed, err)
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{AutomationID: def.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(invs, func(a, b automation.Invocation) int { return strings.Compare(a.ID, b.ID) })
+	recovered := invs[0]
+	recovered.Status = "running"
+	recovered.ClaimVersion = 1
+	recovered.ClaimToken = "interrupted"
+	recovered.ClaimExpiresAt = base.Add(-time.Second)
+	if err := store.PutInvocation(ctx, recovered); err != nil {
+		t.Fatal(err)
+	}
+	recoveredRun := automation.Run{ID: automationRunID(recovered, 1), DomainID: ids.domainID, InvocationID: recovered.ID, BindingID: recovered.BindingID, BindingVersion: recovered.BindingVersion, ProcedureID: recovered.ProcedureID, ProcedureVersion: recovered.ProcedureVersion, AttemptNumber: 1, Status: "succeeded", CompletedAt: base}
+	if err := store.PutRun(ctx, recoveredRun); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("recovery ProcessPending() processed=%d err=%v", processed, err)
 	}
 	mgr.now = func() time.Time { return base.Add(31 * time.Second) }
 	processed, err := mgr.ProcessPending(ctx, ids.domainID, 10)
@@ -417,11 +438,20 @@ func TestGraphContextAutomationDebouncesByTarget(t *testing.T) {
 	if chatCalls != 1 {
 		t.Fatalf("debounced context should call inference once, got %d", chatCalls)
 	}
-	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{AutomationID: def.ID})
+	invs, err = store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{AutomationID: def.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	skipped := 0
+	recoveredSucceeded := false
+	for _, inv := range invs {
+		if inv.ID == recovered.ID && inv.Status == "succeeded" {
+			recoveredSucceeded = true
+		}
+	}
+	if !recoveredSucceeded {
+		t.Fatalf("terminal run was not reconciled before debounce: invs=%+v", invs)
+	}
 	for _, inv := range invs {
 		if inv.Status == "skipped" && inv.SkipReason == skipReasonCoalesced {
 			skipped++
@@ -466,6 +496,60 @@ func TestGraphAutomationExecutesThroughInferenceEndToEnd(t *testing.T) {
 	events, err := inference.UsageLedger().ListUsageEvents(ctx)
 	if err != nil || len(events) != 1 || events[0].AutomationID != def.ID || events[0].UsageMode != domaininference.UsageModeAutomation || events[0].OnBehalfOfPrincipalID != "principal-a" {
 		t.Fatalf("unexpected usage events: %#v err=%v", events, err)
+	}
+	ledger, err := store.GetProcedureInferenceLedger(ctx, ids.spaceID)
+	if err != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].PublicationDisposition != "published" {
+		t.Fatalf("publication disposition ledger=%+v err=%v", ledger, err)
+	}
+}
+
+func TestPublicationPendingDispositionCanBeReconciledByRunID(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	mgr := NewManager(store)
+	domainID := graph.DomainID(uuid.New())
+	invocation := automation.Invocation{ID: "inv", SpaceID: uuid.NewString(), DomainID: domainID, ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1}
+	run := automation.Run{ID: "run", DomainID: domainID, InvocationID: invocation.ID, ProcedureID: invocation.ProcedureID, ProcedureVersion: 1, BindingID: invocation.BindingID, BindingVersion: 1, AttemptNumber: 1}
+	attempt := newRequestedProcedureInferenceAttempt(invocation, run, "chat", "profile", mgr.now())
+	run.Status = "running"
+	run.InferenceAttemptIDs = []string{attempt.ID}
+	if err := mgr.putRunRuntime(ctx, invocation.SpaceID, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.putProcedureInferenceAttemptRuntime(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	attempt, err = mgr.authorizeProcedureInferenceAttempt(ctx, attempt, inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{AuthorizationRevision: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err = mgr.startProcedureInferenceAttempt(ctx, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.completeProcedureInferenceAttempt(ctx, attempt, inferenceruntime.InvokeResponse{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.recordRunPublicationDisposition(ctx, run, "publication_pending"); err != nil {
+		t.Fatal(err)
+	}
+	run.InferenceAttemptIDs = nil // recovery may only retain the stable run ID.
+	if err := mgr.recordRunPublicationDisposition(ctx, run, "published"); err != nil {
+		t.Fatal(err)
+	}
+	recoveredRun := run
+	recoveredRun.Status = "skipped"
+	if err := mgr.putRunRuntime(ctx, invocation.SpaceID, recoveredRun); err != nil {
+		t.Fatal(err)
+	}
+	persistedRun, err := store.GetRun(ctx, domainID, run.ID)
+	if err != nil || len(persistedRun.InferenceAttemptIDs) != 1 || persistedRun.InferenceAttemptIDs[0] != attempt.ID {
+		t.Fatalf("reconciled run lost attempt reference: %+v err=%v", persistedRun, err)
+	}
+	ledger, err := store.GetProcedureInferenceLedger(ctx, invocation.SpaceID)
+	if err != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].PublicationDisposition != "published" {
+		t.Fatalf("reconciled ledger=%+v err=%v", ledger, err)
 	}
 }
 

@@ -179,6 +179,20 @@ func (m *Module) applySemanticRaftCommand(ctx context.Context, cmd consensus.Raf
 	if cmd.Scope == consensus.CommandScopeSpacePartition && strings.TrimSpace(spaceID.String()) != strings.TrimSpace(cmd.SpaceID) {
 		return fmt.Errorf("semantic raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, spaceID.String())
 	}
+	if err == nil && (cmd.RecordType == recordTypeSemanticSpace || cmd.RecordType == recordTypeSemanticSpaceConditional) {
+		m.mu.Lock()
+		sink := m.authorizationRevisionSink
+		m.mu.Unlock()
+		if sink != nil {
+			revision, revisionErr := m.SpaceAuthorizationRevision(ctx, spaceID.String())
+			if revisionErr != nil {
+				return fmt.Errorf("derive space authorization revision: %w", revisionErr)
+			}
+			if sinkErr := sink.ApplySpaceAuthorizationRevision(ctx, spaceID.String(), revision); sinkErr != nil {
+				return fmt.Errorf("apply space authorization revision: %w", sinkErr)
+			}
+		}
+	}
 	if err != nil {
 		if !isSemanticCommandRejection(err) {
 			return err

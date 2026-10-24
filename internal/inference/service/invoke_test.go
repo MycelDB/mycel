@@ -57,6 +57,27 @@ func TestInvokeFakeChatRecordsSuccessUsage(t *testing.T) {
 	}
 }
 
+func TestInvokeRechecksRevocationBeforeCredentialAndProviderAccess(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fake := &connectors.FakeConnector{Text: "must not run"}
+	resolver := &countingSecretResolver{value: "super-secret"}
+	module.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
+	module.SetSecretResolver(resolver)
+
+	resp, err := module.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1, Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}, Input: "hello", AfterAuthorization: func(context.Context, inferenceruntime.ResolveResult) error {
+		_, upsertErr := fixture.spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: fixture.spaceID, Scope: domaininference.Scope{SpaceID: fixture.spaceID, ProcedureID: "proc"}, Operations: []domaininference.Operation{domaininference.OperationChat}, Action: domaininference.PolicyActionDeny, State: domaininference.PolicyStateActive, Reason: "procedure revoked"})
+		return upsertErr
+	}})
+	if !errors.Is(err, inferenceruntime.ErrDenied) || resp.Allowed {
+		t.Fatalf("revocation response=%+v err=%v", resp, err)
+	}
+	_, calls := fake.Calls()
+	if calls != 0 || resolver.calls != 0 {
+		t.Fatalf("revoked request accessed credential/provider: secret=%d provider=%d", resolver.calls, calls)
+	}
+}
+
 func TestInvokeDeniedDoesNotResolveSecretOrCallConnector(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)

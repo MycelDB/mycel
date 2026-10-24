@@ -25,7 +25,7 @@ func newAutomationProcedureCommand(a *app.App) *cobra.Command {
 
 func newProcedureCommand(a *app.App, use string, aliases []string, short, long string) *cobra.Command {
 	cmd := &cobra.Command{Use: use, Aliases: aliases, Short: short, Long: long}
-	cmd.AddCommand(newProcedureValidateCommand(a), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedurePutCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureDeleteCommand(a))
+	cmd.AddCommand(newProcedureValidateCommand(a), newProcedureCreateCommand(a), newProcedureUpdateCommand(a), newProcedurePutCommand(a), newProcedureListCommand(a), newProcedureGetCommand(a), newProcedureEnableCommand(a), newProcedureDisableCommand(a), newProcedureDeleteCommand(a))
 	return cmd
 }
 
@@ -65,6 +65,58 @@ func newProcedureValidateCommand(a *app.App) *cobra.Command {
 		return nil
 	}}
 	cmd.Flags().BoolVar(&server, "server", false, "validate against daemon state instead of local-only checks")
+	bindAutomationDomainFlags(cmd, &flags)
+	return cmd
+}
+
+func newProcedureEnableCommand(a *app.App) *cobra.Command {
+	return newProcedureControlCommand(a, "enable", true)
+}
+
+func newProcedureDisableCommand(a *app.App) *cobra.Command {
+	return newProcedureControlCommand(a, "disable", false)
+}
+
+func newProcedureControlCommand(a *app.App, action string, enable bool) *cobra.Command {
+	var flags automationDomainFlags
+	cmd := &cobra.Command{Use: action + " <procedure-id>", Short: action + " a graph procedure with a committed execution-partition barrier", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		domainID, err := resolveAutomationDomainID(cmd, a, conn, authCtx, flags)
+		if err != nil {
+			return err
+		}
+		spaceID, err := a.ResolveSpaceID(strings.TrimSpace(flags.SpaceID))
+		if err != nil {
+			return err
+		}
+		client := clientv1.NewAutomationServiceClient(conn)
+		if enable {
+			res, err := client.EnableGraphProcedure(authCtx, &clientv1.EnableGraphProcedureRequest{SpaceId: spaceID.String(), DomainId: domainID, ProcedureId: args[0]})
+			if err != nil {
+				return err
+			}
+			if a.Output == "json" {
+				return a.Print(res, "")
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), res.GetProcedureJson())
+			fmt.Fprintf(cmd.OutOrStdout(), "control_epoch=%d completed=%t acknowledged=%v\n", res.GetControl().GetControlEpoch(), res.GetControl().GetCompleted(), res.GetControl().GetAcknowledgedPartitions())
+			return nil
+		}
+		res, err := client.DisableGraphProcedure(authCtx, &clientv1.DisableGraphProcedureRequest{SpaceId: spaceID.String(), DomainId: domainID, ProcedureId: args[0]})
+		if err != nil {
+			return err
+		}
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), res.GetProcedureJson())
+		fmt.Fprintf(cmd.OutOrStdout(), "control_epoch=%d completed=%t acknowledged=%v\n", res.GetControl().GetControlEpoch(), res.GetControl().GetCompleted(), res.GetControl().GetAcknowledgedPartitions())
+		return nil
+	}}
 	bindAutomationDomainFlags(cmd, &flags)
 	return cmd
 }

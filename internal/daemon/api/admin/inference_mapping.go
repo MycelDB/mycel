@@ -145,7 +145,7 @@ func mapCredentials(items []domainsemantic.InferenceCredential) []*adminv1.Intel
 }
 
 func mapProcessingScope(in domainsemantic.ProcessingScope) *adminv1.ProcessingScope {
-	return &adminv1.ProcessingScope{SpaceId: in.SpaceID.String(), DomainId: uuidOrEmptyAdmin(in.DomainID), SemanticRuleId: firstNonEmptyAdmin(uuidOrEmptyAdmin(in.SemanticRuleID), uuidOrEmptyAdmin(in.SemanticIndexID)), NodeId: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+	return &adminv1.ProcessingScope{SpaceId: in.SpaceID.String(), DomainId: uuidOrEmptyAdmin(in.DomainID), SemanticRuleId: firstNonEmptyAdmin(uuidOrEmptyAdmin(in.SemanticRuleID), uuidOrEmptyAdmin(in.SemanticIndexID)), NodeId: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants, ProcedureId: in.ProcedureID, ProcedureVersion: int32(in.ProcedureVersion), BindingId: in.BindingID, BindingVersion: int32(in.BindingVersion), InvocationId: in.InvocationID, RunId: in.RunID}
 }
 
 func mapCredentialGrant(in domainsemantic.CredentialGrant) *adminv1.CredentialGrant {
@@ -171,7 +171,7 @@ func mapCredentialGrants(items []domainsemantic.CredentialGrant) []*adminv1.Cred
 }
 
 func mapAccessPolicy(in domainsemantic.InferencePolicy) *adminv1.AccessPolicy {
-	out := &adminv1.AccessPolicy{AccessPolicyId: in.ID.String(), Scope: mapProcessingScope(in.Scope), Effect: string(in.Effect), Operations: stringsFromOperations(in.Operations), NoIntelligence: in.NoInference, AllowedPrivacyClasses: stringsFromPrivacyClasses(in.AllowedPrivacyClasses), DisallowThirdParty: in.DisallowThirdParty, RequireLocalEndpoint: in.RequireLocalEndpoint, Reason: in.Reason, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt)}
+	out := &adminv1.AccessPolicy{AccessPolicyId: in.ID.String(), Scope: mapProcessingScope(in.Scope), Effect: string(in.Effect), Operations: stringsFromOperations(in.Operations), ModelEndpointIds: append([]string(nil), in.EndpointRefs...), ModelIds: append([]string(nil), in.ModelRefs...), ModelEndpointCapabilityIds: append([]string(nil), in.CapabilityRefs...), NoIntelligence: in.NoInference, AllowedPrivacyClasses: stringsFromPrivacyClasses(in.AllowedPrivacyClasses), DisallowThirdParty: in.DisallowThirdParty, RequireLocalEndpoint: in.RequireLocalEndpoint, Reason: in.Reason, CreatedBy: in.CreatedBy, CreateTime: timestamppb.New(in.CreatedAt)}
 	if in.ExpiresAt != nil {
 		out.ExpireTime = timestamppb.New(*in.ExpiresAt)
 	}
@@ -210,7 +210,16 @@ func processingScopeFromProto(in *adminv1.ProcessingScope, defaultSpaceID domain
 	if err != nil {
 		return domainsemantic.ProcessingScope{}, err
 	}
-	return domainsemantic.ProcessingScope{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, IncludeDescendants: in.GetIncludeDescendants()}, nil
+	if in.GetProcedureVersion() < 0 || in.GetBindingVersion() < 0 {
+		return domainsemantic.ProcessingScope{}, status.Error(codes.InvalidArgument, "scope versions must be non-negative")
+	}
+	if in.GetProcedureVersion() > 0 && strings.TrimSpace(in.GetProcedureId()) == "" {
+		return domainsemantic.ProcessingScope{}, status.Error(codes.InvalidArgument, "scope.procedure_id is required when procedure_version is set")
+	}
+	if in.GetBindingVersion() > 0 && strings.TrimSpace(in.GetBindingId()) == "" {
+		return domainsemantic.ProcessingScope{}, status.Error(codes.InvalidArgument, "scope.binding_id is required when binding_version is set")
+	}
+	return domainsemantic.ProcessingScope{SpaceID: spaceID, DomainID: domainID, SemanticRuleID: ruleID, SemanticIndexID: domainsemantic.SemanticIndexID(ruleID), NodeID: nodeID, IncludeDescendants: in.GetIncludeDescendants(), ProcedureID: strings.TrimSpace(in.GetProcedureId()), ProcedureVersion: int(in.GetProcedureVersion()), BindingID: strings.TrimSpace(in.GetBindingId()), BindingVersion: int(in.GetBindingVersion()), InvocationID: strings.TrimSpace(in.GetInvocationId()), RunID: strings.TrimSpace(in.GetRunId())}, nil
 }
 
 func uuidOrEmptyAdmin[T ~[16]byte](id T) string {
@@ -963,7 +972,7 @@ func semanticPackageToInference(in domainsemantic.InferencePackage) domaininfere
 }
 
 func semanticScopeToInference(in domainsemantic.ProcessingScope) domaininference.Scope {
-	return domaininference.Scope{SpaceID: uuidOrEmptyAdmin(in.SpaceID), DomainID: uuidOrEmptyAdmin(in.DomainID), SemanticRuleID: uuidOrEmptyAdmin(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyAdmin(in.SemanticIndexID), NodeID: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+	return domaininference.Scope{SpaceID: uuidOrEmptyAdmin(in.SpaceID), DomainID: uuidOrEmptyAdmin(in.DomainID), SemanticRuleID: uuidOrEmptyAdmin(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyAdmin(in.SemanticIndexID), NodeID: uuidOrEmptyAdmin(in.NodeID), IncludeDescendants: in.IncludeDescendants, ProcedureID: in.ProcedureID, ProcedureVersion: in.ProcedureVersion, BindingID: in.BindingID, BindingVersion: in.BindingVersion, InvocationID: in.InvocationID, RunID: in.RunID}
 }
 
 func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant) domaininference.CredentialGrant {
@@ -989,7 +998,7 @@ func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant)
 }
 
 func semanticPolicyToInference(spaceID string, in domainsemantic.InferencePolicy) domaininference.Policy {
-	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
+	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
 	if in.ExpiresAt != nil {
 		out.ExpiresAt = *in.ExpiresAt
 		if !in.ExpiresAt.After(time.Now()) {

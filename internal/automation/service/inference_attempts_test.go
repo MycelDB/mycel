@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
@@ -83,7 +84,11 @@ func TestBeginProcedureInferenceAttemptRefusesExistingStartedAttempt(t *testing.
 	if err != nil {
 		t.Fatalf("first begin: %v", err)
 	}
-	first, err = mgr.authorizeProcedureInferenceAttempt(ctx, first, inferenceruntime.ResolveResult{Allowed: true})
+	persistedRun, err := store.GetRun(ctx, domainID, run.ID)
+	if err != nil || len(persistedRun.InferenceAttemptIDs) != 1 || persistedRun.InferenceAttemptIDs[0] != first.ID {
+		t.Fatalf("pre-terminal run reference=%+v err=%v", persistedRun, err)
+	}
+	first, err = mgr.authorizeProcedureInferenceAttempt(ctx, first, inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{AuthorizationRevision: 1}})
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
@@ -168,6 +173,49 @@ func TestStandaloneRestartReclaimsExpiredInvocation(t *testing.T) {
 	}
 }
 
+func TestStandaloneRestartReconcilesTerminalRunBeforeInvocationFinalization(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := storage.NewFileStore(root)
+	domainID := graph.DomainID(uuid.New())
+	now := time.Now().UTC()
+	inv := automation.Invocation{ID: "inv", SpaceID: uuid.NewString(), DomainID: domainID, Status: "running", ClaimVersion: 1, ClaimToken: "old", ClaimExpiresAt: now.Add(-time.Second)}
+	if err := store.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, AttemptNumber: 1, Status: "succeeded", RenderedInputHash: "input-hash", CompletedAt: now, InferenceAttemptIDs: []string{"attempt-1"}}
+	if err := store.PutRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := NewManager(storage.NewFileStore(root))
+	reconciled, err := restarted.reconcileTerminalRunFinalization(ctx, &inv, nil)
+	if err != nil || !reconciled {
+		t.Fatalf("reconciled=%v err=%v", reconciled, err)
+	}
+	persisted, err := restarted.store.GetInvocation(ctx, domainID, inv.ID)
+	if err != nil || persisted.Status != "succeeded" || persisted.AttemptCount != 1 || persisted.InputHash != run.RenderedInputHash {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+	persistedRun, err := restarted.store.GetRun(ctx, domainID, run.ID)
+	if err != nil || len(persistedRun.InferenceAttemptIDs) != 1 || persistedRun.InferenceAttemptIDs[0] != "attempt-1" {
+		t.Fatalf("run=%+v err=%v", persistedRun, err)
+	}
+
+	skippedInvocation := automation.Invocation{ID: "skipped-inv", SpaceID: inv.SpaceID, DomainID: domainID, Status: "running"}
+	if err := restarted.store.PutInvocation(ctx, skippedInvocation); err != nil {
+		t.Fatal(err)
+	}
+	skippedRun := automation.Run{ID: automationRunID(skippedInvocation, 1), DomainID: domainID, InvocationID: skippedInvocation.ID, AttemptNumber: 1, Status: "skipped", Error: skipReasonCoalesced, CompletedAt: now}
+	if err := restarted.store.PutRun(ctx, skippedRun); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err = restarted.reconcileTerminalRunFinalization(ctx, &skippedInvocation, nil)
+	if err != nil || !reconciled || skippedInvocation.AttemptCount != 0 {
+		t.Fatalf("skipped reconciliation changed attempt count: inv=%+v reconciled=%v err=%v", skippedInvocation, reconciled, err)
+	}
+}
+
 func TestStandaloneRestartAdvancesKnownPreProviderTerminalAttempt(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -212,7 +260,7 @@ func TestStandaloneRestartSuppressesStartedProviderAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err = mgr.authorizeProcedureInferenceAttempt(ctx, attempt, inferenceruntime.ResolveResult{Allowed: true})
+	attempt, err = mgr.authorizeProcedureInferenceAttempt(ctx, attempt, inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{AuthorizationRevision: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +272,67 @@ func TestStandaloneRestartSuppressesStartedProviderAttempt(t *testing.T) {
 	secondRun.InferenceAttemptIDs = nil
 	if _, err := restarted.beginProcedureInferenceAttempt(ctx, inv, &secondRun, domaininference.OperationChat, "profile"); !errors.Is(err, ErrInferenceAttemptAlreadyStarted) {
 		t.Fatalf("restart begin error=%v", err)
+	}
+}
+
+func TestProcedureInferenceRetentionPrunesOnlyOldTerminalStateAndAdvancesWatermarks(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0).UTC()
+	ledger := automation.ProcedureInferenceLedger{SpaceID: uuid.NewString(), HighWaterSequence: retainedProcedureInferenceChanges + 1, EarliestRetainedSequence: 1, EarliestRetainedStateSequence: 1}
+	for i := 0; i < retainedProcedureInferenceChanges+1; i++ {
+		ledger.Changes = append(ledger.Changes, automation.ProcedureInferenceAttemptChange{Sequence: uint64(i + 1)})
+	}
+	for i := 0; i < retainedProcedureInferenceAttempts+2; i++ {
+		state := automation.InferenceAttemptStateSucceeded
+		if i == retainedProcedureInferenceAttempts+1 {
+			state = automation.InferenceAttemptStateAmbiguous
+		}
+		ledger.Attempts = append(ledger.Attempts, automation.ProcedureInferenceAttempt{ID: fmt.Sprintf("attempt-%05d", i), State: state, CompletedAt: base.Add(time.Duration(i) * time.Second)})
+	}
+	protected := ledger.Attempts[0].ID
+	pruneProcedureInferenceLedger(&ledger, protected, time.Time{}, nil)
+	if len(ledger.Changes) != retainedProcedureInferenceChanges || ledger.EarliestRetainedSequence != 2 {
+		t.Fatalf("retained changes=%d earliest=%d", len(ledger.Changes), ledger.EarliestRetainedSequence)
+	}
+	if len(ledger.Attempts) != retainedProcedureInferenceAttempts || ledger.EarliestRetainedStateSequence != ledger.HighWaterSequence+1 {
+		t.Fatalf("retained attempts=%d state watermark=%d", len(ledger.Attempts), ledger.EarliestRetainedStateSequence)
+	}
+	seen := map[string]bool{}
+	for _, attempt := range ledger.Attempts {
+		seen[attempt.ID] = true
+	}
+	if !seen[protected] || !seen[fmt.Sprintf("attempt-%05d", retainedProcedureInferenceAttempts+1)] {
+		t.Fatalf("protected or ambiguous attempt was pruned")
+	}
+}
+
+func TestProcedureInferenceChangeOnlyRetentionInvalidatesPreRetainedSnapshot(t *testing.T) {
+	ledger := automation.ProcedureInferenceLedger{HighWaterSequence: 3, EarliestRetainedSequence: 1, EarliestRetainedStateSequence: 1, Attempts: []automation.ProcedureInferenceAttempt{{ID: "active", State: automation.InferenceAttemptStateStarted}}, Changes: make([]automation.ProcedureInferenceAttemptChange, retainedProcedureInferenceChanges+1)}
+	for i := range ledger.Changes {
+		ledger.Changes[i].Sequence = uint64(i + 1)
+	}
+	pruneProcedureInferenceLedger(&ledger, "", time.Time{}, nil)
+	if ledger.EarliestRetainedSequence != 2 || ledger.EarliestRetainedStateSequence != 2 {
+		t.Fatalf("retention watermarks history=%d state=%d", ledger.EarliestRetainedSequence, ledger.EarliestRetainedStateSequence)
+	}
+}
+
+func TestProcedureInferenceRetentionPrunesAgedTerminalButKeepsAmbiguous(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	old := now.Add(-procedureInferenceRetentionAge - time.Hour)
+	ledger := automation.ProcedureInferenceLedger{HighWaterSequence: 4, EarliestRetainedSequence: 1, EarliestRetainedStateSequence: 1, Attempts: []automation.ProcedureInferenceAttempt{{ID: "old", State: automation.InferenceAttemptStateSucceeded, CompletedAt: old}, {ID: "ambiguous", State: automation.InferenceAttemptStateAmbiguous, CompletedAt: old}, {ID: "recent", State: automation.InferenceAttemptStateSucceeded, CompletedAt: now}}, Changes: []automation.ProcedureInferenceAttemptChange{{Sequence: 1, CommittedAt: old}, {Sequence: 2, CommittedAt: now}}}
+	pruneProcedureInferenceLedger(&ledger, "", now, nil)
+	if len(ledger.Attempts) != 2 || ledger.Attempts[0].ID != "ambiguous" || ledger.Attempts[1].ID != "recent" || ledger.EarliestRetainedSequence != 2 || ledger.EarliestRetainedStateSequence != ledger.HighWaterSequence+1 {
+		t.Fatalf("retained ledger=%+v", ledger)
+	}
+}
+
+func TestProcedureInferenceRetentionDoesNotPruneRunReferencedAttempt(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	old := now.Add(-procedureInferenceRetentionAge - time.Hour)
+	ledger := automation.ProcedureInferenceLedger{HighWaterSequence: 3, Attempts: []automation.ProcedureInferenceAttempt{{ID: "referenced", State: automation.InferenceAttemptStateSucceeded, CompletedAt: old}, {ID: "unreferenced", State: automation.InferenceAttemptStateSucceeded, CompletedAt: old}, {ID: "recent", State: automation.InferenceAttemptStateSucceeded, CompletedAt: now}}}
+	pruneProcedureInferenceLedger(&ledger, "", now, map[string]struct{}{"referenced": {}})
+	if len(ledger.Attempts) != 2 || ledger.Attempts[0].ID != "referenced" || ledger.Attempts[1].ID != "recent" {
+		t.Fatalf("retained attempts=%+v", ledger.Attempts)
 	}
 }
 
@@ -248,6 +357,54 @@ func TestProcedureInferenceTransitionCapacityReservations(t *testing.T) {
 				t.Fatalf("procedureInferenceTransitionFits()=%v want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProcedureInferenceProviderStartRejectsChangedAuthorizationRevisionAtRaftApply(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	revisions := &outputFenceRevisionInference{revision: 2}
+	mgr := NewManager(store).WithInferenceInvoker(revisions)
+	mgr.raftGroups = &consensus.MultiGroup{}
+	mgr.raftPartitionCount = 1
+	attempt := automation.ProcedureInferenceAttempt{ID: "attempt", RecordVersion: 1, SpaceID: uuid.NewString(), DomainID: graph.DomainID(uuid.New()), ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1, InvocationID: "inv", RunID: "run", RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateRequested, RequestedAt: time.Unix(100, 0).UTC()}
+	if err := mgr.applyProcedureInferenceAttemptTransition(ctx, attempt, attempt.RequestedAt); err != nil {
+		t.Fatal(err)
+	}
+	attempt.RecordVersion = 2
+	attempt.State = automation.InferenceAttemptStateAuthorized
+	attempt.AuthorizedAt = time.Unix(101, 0).UTC()
+	attempt.ConfigurationRevision = 1
+	attempt.AuthorizationRevision = 1
+	attempt.PolicyDecisionID = uuid.NewString()
+	if err := mgr.applyProcedureInferenceAttemptTransition(ctx, attempt, attempt.AuthorizedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: attempt.SpaceID, Revision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	attempt.RecordVersion = 3
+	attempt.State = automation.InferenceAttemptStateStarted
+	attempt.StartedAt = time.Unix(102, 0).UTC()
+	if err := mgr.applyProcedureInferenceAttemptTransition(ctx, attempt, attempt.StartedAt); !errors.Is(err, ErrProcedureAuthorizationRevoked) {
+		t.Fatalf("provider start error=%v", err)
+	}
+}
+
+func TestProcedureInferenceChangeCommittedAtIsDeterministicAcrossApply(t *testing.T) {
+	ctx := context.Background()
+	spaceID := uuid.NewString()
+	attempt := automation.ProcedureInferenceAttempt{ID: "attempt", RecordVersion: 1, SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1, InvocationID: "inv", RunID: "run", RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateRequested, RequestedAt: time.Unix(100, 0).UTC()}
+	committedAt := time.Unix(200, 123).UTC()
+	for _, root := range []string{t.TempDir(), t.TempDir()} {
+		mgr := NewManager(storage.NewFileStore(root))
+		if err := mgr.applyProcedureInferenceAttemptTransition(ctx, attempt, committedAt); err != nil {
+			t.Fatal(err)
+		}
+		ledger, err := mgr.store.GetProcedureInferenceLedger(ctx, spaceID)
+		if err != nil || len(ledger.Changes) != 1 || !ledger.Changes[0].CommittedAt.Equal(committedAt) {
+			t.Fatalf("ledger=%+v err=%v", ledger, err)
+		}
 	}
 }
 
@@ -291,7 +448,7 @@ func TestRetryInvocationRejectsProviderStartedAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err = mgr.authorizeProcedureInferenceAttempt(ctx, attempt, inferenceruntime.ResolveResult{Allowed: true})
+	attempt, err = mgr.authorizeProcedureInferenceAttempt(ctx, attempt, inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{AuthorizationRevision: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +475,7 @@ func TestCompleteProcedureInferenceAttemptPersistsAfterRequestCancellation(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err = mgr.authorizeProcedureInferenceAttempt(context.Background(), attempt, inferenceruntime.ResolveResult{Allowed: true})
+	attempt, err = mgr.authorizeProcedureInferenceAttempt(context.Background(), attempt, inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{AuthorizationRevision: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

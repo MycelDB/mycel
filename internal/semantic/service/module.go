@@ -63,6 +63,7 @@ type Module struct {
 	graphRevisions                   GraphRevisionReader
 	inferenceInvoker                 connectors.InferenceInvoker
 	inferenceProjection              InferenceProjection
+	authorizationRevisionSink        AuthorizationRevisionSink
 	logger                           *slog.Logger
 	maintenanceCancel                context.CancelFunc
 	maintenanceWG                    sync.WaitGroup
@@ -107,6 +108,13 @@ func NewModule(config ...Config) *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) WithAuthorizationRevisionSink(sink AuthorizationRevisionSink) *Module {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authorizationRevisionSink = sink
+	return m
+}
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	global := storesemantic.NewGlobalManager()

@@ -12,6 +12,11 @@ var (
 	ErrNotFound = errors.New("automation not found")
 )
 
+type SpaceAuthorizationRevision struct {
+	SpaceID  string `json:"space_id"`
+	Revision uint64 `json:"revision"`
+}
+
 type Store interface {
 	PutProcedure(ctx context.Context, procedure automation.Procedure) error
 	GetProcedure(ctx context.Context, domainID graph.DomainID, id string) (automation.Procedure, error)
@@ -42,6 +47,18 @@ type Store interface {
 	GetProcedureInferenceLedger(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error)
 	DeleteProcedureInferenceLedger(ctx context.Context, spaceID string) error
 	ListProcedureInferenceLedgers(ctx context.Context) ([]automation.ProcedureInferenceLedger, error)
+	PutSpaceAuthorizationRevision(ctx context.Context, revision SpaceAuthorizationRevision) error
+	GetSpaceAuthorizationRevision(ctx context.Context, spaceID string) (SpaceAuthorizationRevision, error)
+	DeleteSpaceAuthorizationRevision(ctx context.Context, spaceID string) error
+	ListSpaceAuthorizationRevisions(ctx context.Context) ([]SpaceAuthorizationRevision, error)
+	PutProcedureControlFence(ctx context.Context, fence automation.ProcedureControlFence) error
+	GetProcedureControlFence(ctx context.Context, partitionID uint32, domainID graph.DomainID, procedureID string) (automation.ProcedureControlFence, error)
+	DeleteProcedureControlFence(ctx context.Context, partitionID uint32, domainID graph.DomainID, procedureID string) error
+	ListProcedureControlFences(ctx context.Context) ([]automation.ProcedureControlFence, error)
+	PutProcedureControlBarrier(ctx context.Context, barrier automation.ProcedureControlBarrier) error
+	GetProcedureControlBarrier(ctx context.Context, domainID graph.DomainID, procedureID string) (automation.ProcedureControlBarrier, error)
+	DeleteProcedureControlBarrier(ctx context.Context, domainID graph.DomainID, procedureID string) error
+	ListProcedureControlBarriers(ctx context.Context) ([]automation.ProcedureControlBarrier, error)
 	PutSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error
 	GetSuccessfulInputIndex(ctx context.Context, domainID graph.DomainID, automationID string, version int, elementID string, inputHash string) (SuccessfulInputIndex, error)
 	DeleteSuccessfulInputIndex(ctx context.Context, record SuccessfulInputIndex) error

@@ -249,6 +249,18 @@ func (m *Module) rebuildInferenceProjection(ctx context.Context) error {
 		if err := m.rebuildInferenceSpaceProjection(ctx, space.SpaceID.String(), space.Manager); err != nil {
 			return err
 		}
+		m.mu.Lock()
+		sink := m.authorizationRevisionSink
+		m.mu.Unlock()
+		if sink != nil {
+			revision, err := spaceAuthorizationRevisionFromManager(ctx, space.Manager)
+			if err != nil {
+				return err
+			}
+			if err := sink.ApplySpaceAuthorizationRevision(ctx, space.SpaceID.String(), revision); err != nil {
+				return err
+			}
+		}
 	}
 	m.markInferenceProjectionHealthy()
 	return nil
@@ -593,7 +605,7 @@ func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant)
 }
 
 func semanticPolicyToInference(spaceID string, in domainsemantic.InferencePolicy) domaininference.Policy {
-	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
+	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
 	if in.ExpiresAt != nil {
 		out.ExpiresAt = *in.ExpiresAt
 		if !in.ExpiresAt.After(time.Now()) {
@@ -604,7 +616,7 @@ func semanticPolicyToInference(spaceID string, in domainsemantic.InferencePolicy
 }
 
 func semanticScopeToInference(in domainsemantic.ProcessingScope) domaininference.Scope {
-	return domaininference.Scope{SpaceID: uuidOrEmptyProjection(in.SpaceID), DomainID: uuidOrEmptyProjection(in.DomainID), SemanticRuleID: uuidOrEmptyProjection(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyProjection(in.SemanticIndexID), NodeID: uuidOrEmptyProjection(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+	return domaininference.Scope{SpaceID: uuidOrEmptyProjection(in.SpaceID), DomainID: uuidOrEmptyProjection(in.DomainID), SemanticRuleID: uuidOrEmptyProjection(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyProjection(in.SemanticIndexID), NodeID: uuidOrEmptyProjection(in.NodeID), IncludeDescendants: in.IncludeDescendants, ProcedureID: in.ProcedureID, ProcedureVersion: in.ProcedureVersion, BindingID: in.BindingID, BindingVersion: in.BindingVersion, InvocationID: in.InvocationID, RunID: in.RunID}
 }
 
 func uuidOrEmptyProjection[T ~[16]byte](id T) string {

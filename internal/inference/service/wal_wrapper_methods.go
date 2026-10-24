@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -198,7 +199,16 @@ func (w *walSpaceManager) UpsertPolicyDecision(ctx context.Context, v model.Poli
 	if err := w.module.commitInferenceMutation(ctx, recordTypeInferenceSpace, inferenceMutationRecord{Kind: "policy_decision.upsert", SpaceID: w.spaceID, Payload: rawInference(v)}); err != nil {
 		return model.PolicyDecision{}, err
 	}
-	return v, nil
+	decisions, err := w.inner.ListPolicyDecisions(ctx)
+	if err != nil {
+		return model.PolicyDecision{}, err
+	}
+	for _, committed := range decisions {
+		if committed.ID == v.ID {
+			return committed, nil
+		}
+	}
+	return model.PolicyDecision{}, fmt.Errorf("committed policy decision %s is unavailable", v.ID)
 }
 func (w *walSpaceManager) DeletePolicyDecision(ctx context.Context, id model.PolicyDecisionID) error {
 	return w.module.commitInferenceMutation(ctx, recordTypeInferenceSpace, inferenceMutationRecord{Kind: "policy_decision.delete", SpaceID: w.spaceID, Payload: rawInference(id)})

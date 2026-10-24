@@ -163,6 +163,9 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 		if err := mgr.store.PutBinding(ctx, binding); err != nil {
 			t.Fatalf("seed binding: %v", err)
 		}
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+			t.Fatalf("seed authorization revision: %v", err)
+		}
 	}
 	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
 		node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
@@ -745,7 +748,7 @@ func TestAutomationExecutionSnapshotIncludesRuntimeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempt := automation.ProcedureInferenceAttempt{ID: "attempt-a", RecordVersion: 1, SpaceID: spaceID.String(), DomainID: domainID, ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding-a", BindingVersion: 1, InvocationID: inv.ID, RunID: run.ID, RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateRequested, RequestedAt: time.Now().UTC()}
-	if err := source.applyProcedureInferenceAttemptTransition(ctx, attempt); err != nil {
+	if err := source.applyProcedureInferenceAttemptTransition(ctx, attempt, attempt.RequestedAt); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1182,6 +1185,18 @@ type conflictInjectingInference struct {
 	invocations   int
 }
 
+func (f *conflictInjectingInference) CurrentAuthorizationRevisions(context.Context, string) (uint64, uint64, error) {
+	return 1, 1, nil
+}
+
+func (f *conflictInjectingInference) AssertGlobalAuthorizationRevision(context.Context, uint64) error {
+	return nil
+}
+
+func (f *conflictInjectingInference) Resolve(context.Context, inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
+	return inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: 1, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 1}}, nil
+}
+
 func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	f.mu.Lock()
 	f.invocations++
@@ -1190,7 +1205,7 @@ func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceru
 		callback = nil
 	}
 	f.mu.Unlock()
-	resolved := inferenceruntime.ResolveResult{Allowed: true}
+	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: 1, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 1}}
 	if req.AfterAuthorization != nil {
 		if err := req.AfterAuthorization(ctx, resolved); err != nil {
 			return inferenceruntime.InvokeResponse{}, err

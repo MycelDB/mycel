@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/automation/actions"
@@ -132,6 +133,9 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		run.Status = "skipped"
 		run.Error = skipReasonDuplicateOutput
 		run.CompletedAt = m.now()
+		if err := m.recordRunPublicationDisposition(ctx, run, "published"); err != nil && !errors.Is(err, ErrAutomationNotFound) {
+			return run, err
+		}
 		return run, nil
 	}
 	if err := m.ensureClaimStillOwned(ctx, inv); err != nil {
@@ -151,31 +155,90 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run, imageInputs...)
 	if err != nil {
-		return run, err
+		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "not_published_provider_failure"))
+	}
+	if err := m.requireProcedureEnabledRuntime(ctx, inv); err != nil {
+		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "suppressed_procedure_control"))
 	}
 	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
 	if err != nil {
-		return run, err
+		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "rejected_invalid_output"))
 	}
 	run.ActionFingerprint = actionFingerprint(def, parsed)
 	publicationTx, publicationNode, publicationAliases, err := m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, inv, &run, rendered.Hash, imageInputHash)
 	if err != nil {
+		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "publication_precondition_failed"))
+	}
+	if err := m.recordRunPublicationDisposition(ctx, run, "publication_pending"); err != nil {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, publicationTx.ID)
 		return run, err
 	}
 	changed, err := m.commitAutomationOutputWithConflictRetry(ctx, executionPrincipal, sess, publicationTx, def, &inv, &run, publicationNode, publicationAliases, parsed, rendered.Hash, imageInputHash)
 	if err != nil {
-		return run, err
+		disposition := "publication_failed"
+		if errors.Is(err, ErrProcedureDisabled) || errors.Is(err, ErrProcedureAuthorizationRevoked) {
+			disposition = "suppressed_authorization_or_control"
+		}
+		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, disposition))
 	}
 	if !changed {
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
-		return run, nil
+		return run, m.recordRunPublicationDisposition(ctx, run, "not_changed_or_duplicate")
 	}
 	run.Status = "succeeded"
 	run.CompletedAt = m.now()
 	outSum := sha256.Sum256([]byte(output))
 	run.OutputHash = hex.EncodeToString(outSum[:])
+	if err := m.recordRunPublicationDisposition(ctx, run, "published"); err != nil {
+		return run, err
+	}
 	return run, nil
+}
+
+func (m *AutomationManager) recordRunPublicationDisposition(ctx context.Context, run automation.Run, disposition string) error {
+	attemptID := ""
+	if len(run.InferenceAttemptIDs) > 0 {
+		attemptID = run.InferenceAttemptIDs[len(run.InferenceAttemptIDs)-1]
+	}
+	ledgers, err := m.store.ListProcedureInferenceLedgers(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	var attempt automation.ProcedureInferenceAttempt
+	found := false
+	for _, ledger := range ledgers {
+		for _, candidate := range ledger.Attempts {
+			if (attemptID != "" && candidate.ID == attemptID) || (attemptID == "" && candidate.RunID == run.ID && (!found || candidate.ProviderAttemptNumber > attempt.ProviderAttemptNumber)) {
+				attempt = candidate
+				found = true
+				if attemptID != "" {
+					break
+				}
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return ErrAutomationNotFound
+	}
+	if !automation.IsTerminalProcedureInferenceAttemptState(attempt.State) {
+		return fmt.Errorf("procedure inference attempt %s is not terminal for publication disposition", attempt.ID)
+	}
+	disposition = strings.ToLower(strings.TrimSpace(disposition))
+	if attempt.PublicationDisposition == disposition {
+		return nil
+	}
+	if attempt.PublicationDisposition != "" && attempt.PublicationDisposition != "publication_pending" {
+		return fmt.Errorf("procedure inference attempt %s already records publication disposition %q", attempt.ID, attempt.PublicationDisposition)
+	}
+	attempt.RecordVersion++
+	attempt.PublicationDisposition = disposition
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return m.putProcedureInferenceAttemptRuntime(finalizeCtx, attempt)
 }
 
 func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.Context, executionPrincipal string, sess sessionmodel.GraphSession, firstTx sessionmodel.GraphTransaction, def automation.Definition, inv *automation.Invocation, run *automation.Run, firstNode graph.Node, firstAliases map[string]any, parsed autooutput.Result, expectedRenderedInputHash string, expectedImageInputHash string) (bool, error) {
@@ -185,6 +248,14 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 	node := firstNode
 	aliases := firstAliases
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := m.requireProcedureEnabledRuntime(ctx, *inv); err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
+		if err := m.revalidateProcedureAuthorization(ctx, def, *inv, run); err != nil {
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, err
+		}
 		if attempt > 1 {
 			var err error
 			tx, node, aliases, err = m.reopenAutomationOutputTransaction(ctx, executionPrincipal, sess, def, *inv, run, expectedRenderedInputHash, expectedImageInputHash)
@@ -214,7 +285,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			run.Error = skipReasonDuplicateOutput
 			return false, nil
 		}
-		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, Changed: node, Aliases: aliases, Result: parsed})
+		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, ProcedureID: inv.ProcedureID, AuthorizationRevision: run.AuthorizationRevision, GlobalAuthorizationRevision: run.GlobalAuthorizationRevision, SpaceAuthorizationRevision: run.SpaceAuthorizationRevision, Changed: node, Aliases: aliases, Result: parsed})
 		if err != nil {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, err
@@ -230,7 +301,26 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 		run.ClaimOwnerNodeID = inv.ClaimOwnerNodeID
 		run.ClaimVersion = inv.ClaimVersion
 		run.ClaimToken = inv.ClaimToken
+		if m.raftGroups != nil {
+			revisions, ok := m.inference.(inferenceAuthorizationRevisionReader)
+			if !ok || run.GlobalAuthorizationRevision == 0 {
+				m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+				return false, ErrProcedureAuthorizationRevoked
+			}
+			if err := revisions.AssertGlobalAuthorizationRevision(ctx, run.GlobalAuthorizationRevision); err != nil {
+				m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+				return false, ErrProcedureAuthorizationRevoked
+			}
+		}
+		m.procedureControlMu.RLock()
+		controlErr := m.procedureFenceAllows(ctx, inv.SpaceID, inv.DomainID, inv.ProcedureID)
+		if controlErr != nil {
+			m.procedureControlMu.RUnlock()
+			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+			return false, controlErr
+		}
 		graphCommit, err := m.graphs.CommitTransactionGraph(ctx, tx)
+		m.procedureControlMu.RUnlock()
 		if err != nil {
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			if isGraphConflict(err) && attempt < maxAttempts {
@@ -397,6 +487,9 @@ func idempotencyElementID(def automation.Definition, run automation.Run, inv aut
 }
 
 func (m *AutomationManager) generateWithInference(ctx context.Context, def automation.Definition, inv automation.Invocation, rendered string, run *automation.Run, imageInputs ...domaininference.ImageInput) (string, error) {
+	if err := m.requireProcedureEnabledRuntime(ctx, inv); err != nil {
+		return "", err
+	}
 	if m.inference == nil {
 		run.Usage = automation.TokenUsage{Status: string(domaininference.UsageStatusFailed)}
 		return "", ErrInferenceUnavailable
@@ -463,15 +556,23 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 		attempt = authorized
 		return nil
 	}
-	beforeProviderAttempt := func(hookCtx context.Context, _ inferenceruntime.ResolveResult) error {
-		started, err := m.startProcedureInferenceAttempt(hookCtx, attempt)
+	beforeProviderAttempt := func(hookCtx context.Context, resolved inferenceruntime.ResolveResult) error {
+		if err := m.requireProcedureEnabledRuntime(hookCtx, inv); err != nil {
+			return err
+		}
+		refreshed, err := m.refreshProcedureInferenceAuthorization(hookCtx, attempt, resolved)
 		if err != nil {
 			return err
 		}
+		attempt = refreshed
+		started, err := m.startProcedureInferenceAttempt(hookCtx, attempt)
 		attempt = started
+		if err != nil {
+			return err
+		}
 		return nil
 	}
-	resp, invokeErr := m.inference.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, ImageInputs: imageInputs, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata, AfterAuthorization: afterAuthorization, BeforeProviderAttempt: beforeProviderAttempt})
+	resp, invokeErr := m.inference.Invoke(ctx, inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, InvocationID: inv.ID, RunID: run.ID, NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(ref.Profile), ProfileID: profileID, EndpointRef: strings.TrimSpace(ref.EndpointRef), ModelRef: strings.TrimSpace(ref.ModelRef), CapabilityRef: strings.TrimSpace(ref.CapabilityRef), ActorPrincipalID: actor, OnBehalfOfPrincipalID: onBehalf, Parameters: params, Metadata: metadata}, Prompt: def.Prompt, Input: rendered, ImageInputs: imageInputs, RequestID: run.ID, AutomationID: def.ID, AutomationRunID: run.ID, Metadata: metadata, AfterAuthorization: afterAuthorization, BeforeProviderAttempt: beforeProviderAttempt})
 	populateRunFromInference(run, ref, resp)
 	attemptState, completionErr := m.completeProcedureInferenceAttempt(ctx, attempt, resp, invokeErr)
 	if completionErr != nil {
@@ -493,6 +594,48 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 		return "", fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens)
 	}
 	return resp.Text, nil
+}
+
+func (m *AutomationManager) revalidateProcedureAuthorization(ctx context.Context, def automation.Definition, inv automation.Invocation, run *automation.Run) error {
+	resolver, ok := m.inference.(inferenceAuthorizer)
+	if !ok {
+		return ErrProcedureAuthorizationRevoked
+	}
+	if run == nil {
+		return ErrProcedureAuthorizationRevoked
+	}
+	profileID, err := parseOptionalUUID(firstNonEmptyString(run.InferenceProfileID, def.Inference.ProfileID))
+	if err != nil {
+		return ErrProcedureAuthorizationRevoked
+	}
+	endpointID, err := parseOptionalUUID(run.ModelEndpointID)
+	if err != nil {
+		return ErrProcedureAuthorizationRevoked
+	}
+	modelID, err := parseOptionalUUID(run.ModelID)
+	if err != nil {
+		return ErrProcedureAuthorizationRevoked
+	}
+	capabilityID, err := parseOptionalUUID(run.CapabilityID)
+	if err != nil {
+		return ErrProcedureAuthorizationRevoked
+	}
+	operation := domaininference.Operation(strings.ToLower(strings.TrimSpace(def.Inference.Operation)))
+	if operation == "" {
+		operation = domaininference.OperationChat
+	}
+	resolved, err := resolver.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, InvocationID: inv.ID, RunID: run.ID, NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(def.Inference.Profile), ProfileID: profileID, EndpointID: endpointID, ModelID: modelID, CapabilityID: capabilityID, ActorPrincipalID: run.ActorPrincipalID, OnBehalfOfPrincipalID: run.OnBehalfOfPrincipalID, Parameters: inferenceParameters(def.Inference.Parameters)})
+	if err != nil || !resolved.Allowed || resolved.Endpoint.ID != endpointID || resolved.Model.ID != modelID || resolved.Capability.ID != capabilityID || uuidString(resolved.CredentialGrant.ID) != run.CredentialGrantID {
+		return ErrProcedureAuthorizationRevoked
+	}
+	run.PolicyDecisionID = uuidString(resolved.Decision.ID)
+	run.AuthorizationRevision = resolved.Decision.AuthorizationRevision
+	run.GlobalAuthorizationRevision = resolved.Decision.GlobalAuthorizationRevision
+	run.SpaceAuthorizationRevision = resolved.Decision.SpaceAuthorizationRevision
+	if run.AuthorizationRevision == 0 {
+		return ErrProcedureAuthorizationRevoked
+	}
+	return nil
 }
 
 func inferenceParameters(in automation.InferenceParameters) domaininference.Parameters {
@@ -520,7 +663,11 @@ func populateRunFromInference(run *automation.Run, ref automation.InferenceRef, 
 	run.CredentialID = uuidString(resp.Decision.CredentialID)
 	run.CredentialGrantID = uuidString(resp.Decision.CredentialGrantID)
 	run.PolicyDecisionID = uuidString(resp.Decision.ID)
+	run.AuthorizationRevision = resp.Decision.AuthorizationRevision
+	run.GlobalAuthorizationRevision = resp.Decision.GlobalAuthorizationRevision
+	run.SpaceAuthorizationRevision = resp.Decision.SpaceAuthorizationRevision
 	run.ProviderRequestID = resp.ProviderRequestID
+	run.InferenceUsageEventIDs = appendUniqueString(run.InferenceUsageEventIDs, resp.UsageEventID)
 	status := resp.Status
 	if status == "" {
 		status = domaininference.UsageStatusSucceeded

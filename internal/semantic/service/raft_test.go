@@ -1927,6 +1927,41 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 	}
 }
 
+type recordingAuthorizationRevisionSink struct {
+	spaces    []string
+	revisions []uint64
+}
+
+func (s *recordingAuthorizationRevisionSink) ApplySpaceAuthorizationRevision(_ context.Context, spaceID string, revision uint64) error {
+	s.spaces = append(s.spaces, spaceID)
+	s.revisions = append(s.revisions, revision)
+	return nil
+}
+
+func TestRebuildInferenceProjectionBackfillsSpaceAuthorizationRevision(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	manager, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: uuid.New(), SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &recordingAuthorizationRevisionSink{}
+	m.WithAuthorizationRevisionSink(sink)
+	if err := m.rebuildInferenceProjection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.spaces) != 1 || sink.spaces[0] != spaceID.String() || sink.revisions[0] == 0 {
+		t.Fatalf("backfilled authorization revisions spaces=%v revisions=%v", sink.spaces, sink.revisions)
+	}
+}
+
 func TestSemanticRaftStateMachineAppliesSpaceMutation(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
@@ -1934,6 +1969,8 @@ func TestSemanticRaftStateMachineAppliesSpaceMutation(t *testing.T) {
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	spaceID := domainspace.SpaceID(uuid.New())
+	sink := &recordingAuthorizationRevisionSink{}
+	m.WithAuthorizationRevisionSink(sink)
 	idx := semanticIndex(spaceID)
 	rec := semanticMutationRecord{Kind: "semantic_index.upsert", SpaceID: spaceID, Payload: raw(idx)}
 	payload, err := json.Marshal(rec)
@@ -1958,6 +1995,9 @@ func TestSemanticRaftStateMachineAppliesSpaceMutation(t *testing.T) {
 	}
 	if len(indexes) != 1 || indexes[0].ID != idx.ID {
 		t.Fatalf("indexes=%#v want %s", indexes, idx.ID)
+	}
+	if len(sink.spaces) != 1 || sink.spaces[0] != spaceID.String() {
+		t.Fatalf("authorization revision sink spaces=%v", sink.spaces)
 	}
 }
 
