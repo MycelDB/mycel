@@ -284,6 +284,60 @@ func TestAutomationFinalizesAfterGraphCommitCancelsRequest(t *testing.T) {
 	}
 }
 
+func TestAutomationPublicationTimeoutReconcilesWithoutProviderReplay(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	graphs := &automationE2EGraph{node: node, waitForCommitContext: true}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
+	mgr.publicationTimeout = 500 * time.Millisecond
+	def := automation.Definition{
+		ID: "bounded-publication", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 1},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	processed, err := mgr.ProcessPending(ctx, ids.domainID, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("publication timeout was not bounded: %s", elapsed)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 || invs[0].Status != "retryable" {
+		t.Fatalf("invocations=%+v err=%v", invs, err)
+	}
+	if _, chatCalls := fake.Calls(); chatCalls != 1 {
+		t.Fatalf("provider calls=%d", chatCalls)
+	}
+	inv := invs[0]
+	mgr.publicationTimeout = 2 * time.Second
+	reconciled, err := mgr.reconcileProviderStartedPublication(ctx, &inv)
+	if err != nil || !reconciled {
+		t.Fatalf("reconcileProviderStartedPublication() reconciled=%v err=%v", reconciled, err)
+	}
+	if _, chatCalls := fake.Calls(); chatCalls != 1 {
+		t.Fatalf("provider replayed during publication recovery: calls=%d", chatCalls)
+	}
+	ledger, err := store.GetProcedureInferenceLedger(ctx, ids.spaceID)
+	if err != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].PublicationDisposition != "published" {
+		t.Fatalf("ledger=%+v err=%v", ledger, err)
+	}
+}
+
 func TestGraphContextAutomationUpdatesConditionTarget(t *testing.T) {
 	ctx := context.Background()
 	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
@@ -647,14 +701,15 @@ func (s automationE2ESessions) RollbackTransaction(context.Context, string, stri
 }
 
 type automationE2EGraph struct {
-	node                graph.Node
-	nodes               map[string]graph.Node
-	edges               []graph.Edge
-	cancelOnCommit      context.CancelFunc
-	acknowledgements    *int
-	spaceRevision       int64
-	domainRevision      int64
-	domainRevisionCalls *[][2]string
+	node                 graph.Node
+	nodes                map[string]graph.Node
+	edges                []graph.Edge
+	cancelOnCommit       context.CancelFunc
+	waitForCommitContext bool
+	acknowledgements     *int
+	spaceRevision        int64
+	domainRevision       int64
+	domainRevisionCalls  *[][2]string
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -733,9 +788,13 @@ func (g *automationE2EGraph) CurrentDomainRevision(_ context.Context, spaceID st
 	}
 	return 1, nil
 }
-func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, _ sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	if g.cancelOnCommit != nil {
 		g.cancelOnCommit()
+	}
+	if g.waitForCommitContext {
+		<-ctx.Done()
+		return graphchange.CommitResult{}, ctx.Err()
 	}
 	return graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
 }

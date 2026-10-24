@@ -445,6 +445,69 @@ func TestAutomationGraphReplayRecoveryAfterPartitionLeaderCrashDuringRunningInvo
 	}
 }
 
+func TestProcedureInferencePublicationRecoveryTakesOverUnexpiredFailedLeaderClaim(t *testing.T) {
+	ctx := context.Background()
+	cluster := newAutomationExecutionRaftCluster(t, ctx, 8)
+	defer cluster.stop()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
+	oldLeaderID := cluster.leaderForSpace(t, spaceID)
+	oldLeader := cluster.managers[oldLeaderID]
+	now := time.Now().UTC()
+	inv := automation.Invocation{ID: "inv-publication-failover", DomainID: domainID, SpaceID: spaceID.String(), BindingID: "binding-a", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, Status: "running", ClaimOwnerNodeID: uint64(oldLeaderID), ClaimVersion: 1, ClaimToken: "old-leader-claim", ClaimExpiresAt: now.Add(automationClaimLease), CreatedAt: now, UpdatedAt: now}
+	if err := oldLeader.putInvocationRuntime(ctx, inv); err != nil {
+		t.Fatalf("seed running invocation: %v", err)
+	}
+	for _, mgr := range cluster.managers {
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1, ActorPrincipalID: automationActor}
+	attempt := persistSucceededPublicationAttempt(t, ctx, oldLeader, inv, run, "publication_pending")
+	outputKey := automationOutputIdempotencyKey(inv, run.ID)
+	for _, mgr := range cluster.managers {
+		graphs := &automationE2EGraph{node: graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Meta: map[string]any{"automation": map[string]any{"output_idempotency_key": outputKey}}}}
+		mgr.WithGraphRuntime(automationE2ESessions{spaceID: spaceID.String(), domainID: domainID.String()}, graphs)
+	}
+	cluster.waitForInvocation(t, domainID, inv.ID)
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := consensus.WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		for _, mgr := range cluster.managers {
+			ledger, err := mgr.store.GetProcedureInferenceLedger(ctx, spaceID.String())
+			if err != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].PublicationDisposition != "publication_pending" {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("publication attempt did not replicate: %v", err)
+	}
+
+	cluster.crashNode(oldLeaderID)
+	newLeaderID := cluster.waitForNewLeaderForSpace(t, spaceID, oldLeaderID)
+	processed, err := cluster.managers[newLeaderID].ProcessPending(ctx, domainID, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("new leader ProcessPending() processed=%d err=%v", processed, err)
+	}
+	cluster.waitForInvocationStatusOnLiveNodes(t, domainID, inv.ID, "succeeded")
+	cluster.waitForRunIDOnLiveNodes(t, domainID, run.ID)
+	for id, mgr := range cluster.managers {
+		if cluster.crashed[id] {
+			continue
+		}
+		gotInv, err := mgr.store.GetInvocation(ctx, domainID, inv.ID)
+		if err != nil || gotInv.ClaimOwnerNodeID != uint64(newLeaderID) || gotInv.ClaimVersion <= inv.ClaimVersion || gotInv.Status != "succeeded" {
+			t.Fatalf("node %d invocation=%+v err=%v", id, gotInv, err)
+		}
+		gotAttempt := requireProcedureInferenceAttempt(t, ctx, mgr.store, spaceID.String(), attempt.ID)
+		if gotAttempt.PublicationDisposition != "published" {
+			t.Fatalf("node %d publication disposition=%q", id, gotAttempt.PublicationDisposition)
+		}
+	}
+}
+
 func TestAutomationGraphReplayRecoveryReportsUnreclaimableRunningClaim(t *testing.T) {
 	ctx := context.Background()
 	cluster := newAutomationExecutionRaftCluster(t, ctx, 8)

@@ -117,6 +117,7 @@ type AutomationManager struct {
 	writeAllowed                                           func() error
 	gate                                                   *quiesce.Gate
 	logger                                                 *slog.Logger
+	publicationTimeout                                     time.Duration
 	localExecutionMu                                       sync.Mutex
 	inferenceAttemptMu                                     sync.Mutex
 	runMutationMu                                          sync.Mutex
@@ -130,7 +131,11 @@ type AutomationManager struct {
 }
 
 func NewManager(store storage.Store) *AutomationManager {
-	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
+	return &AutomationManager{
+		store:              store,
+		now:                func() time.Time { return time.Now().UTC() },
+		publicationTimeout: 30 * time.Second,
+	}
 }
 
 func (m *AutomationManager) WithLogger(logger *slog.Logger) *AutomationManager {
@@ -914,6 +919,15 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 	}
 	processed := 0
 	for _, inv := range items {
+		reconciledPublication, err := m.reconcileProviderStartedPublication(ctx, &inv)
+		if err != nil {
+			return processed, err
+		}
+		if reconciledPublication {
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
 		recoveringRunning := strings.EqualFold(strings.TrimSpace(inv.Status), "running")
 		item, resolveErr := m.resolveInvocationAutomation(ctx, domainID, inv)
 		var debounce debounceDecision
@@ -1021,9 +1035,18 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 		if err != nil {
 			now := m.now()
 			inv.AttemptCount++
-			inv.SkipReason = err.Error()
+			failureReason := err.Error()
+			if errors.Is(err, ErrPublicationReconciliationRequired) {
+				failureReason = publicationReconciliationRequired
+			}
+			inv.SkipReason = failureReason
 			inv.UpdatedAt = now
-			if inv.AttemptCount < maxAttempts(def) && retryableAutomationError(err) {
+			if errors.Is(err, ErrPublicationReconciliationRequired) {
+				// Provider work is already terminal. Keep this invocation visible to
+				// publication reconciliation regardless of the provider retry ceiling.
+				inv.Status = "retryable"
+				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))
+			} else if inv.AttemptCount < maxAttempts(def) && retryableAutomationError(err) {
 				inv.Status = "retryable"
 				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))
 			} else {
@@ -1036,7 +1059,7 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			run.InvocationID = inv.ID
 			run.AttemptNumber = inv.AttemptCount
 			run.Status = inv.Status
-			run.Error = err.Error()
+			run.Error = failureReason
 			if run.StartedAt.IsZero() {
 				run.StartedAt = now
 			}

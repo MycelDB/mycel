@@ -173,26 +173,34 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, publicationTx.ID)
 		return run, err
 	}
-	changed, err := m.commitAutomationOutputWithConflictRetry(ctx, executionPrincipal, sess, publicationTx, def, &inv, &run, publicationNode, publicationAliases, parsed, rendered.Hash, imageInputHash)
+	m.logPublicationStage(run, "pending_persisted", "completed", "none")
+	publicationCtx, cancelPublication := m.publicationContext(ctx)
+	changed, err := m.commitAutomationOutputWithConflictRetry(publicationCtx, executionPrincipal, sess, publicationTx, def, &inv, &run, publicationNode, publicationAliases, parsed, rendered.Hash, imageInputHash)
+	cancelPublication()
 	if err != nil {
-		disposition := "publication_failed"
+		m.logPublicationStage(run, "publication", "failed", publicationFailureCategory(err))
+		var dispositionErr error
 		if errors.Is(err, ErrProcedureDisabled) || errors.Is(err, ErrProcedureAuthorizationRevoked) {
-			disposition = "suppressed_authorization_or_control"
+			dispositionErr = m.recordRunPublicationDisposition(ctx, run, "suppressed_authorization_or_control")
 		}
-		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, disposition))
+		return run, errors.Join(ErrPublicationReconciliationRequired, err, dispositionErr)
 	}
 	if !changed {
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
-		return run, m.recordRunPublicationDisposition(ctx, run, "not_changed_or_duplicate")
+		err := m.recordRunPublicationDisposition(ctx, run, "not_changed_or_duplicate")
+		m.logPublicationStage(run, "final_disposition", publicationLogResult(err), publicationFailureCategory(err))
+		return run, err
 	}
 	run.Status = "succeeded"
 	run.CompletedAt = m.now()
 	outSum := sha256.Sum256([]byte(output))
 	run.OutputHash = hex.EncodeToString(outSum[:])
 	if err := m.recordRunPublicationDisposition(ctx, run, "published"); err != nil {
-		return run, err
+		m.logPublicationStage(run, "final_disposition", "failed", publicationFailureCategory(err))
+		return run, errors.Join(ErrPublicationReconciliationRequired, err)
 	}
+	m.logPublicationStage(run, "final_disposition", "completed", "published")
 	return run, nil
 }
 
@@ -319,23 +327,32 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			return false, controlErr
 		}
+		m.logPublicationStage(*run, "graph_commit", "started", "none")
 		graphCommit, err := m.graphs.CommitTransactionGraph(ctx, tx)
 		m.procedureControlMu.RUnlock()
 		if err != nil {
+			m.logPublicationStage(*run, "graph_commit", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 			if isGraphConflict(err) && attempt < maxAttempts {
 				continue
 			}
 			return false, err
 		}
-		finalizeCtx := context.WithoutCancel(ctx)
+		m.logPublicationStage(*run, "graph_commit", "completed", "committed")
+		finalizeCtx := ctx
+		m.logPublicationStage(*run, "session_finalize", "started", "none")
 		commit, err := m.sessions.CommitTransactionAtRevision(finalizeCtx, executionPrincipal, tx.ID, graphCommit.OperationCount, graphCommit.CommittedRevision)
 		if err != nil {
+			m.logPublicationStage(*run, "session_finalize", "failed", publicationFailureCategory(err))
 			return false, err
 		}
+		m.logPublicationStage(*run, "session_finalize", "completed", "committed")
+		m.logPublicationStage(*run, "graph_finalize_ack", "started", "none")
 		if err := m.graphs.AcknowledgeTransactionFinalization(finalizeCtx, tx); err != nil {
+			m.logPublicationStage(*run, "graph_finalize_ack", "failed", publicationFailureCategory(err))
 			return false, err
 		}
+		m.logPublicationStage(*run, "graph_finalize_ack", "completed", "acknowledged")
 		run.MutationID = commit.ID
 		return true, nil
 	}
@@ -431,7 +448,8 @@ func automationImageInputsHash(images []domaininference.ImageInput) string {
 }
 
 func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Context, principalID string, transactionID string) {
-	finalizeCtx := context.WithoutCancel(ctx)
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if m.graphs != nil {
 		_ = m.graphs.DiscardTransactionGraph(finalizeCtx, transactionID)
 	}
@@ -625,7 +643,13 @@ func (m *AutomationManager) revalidateProcedureAuthorization(ctx context.Context
 		operation = domaininference.OperationChat
 	}
 	resolved, err := resolver.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: inv.SpaceID, DomainID: inv.DomainID.String(), ProcedureID: inv.ProcedureID, ProcedureVersion: inv.ProcedureVersion, BindingID: inv.BindingID, BindingVersion: inv.BindingVersion, InvocationID: inv.ID, RunID: run.ID, NodeID: firstNonEmptyString(run.TargetNodeID, inv.ChangedElementID), Operation: operation, UsageMode: domaininference.UsageModeAutomation, ProfileRef: strings.TrimSpace(def.Inference.Profile), ProfileID: profileID, EndpointID: endpointID, ModelID: modelID, CapabilityID: capabilityID, ActorPrincipalID: run.ActorPrincipalID, OnBehalfOfPrincipalID: run.OnBehalfOfPrincipalID, Parameters: inferenceParameters(def.Inference.Parameters)})
-	if err != nil || !resolved.Allowed || resolved.Endpoint.ID != endpointID || resolved.Model.ID != modelID || resolved.Capability.ID != capabilityID || uuidString(resolved.CredentialGrant.ID) != run.CredentialGrantID {
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return ErrProcedureAuthorizationRevoked
+	}
+	if !resolved.Allowed || resolved.Endpoint.ID != endpointID || resolved.Model.ID != modelID || resolved.Capability.ID != capabilityID || uuidString(resolved.CredentialGrant.ID) != run.CredentialGrantID {
 		return ErrProcedureAuthorizationRevoked
 	}
 	run.PolicyDecisionID = uuidString(resolved.Decision.ID)

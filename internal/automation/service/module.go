@@ -153,7 +153,9 @@ func (m *Module) Start(ctx context.Context) error {
 					go func(domainID graph.DomainID) {
 						defer batchWG.Done()
 						defer func() { <-sem }()
-						_, _ = m.ProcessPending(workerCtx, domainID, m.worker.BatchSize)
+						if _, err := m.ProcessPending(workerCtx, domainID, m.worker.BatchSize); err != nil && m.logger != nil {
+							m.logger.Warn("automation_worker_process_pending_failed", "category", publicationFailureCategory(err))
+						}
 					}(domainID)
 				}
 				batchWG.Wait()

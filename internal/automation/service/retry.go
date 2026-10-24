@@ -32,6 +32,10 @@ func (m *AutomationManager) pendingInvocations(ctx context.Context, domainID gra
 		return nil, mapStoreError(err)
 	}
 	for _, inv := range running {
+		if m.hasRecoverableProviderPublication(ctx, inv) {
+			out = append(out, inv)
+			continue
+		}
 		if inv.ClaimExpiresAt.IsZero() {
 			m.recordClaimAbandoned()
 			continue
