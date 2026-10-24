@@ -20,6 +20,8 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const automationActor = "automation"
@@ -132,7 +134,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		run.Status = "skipped"
 		run.Error = skipReasonDuplicateOutput
 		run.CompletedAt = m.now()
-		if err := m.recordRunPublicationDisposition(ctx, run, "published", existingCommit.CommitID); err != nil {
+		if err := m.recordRunPublicationDispositionWithDiagnostics(ctx, run, "published", existingCommit.CommitID); err != nil {
 			if !errors.Is(err, ErrAutomationNotFound) {
 				return run, err
 			}
@@ -158,7 +160,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
 	output, err := m.generateWithInference(ctx, def, inv, rendered.Text, &run, imageInputs...)
 	if err != nil {
-		return run, errors.Join(err, m.recordRunPublicationDisposition(ctx, run, "not_published_provider_failure"))
+		return run, errors.Join(err, m.recordRunPublicationDispositionWithDiagnostics(ctx, run, "not_published_provider_failure"))
 	}
 	// Every stage after durable provider success shares one detached, bounded
 	// publication budget. No graph/session/store call can strand the worker.
@@ -167,14 +169,14 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	m.logPublicationStage(run, "runtime_control", "started", "none")
 	if err := m.requireProcedureEnabledRuntime(publicationCtx, inv); err != nil {
 		m.logPublicationStage(run, "runtime_control", "failed", publicationFailureCategory(err))
-		return run, errors.Join(err, m.recordRunPublicationDisposition(publicationCtx, run, "suppressed_procedure_control"))
+		return run, errors.Join(err, m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "suppressed_procedure_control"))
 	}
 	m.logPublicationStage(run, "runtime_control", "completed", "none")
 	m.logPublicationStage(run, "output_parse", "started", "none")
 	parsed, err := autooutput.Parse(def.Output.Mode, def.Output.Schema, output)
 	if err != nil {
 		m.logPublicationStage(run, "output_parse", "failed", publicationFailureCategory(err))
-		return run, errors.Join(err, m.recordRunPublicationDisposition(publicationCtx, run, "rejected_invalid_output"))
+		return run, errors.Join(err, m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "rejected_invalid_output"))
 	}
 	m.logPublicationStage(run, "output_parse", "completed", "none")
 	run.ActionFingerprint = actionFingerprint(def, parsed)
@@ -182,11 +184,11 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	publicationTx, publicationNode, publicationAliases, err := m.reopenAutomationOutputTransaction(publicationCtx, executionPrincipal, sess, def, inv, &run, rendered.Hash, imageInputHash)
 	if err != nil {
 		m.logPublicationStage(run, "transaction_reopen", "failed", publicationFailureCategory(err))
-		return run, errors.Join(ErrPublicationReconciliationRequired, err, m.recordRunPublicationDisposition(publicationCtx, run, "publication_precondition_failed"))
+		return run, errors.Join(ErrPublicationReconciliationRequired, err, m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "publication_precondition_failed"))
 	}
 	m.logPublicationStage(run, "transaction_reopen", "completed", "none")
 	m.logPublicationStage(run, "pending_persistence", "started", "none")
-	if err := m.recordRunPublicationDisposition(publicationCtx, run, "publication_pending"); err != nil {
+	if err := m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "publication_pending"); err != nil {
 		m.logPublicationStage(run, "pending_persistence", "failed", publicationFailureCategory(err))
 		m.rollbackAutomationOutputTransaction(publicationCtx, executionPrincipal, publicationTx.ID)
 		return run, errors.Join(ErrPublicationReconciliationRequired, err)
@@ -197,14 +199,14 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		m.logPublicationStage(run, "publication", "failed", publicationFailureCategory(err))
 		var dispositionErr error
 		if errors.Is(err, ErrProcedureDisabled) || errors.Is(err, ErrProcedureAuthorizationRevoked) {
-			dispositionErr = m.recordRunPublicationDisposition(publicationCtx, run, "suppressed_authorization_or_control")
+			dispositionErr = m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "suppressed_authorization_or_control")
 		}
 		return run, errors.Join(ErrPublicationReconciliationRequired, err, dispositionErr)
 	}
 	if !changed {
 		run.Status = "skipped"
 		run.CompletedAt = m.now()
-		err := m.recordRunPublicationDisposition(publicationCtx, run, "not_changed_or_duplicate")
+		err := m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "not_changed_or_duplicate")
 		m.logPublicationStage(run, "final_disposition", publicationLogResult(err), publicationFailureCategory(err))
 		return run, err
 	}
@@ -212,7 +214,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	run.CompletedAt = m.now()
 	outSum := sha256.Sum256([]byte(output))
 	run.OutputHash = hex.EncodeToString(outSum[:])
-	if err := m.recordRunPublicationDisposition(publicationCtx, run, "published", publicationCommitID); err != nil {
+	if err := m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "published", publicationCommitID); err != nil {
 		m.logPublicationStage(run, "final_disposition", "failed", publicationFailureCategory(err))
 		return run, errors.Join(ErrPublicationReconciliationRequired, err)
 	}
@@ -391,9 +393,10 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 				return false, "", ErrProcedureAuthorizationRevoked
 			}
 			if err := revisions.AssertGlobalAuthorizationRevision(ctx, run.GlobalAuthorizationRevision); err != nil {
-				m.logPublicationStage(*run, "global_authorization_fence", "failed", "authorization_revoked")
+				mappedErr := mapGlobalAuthorizationAssertionError(err)
+				m.logPublicationStage(*run, "global_authorization_fence", "failed", publicationFailureCategory(mappedErr))
 				m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
-				return false, "", ErrProcedureAuthorizationRevoked
+				return false, "", mappedErr
 			}
 		}
 		m.logPublicationStage(*run, "global_authorization_fence", "completed", "none")
@@ -549,6 +552,16 @@ func (m *AutomationManager) rollbackAutomationOutputTransaction(ctx context.Cont
 
 func isGraphConflict(err error) bool {
 	return errors.Is(err, graphchange.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "graph conflict")
+}
+
+func mapGlobalAuthorizationAssertionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if status.Code(err) == codes.FailedPrecondition {
+		return ErrProcedureAuthorizationRevoked
+	}
+	return err
 }
 
 func targetNodeID(alias string, aliases map[string]any, changed graph.Node) string {

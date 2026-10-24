@@ -70,6 +70,37 @@ func (m *AutomationManager) logPublicationStageAtRevision(run automation.Run, st
 	m.logger.Info("procedure_inference_publication_stage", attributes...)
 }
 
+func (m *AutomationManager) recordRunPublicationDispositionWithDiagnostics(ctx context.Context, run automation.Run, disposition string, receiptCommitID ...string) error {
+	stage := publicationDispositionStage(disposition)
+	m.logPublicationStage(run, stage, "started", "none")
+	err := m.recordRunPublicationDisposition(ctx, run, disposition, receiptCommitID...)
+	m.logPublicationStage(run, stage, publicationLogResult(err), publicationFailureCategory(err))
+	return err
+}
+
+func publicationDispositionStage(disposition string) string {
+	switch strings.ToLower(strings.TrimSpace(disposition)) {
+	case "not_published_provider_failure":
+		return "disposition_not_published_provider_failure"
+	case "suppressed_procedure_control":
+		return "disposition_suppressed_procedure_control"
+	case "rejected_invalid_output":
+		return "disposition_rejected_invalid_output"
+	case "publication_precondition_failed":
+		return "disposition_publication_precondition_failed"
+	case "publication_pending":
+		return "disposition_publication_pending"
+	case "suppressed_authorization_or_control":
+		return "disposition_suppressed_authorization_or_control"
+	case "not_changed_or_duplicate":
+		return "disposition_not_changed_or_duplicate"
+	case "published":
+		return "disposition_published"
+	default:
+		return "disposition_invalid"
+	}
+}
+
 func publicationOutputKeyHash(key string) string {
 	if strings.TrimSpace(key) == "" {
 		return ""
@@ -97,6 +128,8 @@ func publicationFailureCategory(err error) string {
 		return "procedure_disabled"
 	case errors.Is(err, ErrProcedureAuthorizationRevoked):
 		return "authorization_revoked"
+	case errors.Is(err, ErrAutomationNotFound):
+		return "not_found"
 	case isGraphConflict(err):
 		return "graph_conflict"
 	}

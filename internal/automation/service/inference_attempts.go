@@ -526,7 +526,7 @@ func (m *AutomationManager) startProcedureInferenceAttempt(ctx context.Context, 
 			return attempt, ErrProcedureAuthorizationRevoked
 		}
 		if err := revisions.AssertGlobalAuthorizationRevision(ctx, attempt.GlobalAuthorizationRevision); err != nil {
-			return attempt, ErrProcedureAuthorizationRevoked
+			return attempt, mapGlobalAuthorizationAssertionError(err)
 		}
 	}
 	started := attempt
@@ -539,7 +539,7 @@ func (m *AutomationManager) startProcedureInferenceAttempt(ctx context.Context, 
 	if m.raftGroups != nil {
 		revisions := m.inference.(inferenceAuthorizationRevisionReader)
 		if err := revisions.AssertGlobalAuthorizationRevision(ctx, attempt.GlobalAuthorizationRevision); err != nil {
-			return started, ErrProcedureAuthorizationRevoked
+			return started, mapGlobalAuthorizationAssertionError(err)
 		}
 	}
 	return started, nil

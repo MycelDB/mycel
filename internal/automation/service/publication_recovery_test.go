@@ -260,6 +260,81 @@ func TestPublicationDiagnosticsUseClosedCategories(t *testing.T) {
 	}
 }
 
+func TestDispositionPersistenceDiagnosticsCoverEveryPostProviderBranch(t *testing.T) {
+	run := automation.Run{ID: "run", DomainID: graph.DomainID(uuid.New()), InferenceAttemptIDs: []string{"attempt"}}
+	for _, disposition := range []string{
+		"not_published_provider_failure",
+		"suppressed_procedure_control",
+		"rejected_invalid_output",
+		"publication_precondition_failed",
+		"publication_pending",
+		"suppressed_authorization_or_control",
+		"not_changed_or_duplicate",
+		"published",
+	} {
+		t.Run(disposition, func(t *testing.T) {
+			var output bytes.Buffer
+			mgr := NewManager(storage.NewFileStore(t.TempDir())).WithLogger(slog.New(slog.NewJSONHandler(&output, nil)))
+			if err := mgr.recordRunPublicationDispositionWithDiagnostics(context.Background(), run, disposition); !errors.Is(err, ErrAutomationNotFound) {
+				t.Fatalf("missing attempt disposition error=%v", err)
+			}
+			logged := output.String()
+			for _, required := range []string{`"stage":"` + publicationDispositionStage(disposition) + `"`, `"result":"started"`, `"result":"failed"`, `"category":"not_found"`} {
+				if !strings.Contains(logged, required) {
+					t.Fatalf("disposition diagnostic missing %s: %s", required, logged)
+				}
+			}
+			if strings.Contains(logged, "secret") {
+				t.Fatalf("disposition diagnostic leaked unsafe text: %s", logged)
+			}
+		})
+	}
+
+	t.Run("completed", func(t *testing.T) {
+		var output bytes.Buffer
+		store := storage.NewFileStore(t.TempDir())
+		attempt := automation.ProcedureInferenceAttempt{ID: "attempt", RecordVersion: 1, SpaceID: "space", DomainID: run.DomainID, ProcedureID: "procedure", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1, InvocationID: "invocation", RunID: run.ID, RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateSucceeded, RequestedAt: time.Now().UTC()}
+		if err := store.PutProcedureInferenceLedger(context.Background(), automation.ProcedureInferenceLedger{SpaceID: "space", Attempts: []automation.ProcedureInferenceAttempt{attempt}}); err != nil {
+			t.Fatal(err)
+		}
+		mgr := NewManager(store).WithLogger(slog.New(slog.NewJSONHandler(&output, nil)))
+		if err := mgr.recordRunPublicationDispositionWithDiagnostics(context.Background(), run, "publication_pending"); err != nil {
+			t.Fatal(err)
+		}
+		logged := output.String()
+		for _, required := range []string{`"stage":"disposition_publication_pending"`, `"result":"started"`, `"result":"completed"`, `"category":"none"`} {
+			if !strings.Contains(logged, required) {
+				t.Fatalf("completion diagnostic missing %s: %s", required, logged)
+			}
+		}
+	})
+}
+
+func TestGlobalAuthorizationAssertionErrorsPreserveInfrastructureCategories(t *testing.T) {
+	cases := []struct {
+		err      error
+		expected error
+		category string
+	}{
+		{err: status.Error(codes.FailedPrecondition, "revision changed"), expected: ErrProcedureAuthorizationRevoked, category: "authorization_revoked"},
+		{err: status.Error(codes.Unavailable, "no leader"), expected: nil, category: "unavailable"},
+		{err: context.DeadlineExceeded, expected: nil, category: "deadline_exceeded"},
+		{err: context.Canceled, expected: nil, category: "canceled"},
+	}
+	for _, tc := range cases {
+		mapped := mapGlobalAuthorizationAssertionError(tc.err)
+		if tc.expected != nil && !errors.Is(mapped, tc.expected) {
+			t.Fatalf("mapped error=%v, want %v", mapped, tc.expected)
+		}
+		if tc.expected == nil && !errors.Is(mapped, tc.err) {
+			t.Fatalf("mapped error=%v, want original %v", mapped, tc.err)
+		}
+		if actual := publicationFailureCategory(mapped); actual != tc.category {
+			t.Fatalf("category=%q, want %q", actual, tc.category)
+		}
+	}
+}
+
 func TestPublicationFailureCategoriesAreClosed(t *testing.T) {
 	cases := []struct {
 		err      error

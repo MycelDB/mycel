@@ -18,6 +18,28 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
+func TestDockerPublicationSuppliesImmutableProvenanceLabels(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	dockerfile, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "dockerhub.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"org.opencontainers.image.revision", "io.myceldb.source.dirty", "io.myceldb.build.context-digest", "${BUILD_IDENTITY}"} {
+		if !strings.Contains(string(dockerfile), required) {
+			t.Fatalf("Dockerfile missing provenance field %q", required)
+		}
+	}
+	for _, required := range []string{"SOURCE_REVISION=${{ env.DAEMON_REVISION }}", "SOURCE_DIRTY=false", "BUILD_CONTEXT_DIGEST=${{ env.BUILD_CONTEXT_DIGEST }}", "BUILD_IDENTITY=github-actions-buildx-multiarch"} {
+		if !strings.Contains(string(workflow), required) {
+			t.Fatalf("Docker workflow missing provenance build arg %q", required)
+		}
+	}
+}
+
 func TestAutomationGraphConsumerProjectionPreservesAuthenticatedOrigin(t *testing.T) {
 	spec := automationGraphConsumerSpec()
 	if spec.ConsumerName != "automation" || !spec.Lossless {
