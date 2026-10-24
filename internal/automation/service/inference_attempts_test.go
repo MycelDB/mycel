@@ -243,6 +243,64 @@ func TestLocalInvocationClaimHasSingleWinner(t *testing.T) {
 	}
 }
 
+func TestProcessPendingStaleSnapshotCannotOverwriteActiveStandaloneClaim(t *testing.T) {
+	ctx := context.Background()
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &blockingPendingSnapshotStore{Store: baseStore, captured: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewManager(store)
+	inv := automation.Invocation{ID: "inv-stale", SpaceID: uuid.NewString(), DomainID: graph.DomainID(uuid.New()), AutomationID: "procedure", AutomationVersion: 1, Status: "pending"}
+	if err := baseStore.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan struct {
+		processed int
+		err       error
+	}, 1)
+	go func() {
+		processed, err := mgr.ProcessPending(ctx, inv.DomainID, 10)
+		result <- struct {
+			processed int
+			err       error
+		}{processed: processed, err: err}
+	}()
+	<-store.captured
+
+	claimed, ok, err := mgr.claimInvocation(ctx, inv)
+	if err != nil || !ok {
+		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	ledger := automation.ProcedureInferenceLedger{SpaceID: inv.SpaceID, Attempts: []automation.ProcedureInferenceAttempt{{ID: "attempt", InvocationID: inv.ID, SpaceID: inv.SpaceID, State: automation.InferenceAttemptStateStarted, RunAttemptNumber: 1}}}
+	if err := baseStore.PutProcedureInferenceLedger(ctx, ledger); err != nil {
+		t.Fatal(err)
+	}
+	close(store.release)
+	got := <-result
+	if got.err != nil || got.processed != 0 {
+		t.Fatalf("stale ProcessPending() processed=%d err=%v", got.processed, got.err)
+	}
+	current, err := baseStore.GetInvocation(ctx, inv.DomainID, inv.ID)
+	if err != nil || current.Status != "running" || current.ClaimToken != claimed.ClaimToken || current.ClaimVersion != claimed.ClaimVersion {
+		t.Fatalf("active claim overwritten: current=%+v claimed=%+v err=%v", current, claimed, err)
+	}
+}
+
+type blockingPendingSnapshotStore struct {
+	storage.Store
+	captured chan struct{}
+	release  chan struct{}
+	blocked  bool
+}
+
+func (s *blockingPendingSnapshotStore) ListInvocations(ctx context.Context, domainID graph.DomainID, filter storage.InvocationFilter) ([]automation.Invocation, error) {
+	items, err := s.Store.ListInvocations(ctx, domainID, filter)
+	if err == nil && filter.Status == "pending" && !s.blocked {
+		s.blocked = true
+		close(s.captured)
+		<-s.release
+	}
+	return items, err
+}
+
 func TestStandaloneRestartReclaimsExpiredInvocation(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
