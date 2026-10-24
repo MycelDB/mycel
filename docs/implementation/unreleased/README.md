@@ -14,4 +14,5 @@ patch-version directories.
 ## Future / unassigned plans
 
 - [AdminTemplateService and Mycel Console template UI implementation plan](admin-template-service-and-ui-implementation-plan.md) — future operator/admin template API and Console Templates tab work. Retained here because the audit found no generated or daemon `AdminTemplateService` implementation.
-- [Atomic inference budget enforcement](atomic-inference-budget-enforcement.md) — daemon-owned reservation, replay, and fail-closed accounting semantics for mycel#239 and SGT1b.
+- [Atomic inference budget enforcement](atomic-inference-budget-enforcement.md) — internal daemon reservation, replay, and fail-closed accounting semantics from mycel#239; its former client-managed public API delivery is superseded.
+- [Procedure inference observability and control](procedure-inference-observability-and-control-implementation-plan.md) — authoritative procedure attempt records, cursor polling, procedure disable, endpoint revocation, and a transport-neutral future delivery boundary without a current message-queue dependency.

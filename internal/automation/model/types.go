@@ -188,6 +188,8 @@ type Invocation struct {
 	BindingVersion             int            `json:"binding_version,omitempty"`
 	ProcedureID                string         `json:"procedure_id,omitempty"`
 	ProcedureVersion           int            `json:"procedure_version,omitempty"`
+	PinnedProcedure            *Procedure     `json:"pinned_procedure,omitempty"`
+	PinnedBinding              *Binding       `json:"pinned_binding,omitempty"`
 	EventID                    string         `json:"event_id"`
 	ChangedElementID           string         `json:"changed_element_id"`
 	ChangedElementKind         string         `json:"changed_element_kind"`
@@ -265,46 +267,51 @@ type WorkflowStepRun struct {
 }
 
 type Run struct {
-	ID                         string                       `json:"id"`
-	DomainID                   graph.DomainID               `json:"domain_id"`
-	InvocationID               string                       `json:"invocation_id"`
-	BindingID                  string                       `json:"binding_id,omitempty"`
-	BindingVersion             int                          `json:"binding_version,omitempty"`
-	ProcedureID                string                       `json:"procedure_id,omitempty"`
-	ProcedureVersion           int                          `json:"procedure_version,omitempty"`
-	AttemptNumber              int                          `json:"attempt_number"`
-	Status                     string                       `json:"status"`
-	ClaimOwnerNodeID           uint64                       `json:"claim_owner_node_id,omitempty"`
-	ClaimVersion               uint64                       `json:"claim_version,omitempty"`
-	ClaimToken                 string                       `json:"claim_token,omitempty"`
-	OutputIdempotencyKey       string                       `json:"output_idempotency_key,omitempty"`
-	RenderedInputHash          string                       `json:"rendered_input_hash,omitempty"`
-	ActorPrincipalID           string                       `json:"actor_principal_id,omitempty"`
-	OnBehalfOfPrincipalID      string                       `json:"on_behalf_of_principal_id,omitempty"`
-	OwnerPrincipalID           string                       `json:"owner_principal_id,omitempty"`
-	AutomationOwnerPrincipalID string                       `json:"automation_owner_principal_id,omitempty"`
-	EventOriginPrincipalID     string                       `json:"event_origin_principal_id,omitempty"`
-	InferenceProfile           string                       `json:"inference_profile,omitempty"`
-	InferenceProfileID         string                       `json:"inference_profile_id,omitempty"`
-	ModelEndpointID            string                       `json:"model_endpoint_id,omitempty"`
-	ModelID                    string                       `json:"model_id,omitempty"`
-	CapabilityID               string                       `json:"model_endpoint_capability_id,omitempty"`
-	CredentialID               string                       `json:"credential_id,omitempty"`
-	CredentialGrantID          string                       `json:"credential_grant_id,omitempty"`
-	PolicyDecisionID           string                       `json:"policy_decision_id,omitempty"`
-	OutputHash                 string                       `json:"output_hash,omitempty"`
-	ProviderRequestID          string                       `json:"provider_request_id,omitempty"`
-	Usage                      TokenUsage                   `json:"usage,omitempty"`
-	ActionFingerprint          string                       `json:"action_fingerprint,omitempty"`
-	MutationID                 string                       `json:"mutation_id,omitempty"`
-	Error                      string                       `json:"error,omitempty"`
-	TargetAlias                string                       `json:"target_alias,omitempty"`
-	TargetNodeID               string                       `json:"target_node_id,omitempty"`
-	IdempotencyTargetNodeID    string                       `json:"idempotency_target_node_id,omitempty"`
-	Context                    map[string]RunContextSummary `json:"context,omitempty"`
-	CoalescedInvocationIDs     []string                     `json:"coalesced_invocation_ids,omitempty"`
-	StartedAt                  time.Time                    `json:"started_at,omitempty"`
-	CompletedAt                time.Time                    `json:"completed_at,omitempty"`
+	ID                          string                       `json:"id"`
+	DomainID                    graph.DomainID               `json:"domain_id"`
+	InvocationID                string                       `json:"invocation_id"`
+	BindingID                   string                       `json:"binding_id,omitempty"`
+	BindingVersion              int                          `json:"binding_version,omitempty"`
+	ProcedureID                 string                       `json:"procedure_id,omitempty"`
+	ProcedureVersion            int                          `json:"procedure_version,omitempty"`
+	AttemptNumber               int                          `json:"attempt_number"`
+	Status                      string                       `json:"status"`
+	ClaimOwnerNodeID            uint64                       `json:"claim_owner_node_id,omitempty"`
+	ClaimVersion                uint64                       `json:"claim_version,omitempty"`
+	ClaimToken                  string                       `json:"claim_token,omitempty"`
+	OutputIdempotencyKey        string                       `json:"output_idempotency_key,omitempty"`
+	RenderedInputHash           string                       `json:"rendered_input_hash,omitempty"`
+	ActorPrincipalID            string                       `json:"actor_principal_id,omitempty"`
+	OnBehalfOfPrincipalID       string                       `json:"on_behalf_of_principal_id,omitempty"`
+	OwnerPrincipalID            string                       `json:"owner_principal_id,omitempty"`
+	AutomationOwnerPrincipalID  string                       `json:"automation_owner_principal_id,omitempty"`
+	EventOriginPrincipalID      string                       `json:"event_origin_principal_id,omitempty"`
+	InferenceProfile            string                       `json:"inference_profile,omitempty"`
+	InferenceProfileID          string                       `json:"inference_profile_id,omitempty"`
+	ModelEndpointID             string                       `json:"model_endpoint_id,omitempty"`
+	ModelID                     string                       `json:"model_id,omitempty"`
+	CapabilityID                string                       `json:"model_endpoint_capability_id,omitempty"`
+	CredentialID                string                       `json:"credential_id,omitempty"`
+	CredentialGrantID           string                       `json:"credential_grant_id,omitempty"`
+	PolicyDecisionID            string                       `json:"policy_decision_id,omitempty"`
+	AuthorizationRevision       uint64                       `json:"authorization_revision,omitempty"`
+	GlobalAuthorizationRevision uint64                       `json:"global_authorization_revision,omitempty"`
+	SpaceAuthorizationRevision  uint64                       `json:"space_authorization_revision,omitempty"`
+	InferenceAttemptIDs         []string                     `json:"inference_attempt_ids,omitempty"`
+	InferenceUsageEventIDs      []string                     `json:"inference_usage_event_ids,omitempty"`
+	OutputHash                  string                       `json:"output_hash,omitempty"`
+	ProviderRequestID           string                       `json:"provider_request_id,omitempty"`
+	Usage                       TokenUsage                   `json:"usage,omitempty"`
+	ActionFingerprint           string                       `json:"action_fingerprint,omitempty"`
+	MutationID                  string                       `json:"mutation_id,omitempty"`
+	Error                       string                       `json:"error,omitempty"`
+	TargetAlias                 string                       `json:"target_alias,omitempty"`
+	TargetNodeID                string                       `json:"target_node_id,omitempty"`
+	IdempotencyTargetNodeID     string                       `json:"idempotency_target_node_id,omitempty"`
+	Context                     map[string]RunContextSummary `json:"context,omitempty"`
+	CoalescedInvocationIDs      []string                     `json:"coalesced_invocation_ids,omitempty"`
+	StartedAt                   time.Time                    `json:"started_at,omitempty"`
+	CompletedAt                 time.Time                    `json:"completed_at,omitempty"`
 }
 
 type RunContextSummary struct {

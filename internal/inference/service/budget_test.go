@@ -370,7 +370,7 @@ func TestBudgetedInvokeCancellationRetainsAmbiguousReservation(t *testing.T) {
 	module, fixture := newResolverFixture(t, ctx)
 	now := time.Now().UTC()
 	scope := newTestBudgetScope(fixture, "scope-cancel", now)
-	scope.Limits.MaxProviderMillisPerRequest = 20
+	scope.Limits.MaxProviderMillisPerRequest = 200
 	scope.Limits.MaxConcurrentProviderCalls = 1
 	if _, err := module.CreateBudgetScope(ctx, scope); err != nil {
 		t.Fatalf("CreateBudgetScope() error=%v", err)
@@ -383,7 +383,7 @@ func TestBudgetedInvokeCancellationRetainsAmbiguousReservation(t *testing.T) {
 		t.Fatalf("Invoke() error=%v", err)
 	}
 	persisted, _ := module.GetBudgetScope(ctx, scope.ID)
-	if blocking.calls.Load() != 1 || persisted.Usage.AmbiguousAttempts != 1 || persisted.Usage.ActiveProviderCalls != 1 || persisted.Usage.ProviderMillis != 20 || persisted.Attempts[0].State != domaininference.BudgetAttemptCanceled {
+	if blocking.calls.Load() != 1 || persisted.Usage.AmbiguousAttempts != 1 || persisted.Usage.ActiveProviderCalls != 1 || persisted.Usage.ProviderMillis != 200 || persisted.Attempts[0].State != domaininference.BudgetAttemptCanceled {
 		t.Fatalf("calls=%d scope=%+v", blocking.calls.Load(), persisted)
 	}
 	_, _, reserveErr := module.ReserveProviderAttempt(ctx, domaininference.BudgetReservationRequest{ScopeID: scope.ID, AttemptID: "attempt-after-cancel", RequestID: "request-after-cancel", Route: scope.Route, BatchItems: 1, InputTokens: 1, OutputTokens: 1, ProviderMillis: 10, Now: time.Now().UTC()})

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
@@ -17,6 +18,12 @@ type ResolveRequest struct {
 	SemanticRuleID        string
 	EmbeddingBindingKey   string
 	SemanticIndexID       string
+	ProcedureID           string
+	ProcedureVersion      int
+	BindingID             string
+	BindingVersion        int
+	InvocationID          string
+	RunID                 string
 	NodeID                string
 	NodeAncestorIDs       []string
 	Operation             domaininference.Operation
@@ -65,6 +72,15 @@ type InvokeRequest struct {
 	BudgetRetry         bool
 	BatchItems          int64
 	Metadata            map[string]any
+	// AfterAuthorization is called after an allowed routing/policy decision and
+	// before connector, budget, or credential access. Returning an error stops
+	// the invocation before any provider access.
+	AfterAuthorization func(context.Context, ResolveResult) error
+	// BeforeProviderAttempt is called after connector, budget, credential, and
+	// cancellation checks, immediately before the connector can observe the
+	// request. Returning an error prevents provider access. Callers use it to
+	// durably establish their provider-start fence.
+	BeforeProviderAttempt func(context.Context, ResolveResult) error
 }
 
 type InvokeResponse struct {
@@ -76,4 +92,5 @@ type InvokeResponse struct {
 	Embedding         []float64
 	Usage             domaininference.Usage
 	Status            domaininference.UsageStatus
+	UsageEventID      string
 }

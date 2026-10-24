@@ -335,6 +335,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			},
 		},
 	})
+	semanticService.WithAuthorizationRevisionSink(automationService)
+	inferenceService.WithAuthorizationRevisionSource(semanticService)
 	backupService := backupservice.NewModule(backupservice.Config{
 		Enabled:                cfg.Backup.Enabled,
 		BackupDir:              cfg.Backup.BackupDir,
@@ -369,7 +371,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		backupService.PrepareExperimentalRaftMode()
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
-			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}}
+			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}, inferenceservice.AuthorizationRaftStateMachine{Module: inferenceService}}
 		}, func(partitionID uint32) consensus.StateMachine {
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
@@ -391,6 +393,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		inferenceService.EnableExperimentalAuthorizationRaft(rt.RaftGroups)
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		automationService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		automationService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)

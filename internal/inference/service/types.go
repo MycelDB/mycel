@@ -9,6 +9,11 @@ import (
 
 const ModuleName = "inference"
 
+type AuthorizationRevisionSource interface {
+	GlobalAuthorizationRevision(ctx context.Context) (uint64, error)
+	SpaceAuthorizationRevision(ctx context.Context, spaceID string) (uint64, error)
+}
+
 type PrincipalStatusChecker interface {
 	IsPrincipalActive(ctx context.Context, principalID string) (bool, error)
 }

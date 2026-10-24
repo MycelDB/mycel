@@ -1,12 +1,19 @@
 # Atomic inference budget enforcement
 
-Tracking: [mycel#239](https://github.com/MycelDB/mycel/issues/239), [mycel-api#37](https://github.com/MycelDB/mycel-api/issues/37), and Mycel Lab SGT1b.
+Tracking: [mycel#239](https://github.com/MycelDB/mycel/issues/239), historical [mycel-api#37](https://github.com/MycelDB/mycel-api/issues/37) planning, and Mycel Lab SGT1b.
+
+> **Supersession note:** the client-managed public budget-scope API and its former
+> protobuf/SDK delivery steps were abandoned. The internal reservation,
+> accounting, replay, and ambiguity machinery remains reusable. The replacement
+> operator-facing architecture is defined by
+> [Procedure inference observability and control](../../design/automation/procedure-inference-observability-and-control.md)
+> and its [implementation plan](procedure-inference-observability-and-control-implementation-plan.md).
 
 ## Purpose
 
 Hosted-provider calls can outlive the client request that caused them and can be retried by background semantic maintenance. Harness-side counters therefore cannot provide hard request, retry, concurrency, token, duration, or cost limits. The daemon must durably reserve capacity before each provider side effect and reconcile it afterward.
 
-This plan defines daemon-owned semantics first. Public protobufs, SDKs, and Lab reconciliation follow in separate repositories after these semantics are reviewed.
+This plan defines the reusable daemon-owned accounting semantics. It no longer proposes a public client-created budget scope. Future public contracts expose daemon-owned procedure execution evidence and controls instead.
 
 ## Safety invariants
 
@@ -35,7 +42,7 @@ Limits include:
 - absolute deadline;
 - optional currency, price-definition version, route prices, and maximum estimated cost.
 
-Zero is not silently interpreted as an enforced zero. Internal capability/status values distinguish configured limits from unavailable enforcement; the public API must preserve that distinction.
+Zero is not silently interpreted as an enforced zero. Internal capability/status values distinguish configured limits from unavailable enforcement; any future operator-facing status must preserve that distinction.
 
 ## Attempt lifecycle
 
@@ -69,13 +76,13 @@ Cost is integer micro-units in one explicit ISO-style currency. A versioned pric
 
 Scopes have explicit expiry and terminal state. The implementation caps attempts per scope and total retained scopes. Retention must extend through the absolute provider deadline. Cleanup may remove only terminal/expired scopes after retention and after every active reservation lease has elapsed; it cannot refund active/ambiguous work.
 
-## Delivery order
+## Revised delivery relationship
 
-1. Domain model, validation, atomic accounting store, WAL replay, and concurrency tests.
-2. Connector integration and cancellation/crash ambiguity tests.
-3. Public contract in `mycel-api#37`.
-4. Generated Go/Rust SDK bindings and daemon API adapters.
-5. Mycel Lab SGT1b preflight, emulator reconciliation, restart tests, and sanitized evidence.
+1. Retain the implemented domain model, validation, atomic accounting store, WAL replay, connector integration, and ambiguity protections as internal daemon machinery.
+2. Adapt the machinery to daemon-created procedure inference attempts where its invariants match; do not accept caller-created enforcement scopes from ordinary graph clients.
+3. Expose typed procedure attempt history, durable cursor polling, procedure controls, and procedure-scoped endpoint authorization through the superseding design.
+4. Regenerate SDK bindings only from the approved replacement source protobuf contract.
+5. Reframe Mycel Lab SGT1b and later live-provider coverage around daemon-owned execution attempts and controls while preserving the Lab's independent orchestration budget.
 
 ## Acceptance tests
 

@@ -218,6 +218,68 @@ The bundled OpenAI package marks GPT-5.6 capabilities with
 `output_token_parameter=max_completion_tokens`, so profiles can use
 `--max-output-tokens` with models that reject legacy `max_tokens`.
 
+## Procedure control and inference audit evidence
+
+Disable or re-enable a logical procedure with a committed execution-partition
+barrier:
+
+```sh
+mycel automation procedure disable <procedure-id> --space-id <space-id> --domain default
+mycel automation procedure enable <procedure-id> --space-id <space-id> --domain default
+```
+
+A successful response includes the control epoch plus affected and acknowledged
+partitions. Disablement prevents later provider starts and suppresses unpublished
+output from calls that were already accepted by a provider. It cannot retract an
+already accepted provider request, so operators must still treat that request as
+conservatively accounted. Enablement does not complete until its partition fences
+are committed.
+
+Inspect the daemon-owned, sanitized attempt ledger:
+
+```sh
+mycel automation inference-attempt list --space-id <space-id> \
+  --procedure-id <procedure-id>
+mycel automation inference-attempt get <attempt-id> --space-id <space-id>
+mycel automation inference-attempt changes --space-id <space-id> \
+  --after-cursor <snapshot-or-next-cursor>
+```
+
+Start polling with the `snapshot_cursor` returned by `list`. Cursors are opaque
+and bound to the principal, space, and filter; do not parse or reuse them under a
+different identity or filter. Delivery is at least once, so consumers must
+deduplicate by immutable event ID. A reported history gap is not an empty result:
+discard the old cursor, obtain a fresh current-state snapshot, and resume from
+its snapshot cursor.
+
+These read surfaces require both `automation.read` and `inference.audit.read`.
+They intentionally exclude prompts, rendered graph content, outputs, vectors,
+credential material, provider request/body identifiers, raw errors, and
+arbitrary metadata. Use bounded policy-decision, credential-grant, configuration,
+and authorization revisions for correlation instead.
+
+Capacity is bounded per space. Capacity errors fail before provider access.
+Raft-owned retention prunes oldest immutable changes by age, count, and bytes,
+then prunes only old terminal materialized attempts; active and ambiguous
+attempts are retained. A terminal attempt that is still referenced by a
+retained run is not pruned; it becomes eligible only after run retention removes
+the reference. Retention advances explicit history/state watermarks past every
+snapshot that can no longer be
+reconstructed, so collectors must handle gaps as described above. Do not delete
+ledger files or active attempt state manually.
+
+Provider start and output publication use two committed authorization fences:
+global endpoint/model/capability/credential state is derived from authoritative
+semantic catalog state and asserted in system-Raft order, while the semantic
+partition state machine passes the exact profile/grant/policy revision into the
+automation-owned execution-partition fence. Startup/rebuild backfills that fence
+for existing spaces. The combined revision remains available for correlation,
+but state-machine decisions use the separately committed scope revisions and do
+not depend on derived inference projections or a node-local decision counter. Raft snapshots
+include current attempts, retained immutable changes, and procedure control
+fences, so restored partitions retain polling watermarks and start/publication
+fencing.
+
 ## Legacy combined automation definitions
 
 Legacy combined definition commands are compatibility surfaces. They keep older

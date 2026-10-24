@@ -102,6 +102,8 @@ func (m *AutomationManager) putInvocationRuntime(ctx context.Context, inv automa
 
 func (m *AutomationManager) putRunRuntime(ctx context.Context, spaceID string, run automation.Run) error {
 	if m.raftGroups == nil {
+		m.runMutationMu.Lock()
+		defer m.runMutationMu.Unlock()
 		release, err := m.enterMutation(ctx)
 		if err != nil {
 			return err
@@ -110,7 +112,25 @@ func (m *AutomationManager) putRunRuntime(ctx context.Context, spaceID string, r
 		if err := m.requireWriteAllowed(); err != nil {
 			return err
 		}
+		if existing, err := m.store.GetRun(ctx, run.DomainID, run.ID); err == nil {
+			merged, mergeErr := mergeAutomationRunUpdate(existing, run)
+			if mergeErr != nil {
+				return mergeErr
+			}
+			run = merged
+		} else if err != storage.ErrNotFound {
+			return mapStoreError(err)
+		}
 		return mapStoreError(m.store.PutRun(ctx, run))
+	}
+	if existing, err := m.store.GetRun(ctx, run.DomainID, run.ID); err == nil {
+		merged, mergeErr := mergeAutomationRunUpdate(existing, run)
+		if mergeErr != nil {
+			return mergeErr
+		}
+		run = merged
+	} else if err != storage.ErrNotFound {
+		return mapStoreError(err)
 	}
 	if err := m.requireLocalExecutionLeader(ctx, spaceID); err != nil {
 		return err
@@ -193,7 +213,42 @@ func (m *AutomationManager) putScheduleCheckpointRuntime(ctx context.Context, sp
 
 func (m *AutomationManager) claimInvocation(ctx context.Context, inv automation.Invocation) (automation.Invocation, bool, error) {
 	if m.raftGroups == nil {
-		return inv, true, nil
+		m.localExecutionMu.Lock()
+		defer m.localExecutionMu.Unlock()
+		current, err := m.store.GetInvocation(ctx, inv.DomainID, inv.ID)
+		if err != nil {
+			return inv, false, mapStoreError(err)
+		}
+		now := m.now()
+		reclaimExpired := false
+		if current.Status == "running" {
+			if current.ClaimExpiresAt.IsZero() {
+				m.recordClaimAbandoned()
+				return current, false, nil
+			}
+			if current.ClaimExpiresAt.After(now) {
+				return current, false, nil
+			}
+			reclaimExpired = true
+		}
+		if current.Status != "pending" && current.Status != "retryable" && current.Status != "running" {
+			return current, false, nil
+		}
+		if current.Status == "retryable" && !current.NextAttemptAt.IsZero() && current.NextAttemptAt.After(now) {
+			return current, false, nil
+		}
+		current.Status = "running"
+		current.ClaimVersion++
+		current.ClaimToken = uuid.NewString()
+		current.ClaimExpiresAt = now.Add(automationClaimLease)
+		current.UpdatedAt = now
+		if err := m.putInvocationRuntime(ctx, current); err != nil {
+			return current, false, err
+		}
+		if reclaimExpired {
+			m.recordClaimReclaim()
+		}
+		return current, true, nil
 	}
 	leader, local, _, _, err := m.executionRoute(inv.SpaceID)
 	if err != nil {
@@ -375,6 +430,42 @@ func (m *AutomationManager) appendExecutionSnapshot(ctx context.Context, snap *a
 			}
 		}
 	}
+	ledgers, err := m.store.ListProcedureInferenceLedgers(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, ledger := range ledgers {
+		if invocationInPartition(automation.Invocation{SpaceID: ledger.SpaceID}, partitionID, partitionCount) {
+			snap.ProcedureInferenceLedgers = append(snap.ProcedureInferenceLedgers, ledger)
+		}
+	}
+	authorizationRevisions, err := m.store.ListSpaceAuthorizationRevisions(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, revision := range authorizationRevisions {
+		if invocationInPartition(automation.Invocation{SpaceID: revision.SpaceID}, partitionID, partitionCount) {
+			snap.SpaceAuthorizationRevisions = append(snap.SpaceAuthorizationRevisions, revision)
+		}
+	}
+	fences, err := m.store.ListProcedureControlFences(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, fence := range fences {
+		if fence.PartitionID == partitionID {
+			snap.ProcedureControlFences = append(snap.ProcedureControlFences, fence)
+		}
+	}
+	barriers, err := m.store.ListProcedureControlBarriers(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, barrier := range barriers {
+		if automationDomainInPartition(barrier.DomainID, partitionID, partitionCount) {
+			snap.ProcedureControlBarriers = append(snap.ProcedureControlBarriers, barrier)
+		}
+	}
 	workflowDomains, err := m.store.ListWorkflowInstanceDomains(ctx)
 	if err != nil {
 		return mapStoreError(err)
@@ -462,6 +553,42 @@ func validateExecutionSnapshotPartition(snap automationSnapshot, partitionID, pa
 	for _, run := range snap.Runs {
 		if _, ok := invocationIDs[run.InvocationID]; !ok {
 			return fmt.Errorf("automation run %s references invocation outside snapshot partition", run.ID)
+		}
+	}
+	for _, fence := range snap.ProcedureControlFences {
+		if strings.TrimSpace(fence.SpaceID) == "" || fence.DomainID == graph.DomainID(uuid.Nil) || strings.TrimSpace(fence.ProcedureID) == "" || fence.ProcedureVersion <= 0 || fence.ControlEpoch == 0 || (fence.TargetStatus != automation.StatusEnabled && fence.TargetStatus != automation.StatusDisabled && fence.TargetStatus != "enabling") {
+			return fmt.Errorf("procedure control fence %s is invalid", fence.ProcedureID)
+		}
+		if fence.PartitionID != partitionID || !invocationInPartition(automation.Invocation{SpaceID: fence.SpaceID}, partitionID, partitionCount) {
+			return fmt.Errorf("procedure control fence %s belongs to a different partition", fence.ProcedureID)
+		}
+	}
+	for _, barrier := range snap.ProcedureControlBarriers {
+		if barrier.DomainID == graph.DomainID(uuid.Nil) || strings.TrimSpace(barrier.ProcedureID) == "" || barrier.ControlEpoch == 0 || !automationDomainInPartition(barrier.DomainID, partitionID, partitionCount) {
+			return fmt.Errorf("procedure control barrier %s belongs to a different partition", barrier.ProcedureID)
+		}
+	}
+	for _, revision := range snap.SpaceAuthorizationRevisions {
+		if strings.TrimSpace(revision.SpaceID) == "" || revision.Revision == 0 || !invocationInPartition(automation.Invocation{SpaceID: revision.SpaceID}, partitionID, partitionCount) {
+			return fmt.Errorf("space authorization revision belongs to a different partition")
+		}
+	}
+	for _, ledger := range snap.ProcedureInferenceLedgers {
+		if !invocationInPartition(automation.Invocation{SpaceID: ledger.SpaceID}, partitionID, partitionCount) {
+			return fmt.Errorf("procedure inference ledger for space %s belongs to a different partition", ledger.SpaceID)
+		}
+		for _, attempt := range ledger.Attempts {
+			if attempt.SpaceID != ledger.SpaceID {
+				return fmt.Errorf("procedure inference attempt %s has a mismatched space", attempt.ID)
+			}
+			if _, ok := invocationIDs[attempt.InvocationID]; !ok {
+				return fmt.Errorf("procedure inference attempt %s references invocation outside snapshot partition", attempt.ID)
+			}
+		}
+		for _, change := range ledger.Changes {
+			if change.SpaceID != ledger.SpaceID || change.Attempt.SpaceID != ledger.SpaceID {
+				return fmt.Errorf("procedure inference change %s has a mismatched space", change.EventID)
+			}
 		}
 	}
 	workflowInstanceIDs := map[string]struct{}{}
@@ -594,6 +721,50 @@ func (m *AutomationManager) deleteAutomationPartitionExecution(ctx context.Conte
 				if err := m.store.DeleteRun(ctx, domainID, run.ID); err != nil && err != storage.ErrNotFound {
 					return mapStoreError(err)
 				}
+			}
+		}
+	}
+	fences, err := m.store.ListProcedureControlFences(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, fence := range fences {
+		if fence.PartitionID == partitionID {
+			if err := m.store.DeleteProcedureControlFence(ctx, fence.PartitionID, fence.DomainID, fence.ProcedureID); err != nil && err != storage.ErrNotFound {
+				return mapStoreError(err)
+			}
+		}
+	}
+	barriers, err := m.store.ListProcedureControlBarriers(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, barrier := range barriers {
+		if automationDomainInPartition(barrier.DomainID, partitionID, partitionCount) {
+			if err := m.store.DeleteProcedureControlBarrier(ctx, barrier.DomainID, barrier.ProcedureID); err != nil && err != storage.ErrNotFound {
+				return mapStoreError(err)
+			}
+		}
+	}
+	ledgers, err := m.store.ListProcedureInferenceLedgers(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, ledger := range ledgers {
+		if invocationInPartition(automation.Invocation{SpaceID: ledger.SpaceID}, partitionID, partitionCount) {
+			if err := m.store.DeleteProcedureInferenceLedger(ctx, ledger.SpaceID); err != nil && err != storage.ErrNotFound {
+				return mapStoreError(err)
+			}
+		}
+	}
+	authorizationRevisions, err := m.store.ListSpaceAuthorizationRevisions(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, revision := range authorizationRevisions {
+		if invocationInPartition(automation.Invocation{SpaceID: revision.SpaceID}, partitionID, partitionCount) {
+			if err := m.store.DeleteSpaceAuthorizationRevision(ctx, revision.SpaceID); err != nil && err != storage.ErrNotFound {
+				return mapStoreError(err)
 			}
 		}
 	}

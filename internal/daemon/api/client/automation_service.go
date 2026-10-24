@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,19 +11,41 @@ import (
 	automationmodel "github.com/myceldb/mycel/internal/automation/model"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	"github.com/myceldb/mycel/internal/daemon/api/automationview"
+	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type AutomationService struct {
 	clientv1.UnimplementedAutomationServiceServer
 	automations automationservice.Manager
+	spaces      daemonspace.Manager
+	cursors     *automationview.CursorCodec
 }
 
-func NewAutomationService(automations automationservice.Manager) *AutomationService {
-	return &AutomationService{automations: automations}
+func NewAutomationService(automations automationservice.Manager, cursorKey ...[]byte) *AutomationService {
+	key := make([]byte, 32)
+	if len(cursorKey) > 0 && len(cursorKey[0]) >= 16 {
+		key = append(key[:0], cursorKey[0]...)
+	} else if _, err := rand.Read(key); err != nil {
+		panic("generate procedure inference cursor key: " + err.Error())
+	}
+	codec, err := automationview.NewCursorCodec(key)
+	if err != nil {
+		panic(err)
+	}
+	return &AutomationService{automations: automations, cursors: codec}
+}
+
+func (s *AutomationService) WithSpaceManager(spaces daemonspace.Manager) *AutomationService {
+	s.spaces = spaces
+	return s
 }
 
 func (s *AutomationService) ValidateAutomation(ctx context.Context, req *clientv1.ValidateAutomationRequest) (*clientv1.ValidateAutomationResponse, error) {
@@ -196,22 +219,189 @@ func (s *AutomationService) ListAutomationInvocations(ctx context.Context, req *
 }
 
 func (s *AutomationService) GetAutomationRun(ctx context.Context, req *clientv1.GetAutomationRunRequest) (*clientv1.GetAutomationRunResponse, error) {
-	if _, err := spaceUserPrincipalFromContext(ctx); err != nil {
-		return nil, err
-	}
 	domainID, err := parseDomainID(req.GetDomainId())
 	if err != nil {
 		return nil, err
+	}
+	if s.spaces == nil {
+		return nil, status.Error(codes.FailedPrecondition, "procedure inference authorization is unavailable")
+	}
+	domain, err := s.spaces.GetDomain(ctx, domainID.String())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "automation run not found")
+	}
+	if _, err := s.requireProcedureInferenceRead(ctx, domain.SpaceID.String()); err != nil {
+		return nil, status.Error(codes.NotFound, "automation run not found")
 	}
 	run, err := s.automations.GetRun(ctx, domainID, req.GetRunId())
 	if err != nil {
 		return nil, mapAutomationError(err)
 	}
-	data, err := json.MarshalIndent(run, "", "  ")
+	typedRun := automationview.RunToProto(run)
+	data, err := (protojson.MarshalOptions{Indent: "  ", UseProtoNames: true}).Marshal(typedRun)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &clientv1.GetAutomationRunResponse{RunJson: string(data)}, nil
+	return &clientv1.GetAutomationRunResponse{RunJson: string(data), Run: typedRun, InferenceUsageEventIds: append([]string(nil), run.InferenceUsageEventIDs...)}, nil
+}
+
+func (s *AutomationService) GetProcedureInferenceAttempt(ctx context.Context, req *clientv1.GetProcedureInferenceAttemptRequest) (*clientv1.GetProcedureInferenceAttemptResponse, error) {
+	if _, err := s.requireProcedureInferenceRead(ctx, req.GetSpaceId()); err != nil {
+		return nil, err
+	}
+	ledger, err := s.automations.GetProcedureInferenceLedger(ctx, strings.TrimSpace(req.GetSpaceId()))
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	attempt, ok := automationview.GetAttempt(ledger, req.GetAttemptId())
+	if !ok {
+		return nil, status.Error(codes.NotFound, "procedure inference attempt not found")
+	}
+	return &clientv1.GetProcedureInferenceAttemptResponse{Attempt: automationview.AttemptToProto(attempt)}, nil
+}
+
+func (s *AutomationService) ListProcedureInferenceAttempts(ctx context.Context, req *clientv1.ListProcedureInferenceAttemptsRequest) (*clientv1.ListProcedureInferenceAttemptsResponse, error) {
+	principal, err := s.requireProcedureInferenceRead(ctx, req.GetSpaceId())
+	if err != nil {
+		return nil, err
+	}
+	pageSize, err := automationview.NormalizePageSize(req.GetPageSize())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ledger, err := s.automations.GetProcedureInferenceLedger(ctx, strings.TrimSpace(req.GetSpaceId()))
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	page, err := s.cursors.ListCurrent(ledger, req.GetFilter(), pageSize, req.GetPageToken(), principal.PrincipalID)
+	if errors.Is(err, automationview.ErrInvalidCursor) {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &clientv1.ListProcedureInferenceAttemptsResponse{NextPageToken: page.NextPageToken, SnapshotCursor: page.SnapshotCursor, SnapshotHighWaterSequence: page.SnapshotHighWaterSequence, EarliestRetainedStateSequence: page.EarliestRetainedStateSequence, Attempts: make([]*commonv1.ProcedureInferenceAttempt, 0, len(page.Attempts))}
+	for _, attempt := range page.Attempts {
+		out.Attempts = append(out.Attempts, automationview.AttemptToProto(attempt))
+	}
+	return out, nil
+}
+
+func (s *AutomationService) ListProcedureInferenceAttemptChanges(ctx context.Context, req *clientv1.ListProcedureInferenceAttemptChangesRequest) (*clientv1.ListProcedureInferenceAttemptChangesResponse, error) {
+	principal, err := s.requireProcedureInferenceRead(ctx, req.GetSpaceId())
+	if err != nil {
+		return nil, err
+	}
+	pageSize, err := automationview.NormalizePageSize(req.GetPageSize())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ledger, err := s.automations.GetProcedureInferenceLedger(ctx, strings.TrimSpace(req.GetSpaceId()))
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	page, err := s.cursors.ListChanges(ledger, req.GetFilter(), pageSize, req.GetAfterCursor(), principal.PrincipalID)
+	if errors.Is(err, automationview.ErrInvalidCursor) {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &clientv1.ListProcedureInferenceAttemptChangesResponse{NextCursor: page.NextCursor, HighWaterSequence: page.HighWaterSequence, EarliestRetainedSequence: page.EarliestRetainedSequence, EarliestRetainedStateSequence: page.EarliestRetainedStateSequence, HistoryGap: page.HistoryGap, Changes: make([]*commonv1.ProcedureInferenceAttemptChange, 0, len(page.Changes))}
+	for _, change := range page.Changes {
+		out.Changes = append(out.Changes, automationview.ChangeToProto(change))
+	}
+	return out, nil
+}
+
+func (s *AutomationService) requireProcedureInferenceRead(ctx context.Context, spaceID string) (principal daemonauth.Principal, err error) {
+	principal, err = spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return principal, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return principal, status.Error(codes.InvalidArgument, "space_id is required")
+	}
+	if s.spaces == nil {
+		return principal, status.Error(codes.FailedPrecondition, "procedure inference authorization is unavailable")
+	}
+	sp, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, spaceID)
+	if err != nil {
+		return principal, status.Error(codes.NotFound, "space not found")
+	}
+	access, err := s.spaces.EffectiveAccess(ctx, principal.PrincipalID, sp)
+	if err != nil {
+		return principal, status.Error(codes.PermissionDenied, "procedure inference evidence is not accessible")
+	}
+	if !containsCapability(access.Capabilities, "automation.read") || !containsCapability(access.Capabilities, "inference.audit.read") {
+		return principal, status.Error(codes.PermissionDenied, "procedure inference evidence requires automation.read and inference.audit.read")
+	}
+	return principal, nil
+}
+
+func containsCapability(values []string, required string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), required) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *AutomationService) EnableGraphProcedure(ctx context.Context, req *clientv1.EnableGraphProcedureRequest) (*clientv1.EnableGraphProcedureResponse, error) {
+	procedure, barrier, err := s.controlGraphProcedure(ctx, req.GetSpaceId(), req.GetDomainId(), req.GetProcedureId(), automationmodel.StatusEnabled)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := automationProcedureJSON(procedure)
+	if err != nil {
+		return nil, err
+	}
+	return &clientv1.EnableGraphProcedureResponse{ProcedureJson: encoded, Control: automationview.ControlBarrierToProto(barrier)}, nil
+}
+
+func (s *AutomationService) DisableGraphProcedure(ctx context.Context, req *clientv1.DisableGraphProcedureRequest) (*clientv1.DisableGraphProcedureResponse, error) {
+	procedure, barrier, err := s.controlGraphProcedure(ctx, req.GetSpaceId(), req.GetDomainId(), req.GetProcedureId(), automationmodel.StatusDisabled)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := automationProcedureJSON(procedure)
+	if err != nil {
+		return nil, err
+	}
+	return &clientv1.DisableGraphProcedureResponse{ProcedureJson: encoded, Control: automationview.ControlBarrierToProto(barrier)}, nil
+}
+
+func (s *AutomationService) controlGraphProcedure(ctx context.Context, spaceID, domainIDText, procedureID, target string) (automationmodel.Procedure, automationmodel.ProcedureControlBarrier, error) {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" || s.spaces == nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, status.Error(codes.FailedPrecondition, "procedure control authorization is unavailable")
+	}
+	sp, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, spaceID)
+	if err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, status.Error(codes.NotFound, "space not found")
+	}
+	access, err := s.spaces.EffectiveAccess(ctx, principal.PrincipalID, sp)
+	if err != nil || !containsCapability(access.Capabilities, "automation.manage") {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, status.Error(codes.PermissionDenied, "procedure control requires automation.manage")
+	}
+	domainID, err := parseDomainID(domainIDText)
+	if err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, err
+	}
+	if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, spaceID, domainID.String(), ""); err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, status.Error(codes.NotFound, "domain not found")
+	}
+	procedure, barrier, err := s.automations.SetProcedureStatusAs(ctx, spaceID, domainID, strings.TrimSpace(procedureID), target, principal.PrincipalID)
+	if err != nil {
+		return automationmodel.Procedure{}, barrier, mapAutomationError(err)
+	}
+	return procedure, barrier, nil
 }
 
 func (s *AutomationService) RetryAutomationInvocation(ctx context.Context, req *clientv1.RetryAutomationInvocationRequest) (*clientv1.RetryAutomationInvocationResponse, error) {

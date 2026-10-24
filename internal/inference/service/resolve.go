@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +15,44 @@ import (
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 )
+
+func (m *Module) CurrentAuthorizationRevision(ctx context.Context, spaceID string) (uint64, error) {
+	globalRevision, spaceRevision, err := m.CurrentAuthorizationRevisions(ctx, spaceID)
+	if err != nil {
+		return 0, err
+	}
+	return combineAuthorizationRevisions(globalRevision, spaceRevision), nil
+}
+
+func (m *Module) CurrentAuthorizationRevisions(ctx context.Context, spaceID string) (uint64, uint64, error) {
+	if source := m.authorizationRevisionSource(); source != nil {
+		globalRevision, err := source.GlobalAuthorizationRevision(ctx)
+		if err != nil {
+			return 0, 0, err
+		}
+		spaceRevision, err := source.SpaceAuthorizationRevision(ctx, strings.TrimSpace(spaceID))
+		if err != nil {
+			return 0, 0, err
+		}
+		return globalRevision, spaceRevision, nil
+	}
+	if err := m.requireDerivedProjectionHealthy(); err != nil {
+		return 0, 0, err
+	}
+	spaceMgr, err := m.SpaceManager(ctx, strings.TrimSpace(spaceID))
+	if err != nil {
+		return 0, 0, err
+	}
+	globalRevision, err := globalAuthorizationStateRevision(ctx, m.GlobalManager())
+	if err != nil {
+		return 0, 0, err
+	}
+	spaceRevision, err := spaceAuthorizationStateRevision(ctx, spaceMgr)
+	if err != nil {
+		return 0, 0, err
+	}
+	return globalRevision, spaceRevision, nil
+}
 
 func (m *Module) Resolve(ctx context.Context, req inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
 	if err := m.requireDerivedProjectionHealthy(); err != nil {
@@ -254,7 +295,7 @@ func (r resolver) evaluatePolicies(req inferenceruntime.ResolveRequest, profile 
 	now := time.Now().UTC()
 	matched := []domaininference.Policy{}
 	for _, policy := range policies {
-		if policyMatches(policy, req, profile, now) {
+		if policyMatches(policy, req, profile, candidate, now) {
 			matched = append(matched, policy)
 		}
 	}
@@ -321,7 +362,15 @@ func (r resolver) evaluatePolicies(req inferenceruntime.ResolveRequest, profile 
 }
 
 func (r resolver) allow(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req inferenceruntime.ResolveRequest, result inferenceruntime.ResolveResult, policyIDs []string, reason string) (inferenceruntime.ResolveResult, error) {
-	decision, err := spaceMgr.UpsertPolicyDecision(ctx, decisionFromResolve(req, result, domaininference.PolicyDecisionAllowed, policyIDs, reason))
+	decisionRecord := decisionFromResolve(req, result, domaininference.PolicyDecisionAllowed, policyIDs, reason)
+	globalRevision, spaceRevision, revision, err := r.authorizationStateRevisions(ctx, req.SpaceID, spaceMgr)
+	if err != nil {
+		return inferenceruntime.ResolveResult{}, err
+	}
+	decisionRecord.AuthorizationRevision = revision
+	decisionRecord.GlobalAuthorizationRevision = globalRevision
+	decisionRecord.SpaceAuthorizationRevision = spaceRevision
+	decision, err := spaceMgr.UpsertPolicyDecision(ctx, decisionRecord)
 	if err != nil {
 		return inferenceruntime.ResolveResult{}, err
 	}
@@ -331,7 +380,15 @@ func (r resolver) allow(ctx context.Context, spaceMgr inferencestorage.SpaceMana
 }
 
 func (r resolver) deny(ctx context.Context, spaceMgr inferencestorage.SpaceManager, req inferenceruntime.ResolveRequest, result inferenceruntime.ResolveResult, policyIDs []string, reason string) (inferenceruntime.ResolveResult, error) {
-	decision, err := spaceMgr.UpsertPolicyDecision(ctx, decisionFromResolve(req, result, domaininference.PolicyDecisionDenied, policyIDs, reason))
+	decisionRecord := decisionFromResolve(req, result, domaininference.PolicyDecisionDenied, policyIDs, reason)
+	globalRevision, spaceRevision, revision, err := r.authorizationStateRevisions(ctx, req.SpaceID, spaceMgr)
+	if err != nil {
+		return inferenceruntime.ResolveResult{}, err
+	}
+	decisionRecord.AuthorizationRevision = revision
+	decisionRecord.GlobalAuthorizationRevision = globalRevision
+	decisionRecord.SpaceAuthorizationRevision = spaceRevision
+	decision, err := spaceMgr.UpsertPolicyDecision(ctx, decisionRecord)
 	if err != nil {
 		return inferenceruntime.ResolveResult{}, err
 	}
@@ -340,8 +397,109 @@ func (r resolver) deny(ctx context.Context, spaceMgr inferencestorage.SpaceManag
 	return result, nil
 }
 
+func (r resolver) authorizationStateRevisions(ctx context.Context, spaceID string, spaceMgr inferencestorage.SpaceManager) (uint64, uint64, uint64, error) {
+	if provider, ok := r.manager.(interface {
+		CurrentAuthorizationRevisions(context.Context, string) (uint64, uint64, error)
+	}); ok {
+		globalRevision, spaceRevision, err := provider.CurrentAuthorizationRevisions(ctx, spaceID)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		return globalRevision, spaceRevision, combineAuthorizationRevisions(globalRevision, spaceRevision), nil
+	}
+	return authorizationStateRevisions(ctx, r.manager, spaceMgr)
+}
+
+func authorizationStateRevisions(ctx context.Context, manager Manager, spaceMgr inferencestorage.SpaceManager) (uint64, uint64, uint64, error) {
+	globalRevision, err := globalAuthorizationStateRevision(ctx, manager.GlobalManager())
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	spaceRevision, err := spaceAuthorizationStateRevision(ctx, spaceMgr)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return globalRevision, spaceRevision, combineAuthorizationRevisions(globalRevision, spaceRevision), nil
+}
+
+func globalAuthorizationStateRevision(ctx context.Context, global inferencestorage.GlobalManager) (uint64, error) {
+	endpoints, err := global.ListEndpoints(ctx)
+	if err != nil {
+		return 0, err
+	}
+	models, err := global.ListModels(ctx)
+	if err != nil {
+		return 0, err
+	}
+	capabilities, err := global.ListCapabilities(ctx)
+	if err != nil {
+		return 0, err
+	}
+	credentials, err := global.ListCredentials(ctx)
+	if err != nil {
+		return 0, err
+	}
+	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].ID.String() < endpoints[j].ID.String() })
+	sort.Slice(models, func(i, j int) bool { return models[i].ID.String() < models[j].ID.String() })
+	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i].ID.String() < capabilities[j].ID.String() })
+	sort.Slice(credentials, func(i, j int) bool { return credentials[i].ID.String() < credentials[j].ID.String() })
+	encoded, err := json.Marshal(struct {
+		Endpoints    []domaininference.Endpoint
+		Models       []domaininference.Model
+		Capabilities []domaininference.Capability
+		Credentials  []domaininference.Credential
+	}{endpoints, models, capabilities, credentials})
+	if err != nil {
+		return 0, err
+	}
+	return nonZeroRevision(encoded), nil
+}
+
+func spaceAuthorizationStateRevision(ctx context.Context, spaceMgr inferencestorage.SpaceManager) (uint64, error) {
+	profiles, err := spaceMgr.ListProfiles(ctx)
+	if err != nil {
+		return 0, err
+	}
+	grants, err := spaceMgr.ListCredentialGrants(ctx)
+	if err != nil {
+		return 0, err
+	}
+	policies, err := spaceMgr.ListPolicies(ctx)
+	if err != nil {
+		return 0, err
+	}
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].ID.String() < profiles[j].ID.String() })
+	sort.Slice(grants, func(i, j int) bool { return grants[i].ID.String() < grants[j].ID.String() })
+	sort.Slice(policies, func(i, j int) bool { return policies[i].ID.String() < policies[j].ID.String() })
+	encoded, err := json.Marshal(struct {
+		Profiles []domaininference.Profile
+		Grants   []domaininference.CredentialGrant
+		Policies []domaininference.Policy
+	}{profiles, grants, policies})
+	if err != nil {
+		return 0, err
+	}
+	return nonZeroRevision(encoded), nil
+}
+
+func combineAuthorizationRevisions(globalRevision, spaceRevision uint64) uint64 {
+	encoded := make([]byte, 16)
+	binary.BigEndian.PutUint64(encoded[:8], globalRevision)
+	binary.BigEndian.PutUint64(encoded[8:], spaceRevision)
+	return nonZeroRevision(encoded)
+}
+
+func nonZeroRevision(encoded []byte) uint64 {
+	sum := sha256.Sum256(encoded)
+	revision := binary.BigEndian.Uint64(sum[:8])
+	if revision == 0 {
+		return 1
+	}
+	return revision
+}
+
 func decisionFromResolve(req inferenceruntime.ResolveRequest, result inferenceruntime.ResolveResult, action domaininference.PolicyDecisionAction, policyIDs []string, reason string) domaininference.PolicyDecision {
-	return domaininference.PolicyDecision{SpaceID: req.SpaceID, DomainID: req.DomainID, NodeID: req.NodeID, SemanticRuleID: req.SemanticRuleID, EmbeddingBindingKey: req.EmbeddingBindingKey, Operation: req.Operation, UsageMode: req.UsageMode, ProfileID: result.Profile.ID, CapabilityID: result.Capability.ID, EndpointID: result.Endpoint.ID, ModelID: result.Model.ID, CredentialID: result.Credential.ID, CredentialGrantID: result.CredentialGrant.ID, ActorPrincipalID: req.ActorPrincipalID, OnBehalfOfPrincipalID: req.OnBehalfOfPrincipalID, Action: action, MatchedPolicyIDs: append([]string(nil), policyIDs...), Reason: reason, Metadata: copyMap(req.Metadata)}
+	return domaininference.PolicyDecision{SpaceID: req.SpaceID, DomainID: req.DomainID, NodeID: req.NodeID, SemanticRuleID: req.SemanticRuleID, EmbeddingBindingKey: req.EmbeddingBindingKey, ProcedureID: req.ProcedureID, ProcedureVersion: req.ProcedureVersion, BindingID: req.BindingID, BindingVersion: req.BindingVersion, InvocationID: req.InvocationID, RunID: req.RunID, Operation: req.Operation, UsageMode: req.UsageMode, ProfileID: result.Profile.ID, CapabilityID: result.Capability.ID, EndpointID: result.Endpoint.ID, ModelID: result.Model.ID, CredentialID: result.Credential.ID, CredentialGrantID: result.CredentialGrant.ID, ActorPrincipalID: req.ActorPrincipalID, OnBehalfOfPrincipalID: req.OnBehalfOfPrincipalID, Action: action, MatchedPolicyIDs: append([]string(nil), policyIDs...), Reason: reason, Metadata: copyMap(req.Metadata)}
 }
 
 func candidateEnabled(candidate capabilityCandidate) bool {
@@ -502,7 +660,7 @@ func onBehalfPrincipalMatches(values []string, actorPrincipalID string, onBehalf
 	return principalListExplicitlyAllows(values, onBehalfPrincipalID)
 }
 
-func policyMatches(policy domaininference.Policy, req inferenceruntime.ResolveRequest, profile domaininference.Profile, now time.Time) bool {
+func policyMatches(policy domaininference.Policy, req inferenceruntime.ResolveRequest, profile domaininference.Profile, candidate capabilityCandidate, now time.Time) bool {
 	if policy.SpaceID != "" && policy.SpaceID != req.SpaceID {
 		return false
 	}
@@ -517,7 +675,7 @@ func policyMatches(policy domaininference.Policy, req inferenceruntime.ResolveRe
 	// explicit ancestry matches so an unevaluable descendant scope cannot broaden
 	// access.
 	unknownDescendantMatches := policy.NoInference || policy.Action == domaininference.PolicyActionDeny
-	return scopeMatchesWithDescendants(policy.Scope, req, unknownDescendantMatches) && operationRefsMatch(policy.Operations, req.Operation) && refsAllow(policy.ProfileRefs, profile.ID, profile.Key)
+	return scopeMatchesWithDescendants(policy.Scope, req, unknownDescendantMatches) && operationRefsMatch(policy.Operations, req.Operation) && refsAllow(policy.ProfileRefs, profile.ID, profile.Key) && refsAllow(policy.EndpointRefs, candidate.endpoint.ID, candidate.endpoint.Key) && refsAllow(policy.ModelRefs, candidate.model.ID, candidate.model.Key) && refsAllow(policy.CapabilityRefs, candidate.capability.ID, candidate.capability.Key)
 }
 
 func scopeMatches(scope domaininference.Scope, req inferenceruntime.ResolveRequest) bool {
@@ -538,6 +696,24 @@ func scopeMatchesWithDescendants(scope domaininference.Scope, req inferencerunti
 		return false
 	}
 	if scope.SemanticIndexID != "" && scope.SemanticIndexID != req.SemanticIndexID {
+		return false
+	}
+	if scope.ProcedureID != "" && scope.ProcedureID != req.ProcedureID {
+		return false
+	}
+	if scope.ProcedureVersion > 0 && scope.ProcedureVersion != req.ProcedureVersion {
+		return false
+	}
+	if scope.BindingID != "" && scope.BindingID != req.BindingID {
+		return false
+	}
+	if scope.BindingVersion > 0 && scope.BindingVersion != req.BindingVersion {
+		return false
+	}
+	if scope.InvocationID != "" && scope.InvocationID != req.InvocationID {
+		return false
+	}
+	if scope.RunID != "" && scope.RunID != req.RunID {
 		return false
 	}
 	if scope.NodeID != "" {
@@ -595,6 +771,24 @@ func scopeSpecificity(scope domaininference.Scope, req inferenceruntime.ResolveR
 	}
 	if scope.SemanticIndexID != "" {
 		score += 4
+	}
+	if scope.ProcedureID != "" {
+		score += 8
+	}
+	if scope.ProcedureVersion > 0 {
+		score += 8
+	}
+	if scope.BindingID != "" {
+		score += 8
+	}
+	if scope.BindingVersion > 0 {
+		score += 8
+	}
+	if scope.InvocationID != "" {
+		score += 16
+	}
+	if scope.RunID != "" {
+		score += 16
 	}
 	if scope.NodeID != "" {
 		score += 8

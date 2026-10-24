@@ -25,18 +25,22 @@ type Graphs interface {
 type Engine struct{ Graphs Graphs }
 
 type Context struct {
-	Definition           automation.Definition
-	RunID                string
-	InvocationID         string
-	BindingID            string
-	TargetNodeID         string
-	ClaimOwnerNodeID     uint64
-	ClaimVersion         uint64
-	ClaimToken           string
-	OutputIdempotencyKey string
-	Changed              graph.Node
-	Aliases              map[string]any
-	Result               output.Result
+	Definition                  automation.Definition
+	RunID                       string
+	InvocationID                string
+	BindingID                   string
+	TargetNodeID                string
+	ClaimOwnerNodeID            uint64
+	ClaimVersion                uint64
+	ClaimToken                  string
+	OutputIdempotencyKey        string
+	ProcedureID                 string
+	AuthorizationRevision       uint64
+	GlobalAuthorizationRevision uint64
+	SpaceAuthorizationRevision  uint64
+	Changed                     graph.Node
+	Aliases                     map[string]any
+	Result                      output.Result
 }
 
 type Summary struct {
@@ -349,6 +353,18 @@ func automationMeta(in Context) map[string]any {
 	}
 	if in.OutputIdempotencyKey != "" {
 		meta["output_idempotency_key"] = in.OutputIdempotencyKey
+	}
+	if in.ProcedureID != "" {
+		meta["procedure_id"] = in.ProcedureID
+	}
+	if in.AuthorizationRevision != 0 {
+		meta["authorization_revision"] = in.AuthorizationRevision
+	}
+	if in.GlobalAuthorizationRevision != 0 {
+		meta["global_authorization_revision"] = in.GlobalAuthorizationRevision
+	}
+	if in.SpaceAuthorizationRevision != 0 {
+		meta["space_authorization_revision"] = in.SpaceAuthorizationRevision
 	}
 	return meta
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
@@ -42,9 +43,11 @@ type Module struct {
 	connectors           map[domaininference.ConnectorType]connectors.Connector
 	secretResolver       SecretResolver
 	principals           PrincipalStatusChecker
+	authorizationSource  AuthorizationRevisionSource
 	derivedProjectionErr string
 	logger               *slog.Logger
 	gate                 *quiesce.Gate
+	raftGroups           *consensus.MultiGroup
 	startedAt            time.Time
 }
 
@@ -59,6 +62,19 @@ func (m *Module) WithPrincipalStatusChecker(checker PrincipalStatusChecker) *Mod
 	defer m.mu.Unlock()
 	m.principals = checker
 	return m
+}
+
+func (m *Module) WithAuthorizationRevisionSource(source AuthorizationRevisionSource) *Module {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authorizationSource = source
+	return m
+}
+
+func (m *Module) authorizationRevisionSource() AuthorizationRevisionSource {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.authorizationSource
 }
 
 func (m *Module) principalStatusChecker() PrincipalStatusChecker {

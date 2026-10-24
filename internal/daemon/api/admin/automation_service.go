@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,13 +12,17 @@ import (
 	automationmodel "github.com/myceldb/mycel/internal/automation/model"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	"github.com/myceldb/mycel/internal/daemon/api/automationview"
+	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
+	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	storedomains "github.com/myceldb/mycel/internal/space/storage/domains"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const (
@@ -35,6 +40,7 @@ type AdminAutomationService struct {
 	automations    automationservice.Manager
 	authorizer     OperatorAuthorizer
 	domainResolver AdminAutomationDomainResolver
+	cursors        *automationview.CursorCodec
 }
 
 func NewAdminAutomationService(automations automationservice.Manager, authorizer ...OperatorAuthorizer) *AdminAutomationService {
@@ -42,7 +48,24 @@ func NewAdminAutomationService(automations automationservice.Manager, authorizer
 	if len(authorizer) > 0 {
 		authz = authorizer[0]
 	}
-	return &AdminAutomationService{automations: automations, authorizer: authz}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic("generate procedure inference cursor key: " + err.Error())
+	}
+	codec, err := automationview.NewCursorCodec(key)
+	if err != nil {
+		panic(err)
+	}
+	return &AdminAutomationService{automations: automations, authorizer: authz, cursors: codec}
+}
+
+func (s *AdminAutomationService) WithCursorKey(key []byte) *AdminAutomationService {
+	codec, err := automationview.NewCursorCodec(key)
+	if err != nil {
+		panic(err)
+	}
+	s.cursors = codec
+	return s
 }
 
 func (s *AdminAutomationService) WithDomainResolver(resolver AdminAutomationDomainResolver) *AdminAutomationService {
@@ -216,15 +239,141 @@ func (s *AdminAutomationService) GetAutomationRun(ctx context.Context, req *admi
 	if err := s.requireAutomationCapability(ctx, domainID, capAutomationRead); err != nil {
 		return nil, err
 	}
+	if err := s.requireAutomationCapability(ctx, domainID, capInferenceAuditRead); err != nil {
+		return nil, err
+	}
 	run, err := s.automations.GetRun(ctx, domainID, req.GetRunId())
 	if err != nil {
 		return nil, mapAdminAutomationError(err)
 	}
-	data, err := json.MarshalIndent(run, "", "  ")
+	typedRun := automationview.RunToProto(run)
+	data, err := (protojson.MarshalOptions{Indent: "  ", UseProtoNames: true}).Marshal(typedRun)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	return &adminv1.GetAutomationRunResponse{RunJson: string(data)}, nil
+	return &adminv1.GetAutomationRunResponse{RunJson: string(data), Run: typedRun, InferenceUsageEventIds: append([]string(nil), run.InferenceUsageEventIDs...)}, nil
+}
+
+func (s *AdminAutomationService) GetProcedureInferenceAttempt(ctx context.Context, req *adminv1.GetProcedureInferenceAttemptRequest) (*adminv1.GetProcedureInferenceAttemptResponse, error) {
+	if _, err := s.requireProcedureInferenceRead(ctx, req.GetSpaceId(), ""); err != nil {
+		return nil, err
+	}
+	ledger, err := s.automations.GetProcedureInferenceLedger(ctx, strings.TrimSpace(req.GetSpaceId()))
+	if err != nil {
+		return nil, mapAdminAutomationError(err)
+	}
+	attempt, ok := automationview.GetAttempt(ledger, req.GetAttemptId())
+	if !ok {
+		return nil, status.Error(codes.NotFound, "procedure inference attempt not found")
+	}
+	return &adminv1.GetProcedureInferenceAttemptResponse{Attempt: automationview.AttemptToProto(attempt)}, nil
+}
+
+func (s *AdminAutomationService) ListProcedureInferenceAttempts(ctx context.Context, req *adminv1.ListProcedureInferenceAttemptsRequest) (*adminv1.ListProcedureInferenceAttemptsResponse, error) {
+	domainID := ""
+	if req.GetFilter() != nil {
+		domainID = req.GetFilter().GetDomainId()
+	}
+	principal, err := s.requireProcedureInferenceRead(ctx, req.GetSpaceId(), domainID)
+	if err != nil {
+		return nil, err
+	}
+	pageSize, err := automationview.NormalizePageSize(req.GetPageSize())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ledger, err := s.automations.GetProcedureInferenceLedger(ctx, strings.TrimSpace(req.GetSpaceId()))
+	if err != nil {
+		return nil, mapAdminAutomationError(err)
+	}
+	page, err := s.cursors.ListCurrent(ledger, req.GetFilter(), pageSize, req.GetPageToken(), principal.PrincipalID)
+	if errors.Is(err, automationview.ErrInvalidCursor) {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &adminv1.ListProcedureInferenceAttemptsResponse{NextPageToken: page.NextPageToken, SnapshotCursor: page.SnapshotCursor, SnapshotHighWaterSequence: page.SnapshotHighWaterSequence, EarliestRetainedStateSequence: page.EarliestRetainedStateSequence, Attempts: make([]*commonv1.ProcedureInferenceAttempt, 0, len(page.Attempts))}
+	for _, attempt := range page.Attempts {
+		out.Attempts = append(out.Attempts, automationview.AttemptToProto(attempt))
+	}
+	return out, nil
+}
+
+func (s *AdminAutomationService) ListProcedureInferenceAttemptChanges(ctx context.Context, req *adminv1.ListProcedureInferenceAttemptChangesRequest) (*adminv1.ListProcedureInferenceAttemptChangesResponse, error) {
+	domainID := ""
+	if req.GetFilter() != nil {
+		domainID = req.GetFilter().GetDomainId()
+	}
+	principal, err := s.requireProcedureInferenceRead(ctx, req.GetSpaceId(), domainID)
+	if err != nil {
+		return nil, err
+	}
+	pageSize, err := automationview.NormalizePageSize(req.GetPageSize())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	ledger, err := s.automations.GetProcedureInferenceLedger(ctx, strings.TrimSpace(req.GetSpaceId()))
+	if err != nil {
+		return nil, mapAdminAutomationError(err)
+	}
+	page, err := s.cursors.ListChanges(ledger, req.GetFilter(), pageSize, req.GetAfterCursor(), principal.PrincipalID)
+	if errors.Is(err, automationview.ErrInvalidCursor) {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	out := &adminv1.ListProcedureInferenceAttemptChangesResponse{NextCursor: page.NextCursor, HighWaterSequence: page.HighWaterSequence, EarliestRetainedSequence: page.EarliestRetainedSequence, EarliestRetainedStateSequence: page.EarliestRetainedStateSequence, HistoryGap: page.HistoryGap, Changes: make([]*commonv1.ProcedureInferenceAttemptChange, 0, len(page.Changes))}
+	for _, change := range page.Changes {
+		out.Changes = append(out.Changes, automationview.ChangeToProto(change))
+	}
+	return out, nil
+}
+
+func (s *AdminAutomationService) requireProcedureInferenceRead(ctx context.Context, spaceID, domainID string) (daemonauth.Principal, error) {
+	principal, err := principalFromContext(ctx)
+	if err != nil {
+		return daemonauth.Principal{}, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return daemonauth.Principal{}, status.Error(codes.InvalidArgument, "space_id is required")
+	}
+	scope := principalservice.AccessScope{Type: "space", SpaceID: spaceID}
+	if strings.TrimSpace(domainID) != "" {
+		parsed, err := parseAdminAutomationDomainID(domainID)
+		if err != nil {
+			return daemonauth.Principal{}, err
+		}
+		scope.Type = "domain"
+		scope.DomainID = parsed.String()
+		if s.domainResolver != nil {
+			domain, err := s.domainResolver.GetDomain(ctx, parsed.String())
+			if err != nil || domain.SpaceID.String() != spaceID {
+				return daemonauth.Principal{}, status.Error(codes.NotFound, "procedure inference scope not found")
+			}
+		}
+	}
+	for _, capability := range []string{capAutomationRead, capInferenceAuditRead} {
+		if scoped, ok := s.authorizer.(ScopedOperatorAuthorizer); ok {
+			if err := scoped.Authorize(ctx, principal.PrincipalID, capability, scope); err != nil {
+				return daemonauth.Principal{}, err
+			}
+			continue
+		}
+		if s.authorizer == nil {
+			continue
+		}
+		ok, err := s.authorizer.HasCapability(ctx, principal.PrincipalID, capability)
+		if err != nil {
+			return daemonauth.Principal{}, status.Errorf(codes.Internal, "authorize procedure inference read: %v", err)
+		}
+		if !ok {
+			return daemonauth.Principal{}, status.Error(codes.PermissionDenied, "operator lacks required procedure inference capability")
+		}
+	}
+	return principal, nil
 }
 
 func (s *AdminAutomationService) RetryAutomationInvocation(ctx context.Context, req *adminv1.RetryAutomationInvocationRequest) (*adminv1.RetryAutomationInvocationResponse, error) {
@@ -552,6 +701,54 @@ func formatAdminAutomationTime(t interface {
 	}
 	return t.Format("2006-01-02T15:04:05Z07:00")
 }
+func (s *AdminAutomationService) EnableGraphProcedure(ctx context.Context, req *adminv1.EnableGraphProcedureRequest) (*adminv1.EnableGraphProcedureResponse, error) {
+	procedure, barrier, err := s.controlGraphProcedure(ctx, req.GetSpaceId(), req.GetDomainId(), req.GetProcedureId(), automationmodel.StatusEnabled)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := adminAutomationProcedureJSON(procedure)
+	if err != nil {
+		return nil, err
+	}
+	return &adminv1.EnableGraphProcedureResponse{ProcedureJson: encoded, Control: automationview.ControlBarrierToProto(barrier)}, nil
+}
+
+func (s *AdminAutomationService) DisableGraphProcedure(ctx context.Context, req *adminv1.DisableGraphProcedureRequest) (*adminv1.DisableGraphProcedureResponse, error) {
+	procedure, barrier, err := s.controlGraphProcedure(ctx, req.GetSpaceId(), req.GetDomainId(), req.GetProcedureId(), automationmodel.StatusDisabled)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := adminAutomationProcedureJSON(procedure)
+	if err != nil {
+		return nil, err
+	}
+	return &adminv1.DisableGraphProcedureResponse{ProcedureJson: encoded, Control: automationview.ControlBarrierToProto(barrier)}, nil
+}
+
+func (s *AdminAutomationService) controlGraphProcedure(ctx context.Context, spaceID, domainIDText, procedureID, target string) (automationmodel.Procedure, automationmodel.ProcedureControlBarrier, error) {
+	domainID, err := parseAdminAutomationDomainID(domainIDText)
+	if err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, err
+	}
+	if err := s.requireAutomationCapability(ctx, domainID, capAutomationManage); err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if _, err := uuid.Parse(spaceID); err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, status.Error(codes.InvalidArgument, "space_id must be a UUID")
+	}
+	if scope, err := s.automationAccessScope(ctx, domainID); err != nil {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, err
+	} else if scope.SpaceID != "" && scope.SpaceID != spaceID {
+		return automationmodel.Procedure{}, automationmodel.ProcedureControlBarrier{}, status.Error(codes.NotFound, "domain not found in space")
+	}
+	procedure, barrier, err := s.automations.SetProcedureStatusAs(ctx, strings.TrimSpace(spaceID), domainID, strings.TrimSpace(procedureID), target, automationActorFromContext(ctx))
+	if err != nil {
+		return automationmodel.Procedure{}, barrier, mapAdminAutomationError(err)
+	}
+	return procedure, barrier, nil
+}
+
 func parseAdminAutomationDomainID(value string) (graph.DomainID, error) {
 	id, err := uuid.Parse(value)
 	if err != nil {
