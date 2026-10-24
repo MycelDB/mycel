@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed, unreleased plan.
+Core API/SDK/daemon implementation merged to `develop`; unreleased. PIO7
+destructive/live acceptance remains pending explicit approval. See
+[release readiness](procedure-inference-observability-control-release-readiness.md).
 
 Design authority:
 [Procedure inference observability and control](../../design/automation/procedure-inference-observability-and-control.md).

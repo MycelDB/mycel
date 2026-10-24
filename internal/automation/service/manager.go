@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -61,47 +62,80 @@ type Manager interface {
 }
 
 type AutomationManager struct {
-	store                                 storage.Store
-	now                                   func() time.Time
-	sessions                              SessionRuntime
-	graphs                                GraphRuntime
-	schemas                               SchemaReader
-	inference                             InferenceInvoker
-	blobs                                 BlobReader
-	raftGroups                            *consensus.MultiGroup
-	raftPartitionCount                    uint32
-	raftLocalNode                         consensus.NodeID
-	raftNodeAddrs                         []string
-	raftBackendAuthToken                  string
-	maxInputTokens                        int64
-	maxOutputTokens                       int64
-	metricsProcessed                      int64
-	metricsSucceeded                      int64
-	metricsSkipped                        int64
-	metricsFailed                         int64
-	metricsRetryable                      int64
-	metricsGraphReplayScopes              int64
-	metricsGraphReplayFollowerSkips       int64
-	metricsGraphReplayEvents              int64
-	metricsGraphReplaySkippedEvents       int64
-	metricsGraphReplayInvocationsCreated  int64
-	metricsGraphReplayInvocationsExisting int64
-	metricsGraphReplayCursorAdvances      int64
-	metricsGraphReplayGaps                int64
-	metricsClaimReclaims                  int64
-	metricsClaimAbandoned                 int64
-	writeAllowed                          func() error
-	gate                                  *quiesce.Gate
-	localExecutionMu                      sync.Mutex
-	inferenceAttemptMu                    sync.Mutex
-	runMutationMu                         sync.Mutex
-	definitionMutationMu                  sync.Mutex
-	procedureControlMu                    sync.RWMutex
-	procedureControlOperationMu           sync.Mutex
+	store                                                  storage.Store
+	now                                                    func() time.Time
+	sessions                                               SessionRuntime
+	graphs                                                 GraphRuntime
+	schemas                                                SchemaReader
+	inference                                              InferenceInvoker
+	blobs                                                  BlobReader
+	raftGroups                                             *consensus.MultiGroup
+	raftPartitionCount                                     uint32
+	raftLocalNode                                          consensus.NodeID
+	raftNodeAddrs                                          []string
+	raftBackendAuthToken                                   string
+	maxInputTokens                                         int64
+	maxOutputTokens                                        int64
+	metricsProcessed                                       int64
+	metricsSucceeded                                       int64
+	metricsSkipped                                         int64
+	metricsFailed                                          int64
+	metricsRetryable                                       int64
+	metricsGraphReplayScopes                               int64
+	metricsGraphReplayFollowerSkips                        int64
+	metricsGraphReplayEvents                               int64
+	metricsGraphReplaySkippedEvents                        int64
+	metricsGraphReplayInvocationsCreated                   int64
+	metricsGraphReplayInvocationsExisting                  int64
+	metricsGraphReplayCursorAdvances                       int64
+	metricsGraphReplayGaps                                 int64
+	metricsClaimReclaims                                   int64
+	metricsClaimAbandoned                                  int64
+	metricsProcedureInferenceRequested                     int64
+	metricsProcedureInferenceAuthorized                    int64
+	metricsProcedureInferenceStarted                       int64
+	metricsProcedureInferenceTerminal                      int64
+	metricsProcedureInferenceAmbiguous                     int64
+	metricsProcedureInferenceAttemptCapacityRejections     int64
+	metricsProcedureInferenceChangeCapacityRejections      int64
+	metricsProcedureInferenceAttemptsPruned                int64
+	metricsProcedureInferenceChangesPruned                 int64
+	metricsProcedureInferenceStateBytesPruned              int64
+	metricsProcedureInferenceHistoryBytesPruned            int64
+	metricsProcedureInferenceRetentionGapAdvances          int64
+	metricsProcedureInferenceStateByteCapacityRejections   int64
+	metricsProcedureInferenceHistoryByteCapacityRejections int64
+	metricsProcedureInferenceObservedSpaces                int64
+	metricsProcedureInferenceRetainedAttempts              int64
+	metricsProcedureInferenceRetainedChanges               int64
+	metricsProcedureInferenceRetainedStateBytes            int64
+	metricsProcedureInferenceRetainedHistoryBytes          int64
+	metricsProcedureInferenceActiveAttempts                int64
+	metricsProcedureInferenceCurrentAmbiguousAttempts      int64
+	metricsProcedureInferenceSpacesWithHistoryGap          int64
+	metricsProcedureInferenceSpacesWithStateGap            int64
+	writeAllowed                                           func() error
+	gate                                                   *quiesce.Gate
+	logger                                                 *slog.Logger
+	localExecutionMu                                       sync.Mutex
+	inferenceAttemptMu                                     sync.Mutex
+	runMutationMu                                          sync.Mutex
+	definitionMutationMu                                   sync.Mutex
+	procedureControlMu                                     sync.RWMutex
+	procedureControlOperationMu                            sync.Mutex
+	procedureInferenceDiagnosticsLogMu                     sync.Mutex
+	procedureInferenceDiagnosticsLastLog                   map[string]time.Time
+	procedureInferenceDiagnosticsSuppressed                map[string]int64
+	procedureInferenceObserved                             map[string]procedureInferenceLedgerSummary
 }
 
 func NewManager(store storage.Store) *AutomationManager {
 	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
+}
+
+func (m *AutomationManager) WithLogger(logger *slog.Logger) *AutomationManager {
+	m.logger = logger
+	return m
 }
 
 func (m *AutomationManager) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *AutomationManager {

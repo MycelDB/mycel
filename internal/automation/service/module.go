@@ -106,6 +106,10 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 		}
 	}
 	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceInvoker(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
+	if host != nil {
+		m.AutomationManager.WithLogger(host.Log())
+		m.AutomationManager.logProcedureInferenceFixedBounds()
+	}
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}
