@@ -56,9 +56,13 @@ func TestValidateAutomationOutputFenceAcceptsCurrentClaim(t *testing.T) {
 }
 
 func TestValidateAutomationOutputFenceRejectsChangedAuthorizationRevisionInCluster(t *testing.T) {
+	const (
+		currentRevision uint64 = 4778902782362294898
+		staleRevision   uint64 = 4778902782362294897
+	)
 	ctx := context.Background()
 	store := storage.NewFileStore(t.TempDir())
-	revisions := &outputFenceRevisionInference{revision: 12}
+	revisions := &outputFenceRevisionInference{revision: currentRevision}
 	mgr := NewManager(store).WithInferenceInvoker(revisions)
 	mgr.raftGroups = &consensus.MultiGroup{}
 	mgr.raftPartitionCount = 1
@@ -71,15 +75,15 @@ func TestValidateAutomationOutputFenceRejectsChangedAuthorizationRevisionInClust
 	if err := store.PutProcedure(ctx, automation.Procedure{ID: "proc", Version: 1, DomainID: domainID, Status: automation.StatusEnabled}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID, Revision: 12}); err != nil {
+	if err := store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID, Revision: currentRevision}); err != nil {
 		t.Fatal(err)
 	}
-	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: 11, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 11}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: staleRevision, GlobalAuthorizationRevision: 8853358141603235760, SpaceAuthorizationRevision: staleRevision}
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("authorization revision fence error=%v", err)
 	}
-	validation.AuthorizationRevision = 12
-	validation.SpaceAuthorizationRevision = 12
+	validation.AuthorizationRevision = currentRevision
+	validation.SpaceAuthorizationRevision = currentRevision
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); err != nil {
 		t.Fatalf("matching authorization revision error=%v", err)
 	}

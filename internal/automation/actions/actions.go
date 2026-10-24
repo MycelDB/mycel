@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -343,10 +344,10 @@ func automationMeta(in Context) map[string]any {
 		meta["target_node_id"] = in.TargetNodeID
 	}
 	if in.ClaimOwnerNodeID != 0 {
-		meta["claim_owner_node_id"] = in.ClaimOwnerNodeID
+		meta["claim_owner_node_id"] = strconv.FormatUint(in.ClaimOwnerNodeID, 10)
 	}
 	if in.ClaimVersion != 0 {
-		meta["claim_version"] = in.ClaimVersion
+		meta["claim_version"] = strconv.FormatUint(in.ClaimVersion, 10)
 	}
 	if in.ClaimToken != "" {
 		meta["claim_token"] = in.ClaimToken
@@ -358,13 +359,13 @@ func automationMeta(in Context) map[string]any {
 		meta["procedure_id"] = in.ProcedureID
 	}
 	if in.AuthorizationRevision != 0 {
-		meta["authorization_revision"] = in.AuthorizationRevision
+		meta["authorization_revision"] = strconv.FormatUint(in.AuthorizationRevision, 10)
 	}
 	if in.GlobalAuthorizationRevision != 0 {
-		meta["global_authorization_revision"] = in.GlobalAuthorizationRevision
+		meta["global_authorization_revision"] = strconv.FormatUint(in.GlobalAuthorizationRevision, 10)
 	}
 	if in.SpaceAuthorizationRevision != 0 {
-		meta["space_authorization_revision"] = in.SpaceAuthorizationRevision
+		meta["space_authorization_revision"] = strconv.FormatUint(in.SpaceAuthorizationRevision, 10)
 	}
 	return meta
 }

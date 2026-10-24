@@ -19,7 +19,9 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type RaftStateMachine struct {
@@ -191,12 +193,26 @@ func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.Raft
 	}
 	result, err := group.Propose(ctx, cmd)
 	if err != nil {
-		if errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity) {
-			return consensus.ProposalResult{}, err
-		}
-		return consensus.ProposalResult{}, raftGraphUnavailable("raft graph proposal for partition %d failed: %v", cmd.PartitionID, err)
+		return consensus.ProposalResult{}, mapGraphRaftProposalError(cmd.PartitionID, err)
 	}
 	return result, nil
+}
+
+func mapGraphRaftProposalError(partitionID uint32, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, ErrConflict) || errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity) {
+		return err
+	}
+	// Group.Propose returns deterministic state-machine status errors unchanged.
+	// Preserve their category so callers do not retry committed Raft no-ops as
+	// infrastructure failures. Unknown proposal failures remain unavailable.
+	if status.Code(err) != codes.Unknown {
+		return err
+	}
+	return raftGraphUnavailable("raft graph proposal for partition %d failed: %v", partitionID, err)
 }
 
 func (m *Module) buildGraphCommitRaftCommand(record graphCommitRecord, partitionCount uint32, commandID string) (consensus.RaftCommand, error) {

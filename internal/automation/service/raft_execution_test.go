@@ -140,8 +140,13 @@ func TestProcessPendingRaftDebounceWaitDoesNotHoldRunningClaim(t *testing.T) {
 }
 
 func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
+	const (
+		authorizationRevision       uint64 = 7803206355751821409
+		globalAuthorizationRevision uint64 = 8853358141603235760
+		spaceAuthorizationRevision  uint64 = 4778902782362294898
+	)
 	ctx := context.Background()
-	inference := &conflictInjectingInference{text: "generated summary"}
+	inference := &conflictInjectingInference{text: "generated summary", authorizationRevision: authorizationRevision, globalAuthorizationRevision: globalAuthorizationRevision, spaceAuthorizationRevision: spaceAuthorizationRevision}
 	cluster := newAutomationGraphExecutionRaftCluster(t, ctx, 8, inference)
 	defer cluster.stop()
 	domainID := graph.DomainID(uuid.New())
@@ -163,7 +168,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 		if err := mgr.store.PutBinding(ctx, binding); err != nil {
 			t.Fatalf("seed binding: %v", err)
 		}
-		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: spaceAuthorizationRevision}); err != nil {
 			t.Fatalf("seed authorization revision: %v", err)
 		}
 	}
@@ -202,6 +207,12 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	if err != nil || processed != 1 {
 		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
 	}
+	inference.mu.Lock()
+	providerCalls := inference.invocations
+	inference.mu.Unlock()
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want exactly 1", providerCalls)
+	}
 	cluster.waitForInvocationCount(t, domainID, 1)
 	invs, err := cluster.managers[leaderID].store.ListInvocations(ctx, domainID, storage.InvocationFilter{})
 	if err != nil || len(invs) != 1 {
@@ -233,6 +244,13 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	}
 	if got.Properties["summary"] != "generated summary" || got.Properties["touched_during_inference"] != true {
 		t.Fatalf("final page properties=%+v, want summary and concurrent write preserved", got.Properties)
+	}
+	meta, ok := got.Meta["automation"].(map[string]any)
+	if !ok {
+		t.Fatalf("final automation metadata=%#v, want map", got.Meta["automation"])
+	}
+	if meta["authorization_revision"] != "7803206355751821409" || meta["global_authorization_revision"] != "8853358141603235760" || meta["space_authorization_revision"] != "4778902782362294898" {
+		t.Fatalf("final authorization metadata=%#v, want lossless decimal strings", meta)
 	}
 }
 
@@ -1426,22 +1444,47 @@ func (c automationGraphExecutionRaftCluster) waitForRun(t *testing.T, domainID g
 }
 
 type conflictInjectingInference struct {
-	mu            sync.Mutex
-	text          string
-	onFirstInvoke func(context.Context) error
-	invocations   int
+	mu                          sync.Mutex
+	text                        string
+	onFirstInvoke               func(context.Context) error
+	invocations                 int
+	authorizationRevision       uint64
+	globalAuthorizationRevision uint64
+	spaceAuthorizationRevision  uint64
+}
+
+func (f *conflictInjectingInference) revisions() (uint64, uint64, uint64) {
+	authorizationRevision := f.authorizationRevision
+	if authorizationRevision == 0 {
+		authorizationRevision = 1
+	}
+	globalRevision := f.globalAuthorizationRevision
+	if globalRevision == 0 {
+		globalRevision = 1
+	}
+	spaceRevision := f.spaceAuthorizationRevision
+	if spaceRevision == 0 {
+		spaceRevision = 1
+	}
+	return authorizationRevision, globalRevision, spaceRevision
 }
 
 func (f *conflictInjectingInference) CurrentAuthorizationRevisions(context.Context, string) (uint64, uint64, error) {
-	return 1, 1, nil
+	_, globalRevision, spaceRevision := f.revisions()
+	return globalRevision, spaceRevision, nil
 }
 
-func (f *conflictInjectingInference) AssertGlobalAuthorizationRevision(context.Context, uint64) error {
+func (f *conflictInjectingInference) AssertGlobalAuthorizationRevision(_ context.Context, expected uint64) error {
+	_, globalRevision, _ := f.revisions()
+	if expected != globalRevision {
+		return status.Error(codes.FailedPrecondition, "global authorization revision changed")
+	}
 	return nil
 }
 
 func (f *conflictInjectingInference) Resolve(context.Context, inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
-	return inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: 1, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 1}}, nil
+	authorizationRevision, globalRevision, spaceRevision := f.revisions()
+	return inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: authorizationRevision, GlobalAuthorizationRevision: globalRevision, SpaceAuthorizationRevision: spaceRevision}}, nil
 }
 
 func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
@@ -1452,7 +1495,8 @@ func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceru
 		callback = nil
 	}
 	f.mu.Unlock()
-	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: 1, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 1}}
+	authorizationRevision, globalRevision, spaceRevision := f.revisions()
+	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: authorizationRevision, GlobalAuthorizationRevision: globalRevision, SpaceAuthorizationRevision: spaceRevision}}
 	if req.AfterAuthorization != nil {
 		if err := req.AfterAuthorization(ctx, resolved); err != nil {
 			return inferenceruntime.InvokeResponse{}, err
