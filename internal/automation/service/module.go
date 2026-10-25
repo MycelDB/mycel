@@ -106,6 +106,10 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 		}
 	}
 	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceInvoker(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
+	if host != nil {
+		m.AutomationManager.WithLogger(host.Log())
+		m.AutomationManager.logProcedureInferenceFixedBounds()
+	}
 	if gate, ok := host.(coreruntime.LocalWriteGate); ok {
 		m.AutomationManager.WithWriteAllowed(gate.RequireLocalWriteAllowed)
 	}
@@ -149,7 +153,9 @@ func (m *Module) Start(ctx context.Context) error {
 					go func(domainID graph.DomainID) {
 						defer batchWG.Done()
 						defer func() { <-sem }()
-						_, _ = m.ProcessPending(workerCtx, domainID, m.worker.BatchSize)
+						if _, err := m.ProcessPending(workerCtx, domainID, m.worker.BatchSize); err != nil && m.logger != nil {
+							m.logger.Warn("automation_worker_process_pending_failed", "category", publicationFailureCategory(err))
+						}
 					}(domainID)
 				}
 				batchWG.Wait()

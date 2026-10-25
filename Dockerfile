@@ -2,10 +2,19 @@
 
 # Build from the myceldb directory so the local mycel-api protobuf contracts are
 # available to the mycel module:
-#   docker build -f mycel/Dockerfile -t local/myceld:dev .
+#   docker build -f mycel/Dockerfile \
+#     --build-arg SOURCE_REVISION=<full-commit> \
+#     --build-arg SOURCE_DIRTY=false \
+#     --build-arg BUILD_CONTEXT_DIGEST=<sha256> \
+#     --build-arg BUILD_IDENTITY=docker-buildx-local-linux-arm64 \
+#     -t local/myceld:dev .
 
 ARG GO_VERSION=1.25.5
 ARG ALPINE_VERSION=3.21
+ARG SOURCE_REVISION
+ARG SOURCE_DIRTY
+ARG BUILD_CONTEXT_DIGEST
+ARG BUILD_IDENTITY
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 
@@ -34,6 +43,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" go build -trimpath -ldflags="-s -w" -o /out/mycel ./cmd/mycel
 
 FROM alpine:${ALPINE_VERSION}
+
+ARG SOURCE_REVISION
+ARG SOURCE_DIRTY
+ARG BUILD_CONTEXT_DIGEST
+ARG BUILD_IDENTITY
+
+LABEL org.opencontainers.image.source="https://github.com/MycelDB/mycel" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      io.myceldb.source.dirty="${SOURCE_DIRTY}" \
+      io.myceldb.build.context-digest="${BUILD_CONTEXT_DIGEST}" \
+      io.myceldb.build.command="${BUILD_IDENTITY}"
 
 RUN apk add --no-cache ca-certificates tzdata busybox-extras
 

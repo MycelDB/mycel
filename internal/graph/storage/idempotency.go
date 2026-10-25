@@ -1,6 +1,7 @@
 package graphstorage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -48,6 +49,9 @@ func validateIdempotencyRecord(record IdempotencyRecord) error {
 	}
 	if !record.ExpiresAt.After(record.CommittedAt) {
 		return fmt.Errorf("%w: idempotency expires_at must follow committed_at", ErrInvalidRecord)
+	}
+	if record.PublicationAcknowledged && !record.RetainUntilAcknowledged {
+		return fmt.Errorf("%w: publication acknowledgement requires retained idempotency", ErrInvalidRecord)
 	}
 	return nil
 }
@@ -98,9 +102,16 @@ func (s *LocalStore) GetIdempotencyRecord(ctx context.Context, scope, key string
 	return cloneIdempotencyRecord(record), true, ctx.Err()
 }
 
+func idempotencyRecordExpired(record IdempotencyRecord, now time.Time) bool {
+	if record.RetainUntilAcknowledged && !record.PublicationAcknowledged {
+		return false
+	}
+	return !record.ExpiresAt.After(now)
+}
+
 func (s *LocalStore) purgeExpiredIdempotencyRecordsLocked(now time.Time) {
 	for identity, record := range s.idempotencyRecords {
-		if !record.ExpiresAt.After(now) {
+		if idempotencyRecordExpired(record, now) {
 			delete(s.idempotencyRecords, identity)
 			s.idempotencyEvictions++
 		}
@@ -142,7 +153,7 @@ func (s *LocalStore) RestoreIdempotencyRecords(ctx context.Context, records []Id
 	now := time.Now().UTC()
 	s.purgeExpiredIdempotencyRecordsLocked(now)
 	for _, record := range records {
-		if !record.ExpiresAt.After(now) {
+		if idempotencyRecordExpired(record, now) {
 			continue
 		}
 		if err := validateIdempotencyRecord(record); err != nil {
@@ -205,6 +216,76 @@ func (s *LocalStore) MarkIdempotencyDelivered(ctx context.Context, scope, key, d
 	return nil
 }
 
+func (s *LocalStore) RetainIdempotencyUntilAcknowledged(ctx context.Context, scope, key, digest string, metadata json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureReady(); err != nil {
+		return err
+	}
+	identity := idempotencyRecordIdentity(scope, key)
+	record, ok := s.idempotencyRecords[identity]
+	if !ok {
+		return ErrNotFound
+	}
+	if record.Digest != digest || !bytes.Equal(record.Metadata, metadata) {
+		return ErrIdempotencyConflict
+	}
+	if record.RetainUntilAcknowledged {
+		return nil
+	}
+	payload, err := json.Marshal(idempotencyDeliveryMetadata{Scope: scope, Key: key, Digest: record.Digest})
+	if err != nil {
+		return err
+	}
+	if _, err := s.txns.appendRecord(RecordKindIdempotencyRetained, record.StorageTxnID, uuid.Nil, payload); err != nil {
+		return err
+	}
+	if err := s.txns.sync(); err != nil {
+		return err
+	}
+	record.RetainUntilAcknowledged = true
+	s.idempotencyRecords[identity] = record
+	return nil
+}
+
+func (s *LocalStore) MarkIdempotencyPublicationAcknowledged(ctx context.Context, scope, key, digest string, metadata json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureReady(); err != nil {
+		return err
+	}
+	identity := idempotencyRecordIdentity(scope, key)
+	record, ok := s.idempotencyRecords[identity]
+	if !ok {
+		return ErrNotFound
+	}
+	if record.Digest != digest || !bytes.Equal(record.Metadata, metadata) {
+		return ErrIdempotencyConflict
+	}
+	if !record.RetainUntilAcknowledged || record.PublicationAcknowledged {
+		return nil
+	}
+	payload, err := json.Marshal(idempotencyDeliveryMetadata{Scope: scope, Key: key, Digest: record.Digest})
+	if err != nil {
+		return err
+	}
+	if _, err := s.txns.appendRecord(RecordKindIdempotencyAcknowledged, record.StorageTxnID, uuid.Nil, payload); err != nil {
+		return err
+	}
+	if err := s.txns.sync(); err != nil {
+		return err
+	}
+	record.PublicationAcknowledged = true
+	s.idempotencyRecords[identity] = record
+	return nil
+}
+
 func (s *LocalStore) IdempotencyStats() (active, capacity int, evictions uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -257,7 +338,7 @@ func (s *LocalStore) loadIdempotencyRecords(ctx context.Context) error {
 				if restored.StorageTxnID != record.header.txnID || restored.CommittedRevision == 0 || restored.CommittedRevision > revision {
 					return fmt.Errorf("%w: restored idempotency commit identity mismatch", ErrInvalidRecord)
 				}
-			case RecordKindIdempotencyDelivered:
+			case RecordKindIdempotencyDelivered, RecordKindIdempotencyAcknowledged, RecordKindIdempotencyRetained:
 				var delivered idempotencyDeliveryMetadata
 				if err := json.Unmarshal(record.payload, &delivered); err != nil {
 					return fmt.Errorf("%w: decode idempotency delivery metadata: %v", ErrInvalidRecord, err)
@@ -270,7 +351,14 @@ func (s *LocalStore) loadIdempotencyRecords(ctx context.Context) error {
 				if existing.Digest != delivered.Digest || existing.StorageTxnID != record.header.txnID {
 					return fmt.Errorf("%w: delivered idempotency identity mismatch", ErrInvalidRecord)
 				}
-				existing.Delivered = true
+				switch record.header.kind {
+				case RecordKindIdempotencyAcknowledged:
+					existing.PublicationAcknowledged = true
+				case RecordKindIdempotencyRetained:
+					existing.RetainUntilAcknowledged = true
+				default:
+					existing.Delivered = true
+				}
 				s.idempotencyRecords[identity] = existing
 				return nil
 			default:
@@ -280,14 +368,10 @@ func (s *LocalStore) loadIdempotencyRecords(ctx context.Context) error {
 			if err := validateIdempotencyRecord(candidate); err != nil {
 				return err
 			}
-			if !candidate.ExpiresAt.After(now) {
-				s.idempotencyEvictions++
-				return nil
-			}
+			// Defer expiry until all later retention/acknowledgement markers have
+			// replayed. A legacy record may have expired by wall clock before its
+			// durable promotion marker appears later in the WAL.
 			s.idempotencyRecords[idempotencyRecordIdentity(candidate.Scope, candidate.Key)] = candidate
-			if len(s.idempotencyRecords) > MaxIdempotencyRecordsPerStore {
-				return ErrIdempotencyCapacity
-			}
 			return nil
 		}); err != nil {
 			return err
@@ -295,6 +379,10 @@ func (s *LocalStore) loadIdempotencyRecords(ctx context.Context) error {
 	}
 	if revision != s.revision {
 		return fmt.Errorf("%w: idempotency revision scan mismatch", ErrInvalidRecord)
+	}
+	s.purgeExpiredIdempotencyRecordsLocked(now)
+	if len(s.idempotencyRecords) > MaxIdempotencyRecordsPerStore {
+		return ErrIdempotencyCapacity
 	}
 	return nil
 }

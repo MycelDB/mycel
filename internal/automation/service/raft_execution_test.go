@@ -140,8 +140,13 @@ func TestProcessPendingRaftDebounceWaitDoesNotHoldRunningClaim(t *testing.T) {
 }
 
 func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
+	const (
+		authorizationRevision       uint64 = 7803206355751821409
+		globalAuthorizationRevision uint64 = 8853358141603235760
+		spaceAuthorizationRevision  uint64 = 4778902782362294898
+	)
 	ctx := context.Background()
-	inference := &conflictInjectingInference{text: "generated summary"}
+	inference := &conflictInjectingInference{text: "generated summary", authorizationRevision: authorizationRevision, globalAuthorizationRevision: globalAuthorizationRevision, spaceAuthorizationRevision: spaceAuthorizationRevision}
 	cluster := newAutomationGraphExecutionRaftCluster(t, ctx, 8, inference)
 	defer cluster.stop()
 	domainID := graph.DomainID(uuid.New())
@@ -163,7 +168,7 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 		if err := mgr.store.PutBinding(ctx, binding); err != nil {
 			t.Fatalf("seed binding: %v", err)
 		}
-		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: spaceAuthorizationRevision}); err != nil {
 			t.Fatalf("seed authorization revision: %v", err)
 		}
 	}
@@ -202,6 +207,12 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	if err != nil || processed != 1 {
 		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
 	}
+	inference.mu.Lock()
+	providerCalls := inference.invocations
+	inference.mu.Unlock()
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want exactly 1", providerCalls)
+	}
 	cluster.waitForInvocationCount(t, domainID, 1)
 	invs, err := cluster.managers[leaderID].store.ListInvocations(ctx, domainID, storage.InvocationFilter{})
 	if err != nil || len(invs) != 1 {
@@ -234,6 +245,191 @@ func TestClusteredGraphAutomationOutputRetriesGraphConflict(t *testing.T) {
 	if got.Properties["summary"] != "generated summary" || got.Properties["touched_during_inference"] != true {
 		t.Fatalf("final page properties=%+v, want summary and concurrent write preserved", got.Properties)
 	}
+	meta, ok := got.Meta["automation"].(map[string]any)
+	if !ok {
+		t.Fatalf("final automation metadata=%#v, want map", got.Meta["automation"])
+	}
+	if meta["authorization_revision"] != "7803206355751821409" || meta["global_authorization_revision"] != "8853358141603235760" || meta["space_authorization_revision"] != "4778902782362294898" {
+		t.Fatalf("final authorization metadata=%#v, want lossless decimal strings", meta)
+	}
+}
+
+func TestClusteredGraphAutomationOutputRetriesTransientUnavailableWithoutProviderReplay(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		failures             int
+		failureCode          codes.Code
+		commitBeforeFailure  bool
+		advanceSession       bool
+		expectedCommitCalls  int
+		expectedStatus       string
+		expectPublishedInput bool
+	}{
+		{name: "rejected before commit", failures: 1, failureCode: codes.Unavailable, expectedCommitCalls: 2, expectedStatus: "succeeded", expectPublishedInput: true},
+		{name: "response lost after commit", failures: 1, failureCode: codes.Unavailable, commitBeforeFailure: true, expectedCommitCalls: 1, expectedStatus: "succeeded", expectPublishedInput: true},
+		{name: "response lost after session revision advances", failures: 1, failureCode: codes.Unavailable, commitBeforeFailure: true, advanceSession: true, expectedCommitCalls: 1, expectedStatus: "succeeded", expectPublishedInput: true},
+		{name: "non transient is not retried", failures: 1, failureCode: codes.FailedPrecondition, expectedCommitCalls: 1, expectedStatus: "retryable"},
+		{name: "transient retries are bounded", failures: 10, failureCode: codes.Unavailable, expectedCommitCalls: 5, expectedStatus: "retryable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testClusteredGraphAutomationOutputTransientUnavailable(t, tc.failures, tc.failureCode, tc.commitBeforeFailure, tc.advanceSession, tc.expectedCommitCalls, tc.expectedStatus, tc.expectPublishedInput)
+		})
+	}
+}
+
+func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, failures int, failureCode codes.Code, commitBeforeFailure bool, advanceSession bool, expectedCommitCalls int, expectedStatus string, expectPublishedInput bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	inference := &conflictInjectingInference{text: "generated summary"}
+	cluster := newAutomationGraphExecutionRaftCluster(t, ctx, 8, inference)
+	defer cluster.stop()
+	defer cancel()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
+	leaderID := cluster.leaderForSpace(t, spaceID)
+	procedure := automation.Procedure{ID: "page-summary", Version: 1, DomainID: domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "changed", Fields: []string{"properties.source"}}, Inference: automation.InferenceRef{Operation: "chat", Profile: "summary"}, Prompt: "Summarize this page", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"properties.source": "$result.text"}}}}}}
+	binding := automation.Binding{ID: "page-summary-binding", Version: 1, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: spaceID.String(), DomainID: domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "owner", OnBehalfOfPrincipalID: "owner", InferenceProfile: "summary"}}
+	pageID := graph.NodeID(uuid.New())
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+		_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graph.NodeInput{NodeID: pageID.String(), Labels: []string{"Page"}, Payload: map[string]any{}, Properties: map[string]any{"source": "original"}})
+		return err
+	})
+	cluster.enableGraphAutomationSinks()
+	binding.CreatedAt = time.Now().UTC()
+	for _, mgr := range cluster.managers {
+		if err := mgr.store.PutProcedure(ctx, procedure); err != nil {
+			t.Fatalf("seed procedure: %v", err)
+		}
+		if err := mgr.store.PutBinding(ctx, binding); err != nil {
+			t.Fatalf("seed binding: %v", err)
+		}
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+			t.Fatalf("seed authorization revision: %v", err)
+		}
+	}
+	cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+		node, err := cluster.graphs[leaderID].GetNode(ctx, tx, pageID.String())
+		if err != nil {
+			return err
+		}
+		node.Properties["source"] = "updated before automation"
+		_, err = cluster.graphs[leaderID].UpdateNode(ctx, tx, graph.UpdateNodeInput{NodeID: node.ID.String(), Labels: node.Labels, Properties: node.Properties, Payload: node.Payload, Meta: node.Meta, Content: &node.Content, Props: node.Props})
+		return err
+	})
+	cluster.waitForInvocationCount(t, domainID, 1)
+	state := &transientUnavailableCommitState{remaining: failures, failureCode: failureCode, commitBeforeFailure: commitBeforeFailure}
+	if advanceSession {
+		state.afterCommit = func(committed graphchange.CommitResult) error {
+			advanceSession, err := cluster.sessions[leaderID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "revision-advancer", SpaceID: spaceID.String(), DomainID: domainID.String()})
+			if err != nil {
+				return err
+			}
+			baseRevision := committed.CommittedRevision
+			advanceTx, err := cluster.sessions[leaderID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "revision-advancer", SessionID: advanceSession.ID, Mode: sessionmodel.TransactionModeReadWrite, BaseRevision: &baseRevision})
+			if err != nil {
+				return err
+			}
+			if _, err := cluster.sessions[leaderID].CommitTransactionAtRevision(ctx, "revision-advancer", advanceTx.ID, committed.OperationCount, committed.CommittedRevision); err != nil {
+				return err
+			}
+			otherID := graph.NodeID(uuid.New())
+			cluster.commitGraphMutation(t, ctx, leaderID, spaceID, domainID, func(tx sessionmodel.GraphTransaction) error {
+				_, err := cluster.graphs[leaderID].CreateNode(ctx, tx, graph.NodeInput{NodeID: otherID.String(), Labels: []string{"Other"}, Payload: map[string]any{}, Properties: map[string]any{}})
+				return err
+			})
+			return nil
+		}
+	}
+	var processed int
+	var err error
+	for attempt := 1; attempt <= 8; attempt++ {
+		leaderID = cluster.leaderForSpace(t, spaceID)
+		flakyGraph := &transientUnavailableCommitGraph{GraphRuntime: cluster.graphs[leaderID], state: state}
+		cluster.managers[leaderID].WithGraphRuntime(cluster.sessions[leaderID], flakyGraph)
+		processed, err = cluster.managers[leaderID].ProcessPending(ctx, domainID, 10)
+		if err == nil {
+			break
+		}
+		if status.Code(err) != codes.Unavailable {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+	}
+	if err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	inference.mu.Lock()
+	providerCalls := inference.invocations
+	inference.mu.Unlock()
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want exactly 1", providerCalls)
+	}
+	state.mu.Lock()
+	commitCalls := state.commitCalls
+	state.mu.Unlock()
+	if commitCalls != expectedCommitCalls {
+		t.Fatalf("graph commit calls=%d, want %d", commitCalls, expectedCommitCalls)
+	}
+	invs, err := cluster.managers[leaderID].store.ListInvocations(ctx, domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 {
+		t.Fatalf("ListInvocations()=%+v err=%v, want one invocation", invs, err)
+	}
+	cluster.waitForInvocationStatus(t, domainID, invs[0].ID, expectedStatus)
+	cluster.waitForRun(t, domainID, invs[0].ID)
+	leaderID = cluster.leaderForSpace(t, spaceID)
+	readTx := cluster.beginReadOnlyTransaction(t, ctx, leaderID, spaceID, domainID)
+	got, err := cluster.graphs[leaderID].GetNode(ctx, readTx, pageID.String())
+	if err != nil {
+		t.Fatalf("GetNode(final): %v", err)
+	}
+	if expectPublishedInput {
+		if got.Properties["source"] != "generated summary" {
+			t.Fatalf("final page properties=%+v, want provider input field durably published", got.Properties)
+		}
+	} else if got.Properties["source"] != "updated before automation" {
+		t.Fatalf("final page properties=%+v, want failed publication to leave input unchanged", got.Properties)
+	}
+}
+
+type transientUnavailableCommitState struct {
+	mu                  sync.Mutex
+	remaining           int
+	commitCalls         int
+	failureCode         codes.Code
+	commitBeforeFailure bool
+	afterCommit         func(graphchange.CommitResult) error
+}
+
+type transientUnavailableCommitGraph struct {
+	GraphRuntime
+	state *transientUnavailableCommitState
+}
+
+func (g *transientUnavailableCommitGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	g.state.mu.Lock()
+	g.state.commitCalls++
+	inject := g.state.remaining > 0
+	if inject {
+		g.state.remaining--
+	}
+	commitBeforeFailure := g.state.commitBeforeFailure
+	failureCode := g.state.failureCode
+	afterCommit := g.state.afterCommit
+	g.state.mu.Unlock()
+	if inject {
+		if commitBeforeFailure {
+			committed, err := g.GraphRuntime.CommitTransactionGraph(ctx, tx)
+			if err != nil {
+				return graphchange.CommitResult{}, err
+			}
+			if afterCommit != nil {
+				if err := afterCommit(committed); err != nil {
+					return graphchange.CommitResult{}, err
+				}
+			}
+		}
+		return graphchange.CommitResult{}, status.Error(failureCode, "injected graph commit failure")
+	}
+	return g.GraphRuntime.CommitTransactionGraph(ctx, tx)
 }
 
 func TestAutomationGraphReplayRecoveryEnqueuesMissedEventAndAdvancesCursor(t *testing.T) {
@@ -442,6 +638,75 @@ func TestAutomationGraphReplayRecoveryAfterPartitionLeaderCrashDuringRunningInvo
 	metrics := newLeader.Metrics()
 	if metrics.ClaimReclaims != 1 || metrics.Skipped != 1 || metrics.Processed != 1 {
 		t.Fatalf("unexpected reclaim metrics: %+v", metrics)
+	}
+}
+
+func TestProcedureInferencePublicationRecoveryTakesOverUnexpiredFailedLeaderClaim(t *testing.T) {
+	ctx := context.Background()
+	cluster := newAutomationExecutionRaftCluster(t, ctx, 8)
+	defer cluster.stop()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := domainspace.SpaceID(uuid.New())
+	oldLeaderID := cluster.leaderForSpace(t, spaceID)
+	oldLeader := cluster.managers[oldLeaderID]
+	now := time.Now().UTC()
+	inv := automation.Invocation{ID: "inv-publication-failover", DomainID: domainID, SpaceID: spaceID.String(), BindingID: "binding-a", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, Status: "running", ClaimOwnerNodeID: uint64(oldLeaderID), ClaimVersion: 1, ClaimToken: "old-leader-claim", ClaimProcessID: oldLeader.processID, ClaimExpiresAt: now.Add(automationClaimLease), CreatedAt: now, UpdatedAt: now}
+	if err := oldLeader.putInvocationRuntime(ctx, inv); err != nil {
+		t.Fatalf("seed running invocation: %v", err)
+	}
+	for _, mgr := range cluster.managers {
+		if err := mgr.store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID.String(), Revision: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := automation.Run{ID: automationRunID(inv, 1), DomainID: domainID, InvocationID: inv.ID, BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1, Status: "retryable", Error: publicationReconciliationRequired, ActorPrincipalID: automationActor, StartedAt: now}
+	if err := oldLeader.putRunRuntime(ctx, spaceID.String(), run); err != nil {
+		t.Fatalf("seed retryable publication run: %v", err)
+	}
+	attempt := persistSucceededPublicationAttempt(t, ctx, oldLeader, inv, run, "publication_pending")
+	outputKey := automationOutputIdempotencyKey(inv, run.ID)
+	for _, mgr := range cluster.managers {
+		graphs := &automationE2EGraph{
+			node:              graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID},
+			idempotentCommits: map[string]graphchange.CommitResult{automationActor + "\x00" + outputKey: {IdempotencyKey: outputKey, CommittedRevision: 1}},
+		}
+		mgr.WithGraphRuntime(automationE2ESessions{spaceID: spaceID.String(), domainID: domainID.String()}, graphs)
+	}
+	cluster.waitForInvocation(t, domainID, inv.ID)
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := consensus.WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		for _, mgr := range cluster.managers {
+			ledger, err := mgr.store.GetProcedureInferenceLedger(ctx, spaceID.String())
+			if err != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].PublicationDisposition != "publication_pending" {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("publication attempt did not replicate: %v", err)
+	}
+
+	cluster.crashNode(oldLeaderID)
+	newLeaderID := cluster.waitForNewLeaderForSpace(t, spaceID, oldLeaderID)
+	processed, err := cluster.managers[newLeaderID].ProcessPending(ctx, domainID, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("new leader ProcessPending() processed=%d err=%v", processed, err)
+	}
+	cluster.waitForInvocationStatusOnLiveNodes(t, domainID, inv.ID, "succeeded")
+	cluster.waitForRunIDOnLiveNodes(t, domainID, run.ID)
+	for id, mgr := range cluster.managers {
+		if cluster.crashed[id] {
+			continue
+		}
+		gotInv, err := mgr.store.GetInvocation(ctx, domainID, inv.ID)
+		if err != nil || gotInv.ClaimOwnerNodeID != uint64(newLeaderID) || gotInv.ClaimVersion <= inv.ClaimVersion || gotInv.Status != "succeeded" {
+			t.Fatalf("node %d invocation=%+v err=%v", id, gotInv, err)
+		}
+		gotAttempt := requireProcedureInferenceAttempt(t, ctx, mgr.store, spaceID.String(), attempt.ID)
+		if gotAttempt.PublicationDisposition != "published" {
+			t.Fatalf("node %d publication disposition=%q", id, gotAttempt.PublicationDisposition)
+		}
 	}
 }
 
@@ -1179,22 +1444,47 @@ func (c automationGraphExecutionRaftCluster) waitForRun(t *testing.T, domainID g
 }
 
 type conflictInjectingInference struct {
-	mu            sync.Mutex
-	text          string
-	onFirstInvoke func(context.Context) error
-	invocations   int
+	mu                          sync.Mutex
+	text                        string
+	onFirstInvoke               func(context.Context) error
+	invocations                 int
+	authorizationRevision       uint64
+	globalAuthorizationRevision uint64
+	spaceAuthorizationRevision  uint64
+}
+
+func (f *conflictInjectingInference) revisions() (uint64, uint64, uint64) {
+	authorizationRevision := f.authorizationRevision
+	if authorizationRevision == 0 {
+		authorizationRevision = 1
+	}
+	globalRevision := f.globalAuthorizationRevision
+	if globalRevision == 0 {
+		globalRevision = 1
+	}
+	spaceRevision := f.spaceAuthorizationRevision
+	if spaceRevision == 0 {
+		spaceRevision = 1
+	}
+	return authorizationRevision, globalRevision, spaceRevision
 }
 
 func (f *conflictInjectingInference) CurrentAuthorizationRevisions(context.Context, string) (uint64, uint64, error) {
-	return 1, 1, nil
+	_, globalRevision, spaceRevision := f.revisions()
+	return globalRevision, spaceRevision, nil
 }
 
-func (f *conflictInjectingInference) AssertGlobalAuthorizationRevision(context.Context, uint64) error {
+func (f *conflictInjectingInference) AssertGlobalAuthorizationRevision(_ context.Context, expected uint64) error {
+	_, globalRevision, _ := f.revisions()
+	if expected != globalRevision {
+		return status.Error(codes.FailedPrecondition, "global authorization revision changed")
+	}
 	return nil
 }
 
 func (f *conflictInjectingInference) Resolve(context.Context, inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error) {
-	return inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: 1, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 1}}, nil
+	authorizationRevision, globalRevision, spaceRevision := f.revisions()
+	return inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: authorizationRevision, GlobalAuthorizationRevision: globalRevision, SpaceAuthorizationRevision: spaceRevision}}, nil
 }
 
 func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
@@ -1205,7 +1495,8 @@ func (f *conflictInjectingInference) Invoke(ctx context.Context, req inferenceru
 		callback = nil
 	}
 	f.mu.Unlock()
-	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: 1, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 1}}
+	authorizationRevision, globalRevision, spaceRevision := f.revisions()
+	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: domaininference.PolicyDecision{ID: uuid.MustParse("00000000-0000-0000-0000-000000000001"), AuthorizationRevision: authorizationRevision, GlobalAuthorizationRevision: globalRevision, SpaceAuthorizationRevision: spaceRevision}}
 	if req.AfterAuthorization != nil {
 		if err := req.AfterAuthorization(ctx, resolved); err != nil {
 			return inferenceruntime.InvokeResponse{}, err

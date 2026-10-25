@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/google/uuid"
@@ -68,16 +69,32 @@ func (m *AutomationManager) ValidateAutomationOutputFence(ctx context.Context, v
 		return status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: procedure authorization evidence is incomplete", validation.InvocationID)
 	}
 	if err := m.procedureFenceAllows(ctx, current.SpaceID, current.DomainID, current.ProcedureID); err != nil {
-		return status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: procedure is disabled", validation.InvocationID)
+		if errors.Is(err, ErrProcedureDisabled) {
+			return status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: procedure is disabled", validation.InvocationID)
+		}
+		return err
 	}
 	if m.raftGroups != nil {
 		if validation.GlobalAuthorizationRevision == 0 {
 			return status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: global authorization assertion is missing", validation.InvocationID)
 		}
 		revision, err := m.currentCommittedSpaceAuthorizationRevision(ctx, current.SpaceID)
-		if err != nil || validation.SpaceAuthorizationRevision == 0 || revision != validation.SpaceAuthorizationRevision {
-			return status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: authorization revision changed", validation.InvocationID)
+		if err := validateCommittedSpaceAuthorizationRevision(revision, err, validation.SpaceAuthorizationRevision); err != nil {
+			if errors.Is(err, ErrProcedureAuthorizationRevoked) {
+				return status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: authorization revision changed", validation.InvocationID)
+			}
+			return err
 		}
+	}
+	return nil
+}
+
+func validateCommittedSpaceAuthorizationRevision(current uint64, readErr error, expected uint64) error {
+	if readErr != nil {
+		return readErr
+	}
+	if current == 0 || expected == 0 || current != expected {
+		return ErrProcedureAuthorizationRevoked
 	}
 	return nil
 }

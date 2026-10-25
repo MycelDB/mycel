@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,8 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestGenerateTextRequiresConfiguredInference(t *testing.T) {
@@ -133,8 +136,14 @@ func TestGenerateTextPreservesPreProviderFailureAsRetryableEvidence(t *testing.T
 	if err == nil || errors.Is(err, ErrInferenceAttemptAlreadyStarted) || !strings.Contains(err.Error(), "routing unavailable") {
 		t.Fatalf("generateWithInference() error=%v", err)
 	}
+	if disposition := inferenceFailurePublicationDisposition(err); disposition != "not_published_pre_provider_failure" {
+		t.Fatalf("pre-provider disposition=%q", disposition)
+	}
+	if err := mgr.recordRunPublicationDispositionWithDiagnostics(ctx, run, inferenceFailurePublicationDisposition(err)); err != nil {
+		t.Fatalf("record pre-provider disposition: %v", err)
+	}
 	ledger, ledgerErr := store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
-	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateFailed || !ledger.Attempts[0].StartedAt.IsZero() {
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateFailed || !ledger.Attempts[0].StartedAt.IsZero() || ledger.Attempts[0].PublicationDisposition != "not_published_pre_provider_failure" {
 		t.Fatalf("unexpected pre-provider evidence: %+v err=%v", ledger, ledgerErr)
 	}
 }
@@ -143,6 +152,244 @@ type preProviderFailureInference struct{}
 
 func (preProviderFailureInference) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	return inferenceruntime.InvokeResponse{Status: domaininference.UsageStatusFailed}, errors.New("routing unavailable")
+}
+
+func TestTerminalAttemptPersistenceFailureIsAmbiguousAndDoesNotReplayProvider(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &terminalAttemptFailureStore{Store: baseStore, remainingFailures: 1}
+	var logs bytes.Buffer
+	mgr := NewManager(store).WithInferenceInvoker(inference).WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
+	run := automation.Run{ID: uuid.NewString(), BindingID: "summarize-binding", BindingVersion: 1, ProcedureID: "summarize", ProcedureVersion: 1, AttemptNumber: 1}
+	def := automation.Definition{ID: "summarize", Version: 1, DomainID: ids.domainID, Prompt: "prompt", Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}}
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: ids.spaceID, DomainID: ids.domainID, BindingID: run.BindingID, BindingVersion: run.BindingVersion, ProcedureID: run.ProcedureID, ProcedureVersion: run.ProcedureVersion, ChangedElementID: uuid.NewString(), ActorPrincipalID: automationActor}
+
+	_, err := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if err == nil || inferenceFailurePublicationDisposition(err) != "not_published_provider_ambiguous" {
+		t.Fatalf("terminal persistence error=%v disposition=%q", err, inferenceFailurePublicationDisposition(err))
+	}
+	if err := mgr.recordRunPublicationDispositionWithDiagnostics(ctx, run, inferenceFailurePublicationDisposition(err)); err == nil {
+		t.Fatal("started attempt unexpectedly accepted a terminal publication disposition")
+	}
+	ledger, ledgerErr := baseStore.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateStarted {
+		t.Fatalf("durable attempt is not started after ambiguous persistence: %+v err=%v", ledger, ledgerErr)
+	}
+	if !strings.Contains(logs.String(), `"stage":"disposition_not_published_provider_ambiguous"`) || !strings.Contains(logs.String(), `"result":"failed"`) {
+		t.Fatalf("ambiguous persistence diagnostic missing: %s", logs.String())
+	}
+
+	_, secondErr := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if secondErr == nil {
+		t.Fatal("reprocessing a durable started attempt unexpectedly succeeded")
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider replayed after terminal persistence ambiguity: calls=%d", calls)
+	}
+}
+
+type terminalAttemptFailureStore struct {
+	storage.Store
+	remainingFailures int
+}
+
+func (s *terminalAttemptFailureStore) PutProcedureInferenceLedger(ctx context.Context, ledger automation.ProcedureInferenceLedger) error {
+	if s.remainingFailures > 0 {
+		for _, attempt := range ledger.Attempts {
+			if automation.IsTerminalProcedureInferenceAttemptState(attempt.State) {
+				s.remainingFailures--
+				return errors.New("temporary terminal attempt persistence unavailable")
+			}
+		}
+	}
+	return s.Store.PutProcedureInferenceLedger(ctx, ledger)
+}
+
+func TestProcessPendingDoesNotRetryTerminalPersistenceAmbiguity(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &terminalAttemptFailureStore{Store: baseStore, remainingFailures: 1}
+	now := time.Now().UTC()
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	mgr := NewManager(store).
+		WithGraphRuntime(automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}, &automationE2EGraph{node: node}).
+		WithInferenceInvoker(inference)
+	mgr.now = func() time.Time { return now }
+	def := automation.Definition{
+		ID: "terminal-persistence", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 3},
+	}
+	if err := baseStore.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("first ProcessPending() processed=%d err=%v", processed, err)
+	}
+	invocations, err := baseStore.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invocations) != 1 || invocations[0].Status != "failed" || invocations[0].NextAttemptAt != (time.Time{}) {
+		t.Fatalf("ambiguous invocation remained retryable: %+v err=%v", invocations, err)
+	}
+	// Even if stale external state incorrectly makes the invocation pending,
+	// durable started evidence must fence allocation of a new run identity.
+	invocations[0].Status = "pending"
+	invocations[0].SkipReason = ""
+	if err := baseStore.PutInvocation(ctx, invocations[0]); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("fenced ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 0 {
+		t.Fatalf("final ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider replayed through automatic retry: calls=%d", calls)
+	}
+}
+
+func TestProcessPendingCrashBetweenAmbiguousRunAndInvocationWritesReconcilesWithoutProvider(t *testing.T) {
+	ctx := context.Background()
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &failTerminalInvocationStore{Store: baseStore, remainingFailures: 1}
+	now := time.Now().UTC()
+	domainID := graph.DomainID(uuid.New())
+	spaceID := uuid.NewString()
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "callable input"}}
+	definition := automation.Definition{
+		ID: "procedure", Version: 1, DomainID: domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", Profile: "callable"}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 3},
+	}
+	procedure, binding := automation.ExpandDefinition(definition)
+	inv := automation.Invocation{ID: "inv-crash-window", SpaceID: spaceID, DomainID: domainID, AutomationID: definition.ID, AutomationVersion: definition.Version, BindingID: binding.ID, BindingVersion: binding.Version, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, ChangedElementID: node.ID.String(), ChangedElementKind: "node", EventType: automation.EventNodeUpdated, Status: "running", ClaimVersion: 1, ClaimToken: "expired", ClaimProcessID: "old-process", ClaimExpiresAt: now.Add(-time.Minute)}
+	runID := automationRunID(inv, 1)
+	run := automation.Run{ID: runID, DomainID: domainID, InvocationID: inv.ID, BindingID: binding.ID, BindingVersion: binding.Version, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, AttemptNumber: 1, Status: "running", StartedAt: now.Add(-time.Minute)}
+	attempt := automation.ProcedureInferenceAttempt{ID: "noncanonical-attempt-crash-window", RecordVersion: 3, InvocationID: inv.ID, RunID: run.ID, SpaceID: spaceID, DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, BindingID: binding.ID, BindingVersion: binding.Version, State: automation.InferenceAttemptStateStarted, RunAttemptNumber: 1, ProviderAttemptNumber: 1, Operation: "chat", RequestedAt: now.Add(-time.Minute), AuthorizedAt: now.Add(-45 * time.Second), StartedAt: now.Add(-30 * time.Second)}
+	if err := automation.ValidateDefinition(definition); err != nil {
+		t.Fatalf("callable definition is invalid: %v", err)
+	}
+	if err := automation.ValidateProcedureInferenceAttempt(attempt); err != nil {
+		t.Fatalf("started attempt is invalid: %v", err)
+	}
+	if err := baseStore.PutDefinition(ctx, definition); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseStore.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseStore.PutRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := baseStore.PutProcedureInferenceLedger(ctx, automation.ProcedureInferenceLedger{SpaceID: spaceID, Attempts: []automation.ProcedureInferenceAttempt{attempt}}); err != nil {
+		t.Fatal(err)
+	}
+	inference := &countingFailureInference{}
+	mgr := NewManager(store).
+		WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, &automationE2EGraph{node: node}).
+		WithInferenceInvoker(inference)
+	mgr.now = func() time.Time { return now }
+	processed, err := mgr.ProcessPending(ctx, domainID, 10)
+	if err == nil || processed != 0 {
+		t.Fatalf("first ProcessPending() processed=%d err=%v, want injected invocation-write failure", processed, err)
+	}
+	persistedRun, runErr := baseStore.GetRun(ctx, domainID, run.ID)
+	persistedInvocation, invocationErr := baseStore.GetInvocation(ctx, domainID, inv.ID)
+	if runErr != nil || persistedRun.Status != "failed" || persistedRun.Error != "provider_outcome_ambiguous" || persistedRun.CompletedAt.IsZero() || persistedRun.ClaimToken == "expired" {
+		t.Fatalf("run was not durably finalized before invocation failure: %+v err=%v", persistedRun, runErr)
+	}
+	if invocationErr != nil || persistedInvocation.Status != "running" {
+		t.Fatalf("injected crash window did not preserve nonterminal invocation: %+v err=%v", persistedInvocation, invocationErr)
+	}
+
+	restarted := NewManager(store).
+		WithGraphRuntime(automationE2ESessions{spaceID: spaceID, domainID: domainID.String()}, &automationE2EGraph{node: node}).
+		WithInferenceInvoker(inference)
+	restarted.now = func() time.Time { return now.Add(automationClaimLease + time.Second) }
+	processed, err = restarted.ProcessPending(ctx, domainID, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("recovery ProcessPending() processed=%d err=%v", processed, err)
+	}
+	persistedInvocation, invocationErr = baseStore.GetInvocation(ctx, domainID, inv.ID)
+	if invocationErr != nil || persistedInvocation.Status != "failed" || persistedInvocation.SkipReason != "provider_outcome_ambiguous" || persistedInvocation.AttemptCount != 1 {
+		t.Fatalf("terminal-run reconciliation did not finalize invocation: %+v err=%v", persistedInvocation, invocationErr)
+	}
+	if inference.calls != 0 {
+		t.Fatalf("provider invoked during crash recovery: calls=%d", inference.calls)
+	}
+}
+
+type failTerminalInvocationStore struct {
+	storage.Store
+	remainingFailures int
+}
+
+func (s *failTerminalInvocationStore) PutInvocation(ctx context.Context, inv automation.Invocation) error {
+	if inv.Status == "failed" && s.remainingFailures > 0 {
+		s.remainingFailures--
+		return errors.New("injected terminal invocation persistence failure")
+	}
+	return s.Store.PutInvocation(ctx, inv)
+}
+
+type countingFailureInference struct {
+	calls int
+}
+
+func (f *countingFailureInference) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	f.calls++
+	return inferenceruntime.InvokeResponse{}, errors.New("provider must not be invoked")
+}
+
+func TestPostStartInfrastructureFailurePreservesCauseAndAmbiguity(t *testing.T) {
+	ctx := context.Background()
+	infrastructureErr := status.Error(codes.Unavailable, "authorization authority unavailable")
+	inference := &postStartFailureInference{err: infrastructureErr}
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithInferenceInvoker(inference)
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: uuid.NewString(), SpaceID: uuid.NewString(), DomainID: domainID, BindingID: "binding", BindingVersion: 1, ProcedureID: "proc", ProcedureVersion: 1, ChangedElementID: uuid.NewString()}
+	run := automation.Run{ID: uuid.NewString(), BindingID: inv.BindingID, BindingVersion: 1, ProcedureID: inv.ProcedureID, ProcedureVersion: 1, AttemptNumber: 1}
+	def := automation.Definition{ID: "proc", Version: 1, DomainID: domainID, Inference: automation.InferenceRef{Operation: "chat", Profile: "profile"}}
+	_, err := mgr.generateWithInference(ctx, def, inv, "input", &run)
+	if status.Code(err) != codes.Unavailable || !inferenceProviderOutcomeAmbiguous(err) || inference.providerCalls != 0 {
+		t.Fatalf("post-start error=%v code=%v ambiguous=%v providerCalls=%d", err, status.Code(err), inferenceProviderOutcomeAmbiguous(err), inference.providerCalls)
+	}
+	ledger, ledgerErr := mgr.store.GetProcedureInferenceLedger(ctx, inv.SpaceID)
+	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateAmbiguous {
+		t.Fatalf("post-start evidence=%+v err=%v", ledger, ledgerErr)
+	}
+}
+
+type postStartFailureInference struct {
+	err           error
+	providerCalls int
+}
+
+func (f *postStartFailureInference) Invoke(ctx context.Context, request inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	decision := domaininference.PolicyDecision{ID: uuid.New(), AuthorizationRevision: 1}
+	resolved := inferenceruntime.ResolveResult{Allowed: true, Decision: decision}
+	if err := request.AfterAuthorization(ctx, resolved); err != nil {
+		return inferenceruntime.InvokeResponse{Decision: decision}, err
+	}
+	if err := request.BeforeProviderAttempt(ctx, resolved); err != nil {
+		return inferenceruntime.InvokeResponse{Decision: decision}, err
+	}
+	// Simulates a post-start authorization/infrastructure fence failing before
+	// the connector is entered.
+	return inferenceruntime.InvokeResponse{Decision: decision}, f.err
 }
 
 func TestAutomationDefinitionStableAcrossCredentialRotation(t *testing.T) {
@@ -281,6 +528,151 @@ func TestAutomationFinalizesAfterGraphCommitCancelsRequest(t *testing.T) {
 	}
 	if acknowledgements != 2 {
 		t.Fatalf("graph finalization acknowledgements = %d, want input rollback and publication commit", acknowledgements)
+	}
+}
+
+func TestAutomationPublicationTimeoutReconcilesWithoutProviderReplay(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	graphs := &automationE2EGraph{node: node, waitForCommitContext: true}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
+	var publicationLogs bytes.Buffer
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference).WithLogger(slog.New(slog.NewJSONHandler(&publicationLogs, nil)))
+	mgr.publicationTimeout = 500 * time.Millisecond
+	def := automation.Definition{
+		ID: "bounded-publication", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 1},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	processed, err := mgr.ProcessPending(ctx, ids.domainID, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("publication timeout was not bounded: %s", elapsed)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 || invs[0].Status != "retryable" {
+		t.Fatalf("invocations=%+v err=%v", invs, err)
+	}
+	if _, chatCalls := fake.Calls(); chatCalls != 1 {
+		t.Fatalf("provider calls=%d", chatCalls)
+	}
+	logged := publicationLogs.String()
+	for _, required := range []string{`"stage":"pending_persistence"`, `"stage":"graph_commit"`, `"result":"failed"`, `"category":"deadline_exceeded"`} {
+		if !strings.Contains(logged, required) {
+			t.Fatalf("publication diagnostics missing %s: %s", required, logged)
+		}
+	}
+	inv := invs[0]
+	mgr.publicationTimeout = 2 * time.Second
+	reconciled, err := mgr.reconcileProviderStartedPublication(ctx, &inv)
+	if err != nil || !reconciled {
+		t.Fatalf("reconcileProviderStartedPublication() reconciled=%v err=%v", reconciled, err)
+	}
+	if _, chatCalls := fake.Calls(); chatCalls != 1 {
+		t.Fatalf("provider replayed during publication recovery: calls=%d", chatCalls)
+	}
+	ledger, err := store.GetProcedureInferenceLedger(ctx, ids.spaceID)
+	if err != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].PublicationDisposition != "published" {
+		t.Fatalf("ledger=%+v err=%v", ledger, err)
+	}
+}
+
+func TestAutomationPublicationReopenTimeoutIsBoundedWithoutProviderReplay(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	store := storage.NewFileStore(t.TempDir())
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	beginCalls := 0
+	graphs := &automationE2EGraph{node: node}
+	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String(), beginCalls: &beginCalls, waitForBeginCall: 2}
+	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
+	mgr.publicationTimeout = 100 * time.Millisecond
+	def := automation.Definition{
+		ID: "bounded-publication-reopen", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 1},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("publication reopen timeout was not bounded: %s", elapsed)
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider calls=%d, want 1", calls)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 || invs[0].Status != "retryable" {
+		t.Fatalf("invocations=%+v err=%v", invs, err)
+	}
+	runs, err := store.ListRuns(ctx, ids.domainID)
+	if err != nil || len(runs) != 1 || runs[0].Status != "running" || !runs[0].CompletedAt.IsZero() {
+		t.Fatalf("runs=%+v err=%v", runs, err)
+	}
+}
+
+func TestAutomationPublicationLedgerLookupTimeoutIsBoundedWithoutProviderReplay(t *testing.T) {
+	ctx := context.Background()
+	inference, ids, fake := newAutomationInferenceRuntime(t, ctx, false)
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &blockingProcedureInferenceLedgerListStore{Store: baseStore}
+	node := graph.Node{ID: graph.NodeID(uuid.New()), DomainID: ids.domainID, Labels: []string{"Page"}, Payload: map[string]any{"text": "World"}}
+	mgr := NewManager(store).WithGraphRuntime(automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}, &automationE2EGraph{node: node}).WithInferenceInvoker(inference)
+	mgr.publicationTimeout = 100 * time.Millisecond
+	def := automation.Definition{
+		ID: "bounded-publication-ledger", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled,
+		Trigger:   automation.Trigger{Events: []string{automation.EventNodeUpdated}, Labels: []string{"Page"}},
+		Input:     automation.Input{Target: "changed", Fields: []string{"payload.text"}},
+		Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize",
+		Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "changed", Set: map[string]string{"payload.summary": "$result.text"}}}}},
+		Safety: automation.Safety{MaxAttempts: 1},
+	}
+	if err := store.PutDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+	event := graphchange.CommittedEvent{ID: uuid.New(), SpaceID: domainspace.SpaceID(uuid.MustParse(ids.spaceID)), DomainID: ids.domainID, Origin: graphchange.OriginMetadata{PrincipalID: "principal-a"}, Changes: []graphchange.Change{{Type: graphchange.ChangeTypeNodeUpdated, NodeID: node.ID.String(), Node: &node}}}
+	if err := mgr.HandleGraphChange(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if processed, err := mgr.ProcessPending(ctx, ids.domainID, 10); err != nil || processed != 1 {
+		t.Fatalf("ProcessPending() processed=%d err=%v", processed, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("publication ledger lookup timeout was not bounded: %s", elapsed)
+	}
+	if _, calls := fake.Calls(); calls != 1 {
+		t.Fatalf("provider calls=%d, want 1", calls)
+	}
+	invs, err := store.ListInvocations(ctx, ids.domainID, storage.InvocationFilter{})
+	if err != nil || len(invs) != 1 || invs[0].Status != "retryable" {
+		t.Fatalf("invocations=%+v err=%v", invs, err)
 	}
 }
 
@@ -609,20 +1001,36 @@ func newAutomationInferenceRuntime(t *testing.T, ctx context.Context, deny bool)
 	return module, ids, fake
 }
 
+type blockingProcedureInferenceLedgerListStore struct{ storage.Store }
+
+func (s *blockingProcedureInferenceLedgerListStore) ListProcedureInferenceLedgers(ctx context.Context) ([]automation.ProcedureInferenceLedger, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type automationE2ESessions struct {
 	spaceID            string
 	domainID           string
 	commitCalls        *int
 	commitContextError *error
 	beginInputs        *[]sessionmodel.BeginTransactionInput
+	beginCalls         *int
+	waitForBeginCall   int
 }
 
 func (s automationE2ESessions) OpenSession(context.Context, sessionmodel.OpenSessionInput) (sessionmodel.GraphSession, error) {
 	return sessionmodel.GraphSession{ID: "session", PrincipalID: automationActor, SpaceID: s.spaceID, DomainID: s.domainID, State: sessionmodel.SessionStateActive}, nil
 }
-func (s automationE2ESessions) BeginTransaction(_ context.Context, input sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
+func (s automationE2ESessions) BeginTransaction(ctx context.Context, input sessionmodel.BeginTransactionInput) (sessionmodel.GraphTransaction, error) {
 	if s.beginInputs != nil {
 		*s.beginInputs = append(*s.beginInputs, input)
+	}
+	if s.beginCalls != nil {
+		*s.beginCalls++
+		if s.waitForBeginCall > 0 && *s.beginCalls == s.waitForBeginCall {
+			<-ctx.Done()
+			return sessionmodel.GraphTransaction{}, ctx.Err()
+		}
 	}
 	baseRevision := int64(0)
 	if input.BaseRevision != nil {
@@ -647,14 +1055,20 @@ func (s automationE2ESessions) RollbackTransaction(context.Context, string, stri
 }
 
 type automationE2EGraph struct {
-	node                graph.Node
-	nodes               map[string]graph.Node
-	edges               []graph.Edge
-	cancelOnCommit      context.CancelFunc
-	acknowledgements    *int
-	spaceRevision       int64
-	domainRevision      int64
-	domainRevisionCalls *[][2]string
+	node                        graph.Node
+	nodes                       map[string]graph.Node
+	edges                       []graph.Edge
+	cancelOnCommit              context.CancelFunc
+	waitForCommitContext        bool
+	acknowledgements            *int
+	spaceRevision               int64
+	domainRevision              int64
+	domainRevisionCalls         *[][2]string
+	idempotentCommits           map[string]graphchange.CommitResult
+	idempotencyAcknowledgements *int
+	idempotencyRetentions       *int
+	acknowledgeIdempotency      func(context.Context, string, string, string, string, string) error
+	retainIdempotency           func(context.Context, string, string, string, string, string) error
 }
 
 func (g *automationE2EGraph) allNodes() []graph.Node {
@@ -733,11 +1147,57 @@ func (g *automationE2EGraph) CurrentDomainRevision(_ context.Context, spaceID st
 	}
 	return 1, nil
 }
-func (g *automationE2EGraph) CommitTransactionGraph(context.Context, sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+func (g *automationE2EGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
 	if g.cancelOnCommit != nil {
 		g.cancelOnCommit()
 	}
-	return graphchange.CommitResult{OperationCount: 1, CommittedRevision: 1}, nil
+	result := graphchange.CommitResult{CommitID: "commit-" + tx.IdempotencyKey, OperationCount: 1, CommittedRevision: 1, IdempotencyKey: tx.IdempotencyKey}
+	if tx.IdempotencyKey != "" {
+		if g.idempotentCommits == nil {
+			g.idempotentCommits = map[string]graphchange.CommitResult{}
+		}
+		g.idempotentCommits[tx.PrincipalID+"\x00"+tx.IdempotencyKey] = result
+	}
+	if g.waitForCommitContext {
+		<-ctx.Done()
+		return graphchange.CommitResult{}, ctx.Err()
+	}
+	return result, nil
+}
+func (g *automationE2EGraph) LookupIdempotentCommit(_ context.Context, principalID, _, _, key string) (graphchange.CommitResult, bool, error) {
+	result, ok := g.idempotentCommits[principalID+"\x00"+key]
+	if ok && result.CommitID == "" {
+		result.CommitID = "commit-" + key
+	}
+	return result, ok, nil
+}
+func (g *automationE2EGraph) RetainIdempotentCommitUntilAcknowledged(ctx context.Context, principalID, spaceID, domainID, key, commitID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if g.retainIdempotency != nil {
+		if err := g.retainIdempotency(ctx, principalID, spaceID, domainID, key, commitID); err != nil {
+			return err
+		}
+	}
+	if g.idempotencyRetentions != nil {
+		(*g.idempotencyRetentions)++
+	}
+	return nil
+}
+func (g *automationE2EGraph) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key, commitID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if g.acknowledgeIdempotency != nil {
+		if err := g.acknowledgeIdempotency(ctx, principalID, spaceID, domainID, key, commitID); err != nil {
+			return err
+		}
+	}
+	if g.idempotencyAcknowledgements != nil {
+		(*g.idempotencyAcknowledgements)++
+	}
+	return nil
 }
 func (g *automationE2EGraph) DiscardTransactionGraph(context.Context, string) error { return nil }
 func (g *automationE2EGraph) AcknowledgeTransactionFinalization(ctx context.Context, _ sessionmodel.GraphTransaction) error {

@@ -240,6 +240,7 @@ func (m *AutomationManager) claimInvocation(ctx context.Context, inv automation.
 		current.Status = "running"
 		current.ClaimVersion++
 		current.ClaimToken = uuid.NewString()
+		current.ClaimProcessID = m.processID
 		current.ClaimExpiresAt = now.Add(automationClaimLease)
 		current.UpdatedAt = now
 		if err := m.putInvocationRuntime(ctx, current); err != nil {
@@ -283,6 +284,7 @@ func (m *AutomationManager) claimInvocation(ctx context.Context, inv automation.
 	current.ClaimOwnerNodeID = uint64(m.raftGroups.NodeID())
 	current.ClaimVersion++
 	current.ClaimToken = uuid.NewString()
+	current.ClaimProcessID = m.processID
 	current.ClaimExpiresAt = now.Add(automationClaimLease)
 	current.UpdatedAt = now
 	if err := m.putInvocationRuntime(ctx, current); err != nil {

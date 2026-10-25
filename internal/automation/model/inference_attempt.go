@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -20,6 +21,11 @@ const (
 	InferenceAttemptStateAmbiguous  = "ambiguous"
 
 	InferenceAttemptChangeSchemaV1 = "procedure_inference_attempt_change.v1"
+
+	// ProcedureInferenceEvidenceStringMaxBytes bounds every persisted free-form identity/correlation string.
+	ProcedureInferenceEvidenceStringMaxBytes = 1024
+	// ProcedureInferenceAttemptMaxBytes bounds one encoded authoritative attempt record.
+	ProcedureInferenceAttemptMaxBytes = 64 << 10
 )
 
 // ProcedureInferenceAttempt is the authoritative, sanitized record for one
@@ -66,6 +72,7 @@ type ProcedureInferenceAttempt struct {
 	TokenCountAuthority         string         `json:"token_count_authority,omitempty"`
 	ProviderDurationMillis      int64          `json:"provider_duration_millis,omitempty"`
 	PublicationDisposition      string         `json:"publication_disposition,omitempty"`
+	PublicationReceiptCommitID  string         `json:"publication_receipt_commit_id,omitempty"`
 	RequestedAt                 time.Time      `json:"requested_at"`
 	AuthorizedAt                time.Time      `json:"authorized_at,omitempty"`
 	StartedAt                   time.Time      `json:"started_at,omitempty"`
@@ -124,6 +131,7 @@ func NormalizeProcedureInferenceAttempt(in ProcedureInferenceAttempt) ProcedureI
 	in.OutcomeCategory = strings.ToLower(strings.TrimSpace(in.OutcomeCategory))
 	in.TokenCountAuthority = strings.ToLower(strings.TrimSpace(in.TokenCountAuthority))
 	in.PublicationDisposition = strings.ToLower(strings.TrimSpace(in.PublicationDisposition))
+	in.PublicationReceiptCommitID = strings.TrimSpace(in.PublicationReceiptCommitID)
 	return in
 }
 
@@ -146,6 +154,45 @@ func ValidateProcedureInferenceAttempt(in ProcedureInferenceAttempt) error {
 	}
 	if in.InputTokens < 0 || in.OutputTokens < 0 || in.TotalTokens < 0 || in.ProviderDurationMillis < 0 {
 		return fmt.Errorf("procedure inference attempt counters cannot be negative")
+	}
+	boundedStrings := []struct {
+		name  string
+		value string
+	}{
+		{name: "id", value: in.ID}, {name: "space_id", value: in.SpaceID}, {name: "procedure_id", value: in.ProcedureID},
+		{name: "binding_id", value: in.BindingID}, {name: "invocation_id", value: in.InvocationID}, {name: "run_id", value: in.RunID},
+		{name: "workflow_step_id", value: in.WorkflowStepID}, {name: "source_event_id", value: in.SourceEventID},
+		{name: "source_transaction_id", value: in.SourceTransactionID}, {name: "event_origin_principal_id", value: in.EventOriginPrincipalID},
+		{name: "actor_principal_id", value: in.ActorPrincipalID}, {name: "owner_principal_id", value: in.OwnerPrincipalID},
+		{name: "on_behalf_of_principal_id", value: in.OnBehalfOfPrincipalID}, {name: "operation", value: in.Operation},
+		{name: "profile_id", value: in.ProfileID}, {name: "endpoint_id", value: in.EndpointID}, {name: "model_id", value: in.ModelID},
+		{name: "capability_id", value: in.CapabilityID}, {name: "policy_decision_id", value: in.PolicyDecisionID},
+		{name: "credential_grant_id", value: in.CredentialGrantID},
+		{name: "publication_receipt_commit_id", value: in.PublicationReceiptCommitID},
+	}
+	for _, field := range boundedStrings {
+		if len(field.value) > ProcedureInferenceEvidenceStringMaxBytes {
+			return fmt.Errorf("procedure inference attempt %s exceeds %d bytes", field.name, ProcedureInferenceEvidenceStringMaxBytes)
+		}
+	}
+	if !validInferenceOutcomeCategory(in.OutcomeCategory) {
+		return fmt.Errorf("unsupported procedure inference outcome category %q", in.OutcomeCategory)
+	}
+	if !validInferenceTokenCountAuthority(in.TokenCountAuthority) {
+		return fmt.Errorf("unsupported procedure inference token count authority %q", in.TokenCountAuthority)
+	}
+	if !validInferencePublicationDisposition(in.PublicationDisposition) {
+		return fmt.Errorf("unsupported procedure inference publication disposition %q", in.PublicationDisposition)
+	}
+	if in.PublicationReceiptCommitID != "" && in.PublicationDisposition != "published" {
+		return fmt.Errorf("procedure inference publication receipt commit id requires published disposition")
+	}
+	encoded, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("encode procedure inference attempt: %w", err)
+	}
+	if len(encoded) > ProcedureInferenceAttemptMaxBytes {
+		return fmt.Errorf("procedure inference attempt exceeds %d bytes", ProcedureInferenceAttemptMaxBytes)
 	}
 	return nil
 }
@@ -187,6 +234,7 @@ func ValidateProcedureInferenceAttemptTransition(current *ProcedureInferenceAtte
 		before, after := cur, next
 		before.RecordVersion, after.RecordVersion = 0, 0
 		before.PublicationDisposition, after.PublicationDisposition = "", ""
+		before.PublicationReceiptCommitID, after.PublicationReceiptCommitID = "", ""
 		if !reflect.DeepEqual(before, after) {
 			return fmt.Errorf("terminal procedure inference attempt may only add publication disposition")
 		}
@@ -204,6 +252,35 @@ func ValidateProcedureInferenceAttemptTransition(current *ProcedureInferenceAtte
 func IsTerminalProcedureInferenceAttemptState(state string) bool {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case InferenceAttemptStateSucceeded, InferenceAttemptStateFailed, InferenceAttemptStateDenied, InferenceAttemptStateCanceled, InferenceAttemptStateAmbiguous:
+		return true
+	default:
+		return false
+	}
+}
+
+func validInferenceOutcomeCategory(value string) bool {
+	switch value {
+	case "", "succeeded", "provider_outcome_unknown", "authorization_denied", "canceled_before_provider", "failed_before_provider":
+		return true
+	default:
+		return false
+	}
+}
+
+func validInferenceTokenCountAuthority(value string) bool {
+	switch value {
+	case "", "provider_reported", "estimated", "unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+func validInferencePublicationDisposition(value string) bool {
+	switch value {
+	case "", "published", "not_published_pre_provider_failure", "not_published_provider_failure", "not_published_provider_ambiguous", "suppressed_procedure_control", "rejected_invalid_output",
+		"publication_precondition_failed", "publication_pending", "publication_failed", "suppressed_authorization_or_control",
+		"not_changed_or_duplicate":
 		return true
 	default:
 		return false

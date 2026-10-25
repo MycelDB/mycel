@@ -208,6 +208,7 @@ type Invocation struct {
 	ClaimOwnerNodeID           uint64         `json:"claim_owner_node_id,omitempty"`
 	ClaimVersion               uint64         `json:"claim_version,omitempty"`
 	ClaimToken                 string         `json:"claim_token,omitempty"`
+	ClaimProcessID             string         `json:"claim_process_id,omitempty"`
 	ClaimExpiresAt             time.Time      `json:"claim_expires_at,omitempty"`
 	CreatedAt                  time.Time      `json:"created_at,omitempty"`
 	UpdatedAt                  time.Time      `json:"updated_at,omitempty"`

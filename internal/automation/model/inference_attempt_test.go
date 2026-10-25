@@ -1,12 +1,43 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
+
+func TestValidateProcedureInferenceAttemptRejectsUnboundedOrUnclassifiedEvidence(t *testing.T) {
+	base := ProcedureInferenceAttempt{
+		ID: "attempt-a", RecordVersion: 1, SpaceID: uuid.NewString(), DomainID: graph.DomainID(uuid.New()),
+		ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1,
+		InvocationID: "inv", RunID: "run", RunAttemptNumber: 1, ProviderAttemptNumber: 1,
+		State: InferenceAttemptStateRequested, RequestedAt: time.Now().UTC(),
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ProcedureInferenceAttempt)
+	}{
+		{name: "oversized identity", mutate: func(in *ProcedureInferenceAttempt) {
+			in.ProcedureID = strings.Repeat("p", ProcedureInferenceEvidenceStringMaxBytes+1)
+		}},
+		{name: "unknown outcome", mutate: func(in *ProcedureInferenceAttempt) { in.OutcomeCategory = "raw-provider-error" }},
+		{name: "unknown token authority", mutate: func(in *ProcedureInferenceAttempt) { in.TokenCountAuthority = "provider-body" }},
+		{name: "unknown publication disposition", mutate: func(in *ProcedureInferenceAttempt) { in.PublicationDisposition = "raw-publication-error" }},
+		{name: "receipt without publication", mutate: func(in *ProcedureInferenceAttempt) { in.PublicationReceiptCommitID = "commit" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := base
+			tt.mutate(&attempt)
+			if err := ValidateProcedureInferenceAttempt(attempt); err == nil {
+				t.Fatal("expected bounded sanitized evidence rejection")
+			}
+		})
+	}
+}
 
 func TestValidateProcedureInferenceAttemptTransition(t *testing.T) {
 	now := time.Now().UTC()
@@ -53,6 +84,14 @@ func TestValidateProcedureInferenceAttemptTransition(t *testing.T) {
 	}
 	if !IsTerminalProcedureInferenceAttemptState(succeeded.State) {
 		t.Fatal("succeeded state should be terminal")
+	}
+
+	published := succeeded
+	published.RecordVersion = 5
+	published.PublicationDisposition = "published"
+	published.PublicationReceiptCommitID = "graph-commit"
+	if err := ValidateProcedureInferenceAttemptTransition(&succeeded, published); err != nil {
+		t.Fatalf("published receipt transition: %v", err)
 	}
 
 	mutated := started

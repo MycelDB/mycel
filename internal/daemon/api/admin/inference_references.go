@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	"google.golang.org/grpc/codes"
@@ -386,7 +387,7 @@ func (s *AdminInferenceService) profileReferences(ctx context.Context, profile d
 				return nil, err
 			}
 			for _, index := range indexes {
-				if metadataMatchesAny(index.Metadata, []string{"intelligence_profile_id", "intelligence_profile", "intelligence_profile_key", "embedding_profile"}, idText, key) {
+				if semanticIndexReferencesProfile(index.Metadata, idText, key) {
 					refs = append(refs, "semantic_index:"+index.ID.String())
 				}
 			}
@@ -399,10 +400,10 @@ func (s *AdminInferenceService) profileReferences(ctx context.Context, profile d
 	refs = append(refs, usageRefs...)
 	spaceRefs, err := s.standaloneSpaceReferences(ctx, profile.SpaceID, func(existing domaininference.Profile, grant domaininference.CredentialGrant, policy domaininference.Policy, decision domaininference.PolicyDecision) []string {
 		out := []string{}
-		if stringSliceContains(grant.ProfileRefs, idText) || (key != "" && stringSliceContains(grant.ProfileRefs, key)) {
+		if stringSliceContains(grant.ProfileRefs, idText) || (key != "" && stringSliceContainsFold(grant.ProfileRefs, key)) {
 			out = append(out, "credential_grant:"+grant.ID.String())
 		}
-		if stringSliceContains(policy.ProfileRefs, idText) || (key != "" && stringSliceContains(policy.ProfileRefs, key)) {
+		if stringSliceContains(policy.ProfileRefs, idText) || (key != "" && stringSliceContainsFold(policy.ProfileRefs, key)) {
 			out = append(out, "inference_policy:"+policy.ID.String())
 		}
 		if decision.ProfileID == profile.ID {
@@ -588,6 +589,19 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func stringSliceContainsFold(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
 func semanticStringRefsContain(values []string, id string, key string) bool {
 	id = strings.TrimSpace(id)
 	key = strings.ToLower(strings.TrimSpace(key))
@@ -601,6 +615,22 @@ func semanticStringRefsContain(values []string, id string, key string) bool {
 		}
 	}
 	return false
+}
+
+func semanticIndexReferencesProfile(metadata map[string]any, id string, key string) bool {
+	selectedKey, selectedID := domainsemantic.SemanticIndexInferenceProfileReference(metadata)
+	id = strings.TrimSpace(id)
+	if id != "" && selectedID.String() == id {
+		return true
+	}
+	selectedKey = strings.TrimSpace(selectedKey)
+	if selectedKey == "" {
+		return false
+	}
+	if parsed, err := uuid.Parse(selectedKey); err == nil {
+		return id != "" && parsed.String() == id
+	}
+	return strings.TrimSpace(key) != "" && strings.EqualFold(selectedKey, strings.TrimSpace(key))
 }
 
 func metadataMatchesAny(metadata map[string]any, keys []string, values ...string) bool {

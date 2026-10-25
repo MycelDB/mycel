@@ -712,20 +712,5 @@ func (r Runner) vectorSpaceKey(ctx context.Context, modelID domainsemantic.Infer
 }
 
 func semanticInferenceProfileRef(index domainsemantic.SemanticIndex) (string, uuid.UUID) {
-	if len(index.Metadata) == 0 {
-		return "", uuid.Nil
-	}
-	if raw, ok := index.Metadata["inference_profile_id"]; ok {
-		if id, err := uuid.Parse(strings.TrimSpace(fmt.Sprint(raw))); err == nil {
-			return "", id
-		}
-	}
-	for _, key := range []string{"inference_profile", "inference_profile_key", "embedding_profile"} {
-		if raw, ok := index.Metadata[key]; ok {
-			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
-				return value, uuid.Nil
-			}
-		}
-	}
-	return "", uuid.Nil
+	return domainsemantic.SemanticIndexInferenceProfileReference(index.Metadata)
 }

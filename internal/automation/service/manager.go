@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -61,47 +62,87 @@ type Manager interface {
 }
 
 type AutomationManager struct {
-	store                                 storage.Store
-	now                                   func() time.Time
-	sessions                              SessionRuntime
-	graphs                                GraphRuntime
-	schemas                               SchemaReader
-	inference                             InferenceInvoker
-	blobs                                 BlobReader
-	raftGroups                            *consensus.MultiGroup
-	raftPartitionCount                    uint32
-	raftLocalNode                         consensus.NodeID
-	raftNodeAddrs                         []string
-	raftBackendAuthToken                  string
-	maxInputTokens                        int64
-	maxOutputTokens                       int64
-	metricsProcessed                      int64
-	metricsSucceeded                      int64
-	metricsSkipped                        int64
-	metricsFailed                         int64
-	metricsRetryable                      int64
-	metricsGraphReplayScopes              int64
-	metricsGraphReplayFollowerSkips       int64
-	metricsGraphReplayEvents              int64
-	metricsGraphReplaySkippedEvents       int64
-	metricsGraphReplayInvocationsCreated  int64
-	metricsGraphReplayInvocationsExisting int64
-	metricsGraphReplayCursorAdvances      int64
-	metricsGraphReplayGaps                int64
-	metricsClaimReclaims                  int64
-	metricsClaimAbandoned                 int64
-	writeAllowed                          func() error
-	gate                                  *quiesce.Gate
-	localExecutionMu                      sync.Mutex
-	inferenceAttemptMu                    sync.Mutex
-	runMutationMu                         sync.Mutex
-	definitionMutationMu                  sync.Mutex
-	procedureControlMu                    sync.RWMutex
-	procedureControlOperationMu           sync.Mutex
+	store                                                  storage.Store
+	now                                                    func() time.Time
+	sessions                                               SessionRuntime
+	graphs                                                 GraphRuntime
+	schemas                                                SchemaReader
+	inference                                              InferenceInvoker
+	blobs                                                  BlobReader
+	raftGroups                                             *consensus.MultiGroup
+	raftPartitionCount                                     uint32
+	raftLocalNode                                          consensus.NodeID
+	raftNodeAddrs                                          []string
+	raftBackendAuthToken                                   string
+	maxInputTokens                                         int64
+	maxOutputTokens                                        int64
+	metricsProcessed                                       int64
+	metricsSucceeded                                       int64
+	metricsSkipped                                         int64
+	metricsFailed                                          int64
+	metricsRetryable                                       int64
+	metricsGraphReplayScopes                               int64
+	metricsGraphReplayFollowerSkips                        int64
+	metricsGraphReplayEvents                               int64
+	metricsGraphReplaySkippedEvents                        int64
+	metricsGraphReplayInvocationsCreated                   int64
+	metricsGraphReplayInvocationsExisting                  int64
+	metricsGraphReplayCursorAdvances                       int64
+	metricsGraphReplayGaps                                 int64
+	metricsClaimReclaims                                   int64
+	metricsClaimAbandoned                                  int64
+	metricsProcedureInferenceRequested                     int64
+	metricsProcedureInferenceAuthorized                    int64
+	metricsProcedureInferenceStarted                       int64
+	metricsProcedureInferenceTerminal                      int64
+	metricsProcedureInferenceAmbiguous                     int64
+	metricsProcedureInferenceAttemptCapacityRejections     int64
+	metricsProcedureInferenceChangeCapacityRejections      int64
+	metricsProcedureInferenceAttemptsPruned                int64
+	metricsProcedureInferenceChangesPruned                 int64
+	metricsProcedureInferenceStateBytesPruned              int64
+	metricsProcedureInferenceHistoryBytesPruned            int64
+	metricsProcedureInferenceRetentionGapAdvances          int64
+	metricsProcedureInferenceStateByteCapacityRejections   int64
+	metricsProcedureInferenceHistoryByteCapacityRejections int64
+	metricsProcedureInferenceObservedSpaces                int64
+	metricsProcedureInferenceRetainedAttempts              int64
+	metricsProcedureInferenceRetainedChanges               int64
+	metricsProcedureInferenceRetainedStateBytes            int64
+	metricsProcedureInferenceRetainedHistoryBytes          int64
+	metricsProcedureInferenceActiveAttempts                int64
+	metricsProcedureInferenceCurrentAmbiguousAttempts      int64
+	metricsProcedureInferenceSpacesWithHistoryGap          int64
+	metricsProcedureInferenceSpacesWithStateGap            int64
+	writeAllowed                                           func() error
+	gate                                                   *quiesce.Gate
+	logger                                                 *slog.Logger
+	publicationTimeout                                     time.Duration
+	processID                                              string
+	localExecutionMu                                       sync.Mutex
+	inferenceAttemptMu                                     sync.Mutex
+	runMutationMu                                          sync.Mutex
+	definitionMutationMu                                   sync.Mutex
+	procedureControlMu                                     sync.RWMutex
+	procedureControlOperationMu                            sync.Mutex
+	procedureInferenceDiagnosticsLogMu                     sync.Mutex
+	procedureInferenceDiagnosticsLastLog                   map[string]time.Time
+	procedureInferenceDiagnosticsSuppressed                map[string]int64
+	procedureInferenceObserved                             map[string]procedureInferenceLedgerSummary
 }
 
 func NewManager(store storage.Store) *AutomationManager {
-	return &AutomationManager{store: store, now: func() time.Time { return time.Now().UTC() }}
+	return &AutomationManager{
+		store:              store,
+		now:                func() time.Time { return time.Now().UTC() },
+		publicationTimeout: 30 * time.Second,
+		processID:          uuid.NewString(),
+	}
+}
+
+func (m *AutomationManager) WithLogger(logger *slog.Logger) *AutomationManager {
+	m.logger = logger
+	return m
 }
 
 func (m *AutomationManager) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *AutomationManager {
@@ -580,11 +621,18 @@ func (m *AutomationManager) ListAutomationDomains(ctx context.Context) ([]graph.
 	if err != nil {
 		return nil, mapStoreError(err)
 	}
+	invocationIDs, err := m.store.ListInvocationDomains(ctx)
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
 	seen := map[string]graph.DomainID{}
 	for _, id := range definitionIDs {
 		seen[id.String()] = id
 	}
 	for _, id := range bindingIDs {
+		seen[id.String()] = id
+	}
+	for _, id := range invocationIDs {
 		seen[id.String()] = id
 	}
 	out := make([]graph.DomainID, 0, len(seen))
@@ -715,6 +763,7 @@ func (m *AutomationManager) RetryInvocation(ctx context.Context, domainID graph.
 	inv.ClaimOwnerNodeID = 0
 	inv.ClaimVersion++
 	inv.ClaimToken = ""
+	inv.ClaimProcessID = ""
 	inv.ClaimExpiresAt = time.Time{}
 	inv.UpdatedAt = m.now()
 	if err := m.putInvocationRuntime(ctx, inv); err != nil {
@@ -740,6 +789,7 @@ func (m *AutomationManager) CancelInvocation(ctx context.Context, domainID graph
 	inv.ClaimOwnerNodeID = 0
 	inv.ClaimVersion++
 	inv.ClaimToken = ""
+	inv.ClaimProcessID = ""
 	inv.ClaimExpiresAt = time.Time{}
 	inv.UpdatedAt = m.now()
 	if err := m.putInvocationRuntime(ctx, inv); err != nil {
@@ -880,6 +930,15 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 	}
 	processed := 0
 	for _, inv := range items {
+		reconciledPublication, err := m.reconcileProviderStartedPublication(ctx, &inv)
+		if err != nil {
+			return processed, err
+		}
+		if reconciledPublication {
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
 		recoveringRunning := strings.EqualFold(strings.TrimSpace(inv.Status), "running")
 		item, resolveErr := m.resolveInvocationAutomation(ctx, domainID, inv)
 		var debounce debounceDecision
@@ -910,6 +969,33 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			return processed, err
 		}
 		if reconciledTerminalRun {
+			m.recordMetric(inv.Status)
+			processed++
+			continue
+		}
+		// Claim acquisition rereads and validates current state. Only after this
+		// point may unresolved provider evidence finalize the invocation; doing so
+		// from the earlier list snapshot could overwrite a concurrent live claim.
+		fencedAttempt, providerFenced, err := m.invocationUnresolvedProviderAttempt(ctx, inv)
+		if err != nil {
+			return processed, err
+		}
+		if providerFenced {
+			// Finalize the run before the invocation. If the process crashes between
+			// writes, terminal-run reconciliation completes the invocation later.
+			if err := m.finalizeUnresolvedProviderAttemptRun(ctx, inv, fencedAttempt); err != nil {
+				return processed, err
+			}
+			if fencedAttempt.RunAttemptNumber > inv.AttemptCount {
+				inv.AttemptCount = fencedAttempt.RunAttemptNumber
+			}
+			inv.Status = "failed"
+			inv.SkipReason = "provider_outcome_ambiguous"
+			inv.NextAttemptAt = time.Time{}
+			inv.UpdatedAt = m.now()
+			if err := m.putInvocationRuntime(ctx, inv); err != nil {
+				return processed, err
+			}
 			m.recordMetric(inv.Status)
 			processed++
 			continue
@@ -983,13 +1069,29 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			processed++
 			continue
 		}
+		publicationRecoveryRequired := false
 		run, err := m.executeInvocation(ctx, def, inv)
 		if err != nil {
 			now := m.now()
 			inv.AttemptCount++
-			inv.SkipReason = err.Error()
+			publicationRecoveryRequired = errors.Is(err, ErrPublicationReconciliationRequired)
+			failureReason := err.Error()
+			if publicationRecoveryRequired {
+				failureReason = publicationReconciliationRequired
+			}
+			inv.SkipReason = failureReason
 			inv.UpdatedAt = now
-			if inv.AttemptCount < maxAttempts(def) && retryableAutomationError(err) {
+			if publicationRecoveryRequired {
+				// Provider work is already terminal. Keep this invocation visible to
+				// publication reconciliation regardless of the provider retry ceiling.
+				inv.Status = "retryable"
+				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))
+			} else if inferenceProviderOutcomeAmbiguous(err) {
+				// Durable started/ambiguous evidence is an absorbing provider fence;
+				// cause-text retry heuristics must never allocate another attempt.
+				inv.Status = "failed"
+				inv.NextAttemptAt = time.Time{}
+			} else if inv.AttemptCount < maxAttempts(def) && retryableAutomationError(err) {
 				inv.Status = "retryable"
 				inv.NextAttemptAt = now.Add(retryBackoff(inv.AttemptCount))
 			} else {
@@ -1002,11 +1104,18 @@ func (m *AutomationManager) ProcessPending(ctx context.Context, domainID graph.D
 			run.InvocationID = inv.ID
 			run.AttemptNumber = inv.AttemptCount
 			run.Status = inv.Status
-			run.Error = err.Error()
+			run.Error = failureReason
 			if run.StartedAt.IsZero() {
 				run.StartedAt = now
 			}
-			run.CompletedAt = now
+			if publicationRecoveryRequired {
+				// Provider work is terminal, but publication is not. The run stays
+				// nonterminal so a later Raft mutation can finalize it.
+				run.Status = "running"
+				run.CompletedAt = time.Time{}
+			} else {
+				run.CompletedAt = now
+			}
 		} else {
 			inv.AttemptCount++
 			inv.NextAttemptAt = time.Time{}

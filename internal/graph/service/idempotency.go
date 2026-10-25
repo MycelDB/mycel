@@ -34,13 +34,29 @@ type IdempotencyMetrics struct {
 	CapacityRecords    uint64
 }
 
+type graphIdempotencyRecordReference struct {
+	Scope    string          `json:"scope"`
+	Key      string          `json:"key"`
+	Digest   string          `json:"digest"`
+	Metadata json.RawMessage `json:"metadata"`
+}
+
+type graphIdempotencyRetention struct {
+	Scope    string                         `json:"scope"`
+	Key      string                         `json:"key"`
+	Digest   string                         `json:"digest"`
+	Metadata json.RawMessage                `json:"metadata"`
+	Record   graphstorage.IdempotencyRecord `json:"record"`
+}
+
 type graphCommitIdempotency struct {
-	Scope       string                         `json:"scope"`
-	Key         string                         `json:"key"`
-	Digest      string                         `json:"digest"`
-	Metadata    graphCommitIdempotencyMetadata `json:"metadata"`
-	CommittedAt time.Time                      `json:"committed_at"`
-	ExpiresAt   time.Time                      `json:"expires_at"`
+	Scope                   string                         `json:"scope"`
+	Key                     string                         `json:"key"`
+	Digest                  string                         `json:"digest"`
+	Metadata                graphCommitIdempotencyMetadata `json:"metadata"`
+	CommittedAt             time.Time                      `json:"committed_at"`
+	ExpiresAt               time.Time                      `json:"expires_at"`
+	RetainUntilAcknowledged bool                           `json:"retain_until_acknowledged,omitempty"`
 }
 
 type graphCommitIdempotencyMetadata struct {
@@ -128,8 +144,9 @@ func newGraphCommitIdempotency(tx sessionmodel.GraphTransaction, record graphCom
 			OperationCount: record.OperationCount,
 			OperationID:    tx.Origin.OperationID,
 		},
-		CommittedAt: committedAt,
-		ExpiresAt:   committedAt.Add(GraphCommitIdempotencyRetention),
+		CommittedAt:             committedAt,
+		ExpiresAt:               committedAt.Add(GraphCommitIdempotencyRetention),
+		RetainUntilAcknowledged: tx.RetainIdempotencyUntilAcknowledged,
 	}, nil
 }
 
@@ -293,13 +310,131 @@ func (record graphCommitIdempotency) storageRecord() (graphstorage.IdempotencyRe
 		return graphstorage.IdempotencyRecord{}, err
 	}
 	return graphstorage.IdempotencyRecord{
-		Scope:       record.Scope,
-		Key:         record.Key,
-		Digest:      record.Digest,
-		Metadata:    metadata,
-		CommittedAt: record.CommittedAt,
-		ExpiresAt:   record.ExpiresAt,
+		Scope:                   record.Scope,
+		Key:                     record.Key,
+		Digest:                  record.Digest,
+		Metadata:                metadata,
+		CommittedAt:             record.CommittedAt,
+		ExpiresAt:               record.ExpiresAt,
+		RetainUntilAcknowledged: record.RetainUntilAcknowledged,
 	}, nil
+}
+
+type publicationIdempotencyTarget struct {
+	principalID string
+	spaceID     string
+	domainID    string
+	key         string
+	commitID    string
+	store       *graphstorage.LocalStore
+	record      graphstorage.IdempotencyRecord
+}
+
+func (m *Module) publicationIdempotencyTarget(ctx context.Context, operation, principalID, spaceID, domainID, key, expectedCommitID string) (publicationIdempotencyTarget, bool, error) {
+	target := publicationIdempotencyTarget{
+		principalID: strings.TrimSpace(principalID),
+		spaceID:     strings.TrimSpace(spaceID),
+		domainID:    strings.TrimSpace(domainID),
+		key:         strings.TrimSpace(key),
+		commitID:    strings.TrimSpace(expectedCommitID),
+	}
+	if target.principalID == "" || target.spaceID == "" || target.domainID == "" || target.key == "" || target.commitID == "" {
+		return publicationIdempotencyTarget{}, false, fmt.Errorf("%w: idempotency %s scope is required", ErrInvalidInput, operation)
+	}
+	if len(target.key) > MaxGraphCommitIdempotencyKeyBytes || !utf8.ValidString(target.key) {
+		return publicationIdempotencyTarget{}, false, fmt.Errorf("%w: invalid idempotency %s key", ErrInvalidInput, operation)
+	}
+	if err := m.requireRaftGraphWriteRoute(target.spaceID); err != nil {
+		return publicationIdempotencyTarget{}, false, err
+	}
+	store, err := m.store(ctx, target.spaceID, target.domainID)
+	if err != nil {
+		return publicationIdempotencyTarget{}, false, err
+	}
+	target.store = store
+	var found bool
+	target.record, found, err = store.GetIdempotencyRecord(ctx, target.principalID, target.key)
+	if err != nil {
+		return publicationIdempotencyTarget{}, false, mapStorageError(err)
+	}
+	if !found {
+		return target, false, nil
+	}
+	storedCommitID, err := idempotencyRecordCommitID(target.record)
+	if err != nil {
+		return publicationIdempotencyTarget{}, false, err
+	}
+	if storedCommitID != target.commitID {
+		return publicationIdempotencyTarget{}, false, ErrIdempotencyConflict
+	}
+	return target, true, nil
+}
+
+// RetainIdempotentCommitUntilAcknowledged durably promotes a legacy matching
+// receipt before publication recovery relies on it.
+func (m *Module) RetainIdempotentCommitUntilAcknowledged(ctx context.Context, principalID, spaceID, domainID, key, expectedCommitID string) error {
+	target, found, err := m.publicationIdempotencyTarget(ctx, "retention", principalID, spaceID, domainID, key, expectedCommitID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	target.record.RetainUntilAcknowledged = true
+	record := graphCommitRecord{
+		SpaceID:  target.spaceID,
+		DomainID: target.domainID,
+		IdempotencyRetention: &graphIdempotencyRetention{
+			Scope:    target.principalID,
+			Key:      target.key,
+			Digest:   target.record.Digest,
+			Metadata: append(json.RawMessage(nil), target.record.Metadata...),
+			Record:   target.record,
+		},
+	}
+	if m.raftGroups != nil {
+		commandID := graphIdempotencyMaintenanceCommandID("graph-idempotency-retain-", target.principalID, target.spaceID, target.domainID, target.key, target.record.Digest, target.commitID)
+		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, commandID)
+		if err != nil {
+			return err
+		}
+		_, err = m.proposeGraphRaftCommand(ctx, cmd)
+		return err
+	}
+	return mapStorageError(target.store.RetainIdempotencyUntilAcknowledged(ctx, target.principalID, target.key, target.record.Digest, target.record.Metadata))
+}
+
+// AcknowledgeIdempotentCommit durably releases a retained publication receipt
+// only after its caller has persisted the terminal publication disposition.
+func (m *Module) AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key, expectedCommitID string) error {
+	target, found, err := m.publicationIdempotencyTarget(ctx, "acknowledgement", principalID, spaceID, domainID, key, expectedCommitID)
+	if err != nil || !found {
+		return err
+	}
+	record := graphCommitRecord{
+		SpaceID:  target.spaceID,
+		DomainID: target.domainID,
+		IdempotencyAcknowledgment: &graphIdempotencyRecordReference{
+			Scope:    target.principalID,
+			Key:      target.key,
+			Digest:   target.record.Digest,
+			Metadata: append(json.RawMessage(nil), target.record.Metadata...),
+		},
+	}
+	if m.raftGroups != nil {
+		commandID := graphIdempotencyMaintenanceCommandID("graph-idempotency-ack-", target.principalID, target.spaceID, target.domainID, target.key, target.record.Digest, target.commitID)
+		cmd, err := m.buildGraphCommitRaftCommand(record, m.raftPartitionCount, commandID)
+		if err != nil {
+			return err
+		}
+		_, err = m.proposeGraphRaftCommand(ctx, cmd)
+		return err
+	}
+	err = target.store.MarkIdempotencyPublicationAcknowledged(ctx, target.principalID, target.key, target.record.Digest, target.record.Metadata)
+	if errors.Is(err, graphstorage.ErrNotFound) {
+		return nil
+	}
+	return mapStorageError(err)
 }
 
 func (m *Module) observeIdempotencyError(record *graphCommitIdempotency, err error) error {
@@ -313,6 +448,23 @@ func (m *Module) observeIdempotencyError(record *graphCommitIdempotency, err err
 		m.idempotencyCapacityRejections.Add(1)
 	}
 	return err
+}
+
+func graphIdempotencyMaintenanceCommandID(prefix, principalID, spaceID, domainID, key, digest, commitID string) string {
+	sum := sha256.Sum256([]byte(principalID + "\x00" + spaceID + "\x00" + domainID + "\x00" + key + "\x00" + digest + "\x00" + commitID))
+	return prefix + hex.EncodeToString(sum[:])
+}
+
+func idempotencyRecordCommitID(record graphstorage.IdempotencyRecord) (string, error) {
+	var metadata graphCommitIdempotencyMetadata
+	if err := json.Unmarshal(record.Metadata, &metadata); err != nil {
+		return "", fmt.Errorf("decode graph idempotency metadata: %w", err)
+	}
+	commitID := strings.TrimSpace(metadata.CommitID)
+	if commitID == "" {
+		return "", fmt.Errorf("decode graph idempotency metadata: commit_id is required")
+	}
+	return commitID, nil
 }
 
 func graphCommitResultFromIdempotency(record graphstorage.IdempotencyRecord, replay bool) (graphchange.CommitResult, error) {

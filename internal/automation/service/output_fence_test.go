@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -16,6 +17,15 @@ import (
 )
 
 type outputFenceRevisionInference struct{ revision uint64 }
+
+type failingSpaceAuthorizationRevisionStore struct {
+	storage.Store
+	err error
+}
+
+func (s failingSpaceAuthorizationRevisionStore) GetSpaceAuthorizationRevision(context.Context, string) (storage.SpaceAuthorizationRevision, error) {
+	return storage.SpaceAuthorizationRevision{}, s.err
+}
 
 func (f *outputFenceRevisionInference) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	return inferenceruntime.InvokeResponse{}, nil
@@ -46,9 +56,13 @@ func TestValidateAutomationOutputFenceAcceptsCurrentClaim(t *testing.T) {
 }
 
 func TestValidateAutomationOutputFenceRejectsChangedAuthorizationRevisionInCluster(t *testing.T) {
+	const (
+		currentRevision uint64 = 4778902782362294898
+		staleRevision   uint64 = 4778902782362294897
+	)
 	ctx := context.Background()
 	store := storage.NewFileStore(t.TempDir())
-	revisions := &outputFenceRevisionInference{revision: 12}
+	revisions := &outputFenceRevisionInference{revision: currentRevision}
 	mgr := NewManager(store).WithInferenceInvoker(revisions)
 	mgr.raftGroups = &consensus.MultiGroup{}
 	mgr.raftPartitionCount = 1
@@ -61,17 +75,37 @@ func TestValidateAutomationOutputFenceRejectsChangedAuthorizationRevisionInClust
 	if err := store.PutProcedure(ctx, automation.Procedure{ID: "proc", Version: 1, DomainID: domainID, Status: automation.StatusEnabled}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID, Revision: 12}); err != nil {
+	if err := store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID, Revision: currentRevision}); err != nil {
 		t.Fatal(err)
 	}
-	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: 11, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 11}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: staleRevision, GlobalAuthorizationRevision: 8853358141603235760, SpaceAuthorizationRevision: staleRevision}
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("authorization revision fence error=%v", err)
 	}
-	validation.AuthorizationRevision = 12
-	validation.SpaceAuthorizationRevision = 12
+	validation.AuthorizationRevision = currentRevision
+	validation.SpaceAuthorizationRevision = currentRevision
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); err != nil {
 		t.Fatalf("matching authorization revision error=%v", err)
+	}
+}
+
+func TestValidateAutomationOutputFencePreservesAuthorizationRevisionReadFailure(t *testing.T) {
+	ctx := context.Background()
+	baseStore := storage.NewFileStore(t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: "inv-read-failure", DomainID: domainID, SpaceID: spaceID, ProcedureID: "proc", Status: "running", ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token"}
+	if err := baseStore.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	readErr := status.Error(codes.Unavailable, "authorization storage unavailable")
+	mgr := NewManager(failingSpaceAuthorizationRevisionStore{Store: baseStore, err: readErr})
+	mgr.raftGroups = &consensus.MultiGroup{}
+	mgr.raftPartitionCount = 1
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: 11, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 11}
+	err := mgr.ValidateAutomationOutputFence(ctx, validation)
+	if !errors.Is(err, readErr) || status.Code(err) != codes.Unavailable {
+		t.Fatalf("authorization revision read error=%v, want preserved Unavailable", err)
 	}
 }
 

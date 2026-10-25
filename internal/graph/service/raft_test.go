@@ -85,6 +85,72 @@ func TestBuildGraphCommitRaftCommand(t *testing.T) {
 	}
 }
 
+type rejectSecondAutomationFenceValidation struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (v *rejectSecondAutomationFenceValidation) ValidateAutomationOutputFence(context.Context, domaingraph.AutomationOutputFenceValidation) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.calls++
+	if v.calls > 1 {
+		return status.Error(codes.FailedPrecondition, "deterministic apply rejection")
+	}
+	return nil
+}
+
+func TestGraphRaftProposalPreservesApplyStatus(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	validator := &rejectSecondAutomationFenceValidation{}
+	m.SetAutomationOutputFenceValidator(validator)
+	router := consensus.NewLocalMessageRouter()
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(consensus.NodeID) (consensus.MessageSender, bool) { return router, true })}, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }}, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	defer groups.Stop()
+	for _, group := range groups.Groups() {
+		router.Register(group)
+	}
+	spaceID := uuid.NewString()
+	probe, err := m.buildGraphCommitRaftCommand(graphCommitRecord{SpaceID: spaceID}, 4, "status-leader-check")
+	if err != nil {
+		t.Fatalf("buildGraphCommitRaftCommand() error = %v", err)
+	}
+	group, ok := groups.Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatal("partition group not found")
+	}
+	if err := consensus.TickUntil(ctx, 10*time.Millisecond, groups.Tick, func() bool { return group.Leader() == 1 }); err != nil {
+		t.Fatalf("leader not elected: %v", err)
+	}
+	m.EnableExperimentalRaft(groups, 4)
+	tx := graphTx(spaceID, uuid.NewString(), 0)
+	_, err = m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "rejected", Meta: map[string]any{"automation": map[string]any{
+		"invocation_id": "inv-a", "claim_owner_node_id": "1", "claim_version": "1", "claim_token": "token-a",
+		"output_idempotency_key": "output-a", "procedure_id": "proc-a", "authorization_revision": "9007199254740993",
+	}}, AutomationOutputFence: true})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CommitTransactionGraph() code=%v err=%v; want FailedPrecondition", status.Code(err), err)
+	}
+}
+
+func TestMapGraphRaftProposalUnknownFailureToUnavailable(t *testing.T) {
+	err := mapGraphRaftProposalError(3, errors.New("opaque proposal failure"))
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("mapGraphRaftProposalError() code=%v err=%v; want Unavailable", status.Code(err), err)
+	}
+}
+
 func TestCommitTransactionGraphUsesRaftWhenEnabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -755,9 +821,15 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		}
 	}()
 	active := map[consensus.NodeID]bool{1: true, 2: true, 3: true}
+	var activeMu sync.RWMutex
+	isActive := func(id consensus.NodeID) bool {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		return active[id]
+	}
 	tickActive := func() {
 		for id, mg := range groupsByNode {
-			if active[id] {
+			if isActive(id) {
 				mg.Tick()
 			}
 		}
@@ -784,7 +856,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	leaderForPartition := func() consensus.NodeID {
 		counts := map[consensus.NodeID]int{}
 		for id, mg := range groupsByNode {
-			if !active[id] {
+			if !isActive(id) {
 				continue
 			}
 			if g, ok := mg.Group(consensus.PartitionGroupID(probe.PartitionID)); ok && g.Leader() != 0 {
@@ -792,7 +864,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 			}
 		}
 		for leader, count := range counts {
-			if active[leader] && count >= 2 {
+			if isActive(leader) && count >= 2 {
 				return leader
 			}
 		}
@@ -806,6 +878,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	principalID := uuid.NewString()
 	idempotencyNodeID := uuid.NewString()
 	firstTx := idempotencyGraphTx(spaceID, idempotencyDomainID, principalID, 0, "failover-capture")
+	firstTx.RetainIdempotencyUntilAcknowledged = true
 	if _, err := modules[oldLeader].UpsertNode(ctx, firstTx, domaingraph.NodeInput{NodeID: idempotencyNodeID, Content: "before failover"}); err != nil {
 		t.Fatalf("UpsertNode() before failover error = %v", err)
 	}
@@ -839,7 +912,9 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		sinkCallsAfterFirstCommit[id] = raftSinkCalls[id]
 	}
 	raftSinkMu.Unlock()
+	activeMu.Lock()
 	active[oldLeader] = false
+	activeMu.Unlock()
 	groupsByNode[oldLeader].Stop()
 	for _, router := range routers {
 		router.UnregisterNode(oldLeader)
@@ -872,6 +947,24 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	if _, err := modules[writer].CommitTransactionGraph(ctx, mismatchTx); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("idempotency mismatch after failover error = %v, want ErrIdempotencyConflict", err)
 	}
+	if err := modules[writer].AcknowledgeIdempotentCommit(ctx, principalID, spaceID, idempotencyDomainID, "failover-capture", firstCommit.CommitID); err != nil {
+		t.Fatalf("AcknowledgeIdempotentCommit() error = %v", err)
+	}
+	for id, module := range modules {
+		if !isActive(id) {
+			continue
+		}
+		store, err := module.store(ctx, spaceID, idempotencyDomainID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			record, found, err := store.GetIdempotencyRecord(ctx, principalID, "failover-capture")
+			return err == nil && found && record.PublicationAcknowledged
+		}); err != nil {
+			t.Fatalf("node %d did not apply receipt acknowledgement: %v", id, err)
+		}
+	}
 	raftSinkMu.Lock()
 	for id, calls := range raftSinkCalls {
 		if calls != sinkCallsAfterFirstCommit[id] {
@@ -891,7 +984,7 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 	}
 	readTx := graphTx(spaceID, domainID, 1)
 	for id, m := range modules {
-		if !active[id] {
+		if !isActive(id) {
 			continue
 		}
 		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
@@ -900,6 +993,51 @@ func TestGraphRaftCommitSurvivesLeaderFailover(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("node %d did not apply post-failover commit: %v", id, err)
 		}
+	}
+}
+
+func TestGraphRaftStateMachinePromotesLegacyIdempotencyReceipt(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphRaftModule(t, ctx, t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	principalID := uuid.NewString()
+	nodeID := domaingraph.NodeID(uuid.New())
+	tx := idempotencyGraphTx(spaceID, domainID, principalID, 0, "legacy-receipt")
+	commitRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domaingraph.DomainID(uuid.MustParse(domainID)), Content: "first"}}, OperationCount: 1}
+	idempotency, err := newGraphCommitIdempotency(tx, commitRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitRecord.Idempotency = idempotency
+	commitCommand, err := m.buildGraphCommitRaftCommand(commitRecord, 64, graphRaftCommandIDForRecord(ctx, tx.ID, commitRecord))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateMachine := RaftStateMachine{Module: m, PartitionCount: 64}
+	if err := stateMachine.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, commitCommand); err != nil {
+		t.Fatal(err)
+	}
+	store, err := m.store(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := store.GetIdempotencyRecord(ctx, principalID, "legacy-receipt")
+	if err != nil || !found || record.RetainUntilAcknowledged {
+		t.Fatalf("legacy receipt=%+v found=%v err=%v", record, found, err)
+	}
+	record.RetainUntilAcknowledged = true
+	retainRecord := graphCommitRecord{SpaceID: spaceID, DomainID: domainID, IdempotencyRetention: &graphIdempotencyRetention{Scope: principalID, Key: "legacy-receipt", Digest: record.Digest, Metadata: record.Metadata, Record: record}}
+	retainCommand, err := m.buildGraphCommitRaftCommand(retainRecord, 64, "retain-legacy-receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stateMachine.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, retainCommand); err != nil {
+		t.Fatal(err)
+	}
+	promoted, found, err := store.GetIdempotencyRecord(ctx, principalID, "legacy-receipt")
+	if err != nil || !found || !promoted.RetainUntilAcknowledged {
+		t.Fatalf("promoted receipt=%+v found=%v err=%v", promoted, found, err)
 	}
 }
 

@@ -1,9 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +70,95 @@ func TestProcedureInferenceAttemptLedgerIsMonotonicAndIdempotent(t *testing.T) {
 		if change.Sequence != uint64(i+1) || change.EventID == "" || change.SchemaVersion != automation.InferenceAttemptChangeSchemaV1 {
 			t.Fatalf("unexpected change %d: %+v", i, change)
 		}
+	}
+	metrics := mgr.Metrics()
+	if metrics.ProcedureInferenceRequested != 1 || metrics.ProcedureInferenceAuthorized != 1 || metrics.ProcedureInferenceStarted != 1 || metrics.ProcedureInferenceTerminal != 1 || metrics.ProcedureInferenceAmbiguous != 0 {
+		t.Fatalf("unexpected lifecycle metrics: %+v", metrics)
+	}
+	if metrics.ProcedureInferenceAttemptCapacity != maxProcedureInferenceAttemptsPerSpace || metrics.ProcedureInferenceChangeCapacity != maxProcedureInferenceChangesPerSpace || metrics.ProcedureInferenceHistoryByteCapacity != maxProcedureInferenceHistoryBytes || metrics.ProcedureInferenceRetentionAgeSeconds != 30*24*60*60 || metrics.ProcedureInferenceAttemptByteCapacity != automation.ProcedureInferenceAttemptMaxBytes || metrics.ProcedureInferenceEvidenceStringByteCapacity != automation.ProcedureInferenceEvidenceStringMaxBytes {
+		t.Fatalf("unexpected capacity diagnostics: %+v", metrics)
+	}
+	diagnostics, err := mgr.ProcedureInferenceDiagnostics(ctx)
+	if err != nil || diagnostics.Spaces != 1 || diagnostics.RetainedAttempts != 1 || diagnostics.RetainedChanges != 4 || diagnostics.RetainedStateBytes == 0 || diagnostics.RetainedHistoryBytes == 0 {
+		t.Fatalf("unexpected durable diagnostics: %+v err=%v", diagnostics, err)
+	}
+}
+
+type procedureInferenceNoListStore struct {
+	storage.Store
+	listCalls int
+}
+
+func (s *procedureInferenceNoListStore) ListProcedureInferenceLedgers(context.Context) ([]automation.ProcedureInferenceLedger, error) {
+	s.listCalls++
+	return nil, errors.New("full-ledger scan forbidden")
+}
+
+func TestProcedureInferenceApplyDiagnosticsDoNotScanAllLedgers(t *testing.T) {
+	ctx := context.Background()
+	store := &procedureInferenceNoListStore{Store: storage.NewFileStore(t.TempDir())}
+	var output bytes.Buffer
+	mgr := NewManager(store).WithLogger(slog.New(slog.NewJSONHandler(&output, nil)))
+	old := time.Unix(1_700_000_000, 0).UTC()
+	mgr.now = func() time.Time { return old }
+	attempt := automation.ProcedureInferenceAttempt{
+		ID: "attempt-no-scan", RecordVersion: 1, SpaceID: uuid.NewString(), DomainID: graph.DomainID(uuid.New()),
+		ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1,
+		InvocationID: "inv", RunID: "run", RunAttemptNumber: 1, ProviderAttemptNumber: 1,
+		State: automation.InferenceAttemptStateRequested, RequestedAt: old,
+	}
+	if err := mgr.putProcedureInferenceAttemptRuntime(ctx, attempt); err != nil {
+		t.Fatalf("put old requested attempt: %v", err)
+	}
+	mgr.now = func() time.Time { return old.Add(procedureInferenceRetentionAge + time.Hour) }
+	authorized := attempt
+	authorized.RecordVersion = 2
+	authorized.State = automation.InferenceAttemptStateAuthorized
+	authorized.AuthorizedAt = mgr.now()
+	if err := mgr.putProcedureInferenceAttemptRuntime(ctx, authorized); err != nil {
+		t.Fatalf("put authorized attempt with pruning: %v", err)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("apply diagnostics performed %d full-ledger scans", store.listCalls)
+	}
+	if !strings.Contains(output.String(), `"reason":"retention_gap_advance"`) {
+		t.Fatalf("missing constant-time pruning diagnostic: %s", output.String())
+	}
+}
+
+func TestProcedureInferenceCapacityDiagnosticsAreOperatorVisibleAndSanitized(t *testing.T) {
+	ctx := context.Background()
+	var output bytes.Buffer
+	mgr := NewManager(storage.NewFileStore(t.TempDir())).WithLogger(slog.New(slog.NewJSONHandler(&output, nil)))
+	mgr.logProcedureInferenceFixedBounds()
+	mgr.recordProcedureInferenceStateByteCapacityRejection(ctx)
+	logged := output.String()
+	for _, want := range []string{
+		`"msg":"procedure_inference_capacity_bounds"`,
+		`"retention_age_seconds":2592000`,
+		`"attempt_byte_capacity":65536`,
+		`"evidence_string_byte_capacity":1024`,
+		`"msg":"procedure_inference_capacity_diagnostics"`,
+		`"reason":"state_byte_capacity_rejection"`,
+		`"state_byte_capacity_rejections":1`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("operator diagnostic log missing %s: %s", want, logged)
+		}
+	}
+	for _, forbidden := range []string{"space_id", "attempt_id", "principal_id", "provider_id"} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("operator diagnostic log contains forbidden identifier field %q: %s", forbidden, logged)
+		}
+	}
+}
+
+func TestProcedureInferenceMetricsCountAmbiguousAsTerminalSubset(t *testing.T) {
+	mgr := NewManager(storage.NewFileStore(t.TempDir()))
+	mgr.recordProcedureInferenceTransition(automation.InferenceAttemptStateAmbiguous)
+	metrics := mgr.Metrics()
+	if metrics.ProcedureInferenceTerminal != 1 || metrics.ProcedureInferenceAmbiguous != 1 {
+		t.Fatalf("ambiguous metrics=%+v", metrics)
 	}
 }
 
@@ -149,6 +241,64 @@ func TestLocalInvocationClaimHasSingleWinner(t *testing.T) {
 	if winners != 1 {
 		t.Fatalf("claim winners=%d, want 1", winners)
 	}
+}
+
+func TestProcessPendingStaleSnapshotCannotOverwriteActiveStandaloneClaim(t *testing.T) {
+	ctx := context.Background()
+	baseStore := storage.NewFileStore(t.TempDir())
+	store := &blockingPendingSnapshotStore{Store: baseStore, captured: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewManager(store)
+	inv := automation.Invocation{ID: "inv-stale", SpaceID: uuid.NewString(), DomainID: graph.DomainID(uuid.New()), AutomationID: "procedure", AutomationVersion: 1, Status: "pending"}
+	if err := baseStore.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan struct {
+		processed int
+		err       error
+	}, 1)
+	go func() {
+		processed, err := mgr.ProcessPending(ctx, inv.DomainID, 10)
+		result <- struct {
+			processed int
+			err       error
+		}{processed: processed, err: err}
+	}()
+	<-store.captured
+
+	claimed, ok, err := mgr.claimInvocation(ctx, inv)
+	if err != nil || !ok {
+		t.Fatalf("claim=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	ledger := automation.ProcedureInferenceLedger{SpaceID: inv.SpaceID, Attempts: []automation.ProcedureInferenceAttempt{{ID: "attempt", InvocationID: inv.ID, SpaceID: inv.SpaceID, State: automation.InferenceAttemptStateStarted, RunAttemptNumber: 1}}}
+	if err := baseStore.PutProcedureInferenceLedger(ctx, ledger); err != nil {
+		t.Fatal(err)
+	}
+	close(store.release)
+	got := <-result
+	if got.err != nil || got.processed != 0 {
+		t.Fatalf("stale ProcessPending() processed=%d err=%v", got.processed, got.err)
+	}
+	current, err := baseStore.GetInvocation(ctx, inv.DomainID, inv.ID)
+	if err != nil || current.Status != "running" || current.ClaimToken != claimed.ClaimToken || current.ClaimVersion != claimed.ClaimVersion {
+		t.Fatalf("active claim overwritten: current=%+v claimed=%+v err=%v", current, claimed, err)
+	}
+}
+
+type blockingPendingSnapshotStore struct {
+	storage.Store
+	captured chan struct{}
+	release  chan struct{}
+	blocked  bool
+}
+
+func (s *blockingPendingSnapshotStore) ListInvocations(ctx context.Context, domainID graph.DomainID, filter storage.InvocationFilter) ([]automation.Invocation, error) {
+	items, err := s.Store.ListInvocations(ctx, domainID, filter)
+	if err == nil && filter.Status == "pending" && !s.blocked {
+		s.blocked = true
+		close(s.captured)
+		<-s.release
+	}
+	return items, err
 }
 
 func TestStandaloneRestartReclaimsExpiredInvocation(t *testing.T) {
@@ -310,9 +460,30 @@ func TestProcedureInferenceChangeOnlyRetentionInvalidatesPreRetainedSnapshot(t *
 	for i := range ledger.Changes {
 		ledger.Changes[i].Sequence = uint64(i + 1)
 	}
-	pruneProcedureInferenceLedger(&ledger, "", time.Time{}, nil)
+	stats := pruneProcedureInferenceLedger(&ledger, "", time.Time{}, nil)
+	if stats.Changes != 1 || stats.HistoryBytes == 0 || !stats.GapAdvanced {
+		t.Fatalf("prune diagnostics=%+v", stats)
+	}
 	if ledger.EarliestRetainedSequence != 2 || ledger.EarliestRetainedStateSequence != 2 {
 		t.Fatalf("retention watermarks history=%d state=%d", ledger.EarliestRetainedSequence, ledger.EarliestRetainedStateSequence)
+	}
+}
+
+func TestProcedureInferenceRetentionEnforcesByteTargetsBelowCountThreshold(t *testing.T) {
+	large := strings.Repeat("x", 5<<20)
+	ledger := automation.ProcedureInferenceLedger{HighWaterSequence: 10, EarliestRetainedSequence: 1, EarliestRetainedStateSequence: 1}
+	for i := 0; i < 10; i++ {
+		attempt := automation.ProcedureInferenceAttempt{ID: fmt.Sprintf("attempt-%02d", i), ProcedureID: large, State: automation.InferenceAttemptStateSucceeded, CompletedAt: time.Unix(int64(i+1), 0).UTC()}
+		ledger.Attempts = append(ledger.Attempts, attempt)
+		ledger.Changes = append(ledger.Changes, automation.ProcedureInferenceAttemptChange{Sequence: uint64(i + 1), Attempt: attempt})
+	}
+	stats := pruneProcedureInferenceLedger(&ledger, "", time.Time{}, nil)
+	stateBytes, historyBytes := procedureInferenceLedgerBytes(ledger)
+	if stats.Attempts == 0 || stats.Changes == 0 || stats.StateBytes == 0 || stats.HistoryBytes == 0 || !stats.GapAdvanced {
+		t.Fatalf("byte retention did not report pressure: %+v", stats)
+	}
+	if stateBytes > retainedProcedureInferenceStateBytes || historyBytes > retainedProcedureInferenceHistoryBytes {
+		t.Fatalf("byte retention state=%d history=%d", stateBytes, historyBytes)
 	}
 }
 

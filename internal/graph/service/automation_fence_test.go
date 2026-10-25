@@ -61,7 +61,7 @@ func TestGraphRaftApplyValidatesAutomationOutputFence(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.New()
 	nodeID := uuid.New()
-	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "stale output", Meta: map[string]any{"automation": map[string]any{"automation_id": "page-summary", "binding_id": "binding-a", "run_id": "run-a", "invocation_id": "inv-a", "claim_owner_node_id": uint64(2), "claim_version": uint64(7), "claim_token": "old-token", "output_idempotency_key": "output-key", "procedure_id": "proc", "authorization_revision": uint64(11)}}}}, AutomationFenceNodeIDs: []domaingraph.NodeID{nodeID}, OperationCount: 1}
+	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "stale output", Meta: map[string]any{"automation": map[string]any{"automation_id": "page-summary", "binding_id": "binding-a", "run_id": "run-a", "invocation_id": "inv-a", "claim_owner_node_id": "2", "claim_version": "7", "claim_token": "old-token", "output_idempotency_key": "output-key", "procedure_id": "proc", "authorization_revision": "7803206355751821409", "global_authorization_revision": "8853358141603235760", "space_authorization_revision": "4778902782362294898"}}}}, AutomationFenceNodeIDs: []domaingraph.NodeID{nodeID}, OperationCount: 1}
 	if err := h.applyRecord(t, record, "automation-output-stale"); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ApplyCommand() error = %v, code=%v; want FailedPrecondition", err, status.Code(err))
 	}
@@ -69,7 +69,7 @@ func TestGraphRaftApplyValidatesAutomationOutputFence(t *testing.T) {
 		t.Fatalf("validator calls=%d want 1", len(h.validator.calls))
 	}
 	call := h.validator.calls[0]
-	if call.SpaceID != spaceID || call.DomainID != domainID || call.EntityKind != "node" || call.EntityID != nodeID.String() || call.InvocationID != "inv-a" || call.ClaimOwnerNodeID != 2 || call.ClaimVersion != 7 || call.ClaimToken != "old-token" || call.OutputIdempotencyKey != "output-key" {
+	if call.SpaceID != spaceID || call.DomainID != domainID || call.EntityKind != "node" || call.EntityID != nodeID.String() || call.InvocationID != "inv-a" || call.ClaimOwnerNodeID != 2 || call.ClaimVersion != 7 || call.ClaimToken != "old-token" || call.OutputIdempotencyKey != "output-key" || call.AuthorizationRevision != 7803206355751821409 || call.GlobalAuthorizationRevision != 8853358141603235760 || call.SpaceAuthorizationRevision != 4778902782362294898 {
 		t.Fatalf("unexpected validation call: %#v", call)
 	}
 	if rev, err := h.module.CurrentRevision(h.ctx, spaceID); err != nil || rev != 0 {

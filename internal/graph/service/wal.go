@@ -1,8 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
@@ -15,18 +18,20 @@ import (
 const recordTypeGraphCommit wal.RecordType = "graph.commit.v1"
 
 type graphCommitRecord struct {
-	SpaceID                string                     `json:"space_id"`
-	DomainID               string                     `json:"domain_id,omitempty"`
-	Origin                 graphchange.OriginMetadata `json:"origin,omitempty"`
-	BaseRevision           int64                      `json:"base_revision"`
-	PutNodes               []domaingraph.Node         `json:"put_nodes,omitempty"`
-	DeleteNodeIDs          []domaingraph.NodeID       `json:"delete_node_ids,omitempty"`
-	PutEdges               []domaingraph.Edge         `json:"put_edges,omitempty"`
-	DeleteEdgeIDs          []domaingraph.EdgeID       `json:"delete_edge_ids,omitempty"`
-	AutomationFenceNodeIDs []domaingraph.NodeID       `json:"automation_fence_node_ids,omitempty"`
-	AutomationFenceEdgeIDs []domaingraph.EdgeID       `json:"automation_fence_edge_ids,omitempty"`
-	OperationCount         int32                      `json:"operation_count"`
-	Idempotency            *graphCommitIdempotency    `json:"idempotency,omitempty"`
+	SpaceID                   string                           `json:"space_id"`
+	DomainID                  string                           `json:"domain_id,omitempty"`
+	Origin                    graphchange.OriginMetadata       `json:"origin,omitempty"`
+	BaseRevision              int64                            `json:"base_revision"`
+	PutNodes                  []domaingraph.Node               `json:"put_nodes,omitempty"`
+	DeleteNodeIDs             []domaingraph.NodeID             `json:"delete_node_ids,omitempty"`
+	PutEdges                  []domaingraph.Edge               `json:"put_edges,omitempty"`
+	DeleteEdgeIDs             []domaingraph.EdgeID             `json:"delete_edge_ids,omitempty"`
+	AutomationFenceNodeIDs    []domaingraph.NodeID             `json:"automation_fence_node_ids,omitempty"`
+	AutomationFenceEdgeIDs    []domaingraph.EdgeID             `json:"automation_fence_edge_ids,omitempty"`
+	OperationCount            int32                            `json:"operation_count"`
+	Idempotency               *graphCommitIdempotency          `json:"idempotency,omitempty"`
+	IdempotencyAcknowledgment *graphIdempotencyRecordReference `json:"idempotency_acknowledgment,omitempty"`
+	IdempotencyRetention      *graphIdempotencyRetention       `json:"idempotency_retention,omitempty"`
 }
 
 func graphCommitRecordFromSnapshot(tx sessionmodel.GraphTransaction, snapshot *overlay) graphCommitRecord {
@@ -56,6 +61,22 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 		return 0, payload, graphstorage.CommitInfo{}, err
 	}
 	timing.StoreOpen = time.Since(stepStart)
+	if payload.IdempotencyRetention != nil {
+		retain := payload.IdempotencyRetention
+		if retain.Record.Scope != retain.Scope || retain.Record.Key != retain.Key || retain.Record.Digest != retain.Digest || !bytes.Equal(retain.Record.Metadata, retain.Metadata) || !retain.Record.RetainUntilAcknowledged {
+			return 0, payload, graphstorage.CommitInfo{}, fmt.Errorf("invalid idempotency retention record")
+		}
+		err := store.RetainIdempotencyUntilAcknowledged(ctx, retain.Scope, retain.Key, retain.Digest, retain.Metadata)
+		if errors.Is(err, graphstorage.ErrNotFound) {
+			err = store.RestoreIdempotencyRecords(ctx, []graphstorage.IdempotencyRecord{retain.Record})
+		}
+		return int64(store.Revision()), payload, graphstorage.CommitInfo{}, mapStorageError(err)
+	}
+	if payload.IdempotencyAcknowledgment != nil {
+		ack := payload.IdempotencyAcknowledgment
+		err := store.MarkIdempotencyPublicationAcknowledged(ctx, ack.Scope, ack.Key, ack.Digest, ack.Metadata)
+		return int64(store.Revision()), payload, graphstorage.CommitInfo{}, mapStorageError(err)
+	}
 	stepStart = time.Now()
 	storageTx, err := store.Begin(ctx)
 	if err != nil {

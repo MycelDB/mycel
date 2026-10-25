@@ -210,6 +210,15 @@ func Run(ctx context.Context) int {
 	return 0
 }
 
+func automationGraphConsumerSpec() graphnotification.ConsumerSpec {
+	return graphnotification.ConsumerSpec{
+		ConsumerName: "automation",
+		Filter:       graphchange.Filter{EventTypes: []graphchange.ChangeType{graphchange.ChangeTypeNodeCreated, graphchange.ChangeTypeNodeUpdated}},
+		Projection:   graphchange.Projection{IncludeRevision: true, IncludeOrigin: true, IncludeNewNodeSnapshot: true, IncludeOldNodeSnapshot: true},
+		Lossless:     true,
+	}
+}
+
 func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime, error) {
 	cfg = cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
@@ -363,7 +372,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	graphNotificationService.WithLeaderGate(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		return graphService.RequireLocalGraphWriteLeader(ctx, event.SpaceID.String())
 	})
-	if _, err := graphNotificationService.RegisterConsumer(ctx, graphnotification.ConsumerSpec{ConsumerName: "automation", Filter: graphchange.Filter{EventTypes: []graphchange.ChangeType{graphchange.ChangeTypeNodeCreated, graphchange.ChangeTypeNodeUpdated}}, Projection: graphchange.Projection{IncludeRevision: true, IncludeNewNodeSnapshot: true, IncludeOldNodeSnapshot: true}, Lossless: true}, automationService); err != nil {
+	if _, err := graphNotificationService.RegisterConsumer(ctx, automationGraphConsumerSpec(), automationService); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}

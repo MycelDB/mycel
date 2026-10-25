@@ -286,7 +286,23 @@ A procedure provider call follows this order:
 9. Procedure output parsing and graph mutation preparation proceed.
 10. Before publishing graph output, the daemon revalidates claim ownership,
     procedure/binding status, and the required access-control revision.
-11. The already durable run records the attempt IDs and publication disposition.
+11. The graph commit atomically records a graph-owned idempotency receipt keyed
+    by the invocation-stable output key. Automation receipts remain protected
+    from generic idempotency expiry until terminal publication disposition is
+    durable; matching legacy receipts are first promoted by a replicated
+    retention record, and a replicated acknowledgement then releases them to
+    normal expiry. Retention and acknowledgement commands bind the logical key
+    to the receipt digest and graph commit ID so key reuse creates a distinct
+    Raft command generation and cannot mutate a replacement receipt.
+12. The already durable run records the attempt IDs and publication disposition.
+
+All stages after durable provider success share one cancellation-detached,
+bounded publication context. If the publisher is interrupted, the execution
+leader probes the graph-owned receipt and finalizes the attempt, run, and
+invocation without another provider request. Receipt lookup does not depend on
+mutable entity metadata. An unexpired claim is reclaimed only when its persisted
+process incarnation differs from the current daemon; an active publisher in the
+same incarnation retains its lease.
 
 Failure to commit the required pre-provider transition means the connector is
 not called. Failure to commit terminal evidence after a possible provider side
@@ -440,10 +456,14 @@ control revisions.
 ## Retention and completeness
 
 Both materialized runs/attempts and attempt changes use Raft-owned bounded
-retention by age, count, and serialized bytes. The initial operational target is
-at least seven days, configurable upward within implementation bounds. An active
-attempt is never pruned. An ambiguous attempt is eligible only after the maximum
-provider deadline, reservation lease, and required audit window have elapsed.
+retention by age, count, and serialized bytes. The initial release uses hard
+per-space limits of 10,000 attempts, 50,000 changes, 64 MiB of materialized
+state, and 64 MiB of change history. Retention targets 8,000 attempts, 20,000
+changes, 30 days, 48 MiB of state, and 48 MiB of change history. Attempt records
+are limited to 64 KiB encoded and persisted evidence strings to 1,024 bytes. An
+active attempt is never pruned. The initial release also retains ambiguous
+attempts indefinitely; operators must resolve capacity pressure rather than lose
+uncertain provider-side-effect evidence.
 
 Pruning removes change history first, then run/attempt state in one referentially
 safe mutation after no retained invocation or run references it. Separate
@@ -496,8 +516,7 @@ Bounded policy-decision IDs, credential-grant IDs, and committed authorization
 revisions are classified correlation fields, not authorization secrets, and may
 be retained. Outcome and denial fields use closed allowlists. Configured route
 IDs are labeled as configured daemon identities. Token-count authority
-distinguishes provider reported, deterministic local, estimated, and unavailable
-counts.
+distinguishes provider-reported, estimated, and unavailable counts.
 
 ## Failure semantics
 
@@ -531,8 +550,5 @@ budget-scope service is not revived by this design.
 
 ## Open decisions
 
-- Exact default retention bounds beyond the seven-day target.
-- Whether client-space principals can read safe attempt evidence by default or
-  must always receive explicit `inference.audit.read`.
 - Whether source transaction ID/revision is mandatory for all trigger types or
   only graph-triggered attempts.

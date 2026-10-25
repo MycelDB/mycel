@@ -63,6 +63,17 @@ jobs:
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
 
+      - name: Resolve immutable build provenance
+        run: |
+          test -z "$(git -C mycel status --porcelain)"
+          test -z "$(git -C mycel-api status --porcelain)"
+          daemon_revision="$(git -C mycel rev-parse HEAD)"
+          context_digest="$({ echo '[mycel]'; git -C mycel ls-files -s; echo '[mycel-api]'; git -C mycel-api ls-files -s; } | sha256sum | awk '{print $1}')"
+          test "${#daemon_revision}" -eq 40
+          test "${#context_digest}" -eq 64
+          echo "DAEMON_REVISION=$daemon_revision" >> "$GITHUB_ENV"
+          echo "BUILD_CONTEXT_DIGEST=$context_digest" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
@@ -98,6 +109,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            SOURCE_REVISION=${{ env.DAEMON_REVISION }}
+            SOURCE_DIRTY=false
+            BUILD_CONTEXT_DIGEST=${{ env.BUILD_CONTEXT_DIGEST }}
+            BUILD_IDENTITY=github-actions-buildx-multiarch
           tags: |
             myceldb/mycel:${{ env.RELEASE_REF }}
             myceldb/mycel:latest
