@@ -48,6 +48,14 @@ func TestNormalizeSemanticTriggerPolicyAcceptsLegacyUnderscoreGraphEventAliases(
 	}
 }
 
+func TestNormalizeSemanticTriggerPolicyCanonicalizesSetOrderAndDuplicates(t *testing.T) {
+	got := NormalizeSemanticTriggerPolicy(SemanticTriggerPolicy{Events: []string{"edge.deleted", "node_updated", "changed", "node.updated", "edge.created"}})
+	want := []string{"changed", "node.updated", "edge.created", "edge.deleted"}
+	if !reflect.DeepEqual(got.Events, want) {
+		t.Fatalf("NormalizeSemanticTriggerPolicy() events = %#v, want %#v", got.Events, want)
+	}
+}
+
 func TestSemanticGenerationRuleHasBindingScopedPurposeAndNoDirectModelFields(t *testing.T) {
 	ruleType := reflect.TypeOf(SemanticGenerationRule{})
 	for _, field := range []string{"Purpose", "ModelEndpointID", "ModelID", "ModelEndpointCapabilityID"} {

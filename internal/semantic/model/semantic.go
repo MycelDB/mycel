@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -187,6 +188,13 @@ const (
 
 const (
 	DefaultSemanticTriggerEventChanged = "changed"
+	SemanticTriggerEventNodeCreated    = "node.created"
+	SemanticTriggerEventNodeUpdated    = "node.updated"
+	SemanticTriggerEventNodeDeleted    = "node.deleted"
+	SemanticTriggerEventEdgeChanged    = "edge.changed"
+	SemanticTriggerEventEdgeCreated    = "edge.created"
+	SemanticTriggerEventEdgeUpdated    = "edge.updated"
+	SemanticTriggerEventEdgeDeleted    = "edge.deleted"
 	SemanticPhysicalIndexExact         = "exact"
 )
 
@@ -370,10 +378,27 @@ func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTrigge
 	if len(policy.Events) == 0 {
 		policy.Events = []string{DefaultSemanticTriggerEventChanged}
 	}
-	events := make([]string, len(policy.Events))
-	for i, event := range policy.Events {
-		events[i] = normalizeSemanticTriggerEvent(event)
+	events := make([]string, 0, len(policy.Events))
+	seen := make(map[string]struct{}, len(policy.Events))
+	for _, event := range policy.Events {
+		event = normalizeSemanticTriggerEvent(event)
+		if _, duplicate := seen[event]; duplicate {
+			continue
+		}
+		seen[event] = struct{}{}
+		events = append(events, event)
 	}
+	sort.SliceStable(events, func(i, j int) bool {
+		left, leftKnown := semanticTriggerEventOrder[events[i]]
+		right, rightKnown := semanticTriggerEventOrder[events[j]]
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if leftKnown {
+			return left < right
+		}
+		return events[i] < events[j]
+	})
 	policy.Events = events
 	labels := make([]string, len(policy.Labels))
 	for i, label := range policy.Labels {
@@ -385,23 +410,34 @@ func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTrigge
 
 func normalizeSemanticTriggerEvent(event string) string {
 	switch strings.ToLower(strings.TrimSpace(event)) {
-	case "node_created", "node.created":
-		return "node.created"
-	case "node_updated", "node.updated":
-		return "node.updated"
-	case "node_deleted", "node.deleted":
-		return "node.deleted"
-	case "edge_changed", "edge.changed":
-		return "edge.changed"
-	case "edge_created", "edge.created":
-		return "edge.created"
-	case "edge_updated", "edge.updated":
-		return "edge.updated"
-	case "edge_deleted", "edge.deleted":
-		return "edge.deleted"
+	case "node_created", SemanticTriggerEventNodeCreated:
+		return SemanticTriggerEventNodeCreated
+	case "node_updated", SemanticTriggerEventNodeUpdated:
+		return SemanticTriggerEventNodeUpdated
+	case "node_deleted", SemanticTriggerEventNodeDeleted:
+		return SemanticTriggerEventNodeDeleted
+	case "edge_changed", SemanticTriggerEventEdgeChanged:
+		return SemanticTriggerEventEdgeChanged
+	case "edge_created", SemanticTriggerEventEdgeCreated:
+		return SemanticTriggerEventEdgeCreated
+	case "edge_updated", SemanticTriggerEventEdgeUpdated:
+		return SemanticTriggerEventEdgeUpdated
+	case "edge_deleted", SemanticTriggerEventEdgeDeleted:
+		return SemanticTriggerEventEdgeDeleted
 	default:
 		return strings.ToLower(strings.TrimSpace(event))
 	}
+}
+
+var semanticTriggerEventOrder = map[string]int{
+	DefaultSemanticTriggerEventChanged: 0,
+	SemanticTriggerEventNodeCreated:    1,
+	SemanticTriggerEventNodeUpdated:    2,
+	SemanticTriggerEventNodeDeleted:    3,
+	SemanticTriggerEventEdgeChanged:    4,
+	SemanticTriggerEventEdgeCreated:    5,
+	SemanticTriggerEventEdgeUpdated:    6,
+	SemanticTriggerEventEdgeDeleted:    7,
 }
 
 func NormalizeSemanticEmbeddingBinding(binding SemanticEmbeddingBinding) SemanticEmbeddingBinding {

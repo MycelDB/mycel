@@ -614,13 +614,16 @@ func (a Analyzer) eventMatchesRuleTrigger(ctx context.Context, rule domainsemant
 		switch strings.TrimSpace(eventName) {
 		case domainsemantic.DefaultSemanticTriggerEventChanged:
 			matchesEvent = true
-		case "node.created":
+		case domainsemantic.SemanticTriggerEventNodeCreated:
 			matchesEvent = len(event.CreatedNodeIDs) > 0
-		case "node.updated":
+		case domainsemantic.SemanticTriggerEventNodeUpdated:
 			matchesEvent = len(event.UpdatedNodeIDs) > 0
-		case "node.deleted":
+		case domainsemantic.SemanticTriggerEventNodeDeleted:
 			matchesEvent = len(event.DeletedNodeIDs) > 0
-		case "edge.changed", "edge.created", "edge.updated", "edge.deleted":
+		case domainsemantic.SemanticTriggerEventEdgeChanged,
+			domainsemantic.SemanticTriggerEventEdgeCreated,
+			domainsemantic.SemanticTriggerEventEdgeUpdated,
+			domainsemantic.SemanticTriggerEventEdgeDeleted:
 			matchesEvent = len(event.ChangedEdges) > 0
 		}
 		if matchesEvent {

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -307,6 +308,93 @@ func TestSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(t *testing.T
 	rules, listErr := space.ListSemanticRules(ctx)
 	if listErr != nil || len(rules) != 1 || rules[0].DisplayName != "concurrent" || !rules[0].Enabled {
 		t.Fatalf("concurrent rule=%+v err=%v", rules, listErr)
+	}
+}
+
+func TestSemanticTriggerPolicyTypedAndLegacyCompatibility(t *testing.T) {
+	typed := []adminv1.SemanticTriggerEventType{
+		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED,
+		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED,
+	}
+	got, err := triggerFromProto(&adminv1.SemanticTriggerPolicy{
+		Events:     []string{"node_updated", "edge.deleted", "node.updated"},
+		EventTypes: typed,
+		Labels:     []string{"Note"},
+		Debounce:   "30s",
+	})
+	if err != nil {
+		t.Fatalf("triggerFromProto() error = %v", err)
+	}
+	want := []string{domainsemantic.SemanticTriggerEventNodeUpdated, domainsemantic.SemanticTriggerEventEdgeDeleted}
+	if !reflect.DeepEqual(got.Events, want) || !reflect.DeepEqual(got.Labels, []string{"Note"}) || got.Debounce != 30*time.Second {
+		t.Fatalf("triggerFromProto() = %+v, want events=%v labels=[Note] debounce=30s", got, want)
+	}
+
+	projected := triggerToProto(got)
+	if !reflect.DeepEqual(projected.GetEvents(), want) {
+		t.Fatalf("triggerToProto() legacy events = %v, want %v", projected.GetEvents(), want)
+	}
+	wantTyped := []adminv1.SemanticTriggerEventType{
+		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED,
+		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED,
+	}
+	if !reflect.DeepEqual(projected.GetEventTypes(), wantTyped) {
+		t.Fatalf("triggerToProto() event types = %v, want %v", projected.GetEventTypes(), wantTyped)
+	}
+}
+
+func TestSemanticTriggerPolicyRejectsConflictingOrUnknownTypedEvents(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *adminv1.SemanticTriggerPolicy
+	}{
+		{
+			name: "conflicting representations",
+			in: &adminv1.SemanticTriggerPolicy{
+				Events:     []string{"node.created"},
+				EventTypes: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED},
+			},
+		},
+		{
+			name: "unsupported legacy event",
+			in: &adminv1.SemanticTriggerPolicy{
+				Events: []string{"future.changed"},
+			},
+		},
+		{
+			name: "unspecified",
+			in: &adminv1.SemanticTriggerPolicy{
+				EventTypes: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_UNSPECIFIED},
+			},
+		},
+		{
+			name: "unknown numeric value",
+			in: &adminv1.SemanticTriggerPolicy{
+				EventTypes: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType(99)},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := triggerFromProto(tt.in)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("triggerFromProto() code = %v, err = %v; want InvalidArgument", status.Code(err), err)
+			}
+		})
+	}
+}
+
+func TestSemanticTriggerPolicyDefaultsBothRepresentationsToChanged(t *testing.T) {
+	got, err := triggerFromProto(&adminv1.SemanticTriggerPolicy{})
+	if err != nil {
+		t.Fatalf("triggerFromProto() error = %v", err)
+	}
+	if !reflect.DeepEqual(got.Events, []string{domainsemantic.DefaultSemanticTriggerEventChanged}) {
+		t.Fatalf("triggerFromProto() events = %v, want [changed]", got.Events)
+	}
+	projected := triggerToProto(got)
+	if !reflect.DeepEqual(projected.GetEvents(), []string{"changed"}) || !reflect.DeepEqual(projected.GetEventTypes(), []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED}) {
+		t.Fatalf("triggerToProto() = %+v, want dual changed representations", projected)
 	}
 }
 

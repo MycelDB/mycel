@@ -84,6 +84,14 @@ storage:
   physical_index: exact
 ```
 
+The Admin gRPC API uses typed `trigger.event_types`. The deprecated string
+`trigger.events` representation remains available for older clients and is
+populated alongside the typed field in responses. During migration, requests
+may supply both only when they normalize to the same set. Omitting both defaults
+to `CHANGED`; explicit `UNSPECIFIED` and unknown numeric values are rejected.
+Persisted daemon state and CLI rule files remain transport-neutral and use
+canonical event names rather than generated protobuf values.
+
 Embedding bindings reference Intelligence Access profiles and vector stores by
 stable key or ID. User-authored rules do not directly own provider endpoint,
 model, capability, or credential IDs; those are resolved and attributed at
