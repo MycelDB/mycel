@@ -56,6 +56,47 @@ func TestSemanticSystemRaftStateMachineSnapshotRestore(t *testing.T) {
 	}
 }
 
+func TestSemanticSystemRaftSnapshotRejectsInvalidVectorStoreCatalogBeforeRestore(t *testing.T) {
+	ctx := context.Background()
+	for _, testCase := range []struct {
+		name   string
+		stores []domainsemantic.VectorStoreBackend
+	}{
+		{name: "duplicate key", stores: []domainsemantic.VectorStoreBackend{
+			{ID: uuid.New(), Key: "primary", Name: "Primary"},
+			{ID: uuid.New(), Key: " PRIMARY ", Name: "Secondary"},
+		}},
+		{name: "blank name", stores: []domainsemantic.VectorStoreBackend{
+			{ID: uuid.New(), Key: "primary", Name: "  "},
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			target := NewModule()
+			if result := target.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+				t.Fatalf("target init failed: %v", result.Error)
+			}
+			before, err := target.globalBase.ListVectorStores(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(semanticRaftSnapshot{Version: semanticRaftSnapshotVersion, Scope: "system", Global: &semanticGlobalSnapshot{VectorStores: testCase.stores}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := (RaftStateMachine{Module: target, System: true}).RestoreSnapshot(raw); err == nil {
+				t.Fatal("expected invalid vector-store snapshot rejection")
+			}
+			after, err := target.globalBase.ListVectorStores(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("failed restore modified catalog: before=%+v after=%+v", before, after)
+			}
+		})
+	}
+}
+
 func TestSemanticPartitionRaftStateMachineSnapshotRestoreResetsRunningWork(t *testing.T) {
 	ctx := context.Background()
 	source := NewModule()

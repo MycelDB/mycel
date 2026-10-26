@@ -37,6 +37,37 @@ Credential-free reliability suites may opt the `fake` connector into the documen
 - `SetModelEndpointCapabilityEnabled`
 - reference-safe hard deletes for endpoints, models, vector stores, and endpoint capabilities
 
+### Vector-store identity and uniqueness
+
+The system vector-store catalog uses the vector-store UUID as immutable,
+authoritative identity. Semantic rules and other durable resources reference that
+UUID. The normalized key is a stable machine identifier; the trimmed name is the
+renameable operator-facing label. Both are required and unique after surrounding
+Unicode whitespace is removed and Unicode lowercase mapping is applied. Keys are
+persisted in normalized form, while names retain their trimmed spelling.
+
+Package definitions carrying `vector_store_id` update only that UUID and may
+rename its key or display name to unused values. For package compatibility, an
+ID-less definition may update the single store with the same normalized key.
+Key-based resolution never selects an arbitrary first match. A new collision
+returns `ALREADY_EXISTS`; ambiguous legacy lookup returns
+`FAILED_PRECONDITION`. Both attach a sanitized `VectorStoreCatalogConflict`
+detail with the field/reason, normalized value, and conflicting UUIDs.
+
+The state-machine apply path performs the uniqueness check while holding the
+catalog storage lock, so concurrent requests and leader-ordered Raft application
+cannot both publish a collision. Replay uses the committed UUID and is
+idempotent. Snapshot and backup restore rebuild through the same validation and
+reject blank or ambiguous catalogs rather than modifying them. Derived inference
+projection synchronization upserts by UUID and cannot redefine catalog identity.
+
+Old on-disk catalogs with blank or duplicate keys/names remain listable after
+startup for diagnosis. Ambiguous key operations fail closed. Operators remediate
+one entry at a time by applying a package definition with its explicit UUID and
+new unique key/name; the daemon never silently renames, merges, replaces, or
+deletes entries. A UUID-backed semantic-rule reference remains valid across a
+display-name rename.
+
 `AdminInferenceCredentialService`:
 
 - `CreateCredential`

@@ -702,6 +702,22 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	if !hasVectorStoreKey(stores, vectorStore.Key) {
 		t.Fatalf("vector stores=%#v want key %q", stores, vectorStore.Key)
 	}
+	conflicting := semanticVectorStore(" GLOBAL-SYSTEM-RAFT ")
+	conflicting.ID = uuid.New()
+	conflicting.Name = "Different display name"
+	_, err = m.GlobalManager().UpsertVectorStore(ctx, conflicting)
+	var conflict *storesemantic.VectorStoreConflictError
+	if !errors.As(err, &conflict) || conflict.Field != storesemantic.VectorStoreConflictKey {
+		t.Fatalf("system-Raft collision error=%v, want key conflict", err)
+	}
+	storedVectorStore.Name = "Renamed system Raft store"
+	renamed, err := m.GlobalManager().UpsertVectorStore(ctx, storedVectorStore)
+	if err != nil {
+		t.Fatalf("system-Raft rename error=%v", err)
+	}
+	if renamed.ID != storedVectorStore.ID || renamed.Name != "Renamed system Raft store" {
+		t.Fatalf("system-Raft rename changed identity: %+v", renamed)
+	}
 	secret, err := m.GlobalManager().UpsertSecret(ctx, domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerSystem, OwnerID: "system", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "MYCEL-ENVELOPE-V1", CipherB64: "cipher"}, SecretSuffix: "test"})
 	if err != nil {
 		t.Fatalf("UpsertSecret() error = %v", err)

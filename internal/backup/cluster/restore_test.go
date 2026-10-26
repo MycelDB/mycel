@@ -92,6 +92,27 @@ func TestRestoreLocalExtractsOnlyRequestedOrdinal(t *testing.T) {
 	}
 }
 
+func TestVerifyRestoredDataDirRejectsAmbiguousVectorStoreCatalog(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		filepath.Join("meta", "clustering", "node.json"):         `{"node_id":"node-1"}`,
+		filepath.Join("meta", "raft", "system", "hard_state.pb"): "raft-state",
+		filepath.Join("meta", "inference", "vector_stores.json"): `{"vector_stores":[{"id":"11111111-1111-4111-8111-111111111111","key":"search","name":"Primary","type":"mycel-file","privacy_class":"local_only"},{"id":"22222222-2222-4222-8222-222222222222","key":" SEARCH ","name":"Secondary","type":"mycel-file","privacy_class":"local_only"}]}`,
+	}
+	for rel, content := range files {
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := VerifyRestoredDataDir(dir); err == nil || !strings.Contains(err.Error(), "vector-store catalog") {
+		t.Fatalf("VerifyRestoredDataDir() error=%v, want vector-store catalog rejection", err)
+	}
+}
+
 func TestRestoreLocalRejectsNonEmptyDataDir(t *testing.T) {
 	dir := t.TempDir()
 	writeLocalBackupSet(t, dir)

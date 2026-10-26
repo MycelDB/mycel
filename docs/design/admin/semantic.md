@@ -93,9 +93,13 @@ Persisted daemon state and CLI rule files remain transport-neutral and use
 canonical event names rather than generated protobuf values.
 
 Embedding bindings reference Intelligence Access profiles and vector stores by
-stable key or ID. User-authored rules do not directly own provider endpoint,
-model, capability, or credential IDs; those are resolved and attributed at
-execution time.
+ID whenever available. A vector-store UUID is the authoritative durable
+reference; its unique display name is only an operator-facing label and may be
+renamed without changing rules. Legacy key-only references remain readable, but
+ambiguous key resolution fails closed and new operator tooling should select from
+the catalog and persist `vector_store_id`. User-authored rules do not directly
+own provider endpoint, model, capability, or credential IDs; those are resolved
+and attributed at execution time.
 
 ## CLI
 

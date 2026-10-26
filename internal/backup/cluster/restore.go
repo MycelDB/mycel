@@ -18,6 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/fsperm"
+	semanticstorage "github.com/myceldb/mycel/internal/semantic/storage"
 )
 
 const BackupSetManifestName = "backup-set.json"
@@ -281,6 +282,9 @@ func verifyRestoredDataDirForNode(dataDir string, node RestorePlanNode) error {
 	}
 	if !foundRaftFile {
 		return fmt.Errorf("restored raft metadata contains no raft storage files under %s", raftDir)
+	}
+	if err := semanticstorage.ValidatePersistedVectorStoreCatalog(filepath.Join(dataDir, "meta")); err != nil {
+		return fmt.Errorf("restored vector-store catalog is invalid: %w", err)
 	}
 	return nil
 }

@@ -504,6 +504,9 @@ func (m *Module) logSnapshotProjectionError(scope string, err error) {
 }
 
 func validateSemanticGlobalSnapshotByApply(ctx context.Context, snap semanticGlobalSnapshot) error {
+	if err := storesemantic.ValidateVectorStoreCatalog(snap.VectorStores); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "mycel-semantic-global-snapshot-validate-*")
 	if err != nil {
 		return err

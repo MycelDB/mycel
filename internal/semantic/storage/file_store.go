@@ -3,6 +3,7 @@ package semantic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -195,18 +196,86 @@ func (m *globalManager) Init(ctx context.Context, metaDir string) error {
 	return err
 }
 
+// ValidateVectorStoreCatalog checks the authoritative identity and uniqueness
+// invariants required for snapshot and backup restore. Live startup deliberately
+// does not call this validator so a legacy catalog remains readable for
+// UUID-directed remediation.
+func ValidateVectorStoreCatalog(stores []domainsemantic.VectorStoreBackend) error {
+	ids := make(map[uuid.UUID]struct{}, len(stores))
+	keys := make(map[string][]uuid.UUID, len(stores))
+	names := make(map[string][]uuid.UUID, len(stores))
+	for _, store := range stores {
+		if store.ID == uuid.Nil {
+			return fmt.Errorf("%w: vector store id is required for restore", ErrInvalidInput)
+		}
+		if _, exists := ids[store.ID]; exists {
+			return fmt.Errorf("%w: duplicate vector store id %s", ErrInvalidInput, store.ID)
+		}
+		ids[store.ID] = struct{}{}
+		key := normalizeKey(store.Key)
+		if key == "" {
+			return fmt.Errorf("%w: vector store key is required for restore", ErrInvalidInput)
+		}
+		name := normalizeKey(store.Name)
+		if name == "" {
+			return fmt.Errorf("%w: vector store name is required for restore", ErrInvalidInput)
+		}
+		keys[key] = append(keys[key], store.ID)
+		names[name] = append(names[name], store.ID)
+	}
+	for key, conflictingIDs := range keys {
+		if len(conflictingIDs) > 1 {
+			return NewVectorStoreConflict(VectorStoreConflictKey, key, conflictingIDs, true)
+		}
+	}
+	for name, conflictingIDs := range names {
+		if len(conflictingIDs) > 1 {
+			return NewVectorStoreConflict(VectorStoreConflictName, name, conflictingIDs, true)
+		}
+	}
+	return nil
+}
+
+// ValidatePersistedVectorStoreCatalog validates the optional catalog stored
+// beneath a daemon meta directory without creating or modifying any files.
+func ValidatePersistedVectorStoreCatalog(metaDir string) error {
+	path := filepath.Join(metaDir, inferenceDirName, vectorStoresFileName)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var state vectorStoresState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return fmt.Errorf("decode vector-store catalog: %w", err)
+	}
+	return ValidateVectorStoreCatalog(state.VectorStores)
+}
+
 func (m *globalManager) EnsureDefaultVectorStore(ctx context.Context) (domainsemantic.VectorStoreBackend, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.VectorStoreBackend{}, err
 	}
 	m.mu.RLock()
+	matches := make([]domainsemantic.VectorStoreBackend, 0, 1)
 	for _, existing := range m.vectorStores.VectorStores {
 		if normalizeKey(existing.Key) == defaultVectorStoreKey {
-			m.mu.RUnlock()
-			return existing, nil
+			matches = append(matches, existing)
 		}
 	}
 	m.mu.RUnlock()
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		ids := make([]uuid.UUID, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, match.ID)
+		}
+		return domainsemantic.VectorStoreBackend{}, NewVectorStoreConflict(VectorStoreConflictKey, defaultVectorStoreKey, ids, true)
+	}
 	return m.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
 		Key:          defaultVectorStoreKey,
 		Name:         defaultVectorStoreName,
@@ -382,10 +451,68 @@ func (m *globalManager) UpsertVectorStore(ctx context.Context, vectorStore domai
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	now := time.Now().UTC()
 	vectorStore.Key = normalizeKey(vectorStore.Key)
-	if vectorStore.Name == "" {
-		vectorStore.Name = vectorStore.Key
+	vectorStore.Name = strings.TrimSpace(vectorStore.Name)
+	normalizedName := normalizeKey(vectorStore.Name)
+
+	idIndex := -1
+	keyMatchIndexes := make([]int, 0, 1)
+	for i, existing := range m.vectorStores.VectorStores {
+		if vectorStore.ID != uuid.Nil && existing.ID == vectorStore.ID {
+			idIndex = i
+		}
+		if normalizeKey(existing.Key) == vectorStore.Key {
+			keyMatchIndexes = append(keyMatchIndexes, i)
+		}
+	}
+	if vectorStore.ID == uuid.Nil {
+		if len(keyMatchIndexes) > 1 {
+			return domainsemantic.VectorStoreBackend{}, vectorStoreConflictForIndexes(m.vectorStores.VectorStores, VectorStoreConflictKey, vectorStore.Key, keyMatchIndexes, true)
+		}
+		if len(keyMatchIndexes) == 1 {
+			idIndex = keyMatchIndexes[0]
+			vectorStore.ID = m.vectorStores.VectorStores[idIndex].ID
+		}
+	}
+
+	keyConflicts := make([]int, 0, 1)
+	nameConflicts := make([]int, 0, 1)
+	for i, existing := range m.vectorStores.VectorStores {
+		if i == idIndex {
+			continue
+		}
+		if normalizeKey(existing.Key) == vectorStore.Key {
+			keyConflicts = append(keyConflicts, i)
+		}
+		if normalizeKey(existing.Name) == normalizedName {
+			nameConflicts = append(nameConflicts, i)
+		}
+	}
+	if len(keyConflicts) > 0 {
+		legacy := len(keyConflicts) > 1 || (idIndex >= 0 && normalizeKey(m.vectorStores.VectorStores[idIndex].Key) == vectorStore.Key)
+		return domainsemantic.VectorStoreBackend{}, vectorStoreConflictForIndexes(m.vectorStores.VectorStores, VectorStoreConflictKey, vectorStore.Key, keyConflicts, legacy)
+	}
+	if len(nameConflicts) > 0 {
+		legacy := len(nameConflicts) > 1 || (idIndex >= 0 && normalizeKey(m.vectorStores.VectorStores[idIndex].Name) == normalizedName)
+		return domainsemantic.VectorStoreBackend{}, vectorStoreConflictForIndexes(m.vectorStores.VectorStores, VectorStoreConflictName, normalizedName, nameConflicts, legacy)
+	}
+
+	if idIndex >= 0 {
+		existing := m.vectorStores.VectorStores[idIndex]
+		vectorStore.ID = existing.ID
+		vectorStore.CreatedAt = existing.CreatedAt
+		if vectorStore.UpdatedAt.IsZero() {
+			vectorStore.UpdatedAt = now
+		}
+		next := vectorStoresState{VectorStores: append([]domainsemantic.VectorStoreBackend(nil), m.vectorStores.VectorStores...)}
+		next.VectorStores[idIndex] = vectorStore
+		if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+			return domainsemantic.VectorStoreBackend{}, err
+		}
+		m.vectorStores = next
+		return vectorStore, nil
 	}
 	if vectorStore.ID == uuid.Nil {
 		vectorStore.ID = newID()
@@ -396,16 +523,21 @@ func (m *globalManager) UpsertVectorStore(ctx context.Context, vectorStore domai
 	if vectorStore.UpdatedAt.IsZero() {
 		vectorStore.UpdatedAt = now
 	}
-	for i, existing := range m.vectorStores.VectorStores {
-		if normalizeKey(existing.Key) == vectorStore.Key {
-			vectorStore.ID = existing.ID
-			vectorStore.CreatedAt = existing.CreatedAt
-			m.vectorStores.VectorStores[i] = vectorStore
-			return vectorStore, m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
-		}
+	next := vectorStoresState{VectorStores: append([]domainsemantic.VectorStoreBackend(nil), m.vectorStores.VectorStores...)}
+	next.VectorStores = append(next.VectorStores, vectorStore)
+	if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+		return domainsemantic.VectorStoreBackend{}, err
 	}
-	m.vectorStores.VectorStores = append(m.vectorStores.VectorStores, vectorStore)
-	return vectorStore, m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
+	m.vectorStores = next
+	return vectorStore, nil
+}
+
+func vectorStoreConflictForIndexes(stores []domainsemantic.VectorStoreBackend, field VectorStoreConflictField, normalizedValue string, indexes []int, legacy bool) error {
+	ids := make([]uuid.UUID, 0, len(indexes))
+	for _, index := range indexes {
+		ids = append(ids, stores[index].ID)
+	}
+	return NewVectorStoreConflict(field, normalizedValue, ids, legacy)
 }
 
 func (m *globalManager) ListVectorStores(ctx context.Context) ([]domainsemantic.VectorStoreBackend, error) {
@@ -555,8 +687,14 @@ func (m *globalManager) DeleteVectorStore(ctx context.Context, id domainsemantic
 	defer m.mu.Unlock()
 	for i, item := range m.vectorStores.VectorStores {
 		if item.ID == id {
-			m.vectorStores.VectorStores = append(m.vectorStores.VectorStores[:i], m.vectorStores.VectorStores[i+1:]...)
-			return m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
+			next := vectorStoresState{VectorStores: make([]domainsemantic.VectorStoreBackend, 0, len(m.vectorStores.VectorStores)-1)}
+			next.VectorStores = append(next.VectorStores, m.vectorStores.VectorStores[:i]...)
+			next.VectorStores = append(next.VectorStores, m.vectorStores.VectorStores[i+1:]...)
+			if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+				return err
+			}
+			m.vectorStores = next
+			return nil
 		}
 	}
 	return ErrNotFound
@@ -2335,6 +2473,9 @@ func validateVectorStore(ctx context.Context, vectorStore domainsemantic.VectorS
 	}
 	if strings.TrimSpace(vectorStore.Key) == "" {
 		return fmt.Errorf("%w: vector store key is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(vectorStore.Name) == "" {
+		return fmt.Errorf("%w: vector store name is required", ErrInvalidInput)
 	}
 	if vectorStore.Type == "" {
 		return fmt.Errorf("%w: vector store type is required", ErrInvalidInput)
