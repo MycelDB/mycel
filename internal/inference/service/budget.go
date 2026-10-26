@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,15 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
+	"github.com/tiktoken-go/tokenizer"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+var (
+	cl100kTokenizerOnce sync.Once
+	cl100kTokenizer     tokenizer.Codec
+	cl100kTokenizerErr  error
 )
 
 const (
@@ -85,13 +95,20 @@ func (m *Module) failBudgetPersistence(err error) error {
 	return ErrBudgetPersistence
 }
 
+func (m *Module) handleBudgetMutationError(err error) error {
+	if status.Code(err) == codes.FailedPrecondition {
+		return err
+	}
+	return m.failBudgetPersistence(err)
+}
+
 func (m *Module) CreateBudgetScope(ctx context.Context, scope domaininference.BudgetScope) (domaininference.BudgetScope, error) {
 	m.budgetMu.Lock()
 	defer m.budgetMu.Unlock()
 	if err := m.requireBudgetPersistence(); err != nil {
 		return domaininference.BudgetScope{}, err
 	}
-	if err := m.RequireLocalWriteAllowed(); err != nil {
+	if err := m.RequireBudgetWriteAllowed(); err != nil {
 		return domaininference.BudgetScope{}, err
 	}
 	now := time.Now().UTC()
@@ -123,12 +140,22 @@ func (m *Module) CreateBudgetScope(ctx context.Context, scope domaininference.Bu
 	if err != nil {
 		return domaininference.BudgetScope{}, err
 	}
+	deleted, err := pruneEligibleBudgetScopes(ctx, ledger, scopes, now, maxBudgetScopesRetained)
+	if err != nil {
+		return domaininference.BudgetScope{}, m.handleBudgetMutationError(err)
+	}
+	if deleted > 0 {
+		scopes, err = ledger.ListBudgetScopes(ctx)
+		if err != nil {
+			return domaininference.BudgetScope{}, err
+		}
+	}
 	if len(scopes) >= maxBudgetScopesRetained {
 		return domaininference.BudgetScope{}, BudgetError{Reason: "scope_capacity_exhausted"}
 	}
 	persisted, err := ledger.UpsertBudgetScope(ctx, scope)
 	if err != nil {
-		return domaininference.BudgetScope{}, m.failBudgetPersistence(err)
+		return domaininference.BudgetScope{}, m.handleBudgetMutationError(err)
 	}
 	return persisted, nil
 }
@@ -147,13 +174,29 @@ func (m *Module) GetBudgetScope(ctx context.Context, id domaininference.BudgetSc
 	return scope, nil
 }
 
+func (m *Module) ListBudgetScopes(ctx context.Context) ([]domaininference.BudgetScope, error) {
+	scopes, err := m.UsageLedger().ListBudgetScopes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domaininference.BudgetScope, 0, len(scopes))
+	for _, scope := range scopes {
+		resolved, err := m.GetBudgetScope(ctx, scope.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resolved)
+	}
+	return out, nil
+}
+
 func (m *Module) ReserveProviderAttempt(ctx context.Context, request domaininference.BudgetReservationRequest) (domaininference.BudgetScope, domaininference.BudgetAttempt, error) {
 	m.budgetMu.Lock()
 	defer m.budgetMu.Unlock()
 	if err := m.requireBudgetPersistence(); err != nil {
 		return domaininference.BudgetScope{}, domaininference.BudgetAttempt{}, err
 	}
-	if err := m.RequireLocalWriteAllowed(); err != nil {
+	if err := m.RequireBudgetWriteAllowed(); err != nil {
 		return domaininference.BudgetScope{}, domaininference.BudgetAttempt{}, err
 	}
 	if request.Now.IsZero() {
@@ -173,7 +216,7 @@ func (m *Module) ReserveProviderAttempt(ctx context.Context, request domaininfer
 	}
 	persisted, err := ledger.UpsertBudgetScope(ctx, next)
 	if err != nil {
-		return domaininference.BudgetScope{}, domaininference.BudgetAttempt{}, m.failBudgetPersistence(err)
+		return domaininference.BudgetScope{}, domaininference.BudgetAttempt{}, m.handleBudgetMutationError(err)
 	}
 	return persisted, attempt, nil
 }
@@ -184,7 +227,7 @@ func (m *Module) CompleteProviderAttempt(ctx context.Context, request domaininfe
 	if err := m.requireBudgetPersistence(); err != nil {
 		return domaininference.BudgetScope{}, err
 	}
-	if err := m.RequireLocalWriteAllowed(); err != nil {
+	if err := m.RequireBudgetWriteAllowed(); err != nil {
 		return domaininference.BudgetScope{}, err
 	}
 	if request.CompletedAt.IsZero() {
@@ -198,18 +241,18 @@ func (m *Module) CompleteProviderAttempt(ctx context.Context, request domaininfe
 	next, accountingErr := completeBudgetAttempt(scope, request)
 	persisted, err := ledger.UpsertBudgetScope(ctx, next)
 	if err != nil {
-		return domaininference.BudgetScope{}, m.failBudgetPersistence(err)
+		return domaininference.BudgetScope{}, m.handleBudgetMutationError(err)
 	}
 	return persisted, accountingErr
 }
 
-func (m *Module) CompleteBudgetScope(ctx context.Context, id domaininference.BudgetScopeID, now time.Time) (domaininference.BudgetScope, error) {
+func (m *Module) ReactivateBudgetScope(ctx context.Context, id domaininference.BudgetScopeID, now time.Time) (domaininference.BudgetScope, error) {
 	m.budgetMu.Lock()
 	defer m.budgetMu.Unlock()
 	if err := m.requireBudgetPersistence(); err != nil {
 		return domaininference.BudgetScope{}, err
 	}
-	if err := m.RequireLocalWriteAllowed(); err != nil {
+	if err := m.RequireBudgetWriteAllowed(); err != nil {
 		return domaininference.BudgetScope{}, err
 	}
 	if now.IsZero() {
@@ -220,7 +263,40 @@ func (m *Module) CompleteBudgetScope(ctx context.Context, id domaininference.Bud
 	if err != nil {
 		return domaininference.BudgetScope{}, err
 	}
-	if scope.State == domaininference.BudgetScopeExpired || scope.State == domaininference.BudgetScopeExhausted {
+	if scope.State == domaininference.BudgetScopeActive {
+		return scope, nil
+	}
+	if scope.State != domaininference.BudgetScopeCompleted || !scope.ExpiresAt.After(now) || !scope.Limits.Deadline.After(now) {
+		return domaininference.BudgetScope{}, BudgetError{Reason: "scope_cannot_be_reactivated"}
+	}
+	scope.State = domaininference.BudgetScopeActive
+	scope.DenialReason = ""
+	scope.UpdatedAt = now
+	persisted, err := ledger.UpsertBudgetScope(ctx, scope)
+	if err != nil {
+		return domaininference.BudgetScope{}, m.handleBudgetMutationError(err)
+	}
+	return persisted, nil
+}
+
+func (m *Module) CompleteBudgetScope(ctx context.Context, id domaininference.BudgetScopeID, now time.Time) (domaininference.BudgetScope, error) {
+	m.budgetMu.Lock()
+	defer m.budgetMu.Unlock()
+	if err := m.requireBudgetPersistence(); err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	if err := m.RequireBudgetWriteAllowed(); err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ledger := m.UsageLedger()
+	scope, err := ledger.GetBudgetScope(ctx, id)
+	if err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	if scope.State == domaininference.BudgetScopeCompleted || scope.State == domaininference.BudgetScopeExpired || scope.State == domaininference.BudgetScopeExhausted {
 		return scope, nil
 	}
 	scope.State = domaininference.BudgetScopeCompleted
@@ -228,9 +304,28 @@ func (m *Module) CompleteBudgetScope(ctx context.Context, id domaininference.Bud
 	scope.Usage = calculateBudgetUsage(scope.Attempts, now)
 	persisted, err := ledger.UpsertBudgetScope(ctx, scope)
 	if err != nil {
-		return domaininference.BudgetScope{}, m.failBudgetPersistence(err)
+		return domaininference.BudgetScope{}, m.handleBudgetMutationError(err)
 	}
 	return persisted, nil
+}
+
+func pruneEligibleBudgetScopes(ctx context.Context, ledger inferencestorage.UsageLedger, scopes []domaininference.BudgetScope, now time.Time, limit int) (int, error) {
+	sort.Slice(scopes, func(i, j int) bool { return scopes[i].RetentionUntil.Before(scopes[j].RetentionUntil) })
+	deleted := 0
+	for _, scope := range scopes {
+		if deleted >= limit {
+			break
+		}
+		terminal := scope.State == domaininference.BudgetScopeCompleted || scope.State == domaininference.BudgetScopeExpired || scope.State == domaininference.BudgetScopeExhausted || !scope.ExpiresAt.After(now) || !scope.Limits.Deadline.After(now)
+		if !terminal || scope.RetentionUntil.IsZero() || scope.RetentionUntil.After(now) || hasActiveBudgetLease(scope.Attempts, now) {
+			continue
+		}
+		if err := ledger.DeleteBudgetScope(ctx, scope.ID); err != nil {
+			return deleted, err
+		}
+		deleted++
+	}
+	return deleted, nil
 }
 
 func (m *Module) PruneBudgetScopes(ctx context.Context, now time.Time, limit int) (int, error) {
@@ -239,7 +334,7 @@ func (m *Module) PruneBudgetScopes(ctx context.Context, now time.Time, limit int
 	if err := m.requireBudgetPersistence(); err != nil {
 		return 0, err
 	}
-	if err := m.RequireLocalWriteAllowed(); err != nil {
+	if err := m.RequireBudgetWriteAllowed(); err != nil {
 		return 0, err
 	}
 	if now.IsZero() {
@@ -253,20 +348,9 @@ func (m *Module) PruneBudgetScopes(ctx context.Context, now time.Time, limit int
 	if err != nil {
 		return 0, err
 	}
-	sort.Slice(scopes, func(i, j int) bool { return scopes[i].RetentionUntil.Before(scopes[j].RetentionUntil) })
-	deleted := 0
-	for _, scope := range scopes {
-		if deleted >= limit {
-			break
-		}
-		terminal := scope.State == domaininference.BudgetScopeCompleted || scope.State == domaininference.BudgetScopeExpired || scope.State == domaininference.BudgetScopeExhausted || !scope.ExpiresAt.After(now) || !scope.Limits.Deadline.After(now)
-		if !terminal || scope.RetentionUntil.IsZero() || scope.RetentionUntil.After(now) || hasActiveBudgetLease(scope.Attempts, now) {
-			continue
-		}
-		if err := ledger.DeleteBudgetScope(ctx, scope.ID); err != nil {
-			return deleted, m.failBudgetPersistence(err)
-		}
-		deleted++
+	deleted, err := pruneEligibleBudgetScopes(ctx, ledger, scopes, now, limit)
+	if err != nil {
+		return deleted, m.handleBudgetMutationError(err)
 	}
 	return deleted, nil
 }
@@ -297,16 +381,19 @@ func reserveBudgetAttempt(scope domaininference.BudgetScope, request domaininfer
 	}
 	usage := calculateBudgetUsage(scope.Attempts, request.Now)
 	newRequest := true
+	retryIndex := int64(0)
 	for _, existing := range scope.Attempts {
 		if existing.RequestID == request.RequestID {
 			newRequest = false
-			break
+			if existing.RetryIndex >= retryIndex {
+				retryIndex = existing.RetryIndex + 1
+			}
 		}
 	}
+	// The durable scope history, not a caller/work-claim counter, is authoritative
+	// for retry classification. Failed reservations leave no attempt and therefore
+	// cannot turn the next provider attempt into a retry.
 	isRetry := !newRequest
-	if request.Retry != isRetry {
-		return scope, domaininference.BudgetAttempt{}, BudgetError{Reason: "retry_classification_invalid"}
-	}
 	if newRequest && limitExceeded(usage.Requests, 1, scope.Limits.MaxRequests) {
 		return scope, domaininference.BudgetAttempt{}, BudgetError{Reason: "request_limit_exhausted"}
 	}
@@ -315,6 +402,9 @@ func reserveBudgetAttempt(scope domaininference.BudgetScope, request domaininfer
 	}
 	if isRetry && limitExceeded(usage.RetryAttempts, 1, scope.Limits.MaxRetryAttempts) {
 		return scope, domaininference.BudgetAttempt{}, BudgetError{Reason: "retry_limit_exhausted"}
+	}
+	if isRetry && retryIndex > scope.Limits.MaxRetriesPerRequest {
+		return scope, domaininference.BudgetAttempt{}, BudgetError{Reason: "per_request_retry_limit_exhausted"}
 	}
 	if limitExceeded(usage.ActiveProviderCalls, 1, scope.Limits.MaxConcurrentProviderCalls) {
 		return scope, domaininference.BudgetAttempt{}, BudgetError{Reason: "concurrency_limit_exhausted"}
@@ -360,8 +450,9 @@ func reserveBudgetAttempt(scope domaininference.BudgetScope, request domaininfer
 	if !reservedUntil.After(request.Now) {
 		return scope, domaininference.BudgetAttempt{}, BudgetError{Reason: "deadline_exhausted"}
 	}
-	attempt := domaininference.BudgetAttempt{ID: request.AttemptID, RequestID: request.RequestID, State: domaininference.BudgetAttemptReserved, Retry: isRetry, BatchItems: request.BatchItems, ReservedInputTokens: request.InputTokens, ReservedOutputTokens: request.OutputTokens, ChargedInputTokens: request.InputTokens, ChargedOutputTokens: request.OutputTokens, ReservedProviderMillis: request.ProviderMillis, ChargedProviderMillis: request.ProviderMillis, ReservedCostMicros: cost, ChargedCostMicros: cost, ReservedAt: request.Now, ReservedUntil: reservedUntil}
+	attempt := domaininference.BudgetAttempt{ID: request.AttemptID, RequestID: request.RequestID, State: domaininference.BudgetAttemptReserved, Retry: isRetry, RetryIndex: retryIndex, BatchItems: request.BatchItems, ReservedInputTokens: request.InputTokens, ReservedOutputTokens: request.OutputTokens, ChargedInputTokens: request.InputTokens, ChargedOutputTokens: request.OutputTokens, ReservedProviderMillis: request.ProviderMillis, ChargedProviderMillis: request.ProviderMillis, ReservedCostMicros: cost, ChargedCostMicros: cost, ReservedAt: request.Now, ReservedUntil: reservedUntil}
 	scope.Attempts = append(scope.Attempts, attempt)
+	scope.AttemptEvents = appendBudgetAttemptEvent(scope.AttemptEvents, attempt, 1, request.Now)
 	scope.UpdatedAt = request.Now
 	scope.Usage = calculateBudgetUsage(scope.Attempts, request.Now)
 	return scope, attempt, nil
@@ -407,18 +498,25 @@ func completeBudgetAttempt(scope domaininference.BudgetScope, request domaininfe
 		attempt.ChargedInputTokens = request.InputTokens
 		attempt.ChargedOutputTokens = request.OutputTokens
 		attempt.ChargedCostMicros = request.CostMicros
+		attempt.ChargedCostSaturated = request.CostSaturated
 	}
 	if attempt.ProviderDurationKnown {
 		attempt.ChargedProviderMillis = request.ProviderMillis
 	}
-	if (attempt.UsageKnown && (request.InputTokens > attempt.ReservedInputTokens || request.OutputTokens > attempt.ReservedOutputTokens || request.CostMicros > attempt.ReservedCostMicros)) || (attempt.ProviderDurationKnown && request.ProviderMillis > attempt.ReservedProviderMillis) {
+	if attempt.ChargedCostSaturated || (attempt.UsageKnown && (request.InputTokens > attempt.ReservedInputTokens || request.OutputTokens > attempt.ReservedOutputTokens || request.CostMicros > attempt.ReservedCostMicros)) || (attempt.ProviderDurationKnown && request.ProviderMillis > attempt.ReservedProviderMillis) {
 		scope.State = domaininference.BudgetScopeExhausted
 		scope.DenialReason = "reservation_exceeded"
 		accountingErr = ErrBudgetAccounting
 	}
 	scope.Attempts[index] = attempt
+	scope.AttemptEvents = appendBudgetAttemptEvent(scope.AttemptEvents, attempt, 2, request.CompletedAt)
 	scope.UpdatedAt = request.CompletedAt
 	scope.Usage = calculateBudgetUsage(scope.Attempts, request.CompletedAt)
+	if scope.Usage.AccountingOverflow {
+		scope.State = domaininference.BudgetScopeExhausted
+		scope.DenialReason = "reservation_exceeded"
+		accountingErr = ErrBudgetAccounting
+	}
 	return scope, accountingErr
 }
 
@@ -451,7 +549,7 @@ func validateBudgetScope(scope domaininference.BudgetScope, now time.Time) error
 	if limits.MaxRequests <= 0 || limits.MaxAttempts <= 0 || limits.MaxAttempts > maxBudgetAttempts || limits.MaxRequests > limits.MaxAttempts {
 		return fmt.Errorf("budget request/attempt limits are invalid")
 	}
-	if limits.MaxRetryAttempts > limits.MaxAttempts || limits.MaxConcurrentProviderCalls <= 0 || limits.MaxConcurrentProviderCalls > limits.MaxAttempts {
+	if limits.MaxRetryAttempts > limits.MaxAttempts || limits.MaxRetriesPerRequest < 0 || limits.MaxRetriesPerRequest > limits.MaxRetryAttempts || limits.MaxConcurrentProviderCalls <= 0 || limits.MaxConcurrentProviderCalls > limits.MaxAttempts {
 		return fmt.Errorf("budget retry/concurrency limits are invalid")
 	}
 	if limits.BatchingMode != domaininference.BatchingModeSingle && limits.BatchingMode != domaininference.BatchingModeBatch {
@@ -478,12 +576,21 @@ func validateBudgetScope(scope domaininference.BudgetScope, now time.Time) error
 	if scope.RetentionUntil.Before(limits.Deadline) || scope.RetentionUntil.After(scope.ExpiresAt.Add(maxBudgetRetention)) {
 		return fmt.Errorf("budget retention deadline is invalid")
 	}
+	if limits.InputMicrosPerMillionTokens > 0 && limits.MaxInputTokensPerRequest <= 0 {
+		return fmt.Errorf("budget input price requires a bounded per-request token limit")
+	}
+	if limits.OutputMicrosPerMillionTokens > 0 && limits.MaxOutputTokensPerRequest <= 0 {
+		return fmt.Errorf("budget output price requires a bounded per-request token limit")
+	}
+	if _, err := estimatedBudgetCost(limits, limits.MaxInputTokensPerRequest, limits.MaxOutputTokensPerRequest); err != nil {
+		return fmt.Errorf("budget per-request cost bounds overflow: %w", err)
+	}
 	if limits.MaxEstimatedCostMicros > 0 {
 		if limits.MaxInputTokensPerRequest <= 0 {
 			return fmt.Errorf("budget cost limit requires a conservative input token reservation")
 		}
-		if len(limits.Currency) != 3 || strings.ToUpper(limits.Currency) != limits.Currency || strings.TrimSpace(limits.PriceDefinitionVersion) == "" || len(limits.PriceDefinitionVersion) > maxBudgetIdentityLength {
-			return fmt.Errorf("budget cost limit requires bounded currency and price definition")
+		if limits.Currency != "USD" || strings.TrimSpace(limits.PriceDefinitionVersion) == "" || len(limits.PriceDefinitionVersion) > maxBudgetIdentityLength {
+			return fmt.Errorf("budget cost limit requires USD and a bounded price definition")
 		}
 		if limits.InputMicrosPerMillionTokens <= 0 {
 			return fmt.Errorf("budget cost limit requires a positive input token price")
@@ -492,10 +599,26 @@ func validateBudgetScope(scope domaininference.BudgetScope, now time.Time) error
 			return fmt.Errorf("budget cost limit requires a positive output token price")
 		}
 	}
-	if len(scope.Attempts) != 0 {
-		return fmt.Errorf("new budget scope must not contain attempts")
+	semanticIdentitySet := strings.TrimSpace(scope.SpaceID) != "" || strings.TrimSpace(scope.SemanticRuleID) != "" || strings.TrimSpace(scope.EmbeddingBindingKey) != "" || strings.TrimSpace(scope.CorrelationID) != ""
+	if semanticIdentitySet {
+		for kind, value := range map[string]string{"space": scope.SpaceID, "semantic_rule": scope.SemanticRuleID, "embedding_binding": scope.EmbeddingBindingKey, "correlation": scope.CorrelationID} {
+			if err := validateBudgetIdentity(kind, value); err != nil {
+				return err
+			}
+		}
+	}
+	if len(scope.Attempts) != 0 || len(scope.AttemptEvents) != 0 {
+		return fmt.Errorf("new budget scope must not contain attempts or attempt events")
 	}
 	return nil
+}
+
+func appendBudgetAttemptEvent(events []domaininference.BudgetAttemptEvent, attempt domaininference.BudgetAttempt, version uint32, recordedAt time.Time) []domaininference.BudgetAttemptEvent {
+	sequence := uint64(len(events)) + 1
+	if len(events) > 0 && events[len(events)-1].Sequence >= sequence {
+		sequence = events[len(events)-1].Sequence + 1
+	}
+	return append(events, domaininference.BudgetAttemptEvent{Sequence: sequence, AttemptVersion: version, Attempt: attempt, RecordedAt: recordedAt})
 }
 
 func validateBudgetIdentity(kind, value string) error {
@@ -539,21 +662,26 @@ func calculateBudgetUsage(attempts []domaininference.BudgetAttempt, now time.Tim
 				usage.AmbiguousAttempts++
 			}
 		}
-		usage.InputTokens = saturatingBudgetAdd(usage.InputTokens, attempt.ChargedInputTokens)
-		usage.OutputTokens = saturatingBudgetAdd(usage.OutputTokens, attempt.ChargedOutputTokens)
-		usage.ProviderMillis = saturatingBudgetAdd(usage.ProviderMillis, attempt.ChargedProviderMillis)
-		usage.EstimatedCostMicros = saturatingBudgetAdd(usage.EstimatedCostMicros, attempt.ChargedCostMicros)
+		usage.InputTokens, usage.AccountingOverflow = saturatingBudgetAddTracked(usage.InputTokens, attempt.ChargedInputTokens, usage.AccountingOverflow)
+		usage.OutputTokens, usage.AccountingOverflow = saturatingBudgetAddTracked(usage.OutputTokens, attempt.ChargedOutputTokens, usage.AccountingOverflow)
+		usage.ProviderMillis, usage.AccountingOverflow = saturatingBudgetAddTracked(usage.ProviderMillis, attempt.ChargedProviderMillis, usage.AccountingOverflow)
+		usage.EstimatedCostMicros, usage.AccountingOverflow = saturatingBudgetAddTracked(usage.EstimatedCostMicros, attempt.ChargedCostMicros, usage.AccountingOverflow || attempt.ChargedCostSaturated)
 	}
 	usage.Requests = int64(len(requests))
 	return usage
 }
 
 func saturatingBudgetAdd(current, additional int64) int64 {
+	value, _ := saturatingBudgetAddTracked(current, additional, false)
+	return value
+}
+
+func saturatingBudgetAddTracked(current, additional int64, overflow bool) (int64, bool) {
 	maxInt := int64(^uint64(0) >> 1)
-	if additional < 0 || current >= maxInt-additional {
-		return maxInt
+	if additional < 0 || current > maxInt-additional {
+		return maxInt, true
 	}
-	return current + additional
+	return current + additional, overflow
 }
 
 func estimatedBudgetCost(limits domaininference.BudgetLimits, inputTokens, outputTokens int64) (int64, error) {
@@ -600,6 +728,22 @@ func limitExceeded(current, additional, limit int64) bool {
 	return additional > limit || current > limit-additional
 }
 
+func validateResolvedBudgetBatching(limits domaininference.BudgetLimits, capability domaininference.Capability, descriptor connectors.BatchingDescriptor, batchItems int64) error {
+	configuredMode := capability.BatchingMode
+	configuredMax := int64(capability.MaxBatchItems)
+	if configuredMode == "" {
+		configuredMode = domaininference.BatchingModeSingle
+		configuredMax = 1
+	}
+	if configuredMax <= 0 {
+		configuredMax = 1
+	}
+	if descriptor.Mode != configuredMode || configuredMax > descriptor.MaxItems || limits.BatchingMode != configuredMode || limits.MaxBatchItems > configuredMax || batchItems > limits.MaxBatchItems || batchItems > descriptor.MaxItems || (configuredMode == domaininference.BatchingModeSingle && batchItems != 1) {
+		return BudgetError{Reason: "connector_batching_unsupported"}
+	}
+	return nil
+}
+
 func (m *Module) reserveInvocationBudget(ctx context.Context, req inferenceruntime.InvokeRequest, resolved inferenceruntime.ResolveResult, connector connectors.Connector) (domaininference.BudgetAttempt, error) {
 	if err := validateBudgetIdentity("attempt", string(req.BudgetAttemptID)); err != nil {
 		return domaininference.BudgetAttempt{}, err
@@ -619,19 +763,10 @@ func (m *Module) reserveInvocationBudget(ctx context.Context, req inferencerunti
 		batchItems = 1
 	}
 	descriptor := connectors.ConnectorBatchingDescriptor(connector)
-	configuredMode := resolved.Capability.BatchingMode
-	configuredMax := int64(resolved.Capability.MaxBatchItems)
-	if configuredMode == "" {
-		configuredMode = domaininference.BatchingModeSingle
-		configuredMax = 1
+	if err := validateResolvedBudgetBatching(scope.Limits, resolved.Capability, descriptor, batchItems); err != nil {
+		return domaininference.BudgetAttempt{}, err
 	}
-	if configuredMax <= 0 {
-		configuredMax = 1
-	}
-	if descriptor.Mode != configuredMode || configuredMax > descriptor.MaxItems || batchItems > descriptor.MaxItems || (descriptor.Mode == domaininference.BatchingModeSingle && batchItems != 1) {
-		return domaininference.BudgetAttempt{}, BudgetError{Reason: "connector_batching_unsupported"}
-	}
-	inputTokens, err := invocationInputTokenReservation(req, scope.Limits)
+	inputTokens, err := invocationInputTokenReservation(req, resolved, scope.Limits)
 	if err != nil {
 		return domaininference.BudgetAttempt{}, err
 	}
@@ -639,7 +774,7 @@ func (m *Module) reserveInvocationBudget(ctx context.Context, req inferencerunti
 	if err != nil {
 		return domaininference.BudgetAttempt{}, err
 	}
-	reservation := domaininference.BudgetReservationRequest{ScopeID: req.BudgetScopeID, AttemptID: req.BudgetAttemptID, RequestID: req.RequestID, Route: domaininference.BudgetRoute{EndpointID: resolved.Endpoint.ID, ModelID: resolved.Model.ID, CapabilityID: resolved.Capability.ID, Operation: resolved.Capability.Operation}, Retry: req.BudgetRetry, BatchItems: batchItems, InputTokens: inputTokens, OutputTokens: outputTokens, ProviderMillis: scope.Limits.MaxProviderMillisPerRequest, Now: time.Now().UTC()}
+	reservation := domaininference.BudgetReservationRequest{ScopeID: req.BudgetScopeID, AttemptID: req.BudgetAttemptID, RequestID: req.RequestID, Route: domaininference.BudgetRoute{EndpointID: resolved.Endpoint.ID, ModelID: resolved.Model.ID, CapabilityID: resolved.Capability.ID, Operation: resolved.Capability.Operation}, Retry: req.BudgetRetry, RetryIndex: req.BudgetRetryIndex, BatchItems: batchItems, InputTokens: inputTokens, OutputTokens: outputTokens, ProviderMillis: scope.Limits.MaxProviderMillisPerRequest, Now: time.Now().UTC()}
 	_, attempt, err := m.ReserveProviderAttempt(ctx, reservation)
 	return attempt, err
 }
@@ -681,30 +816,70 @@ func (m *Module) completeInvocationBudget(req inferenceruntime.InvokeRequest, co
 		return err
 	}
 	cost := int64(0)
+	costSaturated := false
 	if usageKnown {
 		cost, err = estimatedBudgetCost(scope.Limits, response.Usage.InputTokens, response.Usage.OutputTokens)
 		if err != nil {
-			return err
+			var budgetErr BudgetError
+			if !errors.As(err, &budgetErr) || budgetErr.Reason != "cost_overflow" {
+				return err
+			}
+			cost = int64(^uint64(0) >> 1)
+			costSaturated = true
 		}
 	}
-	completion := domaininference.BudgetCompletionRequest{ScopeID: req.BudgetScopeID, AttemptID: req.BudgetAttemptID, State: state, InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, ProviderMillis: providerMillis, CostMicros: cost, UsageKnown: usageKnown, OutcomeKnown: outcomeKnown, ProviderDurationKnown: outcomeKnown, Outcome: outcome, CompletedAt: completed}
+	completion := domaininference.BudgetCompletionRequest{ScopeID: req.BudgetScopeID, AttemptID: req.BudgetAttemptID, State: state, InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, ProviderMillis: providerMillis, CostMicros: cost, CostSaturated: costSaturated, UsageKnown: usageKnown, OutcomeKnown: outcomeKnown, ProviderDurationKnown: outcomeKnown, Outcome: outcome, CompletedAt: completed}
 	completionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = m.CompleteProviderAttempt(completionCtx, completion)
 	return err
 }
 
-func invocationInputTokenReservation(_ inferenceruntime.InvokeRequest, limits domaininference.BudgetLimits) (int64, error) {
-	// Provider tokenization is route-specific and cannot be inferred safely from
-	// words or runes. Reserve the configured per-request ceiling; known provider
-	// usage may refund it after completion, while unavailable usage retains it.
-	if limits.MaxInputTokensPerRequest > 0 {
-		return limits.MaxInputTokensPerRequest, nil
+func invocationInputTokenReservation(req inferenceruntime.InvokeRequest, resolved inferenceruntime.ResolveResult, limits domaininference.BudgetLimits) (int64, error) {
+	required := limits.MaxInputTokensPerRequest > 0 || limits.MaxInputTokens > 0 || limits.MaxEstimatedCostMicros > 0
+	if !required {
+		return 0, nil
 	}
-	if limits.MaxInputTokens > 0 || limits.MaxEstimatedCostMicros > 0 {
+	var tokens int64
+	effectiveProviderModel := strings.TrimSpace(resolved.Capability.ProviderModelOverride)
+	if effectiveProviderModel == "" {
+		effectiveProviderModel = resolved.Model.ProviderModelName
+	}
+	switch {
+	case req.Resolve.Operation == domaininference.OperationEmbeddings && resolved.Endpoint.ConnectorType == domaininference.ConnectorFake:
+		// The daemon owns the fake connector and its deterministic tokenizer.
+		tokens = connectors.EstimateTokens(req.Input)
+	case req.Resolve.Operation == domaininference.OperationEmbeddings && resolved.Endpoint.ConnectorType == domaininference.ConnectorOpenAICompatible && usesCL100KEmbeddingTokenizer(effectiveProviderModel):
+		cl100kTokenizerOnce.Do(func() { cl100kTokenizer, cl100kTokenizerErr = tokenizer.Get(tokenizer.Cl100kBase) })
+		if cl100kTokenizerErr != nil {
+			return 0, BudgetError{Reason: "input_token_reservation_unavailable"}
+		}
+		count, err := cl100kTokenizer.Count(req.Input)
+		if err != nil || count < 0 {
+			return 0, BudgetError{Reason: "input_token_reservation_unavailable"}
+		}
+		tokens = int64(count)
+	default:
+		// Non-semantic routes do not advertise exact tokenizer enforcement. Keep
+		// their existing conservative aggregate reservation behavior.
+		if req.Resolve.Operation != domaininference.OperationEmbeddings && limits.MaxInputTokensPerRequest > 0 {
+			return limits.MaxInputTokensPerRequest, nil
+		}
 		return 0, BudgetError{Reason: "input_token_reservation_unavailable"}
 	}
-	return 0, nil
+	if limits.MaxInputTokensPerRequest > 0 && tokens > limits.MaxInputTokensPerRequest {
+		return 0, BudgetError{Reason: "input_tokens_per_request_exceeded"}
+	}
+	return tokens, nil
+}
+
+func usesCL100KEmbeddingTokenizer(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002":
+		return true
+	default:
+		return false
+	}
 }
 
 func budgetUsageKnown(usage domaininference.Usage, connectorType domaininference.ConnectorType, operation domaininference.Operation) bool {

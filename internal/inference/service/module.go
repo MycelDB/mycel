@@ -17,6 +17,8 @@ import (
 	mycelruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ mycelruntime.Service = (*Module)(nil)
@@ -27,6 +29,7 @@ var _ Manager = (*Module)(nil)
 type Module struct {
 	mu                   sync.Mutex
 	budgetMu             sync.Mutex
+	budgetApplyMu        sync.Mutex
 	budgetPersistenceErr error
 	dataDir              string
 	globalBase           inferencestorage.GlobalManager
@@ -198,6 +201,20 @@ func (m *Module) RequireLocalWriteAllowed() error {
 		return nil
 	}
 	return fn()
+}
+
+func (m *Module) RequireBudgetWriteAllowed() error {
+	m.mu.Lock()
+	groups := m.raftGroups
+	m.mu.Unlock()
+	if groups != nil {
+		group, ok := groups.Group(consensus.SystemGroupID)
+		if ok && group != nil && group.Leader() != 0 {
+			return nil
+		}
+		return status.Error(codes.Unavailable, "inference budget system group is unavailable")
+	}
+	return m.RequireLocalWriteAllowed()
 }
 
 func (m *Module) requireDerivedProjectionHealthy() error {

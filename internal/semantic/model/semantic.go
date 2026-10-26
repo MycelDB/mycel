@@ -210,6 +210,13 @@ const (
 // The rule is user-authored, while concrete endpoint/model/capability choices
 // are resolved later through Intelligence Access and stored only as provenance
 // on generated vector records and usage events.
+const (
+	SemanticProviderBudgetTransitionPrepare     = "prepare"
+	SemanticProviderBudgetTransitionComplete    = "complete"
+	SemanticProviderBudgetTransitionDelete      = "delete"
+	SemanticProviderBudgetTransitionReliability = "reliability"
+)
+
 type SemanticGenerationRule struct {
 	ID                   SemanticRuleID               `json:"id"`
 	SpaceID              domainspace.SpaceID          `json:"space_id"`
@@ -228,7 +235,15 @@ type SemanticGenerationRule struct {
 	CreatedByPrincipalID identity.PrincipalID         `json:"created_by_principal_id,omitempty"`
 	CreatedAt            time.Time                    `json:"created_at"`
 	UpdatedAt            time.Time                    `json:"updated_at"`
-	Metadata             map[string]any               `json:"metadata,omitempty"`
+	// ProviderBudgetTransition is an internal durable lifecycle journal. A
+	// non-empty value makes the rule ineligible for semantic work until the
+	// daemon finishes or rolls forward the associated budget transition.
+	ProviderBudgetTransition                string         `json:"provider_budget_transition,omitempty"`
+	ProviderBudgetTransitionID              string         `json:"provider_budget_transition_id,omitempty"`
+	ProviderBudgetTransitionScopeIDs        []string       `json:"provider_budget_transition_scope_ids,omitempty"`
+	ProviderBudgetTransitionRequiresRebuild bool           `json:"provider_budget_transition_requires_rebuild,omitempty"`
+	ProviderBudgetTransitionPurgeVectors    bool           `json:"provider_budget_transition_purge_vectors,omitempty"`
+	Metadata                                map[string]any `json:"metadata,omitempty"`
 }
 
 // SemanticRuleConfigurationHash identifies semantic-output compatibility. It
@@ -236,12 +251,20 @@ type SemanticGenerationRule struct {
 // and worker scheduling controls while binding selection, projection, route,
 // vector store, and physical ranking semantics.
 func SemanticRuleConfigurationHash(rule SemanticGenerationRule) string {
+	normalized := NormalizeSemanticGenerationRule(rule)
+	embeddings := append([]SemanticEmbeddingBinding(nil), normalized.Embeddings...)
+	for i := range embeddings {
+		// Provider budgets control whether an invocation may occur; they do not
+		// change the bytes, model route, vector space, or ranking semantics of an
+		// already-produced semantic record.
+		embeddings[i].ProviderBudget = nil
+	}
 	return semanticConfigurationHash(struct {
 		Selector   SemanticTargetSelector       `json:"selector"`
 		Source     SemanticSourceAssemblyPolicy `json:"source"`
 		Embeddings []SemanticEmbeddingBinding   `json:"embeddings"`
 		Storage    SemanticStoragePolicy        `json:"storage"`
-	}{Selector: NormalizeSemanticGenerationRule(rule).Selector, Source: NormalizeSemanticGenerationRule(rule).Source, Embeddings: NormalizeSemanticGenerationRule(rule).Embeddings, Storage: NormalizeSemanticGenerationRule(rule).Storage})
+	}{Selector: normalized.Selector, Source: normalized.Source, Embeddings: embeddings, Storage: normalized.Storage})
 }
 
 // SemanticRecordConfigurationHash binds a record to both rule semantics and
@@ -291,15 +314,41 @@ type SemanticSourceAssemblyPolicy struct {
 	ContextGQL        string                     `json:"context_gql,omitempty"`
 }
 
+type SemanticProviderBatchingMode string
+
+const (
+	SemanticProviderBatchingSingle SemanticProviderBatchingMode = "single"
+	SemanticProviderBatchingBatch  SemanticProviderBatchingMode = "batch"
+)
+
+type SemanticProviderBudgetPolicy struct {
+	CorrelationID               string                       `json:"correlation_id"`
+	MaxRequests                 int64                        `json:"max_requests"`
+	MaxRetryAttempts            int64                        `json:"max_retry_attempts"`
+	MaxRetriesPerRequest        int64                        `json:"max_retries_per_request"`
+	MaxConcurrentProviderCalls  int64                        `json:"max_concurrent_provider_calls"`
+	BatchingMode                SemanticProviderBatchingMode `json:"batching_mode"`
+	MaxBatchItems               int64                        `json:"max_batch_items"`
+	MaxInputTokensPerRequest    int64                        `json:"max_input_tokens_per_request"`
+	MaxInputTokens              int64                        `json:"max_input_tokens"`
+	RequestTimeout              time.Duration                `json:"request_timeout"`
+	TotalTimeout                time.Duration                `json:"total_timeout"`
+	Currency                    string                       `json:"currency"`
+	PriceDefinitionVersion      string                       `json:"price_definition_version"`
+	InputMicrosPerMillionTokens int64                        `json:"input_micros_per_million_tokens"`
+	MaxEstimatedCostMicros      int64                        `json:"max_estimated_cost_micros"`
+}
+
 type SemanticEmbeddingBinding struct {
-	Key                   string                `json:"key"`
-	Purpose               string                `json:"purpose,omitempty"`
-	IntelligenceProfile   string                `json:"intelligence_profile,omitempty"`
-	IntelligenceProfileID IntelligenceProfileID `json:"intelligence_profile_id,omitempty"`
-	VectorStore           string                `json:"vector_store,omitempty"`
-	VectorStoreID         VectorStoreID         `json:"vector_store_id,omitempty"`
-	Enabled               bool                  `json:"enabled"`
-	Metadata              map[string]any        `json:"metadata,omitempty"`
+	Key                   string                        `json:"key"`
+	Purpose               string                        `json:"purpose,omitempty"`
+	IntelligenceProfile   string                        `json:"intelligence_profile,omitempty"`
+	IntelligenceProfileID IntelligenceProfileID         `json:"intelligence_profile_id,omitempty"`
+	VectorStore           string                        `json:"vector_store,omitempty"`
+	VectorStoreID         VectorStoreID                 `json:"vector_store_id,omitempty"`
+	Enabled               bool                          `json:"enabled"`
+	Metadata              map[string]any                `json:"metadata,omitempty"`
+	ProviderBudget        *SemanticProviderBudgetPolicy `json:"provider_budget,omitempty"`
 }
 
 type SemanticMaintenancePolicy struct {
@@ -360,6 +409,13 @@ func NormalizeSemanticEmbeddingBinding(binding SemanticEmbeddingBinding) Semanti
 	binding.Purpose = strings.TrimSpace(binding.Purpose)
 	binding.IntelligenceProfile = strings.TrimSpace(binding.IntelligenceProfile)
 	binding.VectorStore = strings.TrimSpace(binding.VectorStore)
+	if binding.ProviderBudget != nil {
+		budget := *binding.ProviderBudget
+		budget.CorrelationID = strings.TrimSpace(budget.CorrelationID)
+		budget.Currency = strings.ToUpper(strings.TrimSpace(budget.Currency))
+		budget.PriceDefinitionVersion = strings.TrimSpace(budget.PriceDefinitionVersion)
+		binding.ProviderBudget = &budget
+	}
 	return binding
 }
 
@@ -852,25 +908,26 @@ type SemanticRevisionRange struct {
 }
 
 type SemanticReliabilityState struct {
-	EmbeddingBindingKey       string                  `json:"embedding_binding_key"`
-	ResolvedConfigurationHash string                  `json:"resolved_configuration_hash,omitempty"`
-	SemanticGeneration        uint64                  `json:"semantic_generation,omitempty"`
-	BaselineFreshThrough      uint64                  `json:"baseline_fresh_through,omitempty"`
-	RebuildEpoch              string                  `json:"rebuild_epoch,omitempty"`
-	RebuildState              string                  `json:"rebuild_state,omitempty"`
-	RebuildOwnerNode          uint64                  `json:"rebuild_owner_node,omitempty"`
-	RebuildOwnerTerm          uint64                  `json:"rebuild_owner_term,omitempty"`
-	PinnedTargetRevision      uint64                  `json:"pinned_target_revision,omitempty"`
-	DeltaCatchupRevision      uint64                  `json:"delta_catchup_revision,omitempty"`
-	RebuildStartedAt          *time.Time              `json:"rebuild_started_at,omitempty"`
-	RebuildCompletedAt        *time.Time              `json:"rebuild_completed_at,omitempty"`
-	RebuildErrorSanitized     string                  `json:"rebuild_error_sanitized,omitempty"`
-	LatestObserved            uint64                  `json:"latest_observed,omitempty"`
-	AnalyzedThrough           uint64                  `json:"analyzed_through,omitempty"`
-	FreshThrough              uint64                  `json:"fresh_through,omitempty"`
-	UnresolvedRanges          []SemanticRevisionRange `json:"unresolved_ranges,omitempty"`
-	CapacityState             string                  `json:"capacity_state,omitempty"`
-	CapacityReason            string                  `json:"capacity_reason,omitempty"`
+	EmbeddingBindingKey           string                  `json:"embedding_binding_key"`
+	ResolvedConfigurationHash     string                  `json:"resolved_configuration_hash,omitempty"`
+	SemanticGeneration            uint64                  `json:"semantic_generation,omitempty"`
+	BaselineFreshThrough          uint64                  `json:"baseline_fresh_through,omitempty"`
+	RebuildEpoch                  string                  `json:"rebuild_epoch,omitempty"`
+	RebuildState                  string                  `json:"rebuild_state,omitempty"`
+	RebuildOwnerNode              uint64                  `json:"rebuild_owner_node,omitempty"`
+	RebuildOwnerTerm              uint64                  `json:"rebuild_owner_term,omitempty"`
+	PinnedTargetRevision          uint64                  `json:"pinned_target_revision,omitempty"`
+	DeltaCatchupRevision          uint64                  `json:"delta_catchup_revision,omitempty"`
+	RebuildStartedAt              *time.Time              `json:"rebuild_started_at,omitempty"`
+	RebuildCompletedAt            *time.Time              `json:"rebuild_completed_at,omitempty"`
+	RebuildErrorSanitized         string                  `json:"rebuild_error_sanitized,omitempty"`
+	LatestObserved                uint64                  `json:"latest_observed,omitempty"`
+	AnalyzedThrough               uint64                  `json:"analyzed_through,omitempty"`
+	FreshThrough                  uint64                  `json:"fresh_through,omitempty"`
+	UnresolvedRanges              []SemanticRevisionRange `json:"unresolved_ranges,omitempty"`
+	CapacityState                 string                  `json:"capacity_state,omitempty"`
+	CapacityReason                string                  `json:"capacity_reason,omitempty"`
+	LastConfigurationTransitionID string                  `json:"last_configuration_transition_id,omitempty"`
 }
 
 type SemanticSearchIndexState struct {

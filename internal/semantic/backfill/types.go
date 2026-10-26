@@ -54,6 +54,7 @@ type Input struct {
 	RebuildEpoch           string                                 `json:"rebuild_epoch,omitempty"`
 	WorkItemID             domainsemantic.SemanticDirtyWorkItemID `json:"work_item_id,omitempty"`
 	WorkItemGeneration     int                                    `json:"work_item_generation,omitempty"`
+	WorkItemAttempt        int                                    `json:"work_item_attempt,omitempty"`
 }
 
 type Publication struct {

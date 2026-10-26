@@ -21,6 +21,8 @@ import (
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
@@ -33,8 +35,25 @@ func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
 	module.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	ids := semanticInferenceAdapterIDs{spaceID: domainspace.SpaceID(uuid.New()), domainID: graph.DomainID(uuid.New()), indexID: domainsemantic.SemanticIndexID(uuid.New()), nodeID: graph.NodeID(uuid.New()), endpointID: domainsemantic.ModelEndpointID(uuid.New()), modelID: domainsemantic.InferenceModelID(uuid.New()), capID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), credentialID: domainsemantic.InferenceCredentialID(uuid.New()), secretID: domainsemantic.SecretID(uuid.New()), grantID: domainsemantic.CredentialGrantID(uuid.New()), profileID: uuid.New()}
 	seedStandaloneInferenceForSemanticAdapter(t, ctx, module, ids)
+	now := time.Now().UTC()
+	budgetRequest := inferenceruntime.SemanticBudgetScopeRequest{SpaceID: ids.spaceID.String(), DomainID: ids.domainID.String(), SemanticRuleID: ids.indexID.String(), EmbeddingBindingKey: "search", CorrelationID: "sgt9-test", ProfileID: domaininference.ProfileID(ids.profileID), ActorPrincipalID: "actor-a", TotalTimeout: time.Minute, Limits: domaininference.BudgetLimits{MaxRequests: 10, MaxAttempts: 12, MaxRetryAttempts: 2, MaxRetriesPerRequest: 1, MaxConcurrentProviderCalls: 1, BatchingMode: domaininference.BatchingModeSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxInputTokens: 1000, MaxProviderMillisPerRequest: 1000, MaxProviderMillis: 10_000, Currency: "USD", PriceDefinitionVersion: "test-v1", InputMicrosPerMillionTokens: 1, MaxEstimatedCostMicros: 1000, Deadline: now.Add(time.Minute)}}
+	invalidRequest := budgetRequest
+	invalidRequest.Limits.MaxRequests = 10_001
+	invalidRequest.Limits.MaxAttempts = 10_001
+	invalidRequest.Limits.MaxRetryAttempts = 0
+	invalidRequest.Limits.MaxRetriesPerRequest = 0
+	if err := module.ValidateSemanticBudgetScope(ctx, invalidRequest); err == nil {
+		t.Fatal("preflight accepted scope beyond daemon attempt capacity")
+	}
+	if scopes, err := module.ListBudgetScopes(ctx); err != nil || len(scopes) != 0 {
+		t.Fatalf("preflight mutated scopes=%+v error=%v", scopes, err)
+	}
+	scope, err := module.EnsureSemanticBudgetScope(ctx, budgetRequest)
+	if err != nil {
+		t.Fatalf("EnsureSemanticBudgetScope() error=%v", err)
+	}
 
-	resp, err := (InferenceAdapter{Invoker: module}).Embed(ctx, EmbedInput{ModelEndpointID: ids.endpointID, ModelID: ids.modelID, ModelEndpointCapabilityID: ids.capID, CredentialID: ids.credentialID, CredentialGrantID: ids.grantID, SpaceID: ids.spaceID, DomainID: ids.domainID, SemanticIndexID: ids.indexID, TargetNodeID: ids.nodeID, ActorPrincipalID: identity.PrincipalID("actor-a"), InferenceProfileID: ids.profileID, Input: "semantic text", Reason: "semantic_backfill"})
+	resp, err := (InferenceAdapter{Invoker: module}).Embed(ctx, EmbedInput{ModelEndpointID: ids.endpointID, ModelID: ids.modelID, ModelEndpointCapabilityID: ids.capID, CredentialID: ids.credentialID, CredentialGrantID: ids.grantID, SpaceID: ids.spaceID, DomainID: ids.domainID, SemanticRuleID: domainsemantic.SemanticRuleID(ids.indexID), EmbeddingBindingKey: "search", SemanticIndexID: ids.indexID, TargetNodeID: ids.nodeID, ActorPrincipalID: identity.PrincipalID("actor-a"), InferenceProfileID: ids.profileID, Input: "semantic text", Reason: "semantic_backfill", ProviderBudgetRequired: true})
 	if err != nil {
 		t.Fatalf("Embed() error = %v", err)
 	}
@@ -45,9 +64,57 @@ func TestInferenceAdapterEmbedsThroughStandaloneInference(t *testing.T) {
 	if embedCalls != 1 {
 		t.Fatalf("expected standalone fake connector to be called once, got %d", embedCalls)
 	}
+	persistedScope, err := module.GetBudgetScope(ctx, scope.ID)
+	if err != nil || persistedScope.Usage.Requests != 1 || persistedScope.Usage.Attempts != 1 || len(persistedScope.AttemptEvents) != 2 {
+		t.Fatalf("unexpected semantic budget scope: %#v err=%v", persistedScope, err)
+	}
 	events, err := module.UsageLedger().ListUsageEvents(ctx)
 	if err != nil || len(events) != 1 || events[0].Status != domaininference.UsageStatusSucceeded || events[0].SemanticIndexID != ids.indexID.String() {
 		t.Fatalf("unexpected usage events: %#v err=%v", events, err)
+	}
+}
+
+func TestSemanticBudgetPreflightRejectsCapabilityConnectorBatchingMismatch(t *testing.T) {
+	ctx := context.Background()
+	module := inferenceservice.NewModule()
+	if result := module.Init(ctx, runtimetest.New(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))); !result.OK {
+		t.Fatalf("init inference module: %#v", result)
+	}
+	module.SetConnector(domaininference.ConnectorOpenAICompatible, &inferenceconnectors.FakeConnector{})
+	ids := semanticInferenceAdapterIDs{spaceID: domainspace.SpaceID(uuid.New()), domainID: graph.DomainID(uuid.New()), indexID: domainsemantic.SemanticIndexID(uuid.New()), nodeID: graph.NodeID(uuid.New()), endpointID: domainsemantic.ModelEndpointID(uuid.New()), modelID: domainsemantic.InferenceModelID(uuid.New()), capID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), credentialID: domainsemantic.InferenceCredentialID(uuid.New()), secretID: domainsemantic.SecretID(uuid.New()), grantID: domainsemantic.CredentialGrantID(uuid.New()), profileID: uuid.New()}
+	seedStandaloneInferenceForSemanticAdapter(t, ctx, module, ids)
+	if _, err := module.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(ids.capID), EndpointID: domaininference.EndpointID(ids.endpointID), ModelID: domaininference.ModelID(ids.modelID), Operation: domaininference.OperationEmbeddings, BatchingMode: domaininference.BatchingModeBatch, MaxBatchItems: 2, Enabled: true}); err != nil {
+		t.Fatalf("update capability: %v", err)
+	}
+	now := time.Now().UTC()
+	err := module.ValidateSemanticBudgetScope(ctx, inferenceruntime.SemanticBudgetScopeRequest{SpaceID: ids.spaceID.String(), DomainID: ids.domainID.String(), SemanticRuleID: ids.indexID.String(), EmbeddingBindingKey: "search", CorrelationID: "sgt9-test", ProfileID: domaininference.ProfileID(ids.profileID), ActorPrincipalID: "actor-a", TotalTimeout: time.Minute, Limits: domaininference.BudgetLimits{MaxRequests: 1, MaxAttempts: 1, MaxConcurrentProviderCalls: 1, BatchingMode: domaininference.BatchingModeSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxInputTokens: 100, MaxProviderMillisPerRequest: 1000, MaxProviderMillis: 1000, Currency: "USD", PriceDefinitionVersion: "test-v1", InputMicrosPerMillionTokens: 1, MaxEstimatedCostMicros: 1000, Deadline: now.Add(time.Minute)}})
+	var budgetErr inferenceservice.BudgetError
+	if !errors.As(err, &budgetErr) || budgetErr.Reason != "connector_batching_unsupported" {
+		t.Fatalf("ValidateSemanticBudgetScope() error=%v", err)
+	}
+	if scopes, listErr := module.ListBudgetScopes(ctx); listErr != nil || len(scopes) != 0 {
+		t.Fatalf("preflight mutated scopes=%+v error=%v", scopes, listErr)
+	}
+}
+
+func TestInferenceAdapterForwardsStableBudgetRetryIdentity(t *testing.T) {
+	invoker := &capturingInferenceInvoker{}
+	requestID := uuid.NewString()
+	adapter := InferenceAdapter{Invoker: invoker}
+	if _, err := adapter.Embed(context.Background(), EmbedInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search", InferenceProfileID: uuid.New(), Input: "semantic text", ProviderBudgetRequired: true, ProviderBudgetRequestID: requestID, ProviderBudgetRetry: true, ProviderBudgetRetryIndex: 2}); err != nil {
+		t.Fatalf("Embed() error=%v", err)
+	}
+	if invoker.request.RequestID != requestID || !invoker.request.BudgetRetry || invoker.request.BudgetRetryIndex != 2 {
+		t.Fatalf("retry metadata=%+v", invoker.request)
+	}
+}
+
+func TestInferenceAdapterClassifiesReplicatedBudgetContentionAsRetryable(t *testing.T) {
+	adapter := InferenceAdapter{Invoker: &capturingInferenceInvoker{err: status.Error(codes.FailedPrecondition, "scope changed")}}
+	_, err := adapter.Embed(context.Background(), EmbedInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search", InferenceProfileID: uuid.New(), Input: "semantic text", ProviderBudgetRequired: true})
+	var failure EmbeddingFailure
+	if !errors.As(err, &failure) || failure.Category != "budget_contention" || !failure.Retryable {
+		t.Fatalf("Embed() error=%T %v failure=%+v", err, err, failure)
 	}
 }
 
@@ -121,6 +188,14 @@ func TestInferenceAdapterClassifiesRateLimitFromStatusNotSubstring(t *testing.T)
 	}
 }
 
+func TestInferenceAdapterFailsClosedWhenBudgetReaderUnavailable(t *testing.T) {
+	adapter := InferenceAdapter{Invoker: failingInferenceInvoker{}}
+	_, err := adapter.Embed(context.Background(), EmbedInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search", InferenceProfileID: uuid.New(), Input: "semantic text", ProviderBudgetRequired: true})
+	if err == nil || !strings.Contains(err.Error(), "budget enforcement is unavailable") {
+		t.Fatalf("expected unavailable budget reader error, got %v", err)
+	}
+}
+
 func TestInferenceAdapterRequiresProfile(t *testing.T) {
 	ctx := context.Background()
 	_, err := (InferenceAdapter{Invoker: inferenceservice.NewModule()}).Embed(ctx, EmbedInput{Input: "semantic text"})
@@ -131,8 +206,22 @@ func TestInferenceAdapterRequiresProfile(t *testing.T) {
 
 type failingInferenceInvoker struct{ err error }
 
+type capturingInferenceInvoker struct {
+	request inferenceruntime.InvokeRequest
+	err     error
+}
+
 func (f failingInferenceInvoker) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
 	return inferenceruntime.InvokeResponse{}, f.err
+}
+
+func (c *capturingInferenceInvoker) Invoke(_ context.Context, request inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	c.request = request
+	return inferenceruntime.InvokeResponse{}, c.err
+}
+
+func (c *capturingInferenceInvoker) CurrentSemanticBudgetScope(context.Context, string, string, string) (domaininference.BudgetScope, error) {
+	return domaininference.BudgetScope{ID: domaininference.BudgetScopeID(uuid.NewString())}, nil
 }
 
 type semanticInferenceAdapterIDs struct {
@@ -154,7 +243,7 @@ func seedStandaloneInferenceForSemanticAdapter(t *testing.T, ctx context.Context
 	if _, err := module.GlobalManager().UpsertEndpoint(ctx, domaininference.Endpoint{ID: domaininference.EndpointID(ids.endpointID), Key: "endpoint", ConnectorType: domaininference.ConnectorOpenAICompatible, NetworkClass: domaininference.NetworkClassPublicInternet, PrivacyClass: domaininference.PrivacyClassThirdParty, Operations: []domaininference.Operation{domaininference.OperationEmbeddings}, Enabled: true}); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
-	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(ids.modelID), Key: "model", Kind: domaininference.ModelKindEmbedding, ProviderModelName: "embed", Enabled: true}); err != nil {
+	if _, err := module.GlobalManager().UpsertModel(ctx, domaininference.Model{ID: domaininference.ModelID(ids.modelID), Key: "model", Kind: domaininference.ModelKindEmbedding, ProviderModelName: "text-embedding-3-small", Enabled: true}); err != nil {
 		t.Fatalf("upsert model: %v", err)
 	}
 	if _, err := module.GlobalManager().UpsertCapability(ctx, domaininference.Capability{ID: domaininference.CapabilityID(ids.capID), EndpointID: domaininference.EndpointID(ids.endpointID), ModelID: domaininference.ModelID(ids.modelID), Operation: domaininference.OperationEmbeddings, Enabled: true}); err != nil {

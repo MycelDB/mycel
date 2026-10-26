@@ -913,6 +913,89 @@ func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing
 	}
 }
 
+func TestSpaceManagerConditionalTransitionFinalizeAndDeleteRejectStaleRule(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "transition-cas", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setter := mgr.(SemanticRuleEnabledManager)
+	staged := created
+	staged.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionPrepare
+	staged.ProviderBudgetTransitionID = "transition-a"
+	staged.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, created, staged); err != nil {
+		t.Fatalf("stage transition: %v", err)
+	}
+	finalized := staged
+	finalized.ProviderBudgetTransition = ""
+	finalized.ProviderBudgetTransitionID = ""
+	finalized.UpdatedAt = staged.UpdatedAt.Add(time.Second)
+	if _, err := setter.SetSemanticRuleEnabled(ctx, staged, finalized); err != nil {
+		t.Fatalf("finalize transition: %v", err)
+	}
+	if _, err := setter.SetSemanticRuleEnabled(ctx, staged, finalized); err != nil {
+		t.Fatalf("idempotent finalization replay: %v", err)
+	}
+	if err := mgr.(SemanticRuleConditionalDeleteManager).DeleteSemanticRuleConditional(ctx, staged, false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale conditional delete error=%v, want ErrConflict", err)
+	}
+	if err := mgr.(SemanticRuleConditionalDeleteManager).DeleteSemanticRuleConditional(ctx, finalized, false); err != nil {
+		t.Fatalf("conditional delete: %v", err)
+	}
+}
+
+func TestConditionalDeleteKeepsJournalUntilEveryDependentFilePersists(t *testing.T) {
+	for _, failureFile := range []string{credentialGrantsFileName, inferencePoliciesFileName, ruleStateFileName, searchIndexStateFileName, indexStateFileName, policyDecisionsFileName, semanticRulesFileName} {
+		t.Run(failureFile, func(t *testing.T) {
+			ctx := context.Background()
+			spaceID := domainspace.SpaceID(uuid.New())
+			dir := t.TempDir()
+			manager := NewSpaceManager()
+			if err := manager.Init(ctx, dir, spaceID); err != nil {
+				t.Fatal(err)
+			}
+			created, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-delete", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionDelete, ProviderBudgetTransitionPurgeVectors: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			concrete := manager.(*spaceManager)
+			concrete.persistOverride = func(path string, value any) error {
+				if filepath.Base(path) == failureFile {
+					return errors.New("injected persistence failure")
+				}
+				return persistJSON(path, value)
+			}
+			if err := manager.(SemanticRuleConditionalDeleteManager).DeleteSemanticRuleConditional(ctx, created, true); err == nil {
+				t.Fatal("conditional delete unexpectedly succeeded")
+			}
+			reopened := NewSpaceManager()
+			if err := reopened.Init(ctx, dir, spaceID); err != nil {
+				t.Fatal(err)
+			}
+			rules, err := reopened.ListSemanticRules(ctx)
+			if err != nil || len(rules) != 1 || rules[0].ProviderBudgetTransition != domainsemantic.SemanticProviderBudgetTransitionDelete || !rules[0].ProviderBudgetTransitionPurgeVectors {
+				t.Fatalf("failure lost delete journal: rules=%+v error=%v", rules, err)
+			}
+			if err := reopened.(SemanticRuleConditionalDeleteManager).DeleteSemanticRuleConditional(ctx, rules[0], true); err != nil {
+				t.Fatalf("roll forward delete: %v", err)
+			}
+			verified := NewSpaceManager()
+			if err := verified.Init(ctx, dir, spaceID); err != nil {
+				t.Fatal(err)
+			}
+			if rules, err := verified.ListSemanticRules(ctx); err != nil || len(rules) != 0 {
+				t.Fatalf("delete did not converge: rules=%+v error=%v", rules, err)
+			}
+		})
+	}
+}
+
 func TestSpaceManagerSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

@@ -52,10 +52,14 @@ type UsageLedger interface {
 	Init(ctx context.Context, location string) error
 	AppendUsageEvent(ctx context.Context, event domaininference.UsageEvent) (domaininference.UsageEvent, error)
 	ListUsageEvents(ctx context.Context) ([]domaininference.UsageEvent, error)
+	ReplaceUsageEvents(ctx context.Context, events []domaininference.UsageEvent) error
 	UpsertBudgetScope(ctx context.Context, scope domaininference.BudgetScope) (domaininference.BudgetScope, error)
 	GetBudgetScope(ctx context.Context, id domaininference.BudgetScopeID) (domaininference.BudgetScope, error)
 	ListBudgetScopes(ctx context.Context) ([]domaininference.BudgetScope, error)
+	BudgetScopeHighWater(ctx context.Context) (uint64, error)
 	DeleteBudgetScope(ctx context.Context, id domaininference.BudgetScopeID) error
+	ReplaceBudgetScopes(ctx context.Context, scopes []domaininference.BudgetScope, highWater uint64) error
+	ReplaceInferenceSnapshot(ctx context.Context, scopes []domaininference.BudgetScope, highWater uint64, events []domaininference.UsageEvent) error
 }
 
 func NewGlobalManager() GlobalManager { return &globalManager{} }

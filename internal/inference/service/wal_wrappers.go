@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +14,8 @@ import (
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -21,9 +26,14 @@ const (
 )
 
 type inferenceMutationRecord struct {
-	Kind    string          `json:"kind"`
-	SpaceID string          `json:"space_id,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	Kind                         string          `json:"kind"`
+	SpaceID                      string          `json:"space_id,omitempty"`
+	Payload                      json.RawMessage `json:"payload,omitempty"`
+	BudgetScopeCAS               bool            `json:"budget_scope_cas,omitempty"`
+	PreviousBudgetScopeDigest    string          `json:"previous_budget_scope_digest,omitempty"`
+	BudgetScopeDigest            string          `json:"budget_scope_digest,omitempty"`
+	AllocateBudgetScopeSequence  bool            `json:"allocate_budget_scope_sequence,omitempty"`
+	EnforceActiveSemanticBinding bool            `json:"enforce_active_semantic_binding,omitempty"`
 }
 
 type walGlobalManager struct {
@@ -49,6 +59,11 @@ func (m *Module) commitInferenceMutation(ctx context.Context, typ wal.RecordType
 			return quiesce.GRPCError(err)
 		}
 		defer release()
+	}
+	if typ == recordTypeInferenceBudget || typ == recordTypeInferenceUsage {
+		if proposed, err := m.proposeInferenceSystemMutation(ctx, typ, rec); proposed {
+			return err
+		}
 	}
 	if m.writeAllowed != nil && !inferenceRuntimeEvidenceMutation(typ, rec) {
 		if err := m.writeAllowed(); err != nil {
@@ -168,6 +183,47 @@ func (m *Module) applyInferenceBudget(ctx context.Context, rec wal.Record) error
 }
 
 func rawInference(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+
+func budgetScopeDigest(scope model.BudgetScope) string {
+	encoded, _ := json.Marshal(scope)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func legacyBudgetScopeMutationAdvances(incoming, existing model.BudgetScope) bool {
+	if incoming.UpdatedAt.After(existing.UpdatedAt) {
+		return true
+	}
+	return incoming.UpdatedAt.Equal(existing.UpdatedAt) && budgetScopeEventHighWater(incoming) > budgetScopeEventHighWater(existing)
+}
+
+func legacyBudgetScopeMutationPrecedesOrEquals(incoming, existing model.BudgetScope) bool {
+	if incoming.UpdatedAt.Before(existing.UpdatedAt) {
+		return true
+	}
+	return incoming.UpdatedAt.Equal(existing.UpdatedAt) && budgetScopeEventHighWater(incoming) < budgetScopeEventHighWater(existing)
+}
+
+func budgetScopeEventHighWater(scope model.BudgetScope) uint64 {
+	var highWater uint64
+	for _, event := range scope.AttemptEvents {
+		if event.Sequence > highWater {
+			highWater = event.Sequence
+		}
+	}
+	return highWater
+}
+
+func currentBudgetScopeDigest(ctx context.Context, ledger inferencestorage.UsageLedger, id model.BudgetScopeID) (string, error) {
+	scope, err := ledger.GetBudgetScope(ctx, id)
+	if errors.Is(err, inferencestorage.ErrBudgetScopeNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return budgetScopeDigest(scope), nil
+}
 
 func applyInferenceGlobalMutation(ctx context.Context, g inferencestorage.GlobalManager, r inferenceMutationRecord) error {
 	if g == nil {
@@ -311,12 +367,88 @@ func applyInferenceBudgetMutation(ctx context.Context, ledger inferencestorage.U
 		if err := json.Unmarshal(r.Payload, &v); err != nil {
 			return err
 		}
+		legacyAllocate := !r.AllocateBudgetScopeSequence && !r.BudgetScopeCAS && v.ScopeSequence == 0
+		if r.AllocateBudgetScopeSequence || legacyAllocate {
+			if existing, err := ledger.GetBudgetScope(ctx, v.ID); err == nil {
+				existingSequence := existing.ScopeSequence
+				existing.ScopeSequence = 0
+				expectedDigest := r.BudgetScopeDigest
+				if legacyAllocate {
+					expectedDigest = budgetScopeDigest(v)
+				}
+				if budgetScopeDigest(existing) == expectedDigest {
+					return nil
+				}
+				if legacyAllocate {
+					if legacyBudgetScopeMutationPrecedesOrEquals(v, existing) {
+						return nil
+					}
+					if legacyBudgetScopeMutationAdvances(v, existing) {
+						v.ScopeSequence = existingSequence
+						_, err := ledger.UpsertBudgetScope(ctx, v)
+						return err
+					}
+				}
+				return status.Error(codes.FailedPrecondition, "inference budget scope id already exists")
+			} else if !errors.Is(err, inferencestorage.ErrBudgetScopeNotFound) {
+				return err
+			}
+			highWater, err := ledger.BudgetScopeHighWater(ctx)
+			if err != nil {
+				return err
+			}
+			if highWater == ^uint64(0) {
+				return status.Error(codes.FailedPrecondition, "inference budget scope sequence is exhausted")
+			}
+			scopes, err := ledger.ListBudgetScopes(ctx)
+			if err != nil {
+				return err
+			}
+			if len(scopes) >= maxBudgetScopesRetained {
+				return status.Error(codes.FailedPrecondition, "inference budget scope capacity is exhausted")
+			}
+			v.ScopeSequence = highWater + 1
+		} else if r.BudgetScopeCAS {
+			currentDigest, err := currentBudgetScopeDigest(ctx, ledger, v.ID)
+			if err != nil {
+				return err
+			}
+			if currentDigest == r.BudgetScopeDigest {
+				return nil
+			}
+			if currentDigest != r.PreviousBudgetScopeDigest {
+				return status.Error(codes.FailedPrecondition, "inference budget scope changed before replicated mutation")
+			}
+		}
+		if r.EnforceActiveSemanticBinding {
+			scopes, err := ledger.ListBudgetScopes(ctx)
+			if err != nil {
+				return err
+			}
+			for _, existing := range scopes {
+				if existing.ID != v.ID && existing.SpaceID == v.SpaceID && existing.SemanticRuleID == v.SemanticRuleID && existing.EmbeddingBindingKey == v.EmbeddingBindingKey && existing.State == model.BudgetScopeActive && existing.ExpiresAt.After(v.UpdatedAt) && existing.Limits.Deadline.After(v.UpdatedAt) {
+					return status.Error(codes.FailedPrecondition, "active semantic budget scope already exists")
+				}
+			}
+		}
 		_, err := ledger.UpsertBudgetScope(ctx, v)
 		return err
 	case "budget_scope.delete":
 		var id model.BudgetScopeID
 		if err := json.Unmarshal(r.Payload, &id); err != nil {
 			return err
+		}
+		if r.BudgetScopeCAS {
+			currentDigest, err := currentBudgetScopeDigest(ctx, ledger, id)
+			if err != nil {
+				return err
+			}
+			if currentDigest == "" {
+				return nil
+			}
+			if currentDigest != r.PreviousBudgetScopeDigest {
+				return status.Error(codes.FailedPrecondition, "inference budget scope changed before replicated mutation")
+			}
 		}
 		return ledger.DeleteBudgetScope(ctx, id)
 	default:

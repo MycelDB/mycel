@@ -35,6 +35,7 @@ type BudgetLimits struct {
 	MaxRequests                  int64        `json:"max_requests,omitempty"`
 	MaxAttempts                  int64        `json:"max_attempts,omitempty"`
 	MaxRetryAttempts             int64        `json:"max_retry_attempts,omitempty"`
+	MaxRetriesPerRequest         int64        `json:"max_retries_per_request,omitempty"`
 	MaxConcurrentProviderCalls   int64        `json:"max_concurrent_provider_calls,omitempty"`
 	BatchingMode                 BatchingMode `json:"batching_mode"`
 	MaxBatchItems                int64        `json:"max_batch_items"`
@@ -70,20 +71,27 @@ type BudgetUsage struct {
 	ProviderMillis      int64 `json:"provider_millis"`
 	EstimatedCostMicros int64 `json:"estimated_cost_micros"`
 	AmbiguousAttempts   int64 `json:"ambiguous_attempts"`
+	AccountingOverflow  bool  `json:"accounting_overflow,omitempty"`
 }
 
 type BudgetScope struct {
-	ID             BudgetScopeID    `json:"id"`
-	State          BudgetScopeState `json:"state"`
-	Route          BudgetRoute      `json:"route"`
-	Limits         BudgetLimits     `json:"limits"`
-	Usage          BudgetUsage      `json:"usage"`
-	Attempts       []BudgetAttempt  `json:"attempts,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	ExpiresAt      time.Time        `json:"expires_at"`
-	RetentionUntil time.Time        `json:"retention_until"`
-	DenialReason   string           `json:"denial_reason,omitempty"`
+	ID                  BudgetScopeID        `json:"id"`
+	ScopeSequence       uint64               `json:"scope_sequence,omitempty"`
+	SpaceID             string               `json:"space_id,omitempty"`
+	SemanticRuleID      string               `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey string               `json:"embedding_binding_key,omitempty"`
+	CorrelationID       string               `json:"correlation_id,omitempty"`
+	State               BudgetScopeState     `json:"state"`
+	Route               BudgetRoute          `json:"route"`
+	Limits              BudgetLimits         `json:"limits"`
+	Usage               BudgetUsage          `json:"usage"`
+	Attempts            []BudgetAttempt      `json:"attempts,omitempty"`
+	AttemptEvents       []BudgetAttemptEvent `json:"attempt_events,omitempty"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
+	ExpiresAt           time.Time            `json:"expires_at"`
+	RetentionUntil      time.Time            `json:"retention_until"`
+	DenialReason        string               `json:"denial_reason,omitempty"`
 }
 
 type BudgetAttempt struct {
@@ -91,6 +99,7 @@ type BudgetAttempt struct {
 	RequestID              string             `json:"request_id"`
 	State                  BudgetAttemptState `json:"state"`
 	Retry                  bool               `json:"retry,omitempty"`
+	RetryIndex             int64              `json:"retry_index,omitempty"`
 	BatchItems             int64              `json:"batch_items"`
 	ReservedInputTokens    int64              `json:"reserved_input_tokens"`
 	ReservedOutputTokens   int64              `json:"reserved_output_tokens"`
@@ -107,6 +116,14 @@ type BudgetAttempt struct {
 	ReservedUntil          time.Time          `json:"reserved_until"`
 	CompletedAt            time.Time          `json:"completed_at,omitempty"`
 	Outcome                string             `json:"outcome,omitempty"`
+	ChargedCostSaturated   bool               `json:"charged_cost_saturated,omitempty"`
+}
+
+type BudgetAttemptEvent struct {
+	Sequence       uint64        `json:"sequence"`
+	AttemptVersion uint32        `json:"attempt_version"`
+	Attempt        BudgetAttempt `json:"attempt"`
+	RecordedAt     time.Time     `json:"recorded_at"`
 }
 
 type BudgetReservationRequest struct {
@@ -115,6 +132,7 @@ type BudgetReservationRequest struct {
 	RequestID           string
 	Route               BudgetRoute
 	Retry               bool
+	RetryIndex          int64
 	BatchItems          int64
 	InputTokens         int64
 	OutputTokens        int64
@@ -131,6 +149,7 @@ type BudgetCompletionRequest struct {
 	OutputTokens          int64
 	ProviderMillis        int64
 	CostMicros            int64
+	CostSaturated         bool
 	UsageKnown            bool
 	OutcomeKnown          bool
 	ProviderDurationKnown bool

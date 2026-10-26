@@ -12,6 +12,16 @@ Enable and disable operations address a semantic rule by immutable ID and requir
 
 Conditional rule control uses `semantic.space.conditional-mutation.v2`. Before proposing this record, the daemon probes every configured voting peer and requires an affirmative capability response; an old, unreachable, or nonaffirming member blocks the operation. Operators must upgrade every Raft member before issuing enable or disable operations and must not use this operation during a mixed-version rolling interval. See the [Raft cluster operations procedure](../../operations/procedures/raft-cluster-operations.md#semantic-rule-control-upgrade-gate).
 
+## Daemon-owned semantic provider budgets
+
+A semantic rule may declare a strict provider budget. The daemon owns the scope lifecycle: rule creation or enablement creates a route-pinned immutable scope, policy or route changes complete the old scope and create a successor, and rollback reactivates the prior scope when safe. Clients cannot create scopes or reserve/release attempts. Rules without a provider budget retain their existing behavior.
+
+Every embedding attempt reserves durably before credential resolution or connector access. A reservation consumes request/attempt, concurrency, batch, input-token, provider-duration, deadline, and versioned integer-micro cost ceilings. Retry ceilings are enforced both per request and in aggregate. Semantic maintenance derives one stable logical request identity from the durable work item, generation, binding, and node, then increments retry metadata on later attempts. A reservation has one immutable version-1 event and at most one version-2 terminal event; ambiguous or missing terminals remain conservatively charged. Overflow saturates accounting and exhausts the scope rather than wrapping or admitting another call.
+
+In clustered deployments, every budget lifecycle and attempt mutation is a versioned system-Raft command. Replicas apply the complete immutable scope state, and system snapshots preserve scopes plus the sequence high-water mark. Missing group authority fails closed; standalone deployments use the same mutation record through the local WAL. Provider work remains outside Raft apply and begins only after reservation commit.
+
+Authenticated semantic-management RPCs expose the enforcement contract, current status, retained scopes, and fixed-high-water event pages. Opaque HMAC cursors bind space, principal, filters, scope, and snapshot. Retention gaps and pruned scopes fail reconciliation explicitly. Evidence contains only bounded identities, counts, timestamps, closed outcome categories, and usage—not source text, queries, vectors, credentials, provider bodies/request IDs, arbitrary metadata, or raw errors.
+
 ## Generations and records
 
 A semantic record persists:

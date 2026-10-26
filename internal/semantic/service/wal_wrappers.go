@@ -295,6 +295,13 @@ func applySemanticSpaceMutation(ctx context.Context, s storesemantic.SpaceManage
 	case "semantic_rule.delete":
 		var v domainsemantic.SemanticRuleID
 		_ = json.Unmarshal(r.Payload, &v)
+		if r.ExpectedSemanticRule != nil {
+			deleter, ok := s.(storesemantic.SemanticRuleConditionalDeleteManager)
+			if !ok {
+				return errors.New("conditional semantic rule deletion is unavailable")
+			}
+			return deleter.DeleteSemanticRuleConditional(ctx, *r.ExpectedSemanticRule, r.Flag)
+		}
 		return s.DeleteSemanticRule(ctx, v, r.Flag)
 	case "semantic_rule_state.upsert":
 		var v domainsemantic.SemanticRuleState

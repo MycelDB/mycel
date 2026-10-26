@@ -262,9 +262,12 @@ func TestMarkRuleConfigurationChangedRotatesGenerationAndRequiresRebuild(t *test
 	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 4, BaselineFreshThrough: 22, RebuildState: "completed"}}}); err != nil {
 		t.Fatal(err)
 	}
-	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Enabled: true}}}
+	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Enabled: true}}, ProviderBudgetTransitionID: "transition-a", ProviderBudgetTransitionRequiresRebuild: true}
 	if err := module.MarkRuleConfigurationChanged(ctx, spaceID, rule); err != nil {
 		t.Fatal(err)
+	}
+	if err := module.MarkRuleConfigurationChanged(ctx, spaceID, rule); err != nil {
+		t.Fatalf("idempotent transition replay: %v", err)
 	}
 	reloadedMgr, err := module.SpaceManager(ctx, spaceID)
 	if err != nil {

@@ -22,6 +22,16 @@ func (m semanticRuleResolutionManager) ListRules(context.Context, domainspace.Sp
 	return m.rules, nil
 }
 
+func TestEffectiveSemanticRuleForClientReadDisablesPendingTransition(t *testing.T) {
+	rule := domainsemantic.SemanticGenerationRule{Enabled: true, ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionPrepare}
+	if effectiveSemanticRuleForClientRead(rule).Enabled {
+		t.Fatal("pending rule was advertised as enabled")
+	}
+	if !rule.Enabled {
+		t.Fatal("effective read mutated stored desired state")
+	}
+}
+
 func TestResolveSearchRulesRejectsExplicitDisabledRuleAsFailedPrecondition(t *testing.T) {
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())

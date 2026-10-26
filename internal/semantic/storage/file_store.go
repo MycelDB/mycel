@@ -644,6 +644,7 @@ type spaceManager struct {
 	searchIndexStates semanticSearchIndexStatesState
 	indexStates       indexStatesState
 	policyDecisions   policyDecisionsState
+	persistOverride   func(string, any) error
 }
 
 type dirtyWorkKey struct {
@@ -812,16 +813,6 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected doma
 	if expected.UpdatedAt.IsZero() || desired.UpdatedAt.IsZero() || !desired.UpdatedAt.After(expected.UpdatedAt) {
 		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule timestamps must advance", ErrInvalidInput)
 	}
-	candidate := expected
-	candidate.Enabled = desired.Enabled
-	candidate.UpdatedAt = desired.UpdatedAt
-	equal, err := semanticRuleStateEqual(candidate, desired)
-	if err != nil {
-		return domainsemantic.SemanticGenerationRule{}, err
-	}
-	if !equal {
-		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: enabled-state mutation changed fields other than enabled and updated_at", ErrInvalidInput)
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var latest semanticRulesState
@@ -875,84 +866,128 @@ func (m *spaceManager) DeleteSemanticRule(ctx context.Context, id domainsemantic
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	found := false
-	for i, item := range m.rules.Rules {
-		if item.ID == id {
-			m.rules.Rules = append(m.rules.Rules[:i], m.rules.Rules[i+1:]...)
-			found = true
-			break
+	return m.deleteSemanticRuleLocked(id, purgeDependents)
+}
+
+func (m *spaceManager) DeleteSemanticRuleConditional(ctx context.Context, expected domainsemantic.SemanticGenerationRule, purgeDependents bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if expected.ID == uuid.Nil || expected.UpdatedAt.IsZero() {
+		return fmt.Errorf("%w: semantic rule identity and version are required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return err
+	}
+	m.rules = latest
+	for _, current := range m.rules.Rules {
+		if current.ID != expected.ID {
+			continue
 		}
+		equal, err := semanticRuleStateEqual(current, expected)
+		if err != nil {
+			return err
+		}
+		if !equal {
+			return fmt.Errorf("%w: semantic rule changed since it was read", ErrConflict)
+		}
+		return m.deleteSemanticRuleLocked(expected.ID, purgeDependents)
+	}
+	return ErrNotFound
+}
+
+func (m *spaceManager) persist(path string, value any) error {
+	if m.persistOverride != nil {
+		return m.persistOverride(path, value)
+	}
+	return persistJSON(path, value)
+}
+
+func (m *spaceManager) deleteSemanticRuleLocked(id domainsemantic.SemanticRuleID, purgeDependents bool) error {
+	nextRules := semanticRulesState{Rules: make([]domainsemantic.SemanticGenerationRule, 0, len(m.rules.Rules))}
+	found := false
+	for _, item := range m.rules.Rules {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		nextRules.Rules = append(nextRules.Rules, item)
 	}
 	if !found {
 		return ErrNotFound
 	}
-	if purgeDependents {
-		grants := m.grants.Grants[:0]
-		for _, grant := range m.grants.Grants {
-			if !scopeMatchesSemanticRule(grant.Scope, id) {
-				grants = append(grants, grant)
-			}
+	if !purgeDependents {
+		if err := m.persist(m.path(semanticRulesFileName), nextRules); err != nil {
+			return err
 		}
-		m.grants.Grants = grants
-		policies := m.policies.Policies[:0]
-		for _, policy := range m.policies.Policies {
-			if !scopeMatchesSemanticRule(policy.Scope, id) {
-				policies = append(policies, policy)
-			}
-		}
-		m.policies.Policies = policies
-		ruleStates := m.ruleStates.States[:0]
-		for _, state := range m.ruleStates.States {
-			if state.SemanticRuleID != id {
-				ruleStates = append(ruleStates, state)
-			}
-		}
-		m.ruleStates.States = ruleStates
-		searchStates := m.searchIndexStates.States[:0]
-		for _, state := range m.searchIndexStates.States {
-			if state.SemanticRuleID != id {
-				searchStates = append(searchStates, state)
-			}
-		}
-		m.searchIndexStates.States = searchStates
-		states := m.indexStates.States[:0]
-		for _, state := range m.indexStates.States {
-			if state.SemanticIndexID != domainsemantic.SemanticIndexID(id) && state.SemanticRuleID != id {
-				states = append(states, state)
-			}
-		}
-		m.indexStates.States = states
-		decisions := m.policyDecisions.Decisions[:0]
-		for _, decision := range m.policyDecisions.Decisions {
-			if !scopeMatchesSemanticRule(decision.Scope, id) {
-				decisions = append(decisions, decision)
-			}
-		}
-		m.policyDecisions.Decisions = decisions
+		m.rules = nextRules
+		return nil
 	}
-	if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
-		return err
+	nextGrants := credentialGrantsState{Grants: make([]domainsemantic.CredentialGrant, 0, len(m.grants.Grants))}
+	for _, grant := range m.grants.Grants {
+		if !scopeMatchesSemanticRule(grant.Scope, id) {
+			nextGrants.Grants = append(nextGrants.Grants, grant)
+		}
 	}
-	if purgeDependents {
-		if err := persistJSON(m.path(credentialGrantsFileName), m.grants); err != nil {
-			return err
+	nextPolicies := inferencePoliciesState{Policies: make([]domainsemantic.InferencePolicy, 0, len(m.policies.Policies))}
+	for _, policy := range m.policies.Policies {
+		if !scopeMatchesSemanticRule(policy.Scope, id) {
+			nextPolicies.Policies = append(nextPolicies.Policies, policy)
 		}
-		if err := persistJSON(m.path(inferencePoliciesFileName), m.policies); err != nil {
-			return err
+	}
+	nextRuleStates := semanticRuleStatesState{States: make([]domainsemantic.SemanticRuleState, 0, len(m.ruleStates.States))}
+	for _, state := range m.ruleStates.States {
+		if state.SemanticRuleID != id {
+			nextRuleStates.States = append(nextRuleStates.States, state)
 		}
-		if err := persistJSON(m.path(ruleStateFileName), m.ruleStates); err != nil {
-			return err
+	}
+	nextSearchStates := semanticSearchIndexStatesState{States: make([]domainsemantic.SemanticSearchIndexState, 0, len(m.searchIndexStates.States))}
+	for _, state := range m.searchIndexStates.States {
+		if state.SemanticRuleID != id {
+			nextSearchStates.States = append(nextSearchStates.States, state)
 		}
-		if err := persistJSON(m.path(searchIndexStateFileName), m.searchIndexStates); err != nil {
-			return err
+	}
+	nextIndexStates := indexStatesState{States: make([]domainsemantic.SemanticIndexState, 0, len(m.indexStates.States))}
+	for _, state := range m.indexStates.States {
+		if state.SemanticIndexID != domainsemantic.SemanticIndexID(id) && state.SemanticRuleID != id {
+			nextIndexStates.States = append(nextIndexStates.States, state)
 		}
-		if err := persistJSON(m.path(indexStateFileName), m.indexStates); err != nil {
-			return err
+	}
+	nextDecisions := policyDecisionsState{Decisions: make([]domainsemantic.PolicyDecision, 0, len(m.policyDecisions.Decisions))}
+	for _, decision := range m.policyDecisions.Decisions {
+		if !scopeMatchesSemanticRule(decision.Scope, id) {
+			nextDecisions.Decisions = append(nextDecisions.Decisions, decision)
 		}
-		if err := persistJSON(m.path(policyDecisionsFileName), m.policyDecisions); err != nil {
+	}
+	// Persist idempotent dependent cleanup before deleting the rule that owns
+	// the durable transition journal. A partial failure therefore remains
+	// discoverable and can be rolled forward after restart.
+	for _, item := range []struct {
+		path  string
+		value any
+	}{
+		{m.path(credentialGrantsFileName), nextGrants},
+		{m.path(inferencePoliciesFileName), nextPolicies},
+		{m.path(ruleStateFileName), nextRuleStates},
+		{m.path(searchIndexStateFileName), nextSearchStates},
+		{m.path(indexStateFileName), nextIndexStates},
+		{m.path(policyDecisionsFileName), nextDecisions},
+		{m.path(semanticRulesFileName), nextRules},
+	} {
+		if err := m.persist(item.path, item.value); err != nil {
 			return err
 		}
 	}
+	m.grants = nextGrants
+	m.policies = nextPolicies
+	m.ruleStates = nextRuleStates
+	m.searchIndexStates = nextSearchStates
+	m.indexStates = nextIndexStates
+	m.policyDecisions = nextDecisions
+	m.rules = nextRules
 	return nil
 }
 

@@ -188,7 +188,7 @@ func (a Analyzer) analyzeRules(ctx context.Context, rules []domainsemantic.Seman
 	result := AnalyzeResult{}
 	for _, rule := range rules {
 		rule = domainsemantic.NormalizeSemanticGenerationRule(rule)
-		if !rule.Enabled || (in.SemanticRuleID != uuid.Nil && rule.ID != in.SemanticRuleID) {
+		if !rule.Enabled || rule.ProviderBudgetTransition != "" || (in.SemanticRuleID != uuid.Nil && rule.ID != in.SemanticRuleID) {
 			continue
 		}
 		bindings := enabledRuleBindings(rule, in.EmbeddingBindingKey)
@@ -266,7 +266,7 @@ func (a Analyzer) compactRuleHistory(ctx context.Context, rules []domainsemantic
 	consumers := make([]storesemantic.MaintenanceConsumerFrontier, 0)
 	for _, rule := range rules {
 		rule = domainsemantic.NormalizeSemanticGenerationRule(rule)
-		if !rule.Enabled {
+		if !rule.Enabled || rule.ProviderBudgetTransition != "" {
 			continue
 		}
 		for _, binding := range enabledRuleBindings(rule, "") {
@@ -1038,7 +1038,7 @@ func (w Worker) runItem(ctx context.Context, item domainsemantic.SemanticDirtyWo
 			}
 			rebuildEpoch = resolvedEpoch
 		}
-		result, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true, SourceGraphRevision: item.LastGraphRevision, PinSourceGraphRevision: true, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch, WorkItemID: item.ID, WorkItemGeneration: item.Generation})
+		result, err := w.Backfill.Run(ctx, backfill.Input{SpaceID: item.SpaceID, SemanticRuleID: item.EffectiveSemanticRuleID(), EmbeddingBindingKey: item.EmbeddingBindingKey, SemanticIndexID: item.SemanticIndexID, NodeIDs: nodeIDs, Force: force, ContinueOnError: true, SourceGraphRevision: item.LastGraphRevision, PinSourceGraphRevision: true, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch, WorkItemID: item.ID, WorkItemGeneration: item.Generation, WorkItemAttempt: item.Attempts})
 		if err != nil {
 			return err
 		}

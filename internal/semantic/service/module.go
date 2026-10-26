@@ -66,6 +66,7 @@ type Module struct {
 	authorizationRevisionSink        AuthorizationRevisionSink
 	logger                           *slog.Logger
 	maintenanceCancel                context.CancelFunc
+	budgetTransitionCancel           context.CancelFunc
 	maintenanceWG                    sync.WaitGroup
 	maintenanceRunning               bool
 	maintenanceStarted               time.Time
@@ -190,6 +191,7 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 }
 
 func (m *Module) Start(ctx context.Context) error {
+	m.startProviderBudgetTransitionReconciler(ctx)
 	if !m.maintenanceConfig.Enabled {
 		return nil
 	}
@@ -203,10 +205,15 @@ func (m *Module) Start(ctx context.Context) error {
 func (m *Module) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	cancel := m.maintenanceCancel
+	budgetCancel := m.budgetTransitionCancel
 	m.maintenanceCancel = nil
+	m.budgetTransitionCancel = nil
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if budgetCancel != nil {
+		budgetCancel()
 	}
 	done := make(chan struct{})
 	go func() {
@@ -886,7 +893,7 @@ func (m *Module) AnalyzeDirtyWork(ctx context.Context, in AnalyzeInput) (result 
 	sort.Slice(rules, func(i, j int) bool { return rules[i].ID.String() < rules[j].ID.String() })
 	result = semanticmaintenance.AnalyzeResult{}
 	for _, rule := range rules {
-		if !rule.Enabled {
+		if !rule.Enabled || rule.ProviderBudgetTransition != "" {
 			continue
 		}
 		limit := in.Limit

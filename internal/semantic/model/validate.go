@@ -2,7 +2,10 @@ package semantic
 
 import (
 	"fmt"
+	"math"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/query/gql"
@@ -12,6 +15,8 @@ import (
 )
 
 const semanticSelectorMaxRows int64 = 500
+
+var semanticBudgetIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 type ValidationSeverity string
 
@@ -216,6 +221,65 @@ func validateBindings(out resultAppend, bindings []SemanticEmbeddingBinding) {
 				out.err(prefix+".vector_store", "enabled embedding binding requires vector_store or vector_store_id")
 			}
 		}
+		if binding.ProviderBudget != nil {
+			validateProviderBudget(out, prefix+".provider_budget", *binding.ProviderBudget)
+		}
+	}
+}
+
+func validateProviderBudget(out resultAppend, prefix string, budget SemanticProviderBudgetPolicy) {
+	if len(budget.CorrelationID) == 0 || len(budget.CorrelationID) > 128 || !semanticBudgetIdentityPattern.MatchString(budget.CorrelationID) {
+		out.err(prefix+".correlation_id", "provider budget correlation_id is invalid")
+	}
+	if budget.MaxRequests <= 0 {
+		out.err(prefix+".max_requests", "provider budget max_requests must be positive")
+	}
+	if budget.MaxRetryAttempts < 0 {
+		out.err(prefix+".max_retry_attempts", "provider budget max_retry_attempts must be non-negative")
+	}
+	if budget.MaxRetriesPerRequest < 0 || budget.MaxRetriesPerRequest > budget.MaxRetryAttempts {
+		out.err(prefix+".max_retries_per_request", "provider budget per-request retries must be non-negative and no greater than aggregate retries")
+	}
+	maxAttempts := int64(0)
+	if budget.MaxRequests > 0 && budget.MaxRetryAttempts >= 0 {
+		if budget.MaxRetryAttempts > math.MaxInt64-budget.MaxRequests {
+			out.err(prefix, "provider budget attempt limit overflows")
+		} else {
+			maxAttempts = budget.MaxRequests + budget.MaxRetryAttempts
+			if maxAttempts > 10_000 {
+				out.err(prefix, "provider budget attempt limit exceeds daemon capacity")
+			}
+		}
+	}
+	if budget.MaxConcurrentProviderCalls <= 0 || (maxAttempts > 0 && budget.MaxConcurrentProviderCalls > maxAttempts) {
+		out.err(prefix+".max_concurrent_provider_calls", "provider budget concurrency must be positive and no greater than the attempt limit")
+	}
+	switch budget.BatchingMode {
+	case SemanticProviderBatchingSingle:
+		if budget.MaxBatchItems != 1 {
+			out.err(prefix+".max_batch_items", "single provider batching requires max_batch_items equal to one")
+		}
+	case SemanticProviderBatchingBatch:
+		if budget.MaxBatchItems <= 0 || budget.MaxBatchItems > 1_000 {
+			out.err(prefix+".max_batch_items", "batch provider budget max_batch_items must be between one and 1000")
+		}
+	default:
+		out.err(prefix+".batching_mode", "provider budget batching_mode must be single or batch")
+	}
+	if budget.MaxInputTokensPerRequest <= 0 || budget.MaxInputTokens <= 0 || budget.MaxInputTokensPerRequest > budget.MaxInputTokens {
+		out.err(prefix+".max_input_tokens", "provider budget input token limits are inconsistent")
+	}
+	if budget.RequestTimeout <= 0 || budget.TotalTimeout <= 0 || budget.RequestTimeout%time.Millisecond != 0 || budget.TotalTimeout%time.Millisecond != 0 || budget.RequestTimeout > budget.TotalTimeout {
+		out.err(prefix+".request_timeout", "provider budget timeouts must use exact millisecond precision, be positive, and request_timeout must not exceed total_timeout")
+	}
+	if budget.Currency != "USD" {
+		out.err(prefix+".cost.currency", "provider budget currency must be USD")
+	}
+	if len(budget.PriceDefinitionVersion) == 0 || len(budget.PriceDefinitionVersion) > 128 || !semanticBudgetIdentityPattern.MatchString(budget.PriceDefinitionVersion) {
+		out.err(prefix+".cost.price_definition_version", "provider budget price definition version is invalid")
+	}
+	if budget.InputMicrosPerMillionTokens <= 0 || budget.MaxEstimatedCostMicros <= 0 {
+		out.err(prefix+".cost", "provider budget input price and maximum estimated cost must be positive")
 	}
 }
 
