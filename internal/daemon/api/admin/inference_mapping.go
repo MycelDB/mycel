@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -530,6 +531,10 @@ func mapAdminInferenceError(err error, action string) error {
 	if errors.Is(err, storesemantic.ErrNotFound) {
 		return status.Error(codes.NotFound, err.Error())
 	}
+	var vectorStoreConflict *storesemantic.VectorStoreConflictError
+	if errors.As(err, &vectorStoreConflict) {
+		return mapVectorStoreConflict(vectorStoreConflict)
+	}
 	if errors.Is(err, storesemantic.ErrConflict) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -544,6 +549,35 @@ func mapAdminInferenceError(err error, action string) error {
 		return status.Error(codes.InvalidArgument, msg)
 	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
+}
+
+func mapVectorStoreConflict(conflict *storesemantic.VectorStoreConflictError) error {
+	code := codes.AlreadyExists
+	reason := adminv1.VectorStoreCatalogConflictReason_VECTOR_STORE_CATALOG_CONFLICT_REASON_UNSPECIFIED
+	switch {
+	case conflict.Field == storesemantic.VectorStoreConflictKey && conflict.Legacy:
+		code = codes.FailedPrecondition
+		reason = adminv1.VectorStoreCatalogConflictReason_VECTOR_STORE_CATALOG_CONFLICT_REASON_LEGACY_AMBIGUOUS_KEY
+	case conflict.Field == storesemantic.VectorStoreConflictName && conflict.Legacy:
+		code = codes.FailedPrecondition
+		reason = adminv1.VectorStoreCatalogConflictReason_VECTOR_STORE_CATALOG_CONFLICT_REASON_LEGACY_AMBIGUOUS_NAME
+	case conflict.Field == storesemantic.VectorStoreConflictKey:
+		reason = adminv1.VectorStoreCatalogConflictReason_VECTOR_STORE_CATALOG_CONFLICT_REASON_KEY_ALREADY_EXISTS
+	case conflict.Field == storesemantic.VectorStoreConflictName:
+		reason = adminv1.VectorStoreCatalogConflictReason_VECTOR_STORE_CATALOG_CONFLICT_REASON_NAME_ALREADY_EXISTS
+	}
+	ids := make([]string, 0, len(conflict.ConflictingIDs))
+	for _, id := range conflict.ConflictingIDs {
+		ids = append(ids, id.String())
+	}
+	sort.Strings(ids)
+	detail := &adminv1.VectorStoreCatalogConflict{Reason: reason, NormalizedValue: conflict.NormalizedValue, ConflictingVectorStoreIds: ids}
+	st := status.New(code, conflict.Error())
+	withDetails, err := st.WithDetails(detail)
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
 }
 
 func inferenceProfileFromProto(in *adminv1.AdminIntelligenceAccessProfileServiceCreateIntelligenceProfileRequest, principalID string) (domaininference.Profile, error) {

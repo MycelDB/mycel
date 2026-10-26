@@ -99,7 +99,7 @@ func TestSemanticProjectionLeaseAllowsFailClosedEmptySearchWhileRebuildBlocksRes
 	spaceID := domainspace.SpaceID(uuid.New())
 	domainID := graph.DomainID(uuid.New())
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
-	store, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: domainsemantic.VectorStoreID(uuid.New()), Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true})
+	store, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: domainsemantic.VectorStoreID(uuid.New()), Key: "lease-store", Name: "Lease store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestForcedBackfillRequiresReconciliationAndResolvesCurrentProvenanceForProj
 	storeID := domainsemantic.VectorStoreID(uuid.New())
 	nodeID := graph.NodeID(uuid.New())
 	now := time.Now().UTC()
-	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "stale-lease-store", Name: "Stale lease store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	mgr, err := module.SpaceManager(ctx, spaceID)

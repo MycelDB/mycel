@@ -319,7 +319,7 @@ func TestReliabilityStatusRotatesOnlyWhenSelectedRouteChanges(t *testing.T) {
 	if _, err := global.UpsertModelEndpointCapability(ctx, domainsemantic.ModelEndpointCapability{ID: capabilityID, ModelEndpointID: endpointID, ModelID: modelID, Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := global.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := global.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "reliability-route-store", Name: "Reliability route store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: profileID, IntelligenceProfile: "unused", VectorStoreID: storeID, Enabled: true}}}); err != nil {
@@ -370,7 +370,7 @@ func TestRebuildSemanticRuleCompletesAtNonzeroPinnedRevision(t *testing.T) {
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
 	storeID := domainsemantic.VectorStoreID(uuid.New())
 	now := time.Now().UTC()
-	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "rebuild-nonzero-store", Name: "Rebuild nonzero store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	spaceMgr, err := module.SpaceManager(ctx, spaceID)
@@ -438,7 +438,7 @@ func TestRebuildSemanticRuleFailsWhenLeadershipChangesDuringBackfill(t *testing.
 		return 1, term.Load(), true, nil
 	}
 	now := time.Now().UTC()
-	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "mycel-file", Name: "mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: storeID, Key: "rebuild-leadership-store", Name: "Rebuild leadership store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	spaceMgr, err := module.SpaceManager(ctx, spaceID)

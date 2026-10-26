@@ -123,7 +123,12 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 		return runtime.Abort(ModuleName, "store", "failed to open semantic global store", err)
 	}
 	if _, err := global.EnsureDefaultVectorStore(ctx); err != nil {
-		return runtime.Abort(ModuleName, "store", "failed to ensure default vector store", err)
+		var conflict *storesemantic.VectorStoreConflictError
+		if !errors.As(err, &conflict) {
+			return runtime.Abort(ModuleName, "store", "failed to ensure default vector store", err)
+		}
+		// Legacy ambiguous catalogs remain readable for UUID-directed remediation.
+		// All name/key lookup and colliding mutation paths continue to fail closed.
 	}
 	m.dataDir = host.DataDir()
 	if provider, ok := host.(runtime.EncryptionProvider); ok {

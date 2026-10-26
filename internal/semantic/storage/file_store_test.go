@@ -73,6 +73,243 @@ func TestGlobalManagerInitCreatesFilesAndDefaultVectorStore(t *testing.T) {
 	}
 }
 
+func TestGlobalManagerEnforcesVectorStoreIdentityAndNormalizedUniqueness(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewGlobalManager()
+	if err := mgr.Init(ctx, t.TempDir()); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	created, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+		Key:          "  Search-Primary  ",
+		Name:         "  Primary Search  ",
+		Type:         domainsemantic.VectorStoreMycelFile,
+		PrivacyClass: domainsemantic.PrivacyClassLocalOnly,
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("create vector store: %v", err)
+	}
+	if created.ID == uuid.Nil || created.Key != "search-primary" || created.Name != "Primary Search" {
+		t.Fatalf("unexpected canonical vector store: %+v", created)
+	}
+
+	renamed, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+		ID:           created.ID,
+		Key:          "SEARCH-PRIMARY",
+		Name:         "Renamed Search",
+		Type:         created.Type,
+		PrivacyClass: created.PrivacyClass,
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("rename vector store: %v", err)
+	}
+	if renamed.ID != created.ID || renamed.CreatedAt != created.CreatedAt || renamed.Name != "Renamed Search" {
+		t.Fatalf("rename changed identity: created=%+v renamed=%+v", created, renamed)
+	}
+
+	_, err = mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+		ID:           uuid.New(),
+		Key:          "other-key",
+		Name:         " renamed search ",
+		Type:         created.Type,
+		PrivacyClass: created.PrivacyClass,
+	})
+	var nameConflict *VectorStoreConflictError
+	if !errors.As(err, &nameConflict) || nameConflict.Field != VectorStoreConflictName || nameConflict.Legacy {
+		t.Fatalf("name collision error=%v, want non-legacy name conflict", err)
+	}
+
+	_, err = mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+		ID:           uuid.New(),
+		Key:          " Search-Primary ",
+		Name:         "Other name",
+		Type:         created.Type,
+		PrivacyClass: created.PrivacyClass,
+	})
+	var keyConflict *VectorStoreConflictError
+	if !errors.As(err, &keyConflict) || keyConflict.Field != VectorStoreConflictKey || keyConflict.Legacy {
+		t.Fatalf("key collision error=%v, want non-legacy key conflict", err)
+	}
+
+	byKey, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+		Key:          "search-primary",
+		Name:         "Package Rename",
+		Type:         created.Type,
+		PrivacyClass: created.PrivacyClass,
+	})
+	if err != nil {
+		t.Fatalf("package-compatible key update: %v", err)
+	}
+	if byKey.ID != created.ID || byKey.Name != "Package Rename" {
+		t.Fatalf("key update did not preserve UUID: %+v", byKey)
+	}
+
+	_, err = mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{Key: "blank-name", Type: created.Type, PrivacyClass: created.PrivacyClass})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("blank name error=%v, want ErrInvalidInput", err)
+	}
+}
+
+func TestGlobalManagerVectorStorePersistenceFailureDoesNotPublishMutation(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewGlobalManager()
+	if err := mgr.Init(ctx, t.TempDir()); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	created, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{Key: "durable", Name: "Durable", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly})
+	if err != nil {
+		t.Fatalf("create vector store: %v", err)
+	}
+	injector := mgr.(CredentialLifecyclePersistenceFaultInjector)
+	injector.SetCredentialLifecyclePersistenceFaultInjector(func(operation, path string) error {
+		if operation == "write" && filepath.Base(path) == vectorStoresFileName {
+			return errors.New("injected vector-store persistence failure")
+		}
+		return nil
+	})
+	created.Name = "Must not publish"
+	if _, err := mgr.UpsertVectorStore(ctx, created); err == nil {
+		t.Fatal("expected injected persistence failure")
+	}
+	stores, err := mgr.ListVectorStores(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, store := range stores {
+		if store.ID == created.ID {
+			found = true
+			if store.Name != "Durable" {
+				t.Fatalf("failed write changed visible state: %+v", store)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("failed write removed vector store %s", created.ID)
+	}
+	if err := mgr.DeleteVectorStore(ctx, created.ID); err == nil {
+		t.Fatal("expected injected delete persistence failure")
+	}
+	stores, err = mgr.ListVectorStores(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, store := range stores {
+		if store.ID == created.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failed delete removed visible vector store %s", created.ID)
+	}
+}
+
+func TestValidateVectorStoreCatalogRejectsRestoreAmbiguityAndBlankIdentity(t *testing.T) {
+	first := domainsemantic.VectorStoreBackend{ID: uuid.New(), Key: "restore-primary", Name: "Restore primary"}
+	second := domainsemantic.VectorStoreBackend{ID: uuid.New(), Key: " RESTORE-PRIMARY ", Name: "Restore secondary"}
+	if err := ValidateVectorStoreCatalog([]domainsemantic.VectorStoreBackend{first, second}); err == nil {
+		t.Fatal("expected duplicate normalized restore key rejection")
+	}
+	second.Key = "restore-secondary"
+	second.Name = " restore PRIMARY "
+	if err := ValidateVectorStoreCatalog([]domainsemantic.VectorStoreBackend{first, second}); err == nil {
+		t.Fatal("expected duplicate normalized restore name rejection")
+	}
+	second.Name = "Restore secondary"
+	second.ID = uuid.Nil
+	if err := ValidateVectorStoreCatalog([]domainsemantic.VectorStoreBackend{first, second}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("blank restore identity error=%v, want invalid input", err)
+	}
+}
+
+func TestGlobalManagerVectorStoreCollisionIsAtomicUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	mgr := NewGlobalManager()
+	if err := mgr.Init(ctx, t.TempDir()); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	const writers = 12
+	results := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			_, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+				ID:           uuid.New(),
+				Key:          "concurrent",
+				Name:         "Concurrent Store",
+				Type:         domainsemantic.VectorStoreMycelFile,
+				PrivacyClass: domainsemantic.PrivacyClassLocalOnly,
+			})
+			results <- err
+		}()
+	}
+	successes := 0
+	for i := 0; i < writers; i++ {
+		err := <-results
+		if err == nil {
+			successes++
+			continue
+		}
+		var conflict *VectorStoreConflictError
+		if !errors.As(err, &conflict) {
+			t.Fatalf("concurrent error=%v, want vector-store conflict", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful concurrent creates=%d, want 1", successes)
+	}
+	stores, err := mgr.ListVectorStores(ctx)
+	if err != nil || len(stores) != 1 {
+		t.Fatalf("stored vector stores=%+v err=%v", stores, err)
+	}
+}
+
+func TestGlobalManagerKeepsLegacyAmbiguousVectorStoresReadableAndRemediableByUUID(t *testing.T) {
+	ctx := context.Background()
+	metaDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(metaDir, inferenceDirName), 0o755); err != nil {
+		t.Fatalf("create inference directory: %v", err)
+	}
+	firstID, secondID := uuid.New(), uuid.New()
+	legacy := vectorStoresState{VectorStores: []domainsemantic.VectorStoreBackend{
+		{ID: firstID, Key: "Duplicate", Name: "Duplicate Name", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly},
+		{ID: secondID, Key: " duplicate ", Name: " duplicate name ", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly},
+	}}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy catalog: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, inferenceDirName, vectorStoresFileName), encoded, 0o600); err != nil {
+		t.Fatalf("write legacy catalog: %v", err)
+	}
+	mgr := NewGlobalManager()
+	if err := mgr.Init(ctx, metaDir); err != nil {
+		t.Fatalf("legacy catalog must remain readable: %v", err)
+	}
+	stores, err := mgr.ListVectorStores(ctx)
+	if err != nil || len(stores) != 2 {
+		t.Fatalf("legacy catalog=%+v err=%v", stores, err)
+	}
+	_, err = mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{Key: "DUPLICATE", Name: "Package", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly})
+	var conflict *VectorStoreConflictError
+	if !errors.As(err, &conflict) || !conflict.Legacy || conflict.Field != VectorStoreConflictKey {
+		t.Fatalf("ambiguous legacy key error=%v", err)
+	}
+
+	remediated, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: secondID, Key: "second", Name: "Second Store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly})
+	if err != nil {
+		t.Fatalf("UUID-directed remediation failed: %v", err)
+	}
+	if remediated.ID != secondID {
+		t.Fatalf("remediation changed UUID: %+v", remediated)
+	}
+	updated, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{Key: "duplicate", Name: "First Store", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly})
+	if err != nil || updated.ID != firstID {
+		t.Fatalf("unambiguous package update=%+v err=%v", updated, err)
+	}
+}
+
 func TestGlobalManagerUpsertsDefinitions(t *testing.T) {
 	ctx := context.Background()
 	mgr := NewGlobalManager()
