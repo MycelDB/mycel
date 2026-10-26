@@ -160,7 +160,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.LexicalManager != nil {
 		adminv1.RegisterAdminLexicalMaintenanceServiceServer(grpcServer, adminapi.NewAdminLexicalMaintenanceService(cfg.LexicalManager, cfg.GraphManager, cfg.SpaceManager, cfg.PrincipalManager))
 	}
-	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.PrincipalManager))
+	semanticBudgetCursorKey, err := cfg.TokenManager.DeriveKey("semantic-provider-budget-cursor-v1")
+	if err != nil {
+		return nil, fmt.Errorf("derive semantic provider budget cursor integrity key: %w", err)
+	}
+	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.PrincipalManager, cfg.InferenceManager).WithCursorKey(semanticBudgetCursorKey))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.PrincipalManager))
 	if cfg.SchemaManager != nil {
 		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"time"
 
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
@@ -70,6 +71,7 @@ type InvokeRequest struct {
 	BudgetScopeID       domaininference.BudgetScopeID
 	BudgetAttemptID     domaininference.BudgetAttemptID
 	BudgetRetry         bool
+	BudgetRetryIndex    int64
 	BatchItems          int64
 	Metadata            map[string]any
 	// AfterAuthorization is called after an allowed routing/policy decision and
@@ -81,6 +83,19 @@ type InvokeRequest struct {
 	// request. Returning an error prevents provider access. Callers use it to
 	// durably establish their provider-start fence.
 	BeforeProviderAttempt func(context.Context, ResolveResult) error
+}
+
+type SemanticBudgetScopeRequest struct {
+	SpaceID             string
+	DomainID            string
+	SemanticRuleID      string
+	EmbeddingBindingKey string
+	CorrelationID       string
+	ProfileRef          string
+	ProfileID           domaininference.ProfileID
+	ActorPrincipalID    string
+	Limits              domaininference.BudgetLimits
+	TotalTimeout        time.Duration
 }
 
 type InvokeResponse struct {

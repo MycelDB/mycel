@@ -62,7 +62,7 @@ Budget state uses the inference accounting store and a dedicated encrypted file.
 
 WAL replay upserts the same scope state. A crash after WAL sync but before local apply can consume capacity without making a provider call, which is conservative and safe. If local apply fails after a possible WAL commit, the live module poisons further budget mutations until recovery so a later full-state record cannot erase ambiguous consumption. A crash after the provider side effect but before completion leaves the attempt active/ambiguous and conservatively charged.
 
-Budget mutations obey the subsystem local-write gate. Until a clustered inference-budget Raft executor is wired, clustered nodes reject scope creation, reservation, completion, and pruning rather than maintaining independent local capacity ledgers.
+Budget mutations use the system Raft group when clustering is configured. Scope creation, reservation, terminal completion, lifecycle transitions, and pruning are proposed as versioned `inference.budget.mutation.v1` system commands and applied to every replica; the system snapshot includes complete scope state and the scope-sequence high-water mark. A missing system group or leader fails closed. Standalone deployments retain the local WAL path, and provider work begins only after the replicated reservation has applied.
 
 ## Batching
 

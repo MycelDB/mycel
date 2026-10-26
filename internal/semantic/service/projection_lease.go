@@ -185,7 +185,7 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 	purpose := domainsemantic.NormalizeSemanticIndexPurpose("")
 	validatedSearchBindings := make(map[semanticProjectionBindingKey]bool, len(searchedBindings))
 	for _, rule := range rules {
-		if !rule.Enabled || rule.SpaceID != in.SpaceID || rule.DomainID != in.DomainID || (len(wantedRules) > 0 && !wantedRules[rule.ID]) {
+		if !rule.Enabled || rule.ProviderBudgetTransition != "" || rule.SpaceID != in.SpaceID || rule.DomainID != in.DomainID || (len(wantedRules) > 0 && !wantedRules[rule.ID]) {
 			continue
 		}
 		for _, rawBinding := range rule.Embeddings {

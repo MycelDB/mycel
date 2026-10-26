@@ -127,8 +127,8 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 	if rule == nil {
 		return Result{}, fmt.Errorf("semantic rule %s not found", ruleID)
 	}
-	if !rule.Enabled {
-		return Result{}, fmt.Errorf("semantic rule %s is disabled", rule.ID)
+	if !rule.Enabled || rule.ProviderBudgetTransition != "" {
+		return Result{}, fmt.Errorf("semantic rule %s is disabled or awaiting provider budget reconciliation", rule.ID)
 	}
 	bindings := selectRuleBindings(*rule, in.EmbeddingBindingKey)
 	if len(bindings) == 0 {
@@ -391,7 +391,18 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 		}
 	}
 	actorPrincipalID := semanticRuleActorPrincipal(rule)
-	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, ActorPrincipalID: actorPrincipalID, InferenceProfile: binding.IntelligenceProfile, InferenceProfileID: uuid.UUID(binding.IntelligenceProfileID), Input: source.Text, Reason: "semantic_backfill"})
+	budgetRequestID := ""
+	budgetRetryIndex := int64(0)
+	budgetRetry := false
+	if uuid.UUID(in.WorkItemID) != uuid.Nil {
+		seed := fmt.Sprintf("%s\x00%d\x00%s\x00%s", in.WorkItemID.String(), in.WorkItemGeneration, binding.Key, root.ID.String())
+		budgetRequestID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
+		if in.WorkItemAttempt > 1 {
+			budgetRetry = true
+			budgetRetryIndex = int64(in.WorkItemAttempt - 1)
+		}
+	}
+	resp, err := r.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, ActorPrincipalID: actorPrincipalID, InferenceProfile: binding.IntelligenceProfile, InferenceProfileID: uuid.UUID(binding.IntelligenceProfileID), Input: source.Text, Reason: "semantic_backfill", ProviderBudgetRequired: binding.ProviderBudget != nil, ProviderBudgetRequestID: budgetRequestID, ProviderBudgetRetry: budgetRetry, ProviderBudgetRetryIndex: budgetRetryIndex})
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, failureForError(root.ID, err)
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/identity/model"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	semanticconnectors "github.com/myceldb/mycel/internal/semantic/connectors"
@@ -78,6 +79,13 @@ type Manager interface {
 	SetInferenceCredentialStatus(ctx context.Context, in CredentialStatusInput) (CredentialLifecycleResult, error)
 	DeleteInferenceCredential(ctx context.Context, in CredentialDeleteInput) error
 	SetSemanticRuleEnabled(ctx context.Context, in SemanticRuleEnabledInput) error
+	ConditionalUpsertSemanticRule(ctx context.Context, expected, desired domainsemantic.SemanticGenerationRule) error
+	ConditionalDeleteSemanticRule(ctx context.Context, expected domainsemantic.SemanticGenerationRule, purgeDependents bool) error
+	PreflightSemanticProviderBudgets(ctx context.Context, rule domainsemantic.SemanticGenerationRule) error
+	PrepareSemanticProviderBudgets(ctx context.Context, rule domainsemantic.SemanticGenerationRule) error
+	CompleteSemanticProviderBudgets(ctx context.Context, rule domainsemantic.SemanticGenerationRule, requireQuiescent bool) error
+	CurrentSemanticProviderBudgetScopeIDs(ctx context.Context, rule domainsemantic.SemanticGenerationRule) ([]domaininference.BudgetScopeID, error)
+	ReactivateSemanticProviderBudgetScopes(ctx context.Context, ids []domaininference.BudgetScopeID) error
 	GlobalManager() storesemantic.GlobalManager
 	SpaceManager(ctx context.Context, spaceID domainspace.SpaceID) (storesemantic.SpaceManager, error)
 	ListSpaceManagers(ctx context.Context) ([]SpaceSemanticManager, error)
@@ -123,10 +131,14 @@ type CredentialDeleteInput struct {
 }
 
 type SemanticRuleEnabledInput struct {
-	Rule              domainsemantic.SemanticGenerationRule
-	ExpectedUpdatedAt time.Time
-	Enabled           bool
-	UpdatedAt         time.Time
+	Rule                                    domainsemantic.SemanticGenerationRule
+	ExpectedUpdatedAt                       time.Time
+	Enabled                                 bool
+	UpdatedAt                               time.Time
+	ProviderBudgetTransition                string
+	ProviderBudgetTransitionID              string
+	ProviderBudgetTransitionScopeIDs        []string
+	ProviderBudgetTransitionRequiresRebuild bool
 }
 
 type CredentialLifecycleResult struct {

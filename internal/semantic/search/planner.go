@@ -75,7 +75,7 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		}
 		profileRef, profileID := bindingProfile(item.binding)
 		p.observeStage("embed-query")
-		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), ActorPrincipalID: in.ActorPrincipalID, OnBehalfOfPrincipalID: item.rule.OwnerPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query"})
+		query, err := p.Connector.Embed(ctx, connectors.EmbedInput{SpaceID: in.SpaceID, DomainID: in.DomainID, SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(item.rule.ID), ActorPrincipalID: in.ActorPrincipalID, OnBehalfOfPrincipalID: item.rule.OwnerPrincipalID, InferenceProfile: profileRef, InferenceProfileID: profileID, Input: strings.TrimSpace(in.Text), Reason: "semantic_query", ProviderBudgetRequired: item.binding.ProviderBudget != nil})
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return res, ctxErr
@@ -186,7 +186,7 @@ func (p Planner) selectRuleBindings(ctx context.Context, in Input, vectorStores 
 	out := []selectedBinding{}
 	warnings := []Warning{}
 	for _, rule := range rules {
-		if !rule.Enabled || rule.SpaceID != in.SpaceID || rule.DomainID != in.DomainID {
+		if !rule.Enabled || rule.ProviderBudgetTransition != "" || rule.SpaceID != in.SpaceID || rule.DomainID != in.DomainID {
 			continue
 		}
 		if len(wantedRules) > 0 && !wantedRules[rule.ID] {

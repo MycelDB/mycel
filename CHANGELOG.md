@@ -8,7 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
-- Added daemon-authoritative, WAL-replay-safe inference budget scopes with atomic per-provider-attempt reservation, retry/concurrency/batch/token/deadline/duration/cost enforcement, bounded retention, conservative ambiguous-outcome accounting, and sanitized reconciliation evidence (#239).
+- Added daemon-authoritative, WAL-replay-safe inference budget scopes for procedure and semantic embedding work, with route-pinned rule-owned scopes, atomic pre-provider attempt reservation, retry/concurrency/batch/token/deadline/duration/versioned-cost enforcement, bounded retention, conservative ambiguous-outcome accounting, authenticated capability discovery, fixed-snapshot immutable attempt pages, and sanitized reconciliation evidence (#239).
 - Added daemon-owned procedure-inference attempt/run evidence, typed bounded polling, immutable execution attribution, procedure control barriers, authorization start/publication fences, crash-safe publication reconciliation, and sanitized lifecycle/capacity/retention diagnostics (#239).
 - Added generation-scoped semantic record provenance, distinct analyzed/fresh revision frontiers, bounded gap/capacity diagnostics, pinned rebuild with delta catch-up, stale-completion rejection, and Raft-snapshotted reliability state (#238).
 - Added integrity-protected direct semantic pagination and authorization-safe hard eligibility filters with bounded candidate post-filter diagnostics (#238).

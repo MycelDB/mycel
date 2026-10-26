@@ -17,6 +17,7 @@ require (
 	github.com/peterh/liner v1.2.2
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
+	github.com/tiktoken-go/tokenizer v0.7.0
 	go.etcd.io/raft/v3 v3.6.0
 	golang.org/x/crypto v0.50.0
 	google.golang.org/grpc v1.82.0
@@ -40,6 +41,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.41.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.48.0 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect

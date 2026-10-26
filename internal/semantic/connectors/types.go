@@ -32,6 +32,10 @@ type EmbedInput struct {
 	OnBehalfOfPrincipalID     identity.PrincipalID
 	Input                     string
 	Reason                    string
+	ProviderBudgetRequired    bool
+	ProviderBudgetRequestID   string
+	ProviderBudgetRetry       bool
+	ProviderBudgetRetryIndex  int64
 }
 
 type EmbeddingFailure struct {

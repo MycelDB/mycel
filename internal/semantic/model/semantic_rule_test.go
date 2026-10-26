@@ -19,6 +19,12 @@ func TestSemanticRecordConfigurationHashBindsConcreteRouteAndCompatibleFields(t 
 	if got := SemanticRecordConfigurationHash(compatible, binding, endpointID, modelID, capabilityID, "fixture/8", 8); got != baseline {
 		t.Fatalf("display-only update rotated configuration hash: %q != %q", got, baseline)
 	}
+	budgetOnly := rule
+	budgetOnly.Embeddings = append([]SemanticEmbeddingBinding(nil), rule.Embeddings...)
+	budgetOnly.Embeddings[0].ProviderBudget = &SemanticProviderBudgetPolicy{CorrelationID: "changed-budget", MaxRequests: 2}
+	if got := SemanticRuleConfigurationHash(budgetOnly); got != SemanticRuleConfigurationHash(rule) {
+		t.Fatalf("provider-budget-only update rotated configuration hash: %q != %q", got, SemanticRuleConfigurationHash(rule))
+	}
 	if got := SemanticRecordConfigurationHash(rule, binding, endpointID, InferenceModelID(uuid.New()), capabilityID, "fixture/8", 8); got == baseline {
 		t.Fatal("model route change did not rotate configuration hash")
 	}

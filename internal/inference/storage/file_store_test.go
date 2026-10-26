@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +12,193 @@ import (
 	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
+
+func TestUsageLedgerMigratesLegacyBudgetScopeSequencesForSnapshotRestore(t *testing.T) {
+	ctx := context.Background()
+	location := t.TempDir()
+	early := domaininference.BudgetScope{ID: "scope-early", CreatedAt: time.Unix(10, 0).UTC()}
+	late := domaininference.BudgetScope{ID: "scope-late", CreatedAt: time.Unix(20, 0).UTC()}
+	raw, err := json.Marshal(budgetScopesState{Scopes: []domaininference.BudgetScope{late, early}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(location, budgetScopesFileName), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ledger := NewUsageLedger()
+	if err := ledger.Init(ctx, location); err != nil {
+		t.Fatalf("init legacy ledger: %v", err)
+	}
+	scopes, err := ledger.ListBudgetScopes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[domaininference.BudgetScopeID]uint64{}
+	for _, scope := range scopes {
+		byID[scope.ID] = scope.ScopeSequence
+	}
+	if byID[early.ID] != 1 || byID[late.ID] != 2 {
+		t.Fatalf("migrated sequences=%v", byID)
+	}
+	highWater, err := ledger.BudgetScopeHighWater(ctx)
+	if err != nil || highWater != 2 {
+		t.Fatalf("high-water=%d error=%v", highWater, err)
+	}
+	restored := NewUsageLedger()
+	if err := restored.Init(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.ReplaceBudgetScopes(ctx, scopes, highWater); err != nil {
+		t.Fatalf("restore migrated snapshot: %v", err)
+	}
+	legacyRestore := NewUsageLedger()
+	if err := legacyRestore.Init(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacyRestore.ReplaceBudgetScopes(ctx, []domaininference.BudgetScope{late, early}, 0); err != nil {
+		t.Fatalf("restore legacy zero-sequence snapshot: %v", err)
+	}
+	if got, err := legacyRestore.BudgetScopeHighWater(ctx); err != nil || got != 2 {
+		t.Fatalf("legacy restore high-water=%d error=%v", got, err)
+	}
+}
+
+func TestInferenceSnapshotRestoreJournalRecoversEveryPersistenceBoundary(t *testing.T) {
+	for _, failureFile := range []string{budgetScopesFileName, usageFileName} {
+		t.Run(failureFile, func(t *testing.T) {
+			ctx := context.Background()
+			location := t.TempDir()
+			ledger := NewUsageLedger().(*usageLedger)
+			if err := ledger.Init(ctx, location); err != nil {
+				t.Fatal(err)
+			}
+			scope := domaininference.BudgetScope{ID: "snapshot-scope", ScopeSequence: 1, State: domaininference.BudgetScopeCompleted}
+			event := domaininference.UsageEvent{ID: uuid.New()}
+			ledger.writeOverride = func(ctx context.Context, path string, value any) error {
+				if filepath.Base(path) == failureFile {
+					return errors.New("injected snapshot persistence failure")
+				}
+				return writeJSONEncrypted(ctx, path, value, ledger.encryption)
+			}
+			if err := ledger.ReplaceInferenceSnapshot(ctx, []domaininference.BudgetScope{scope}, 1, []domaininference.UsageEvent{event}); err == nil {
+				t.Fatal("snapshot restore unexpectedly succeeded")
+			}
+			if scopes, err := ledger.ListBudgetScopes(ctx); err != nil || len(scopes) != 0 {
+				t.Fatalf("failed restore mutated in-memory scopes=%+v error=%v", scopes, err)
+			}
+			if events, err := ledger.ListUsageEvents(ctx); err != nil || len(events) != 0 {
+				t.Fatalf("failed restore mutated in-memory usage=%+v error=%v", events, err)
+			}
+			recovered := NewUsageLedger()
+			if err := recovered.Init(ctx, location); err != nil {
+				t.Fatalf("recover snapshot journal: %v", err)
+			}
+			scopes, err := recovered.ListBudgetScopes(ctx)
+			if err != nil || len(scopes) != 1 || scopes[0].ID != scope.ID {
+				t.Fatalf("recovered scopes=%+v error=%v", scopes, err)
+			}
+			events, err := recovered.ListUsageEvents(ctx)
+			if err != nil || len(events) != 1 || events[0].ID != event.ID {
+				t.Fatalf("recovered usage=%+v error=%v", events, err)
+			}
+			if _, err := os.Stat(filepath.Join(location, inferenceSnapshotJournalFileName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("snapshot journal was not cleared: %v", err)
+			}
+		})
+	}
+}
+
+func TestBudgetScopePersistenceFailureDoesNotMutateMemoryAndReplayPersists(t *testing.T) {
+	ctx := context.Background()
+	for _, operation := range []string{"create", "update", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			location := t.TempDir()
+			ledger := NewUsageLedger().(*usageLedger)
+			if err := ledger.Init(ctx, location); err != nil {
+				t.Fatal(err)
+			}
+			scope := domaininference.BudgetScope{ID: "scope-a", ScopeSequence: 1, State: domaininference.BudgetScopeActive}
+			if operation != "create" {
+				if _, err := ledger.UpsertBudgetScope(ctx, scope); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(location, budgetScopesFileName)
+			backup := path + ".saved"
+			if _, err := os.Stat(path); err == nil {
+				if err := os.Rename(path, backup); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			restorePath := func() {
+				if err := os.RemoveAll(path); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(backup); err == nil {
+					if err := os.Rename(backup, path); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			updated := scope
+			updated.State = domaininference.BudgetScopeCompleted
+			var mutationErr error
+			switch operation {
+			case "create":
+				_, mutationErr = ledger.UpsertBudgetScope(ctx, scope)
+			case "update":
+				_, mutationErr = ledger.UpsertBudgetScope(ctx, updated)
+			case "delete":
+				mutationErr = ledger.DeleteBudgetScope(ctx, scope.ID)
+			}
+			if mutationErr == nil {
+				t.Fatal("mutation unexpectedly succeeded with blocked budget file")
+			}
+			persisted, getErr := ledger.GetBudgetScope(ctx, scope.ID)
+			if operation == "create" {
+				if !errors.Is(getErr, ErrBudgetScopeNotFound) {
+					t.Fatalf("failed create mutated memory: scope=%+v error=%v", persisted, getErr)
+				}
+			} else if getErr != nil || persisted.State != domaininference.BudgetScopeActive {
+				t.Fatalf("failed %s mutated memory: scope=%+v error=%v", operation, persisted, getErr)
+			}
+			restorePath()
+			switch operation {
+			case "create":
+				_, mutationErr = ledger.UpsertBudgetScope(ctx, scope)
+			case "update":
+				_, mutationErr = ledger.UpsertBudgetScope(ctx, updated)
+			case "delete":
+				mutationErr = ledger.DeleteBudgetScope(ctx, scope.ID)
+			}
+			if mutationErr != nil {
+				t.Fatalf("replay mutation: %v", mutationErr)
+			}
+			reopened := NewUsageLedger()
+			if err := reopened.Init(ctx, location); err != nil {
+				t.Fatal(err)
+			}
+			persisted, getErr = reopened.GetBudgetScope(ctx, scope.ID)
+			switch operation {
+			case "create":
+				if getErr != nil || persisted.State != domaininference.BudgetScopeActive {
+					t.Fatalf("reopened create scope=%+v error=%v", persisted, getErr)
+				}
+			case "update":
+				if getErr != nil || persisted.State != domaininference.BudgetScopeCompleted {
+					t.Fatalf("reopened update scope=%+v error=%v", persisted, getErr)
+				}
+			case "delete":
+				if !errors.Is(getErr, ErrBudgetScopeNotFound) {
+					t.Fatalf("reopened delete scope=%+v error=%v", persisted, getErr)
+				}
+			}
+		})
+	}
+}
 
 func TestGlobalManagerRoundTrip(t *testing.T) {
 	ctx := context.Background()

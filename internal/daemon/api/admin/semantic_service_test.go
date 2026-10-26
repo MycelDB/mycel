@@ -2,12 +2,15 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
@@ -18,10 +21,14 @@ import (
 
 type semanticRuleResponseManager struct {
 	daemonsemantic.Manager
-	space     storesemantic.SpaceManager
-	global    storesemantic.GlobalManager
-	beforeSet func() error
-	lastSet   daemonsemantic.SemanticRuleEnabledInput
+	space        storesemantic.SpaceManager
+	global       storesemantic.GlobalManager
+	beforeSet    func() error
+	preflightErr error
+	prepareErr   error
+	purgeErr     error
+	purgeCalls   int
+	lastSet      daemonsemantic.SemanticRuleEnabledInput
 }
 
 func (m *semanticRuleResponseManager) BeginMutation(ctx context.Context) (context.Context, func(), error) {
@@ -44,9 +51,43 @@ func (m *semanticRuleResponseManager) SetSemanticRuleEnabled(ctx context.Context
 	setter := m.space.(storesemantic.SemanticRuleEnabledManager)
 	desired := in.Rule
 	desired.Enabled = in.Enabled
+	desired.ProviderBudgetTransition = in.ProviderBudgetTransition
+	desired.ProviderBudgetTransitionID = in.ProviderBudgetTransitionID
+	desired.ProviderBudgetTransitionScopeIDs = append([]string(nil), in.ProviderBudgetTransitionScopeIDs...)
+	desired.ProviderBudgetTransitionRequiresRebuild = in.ProviderBudgetTransitionRequiresRebuild
 	desired.UpdatedAt = in.UpdatedAt
 	_, err := setter.SetSemanticRuleEnabled(ctx, in.Rule, desired)
 	return err
+}
+
+func (m *semanticRuleResponseManager) ConditionalUpsertSemanticRule(ctx context.Context, expected, desired domainsemantic.SemanticGenerationRule) error {
+	_, err := m.space.(storesemantic.SemanticRuleEnabledManager).SetSemanticRuleEnabled(ctx, expected, desired)
+	return err
+}
+
+func (m *semanticRuleResponseManager) ConditionalDeleteSemanticRule(ctx context.Context, expected domainsemantic.SemanticGenerationRule, purge bool) error {
+	return m.space.(storesemantic.SemanticRuleConditionalDeleteManager).DeleteSemanticRuleConditional(ctx, expected, purge)
+}
+
+func (m *semanticRuleResponseManager) PreflightSemanticProviderBudgets(context.Context, domainsemantic.SemanticGenerationRule) error {
+	return m.preflightErr
+}
+
+func (m *semanticRuleResponseManager) PrepareSemanticProviderBudgets(context.Context, domainsemantic.SemanticGenerationRule) error {
+	return m.prepareErr
+}
+
+func (m *semanticRuleResponseManager) CurrentSemanticProviderBudgetScopeIDs(context.Context, domainsemantic.SemanticGenerationRule) ([]domaininference.BudgetScopeID, error) {
+	return []domaininference.BudgetScopeID{"scope-a"}, nil
+}
+
+func (m *semanticRuleResponseManager) CompleteSemanticProviderBudgets(context.Context, domainsemantic.SemanticGenerationRule, bool) error {
+	return nil
+}
+
+func (m *semanticRuleResponseManager) PurgeVectorIndex(context.Context, domainspace.SpaceID, domainsemantic.SemanticIndexID) error {
+	m.purgeCalls++
+	return m.purgeErr
 }
 
 func newSemanticRuleServiceTest(t *testing.T) (context.Context, domainspace.SpaceID, storesemantic.SpaceManager, domainsemantic.SemanticGenerationRule, storesemantic.GlobalManager) {
@@ -76,6 +117,147 @@ func newSemanticRuleServiceTest(t *testing.T) (context.Context, domainspace.Spac
 		t.Fatal(err)
 	}
 	return ctx, spaceID, space, created, global
+}
+
+func TestSemanticProviderBudgetConfigurationChangeIncludesAuthorizationInputs(t *testing.T) {
+	base := domainsemantic.SemanticGenerationRule{DomainID: graph.DomainID(uuid.New()), OwnerPrincipalID: "owner-a", Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Enabled: true, ProviderBudget: &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: "run"}}}}
+	changedDomain := base
+	changedDomain.DomainID = graph.DomainID(uuid.New())
+	if !semanticProviderBudgetConfigurationChanged(base, changedDomain) {
+		t.Fatal("domain change did not require provider budget replacement")
+	}
+	changedOwner := base
+	changedOwner.OwnerPrincipalID = "owner-b"
+	if !semanticProviderBudgetConfigurationChanged(base, changedOwner) {
+		t.Fatal("owner change did not require provider budget replacement")
+	}
+}
+
+func TestFreshSemanticRuleIDDoesNotReuseIncarnationIdentity(t *testing.T) {
+	first, second := freshSemanticRuleID(), freshSemanticRuleID()
+	if first == uuid.Nil || second == uuid.Nil || first == second {
+		t.Fatalf("fresh rule identities first=%s second=%s", first, second)
+	}
+}
+
+func TestPendingSemanticRuleIsEffectivelyDisabledForRead(t *testing.T) {
+	rule := domainsemantic.SemanticGenerationRule{Enabled: true, ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionPrepare}
+	if semanticRuleEffectiveForRead(rule).Enabled {
+		t.Fatal("pending rule was advertised as enabled")
+	}
+	if !rule.Enabled {
+		t.Fatal("effective read mutated stored desired state")
+	}
+	ctx, spaceID, space, stored, global := newSemanticRuleServiceTest(t)
+	stored.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionPrepare
+	stored, err := space.UpsertSemanticRule(ctx, stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewAdminSemanticService(&semanticRuleResponseManager{space: space, global: global}, nil, &scopedSemanticAuthorizer{})
+	lookedUp, err := service.lookupRule(ctx, spaceID, stored.ID)
+	if err != nil || lookedUp.ProviderBudgetTransition == "" || semanticRuleEffectiveForRead(lookedUp).Enabled {
+		t.Fatalf("pending read lookup=%+v error=%v", lookedUp, err)
+	}
+	if _, err := service.getRule(ctx, spaceID, stored.ID); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("mutation lookup error=%v", err)
+	}
+}
+
+func TestDeleteSemanticRulePurgeFailureRetainsDurablePurgeIntent(t *testing.T) {
+	ctx, spaceID, space, created, global := newSemanticRuleServiceTest(t)
+	created.Embeddings[0].ProviderBudget = &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: "run-1", MaxRequests: 1, MaxConcurrentProviderCalls: 1, BatchingMode: domainsemantic.SemanticProviderBatchingSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 1, MaxInputTokens: 1, RequestTimeout: time.Second, TotalTimeout: time.Minute, Currency: "USD", PriceDefinitionVersion: "price-v1", InputMicrosPerMillionTokens: 1, MaxEstimatedCostMicros: 1}
+	created, err := space.UpsertSemanticRule(ctx, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &semanticRuleResponseManager{space: space, global: global, purgeErr: errors.New("purge unavailable")}
+	service := NewAdminSemanticService(manager, nil, &scopedSemanticAuthorizer{})
+	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: uuid.NewString()})
+	_, err = service.DeleteSemanticRule(requestCtx, &adminv1.DeleteSemanticRuleRequest{SpaceId: spaceID.String(), SemanticRuleId: created.ID.String(), PurgeVectors: true})
+	if err == nil || manager.purgeCalls != 1 {
+		t.Fatalf("DeleteSemanticRule() error=%v purgeCalls=%d", err, manager.purgeCalls)
+	}
+	rules, listErr := space.ListSemanticRules(ctx)
+	if listErr != nil || len(rules) != 1 || rules[0].ProviderBudgetTransition != domainsemantic.SemanticProviderBudgetTransitionDelete || !rules[0].ProviderBudgetTransitionPurgeVectors {
+		t.Fatalf("purge failure lost durable delete journal: rules=%+v error=%v", rules, listErr)
+	}
+}
+
+func TestCreateSemanticRuleRejectsFractionalMillisecondBudgetBeforeStaging(t *testing.T) {
+	ctx, _, space, created, global := newSemanticRuleServiceTest(t)
+	candidate := created
+	candidate.ID = uuid.Nil
+	candidate.Key = "fractional-timeout"
+	candidate.Embeddings[0].ProviderBudget = &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: "run-1", MaxRequests: 1, MaxConcurrentProviderCalls: 1, BatchingMode: domainsemantic.SemanticProviderBatchingSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxInputTokens: 100, RequestTimeout: 1500 * time.Microsecond, TotalTimeout: time.Minute, Currency: "USD", PriceDefinitionVersion: "price-v1", InputMicrosPerMillionTokens: 1, MaxEstimatedCostMicros: 1}
+	service := NewAdminSemanticService(&semanticRuleResponseManager{space: space, global: global}, nil, &scopedSemanticAuthorizer{})
+	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: uuid.NewString()})
+	_, err := service.CreateSemanticRule(requestCtx, &adminv1.CreateSemanticRuleRequest{Rule: semanticRuleToProto(candidate)})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateSemanticRule() error=%v code=%v", err, status.Code(err))
+	}
+	rules, listErr := space.ListSemanticRules(ctx)
+	if listErr != nil || len(rules) != 1 || rules[0].ID != created.ID {
+		t.Fatalf("fractional timeout staged a rule: rules=%+v error=%v", rules, listErr)
+	}
+}
+
+func TestCreateSemanticRulePreflightFailureDoesNotStageRule(t *testing.T) {
+	ctx, spaceID, space, created, global := newSemanticRuleServiceTest(t)
+	candidate := created
+	candidate.ID = uuid.Nil
+	candidate.Key = "preflight-rejected"
+	candidate.Embeddings[0].ProviderBudget = &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: "run-1", MaxRequests: 1, MaxRetryAttempts: 0, MaxRetriesPerRequest: 0, MaxConcurrentProviderCalls: 1, BatchingMode: domainsemantic.SemanticProviderBatchingSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxInputTokens: 100, RequestTimeout: time.Second, TotalTimeout: time.Minute, Currency: "USD", PriceDefinitionVersion: "price-v1", InputMicrosPerMillionTokens: 1, MaxEstimatedCostMicros: 1}
+	manager := &semanticRuleResponseManager{space: space, global: global, preflightErr: errors.New("deterministic invalid route")}
+	service := NewAdminSemanticService(manager, nil, &scopedSemanticAuthorizer{})
+	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: uuid.NewString()})
+	_, err := service.CreateSemanticRule(requestCtx, &adminv1.CreateSemanticRuleRequest{Rule: semanticRuleToProto(candidate)})
+	if err == nil {
+		t.Fatal("expected preflight rejection")
+	}
+	rules, listErr := space.ListSemanticRules(ctx)
+	if listErr != nil || len(rules) != 1 || rules[0].ID != created.ID {
+		t.Fatalf("preflight failure staged a rule: rules=%+v error=%v", rules, listErr)
+	}
+	_ = spaceID
+}
+
+func TestUpdateSemanticRuleRejectsEnabledStateChange(t *testing.T) {
+	ctx, spaceID, space, created, global := newSemanticRuleServiceTest(t)
+	manager := &semanticRuleResponseManager{space: space, global: global}
+	service := NewAdminSemanticService(manager, nil, &scopedSemanticAuthorizer{})
+	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: uuid.NewString()})
+	protoRule := semanticRuleToProto(created)
+	protoRule.Enabled = false
+	_, err := service.UpdateSemanticRule(requestCtx, &adminv1.UpdateSemanticRuleRequest{SpaceId: spaceID.String(), SemanticRuleId: created.ID.String(), Rule: protoRule})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("UpdateSemanticRule() code=%v error=%v, want InvalidArgument", status.Code(err), err)
+	}
+}
+
+func TestSetSemanticRuleEnabledPreservesJournalAfterPartialPreparationFailure(t *testing.T) {
+	ctx, spaceID, space, created, global := newSemanticRuleServiceTest(t)
+	created.Enabled = false
+	created.Embeddings[0].ProviderBudget = &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: "run-1", MaxRequests: 1, MaxRetryAttempts: 0, MaxRetriesPerRequest: 0, MaxConcurrentProviderCalls: 1, BatchingMode: domainsemantic.SemanticProviderBatchingSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxInputTokens: 100, RequestTimeout: time.Second, TotalTimeout: time.Minute, Currency: "USD", PriceDefinitionVersion: "price-v1", InputMicrosPerMillionTokens: 1, MaxEstimatedCostMicros: 1}
+	created.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	created, err := space.UpsertSemanticRule(ctx, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &semanticRuleResponseManager{space: space, global: global, prepareErr: errors.New("injected partial preparation")}
+	service := NewAdminSemanticService(manager, nil, &scopedSemanticAuthorizer{})
+	requestCtx := auth.ContextWithPrincipal(ctx, auth.Principal{PrincipalID: uuid.NewString()})
+	_, err = service.SetSemanticRuleEnabled(requestCtx, &adminv1.SetSemanticRuleEnabledRequest{SpaceId: spaceID.String(), SemanticRuleId: created.ID.String(), Enabled: true})
+	if err == nil {
+		t.Fatal("expected preparation failure")
+	}
+	rules, listErr := space.ListSemanticRules(ctx)
+	if listErr != nil || len(rules) != 1 {
+		t.Fatalf("rules=%+v error=%v", rules, listErr)
+	}
+	if !rules[0].Enabled || rules[0].ProviderBudgetTransition != domainsemantic.SemanticProviderBudgetTransitionPrepare || rules[0].ProviderBudgetTransitionID == "" {
+		t.Fatalf("partial preparation lost durable journal: %+v", rules[0])
+	}
 }
 
 func TestSetSemanticRuleEnabledReturnsExactConditionalMutation(t *testing.T) {

@@ -15,6 +15,8 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestConcurrentBudgetReservationsCannotOversubscribe(t *testing.T) {
@@ -25,6 +27,7 @@ func TestConcurrentBudgetReservationsCannotOversubscribe(t *testing.T) {
 	scope.Limits.MaxRequests = 5
 	scope.Limits.MaxAttempts = 5
 	scope.Limits.MaxRetryAttempts = 5
+	scope.Limits.MaxRetriesPerRequest = 5
 	scope.Limits.MaxConcurrentProviderCalls = 5
 	if _, err := module.CreateBudgetScope(ctx, scope); err != nil {
 		t.Fatalf("CreateBudgetScope() error=%v", err)
@@ -61,12 +64,116 @@ func TestConcurrentBudgetReservationsCannotOversubscribe(t *testing.T) {
 	}
 }
 
+func TestBudgetScopeReactivationForMutationRollback(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	scope := newTestBudgetScope(fixture, "scope-rollback", time.Now().UTC())
+	created, err := module.CreateBudgetScope(ctx, scope)
+	if err != nil {
+		t.Fatalf("CreateBudgetScope() error=%v", err)
+	}
+	completed, err := module.CompleteBudgetScope(ctx, created.ID, time.Now().UTC())
+	if err != nil || completed.State != domaininference.BudgetScopeCompleted {
+		t.Fatalf("CompleteBudgetScope() scope=%#v error=%v", completed, err)
+	}
+	repeatedCompletion, err := module.CompleteBudgetScope(ctx, created.ID, completed.UpdatedAt.Add(time.Second))
+	if err != nil || !repeatedCompletion.UpdatedAt.Equal(completed.UpdatedAt) {
+		t.Fatalf("repeated CompleteBudgetScope() scope=%#v error=%v", repeatedCompletion, err)
+	}
+	reactivated, err := module.ReactivateBudgetScope(ctx, created.ID, time.Now().UTC())
+	if err != nil || reactivated.State != domaininference.BudgetScopeActive {
+		t.Fatalf("ReactivateBudgetScope() scope=%#v error=%v", reactivated, err)
+	}
+	repeatedReactivation, err := module.ReactivateBudgetScope(ctx, created.ID, reactivated.UpdatedAt.Add(time.Second))
+	if err != nil || !repeatedReactivation.UpdatedAt.Equal(reactivated.UpdatedAt) {
+		t.Fatalf("repeated ReactivateBudgetScope() scope=%#v error=%v", repeatedReactivation, err)
+	}
+}
+
+func TestBudgetAttemptEventsAreAppendOnlyAndVersioned(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	now := time.Now().UTC()
+	scope := newTestBudgetScope(fixture, "scope-events", now)
+	created, err := module.CreateBudgetScope(ctx, scope)
+	if err != nil {
+		t.Fatalf("CreateBudgetScope() error=%v", err)
+	}
+	if created.ScopeSequence == 0 {
+		t.Fatal("scope sequence was not allocated")
+	}
+	_, attempt, err := module.ReserveProviderAttempt(ctx, domaininference.BudgetReservationRequest{ScopeID: scope.ID, AttemptID: "attempt-events", RequestID: "request-events", Route: scope.Route, BatchItems: 1, InputTokens: 10, ProviderMillis: 100, Now: now})
+	if err != nil {
+		t.Fatalf("ReserveProviderAttempt() error=%v", err)
+	}
+	if _, err := module.CompleteProviderAttempt(ctx, domaininference.BudgetCompletionRequest{ScopeID: scope.ID, AttemptID: attempt.ID, State: domaininference.BudgetAttemptSucceeded, InputTokens: 5, ProviderMillis: 50, UsageKnown: true, OutcomeKnown: true, ProviderDurationKnown: true, Outcome: "succeeded", CompletedAt: now.Add(50 * time.Millisecond)}); err != nil {
+		t.Fatalf("CompleteProviderAttempt() error=%v", err)
+	}
+	persisted, err := module.GetBudgetScope(ctx, scope.ID)
+	if err != nil {
+		t.Fatalf("GetBudgetScope() error=%v", err)
+	}
+	if len(persisted.AttemptEvents) != 2 || persisted.AttemptEvents[0].Sequence != 1 || persisted.AttemptEvents[0].AttemptVersion != 1 || persisted.AttemptEvents[0].Attempt.State != domaininference.BudgetAttemptReserved || persisted.AttemptEvents[1].Sequence != 2 || persisted.AttemptEvents[1].AttemptVersion != 2 || persisted.AttemptEvents[1].Attempt.State != domaininference.BudgetAttemptSucceeded {
+		t.Fatalf("attempt events=%+v", persisted.AttemptEvents)
+	}
+	if persisted.AttemptEvents[0].Attempt.ChargedInputTokens != 10 {
+		t.Fatalf("reserved event was mutated: %+v", persisted.AttemptEvents[0])
+	}
+}
+
+func TestBudgetScopeRejectsReachableReservationCostOverflow(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	scope := newTestBudgetScope(fixture, "scope-cost-overflow", time.Now().UTC())
+	maxInt := int64(^uint64(0) >> 1)
+	scope.Limits.MaxInputTokensPerRequest = maxInt
+	scope.Limits.MaxInputTokens = maxInt
+	scope.Limits.Currency = "USD"
+	scope.Limits.PriceDefinitionVersion = "test-v1"
+	scope.Limits.InputMicrosPerMillionTokens = maxInt
+	scope.Limits.MaxEstimatedCostMicros = maxInt
+	if _, err := module.CreateBudgetScope(ctx, scope); err == nil || !strings.Contains(err.Error(), "cost bounds overflow") {
+		t.Fatalf("CreateBudgetScope() error=%v", err)
+	}
+	if scopes, err := module.ListBudgetScopes(ctx); err != nil || len(scopes) != 0 {
+		t.Fatalf("overflow validation persisted scopes=%+v error=%v", scopes, err)
+	}
+}
+
+func TestBudgetChargedCostOverflowExhaustsAndSaturates(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	now := time.Now().UTC()
+	scope := newTestBudgetScope(fixture, "scope-overflow", now)
+	scope.Limits.Currency = "USD"
+	scope.Limits.PriceDefinitionVersion = "test-v1"
+	scope.Limits.InputMicrosPerMillionTokens = 1
+	scope.Limits.OutputMicrosPerMillionTokens = 1
+	scope.Limits.MaxEstimatedCostMicros = 100
+	if _, err := module.CreateBudgetScope(ctx, scope); err != nil {
+		t.Fatalf("CreateBudgetScope() error=%v", err)
+	}
+	_, attempt, err := module.ReserveProviderAttempt(ctx, domaininference.BudgetReservationRequest{ScopeID: scope.ID, AttemptID: "attempt-overflow", RequestID: "request-overflow", Route: scope.Route, BatchItems: 1, InputTokens: 10, ProviderMillis: 100, Now: now})
+	if err != nil {
+		t.Fatalf("ReserveProviderAttempt() error=%v", err)
+	}
+	maxInt := int64(^uint64(0) >> 1)
+	persisted, err := module.CompleteProviderAttempt(ctx, domaininference.BudgetCompletionRequest{ScopeID: scope.ID, AttemptID: attempt.ID, State: domaininference.BudgetAttemptSucceeded, InputTokens: 10, ProviderMillis: 50, CostMicros: maxInt, CostSaturated: true, UsageKnown: true, OutcomeKnown: true, ProviderDurationKnown: true, Outcome: "succeeded", CompletedAt: now.Add(50 * time.Millisecond)})
+	if !errors.Is(err, ErrBudgetAccounting) {
+		t.Fatalf("CompleteProviderAttempt() error=%v", err)
+	}
+	if persisted.State != domaininference.BudgetScopeExhausted || !persisted.Usage.AccountingOverflow || persisted.Usage.EstimatedCostMicros != maxInt || len(persisted.AttemptEvents) != 2 || !persisted.AttemptEvents[1].Attempt.ChargedCostSaturated {
+		t.Fatalf("persisted overflow scope=%+v", persisted)
+	}
+}
+
 func TestBudgetDuplicateAttemptAndRetryAccountingFailClosed(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
 	now := time.Now().UTC()
 	scope := newTestBudgetScope(fixture, "scope-retry", now)
 	scope.Limits.MaxRetryAttempts = 1
+	scope.Limits.MaxRetriesPerRequest = 1
 	if _, err := module.CreateBudgetScope(ctx, scope); err != nil {
 		t.Fatalf("CreateBudgetScope() error=%v", err)
 	}
@@ -78,28 +185,50 @@ func TestBudgetDuplicateAttemptAndRetryAccountingFailClosed(t *testing.T) {
 		t.Fatalf("duplicate reserve error=%v", err)
 	}
 	request.AttemptID = "attempt-2"
-	request.Retry = true
-	if _, _, err := module.ReserveProviderAttempt(ctx, request); err != nil {
-		t.Fatalf("retry reserve error=%v", err)
+	// Caller/work-claim retry metadata is intentionally ignored. Durable attempts
+	// for the stable request ID define the retry index.
+	if _, attempt, err := module.ReserveProviderAttempt(ctx, request); err != nil || !attempt.Retry || attempt.RetryIndex != 1 {
+		t.Fatalf("derived retry attempt=%+v error=%v", attempt, err)
 	}
 	request.AttemptID = "attempt-3"
 	if _, _, err := module.ReserveProviderAttempt(ctx, request); budgetDenialReason(err) != "retry_limit_exhausted" {
 		t.Fatalf("second retry error=%v reason=%s", err, budgetDenialReason(err))
 	}
 	request.AttemptID = "attempt-4"
-	request.Retry = false
-	if _, _, err := module.ReserveProviderAttempt(ctx, request); budgetDenialReason(err) != "retry_classification_invalid" {
-		t.Fatalf("unmarked retry error=%v reason=%s", err, budgetDenialReason(err))
-	}
-	request.AttemptID = "attempt-5"
 	request.RequestID = "new-request"
 	request.Retry = true
-	if _, _, err := module.ReserveProviderAttempt(ctx, request); budgetDenialReason(err) != "retry_classification_invalid" {
-		t.Fatalf("false retry error=%v reason=%s", err, budgetDenialReason(err))
+	request.RetryIndex = 99
+	if _, attempt, err := module.ReserveProviderAttempt(ctx, request); err != nil || attempt.Retry || attempt.RetryIndex != 0 {
+		t.Fatalf("derived first attempt=%+v error=%v", attempt, err)
 	}
 	persisted, _ := module.GetBudgetScope(ctx, scope.ID)
-	if persisted.Usage.Requests != 1 || persisted.Usage.Attempts != 2 || persisted.Usage.RetryAttempts != 1 {
+	if persisted.Usage.Requests != 2 || persisted.Usage.Attempts != 3 || persisted.Usage.RetryAttempts != 1 {
 		t.Fatalf("usage=%+v", persisted.Usage)
+	}
+}
+
+func TestReactivateBudgetScopeRejectsAnotherActiveSemanticBinding(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	now := time.Now().UTC()
+	first := newTestBudgetScope(fixture, "scope-reactivate-first", now)
+	first.SpaceID, first.SemanticRuleID, first.EmbeddingBindingKey, first.CorrelationID = "space-a", "rule-a", "search", "correlation-a"
+	created, err := module.CreateBudgetScope(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.CompleteBudgetScope(ctx, created.ID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.ID = "scope-reactivate-second"
+	second.CreatedAt, second.UpdatedAt = now.Add(2*time.Second), now.Add(2*time.Second)
+	second.ExpiresAt, second.Limits.Deadline = now.Add(time.Hour), now.Add(time.Hour)
+	if _, err := module.CreateBudgetScope(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.ReactivateBudgetScope(ctx, created.ID, now.Add(3*time.Second)); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ReactivateBudgetScope() error=%v code=%v", err, status.Code(err))
 	}
 }
 
@@ -495,6 +624,31 @@ func TestBudgetedInvokeUnavailableUsageRetainsTokenAndCostReservations(t *testin
 	}
 }
 
+func TestPinnedEmbeddingTokenizerEnforcesPerRequestCeiling(t *testing.T) {
+	resolved := inferenceruntime.ResolveResult{Endpoint: domaininference.Endpoint{ConnectorType: domaininference.ConnectorOpenAICompatible, BaseURL: "https://api.openai.com/v1"}, Model: domaininference.Model{ProviderModelName: "text-embedding-3-small"}}
+	tokens, err := invocationInputTokenReservation(inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{Operation: domaininference.OperationEmbeddings}, Input: "hello"}, resolved, domaininference.BudgetLimits{MaxInputTokensPerRequest: 20, MaxInputTokens: 200})
+	if err != nil || tokens != 1 {
+		t.Fatalf("token reservation=%d error=%v", tokens, err)
+	}
+	_, err = invocationInputTokenReservation(inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{Operation: domaininference.OperationEmbeddings}, Input: strings.Repeat(" x", 21)}, resolved, domaininference.BudgetLimits{MaxInputTokensPerRequest: 20, MaxInputTokens: 200})
+	if budgetDenialReason(err) != "input_tokens_per_request_exceeded" {
+		t.Fatalf("oversized input error=%v reason=%s", err, budgetDenialReason(err))
+	}
+	resolved.Capability.ProviderModelOverride = "unknown-embedding-model"
+	if _, err := invocationInputTokenReservation(inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{Operation: domaininference.OperationEmbeddings}, Input: "hello"}, resolved, domaininference.BudgetLimits{MaxInputTokensPerRequest: 20, MaxInputTokens: 200}); budgetDenialReason(err) != "input_token_reservation_unavailable" {
+		t.Fatalf("unknown override tokenizer error=%v", err)
+	}
+	resolved.Model.ProviderModelName = "unknown-base-model"
+	resolved.Capability.ProviderModelOverride = "text-embedding-3-small"
+	if tokens, err := invocationInputTokenReservation(inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{Operation: domaininference.OperationEmbeddings}, Input: "hello"}, resolved, domaininference.BudgetLimits{MaxInputTokensPerRequest: 20, MaxInputTokens: 200}); err != nil || tokens != 1 {
+		t.Fatalf("known override token reservation=%d error=%v", tokens, err)
+	}
+	resolved.Capability.ProviderModelOverride = ""
+	if _, err := invocationInputTokenReservation(inferenceruntime.InvokeRequest{Resolve: inferenceruntime.ResolveRequest{Operation: domaininference.OperationEmbeddings}, Input: "hello"}, resolved, domaininference.BudgetLimits{MaxInputTokensPerRequest: 20, MaxInputTokens: 200}); budgetDenialReason(err) != "input_token_reservation_unavailable" {
+		t.Fatalf("unknown base tokenizer error=%v", err)
+	}
+}
+
 func TestBudgetedInvokeRejectsUnsupportedBatchBeforeCredentialsAndProvider(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
@@ -601,7 +755,7 @@ func (c *blockingBudgetConnector) Chat(ctx context.Context, _ connectors.ChatReq
 }
 
 func newTestBudgetScope(fixture resolverFixture, id string, now time.Time) domaininference.BudgetScope {
-	return domaininference.BudgetScope{ID: domaininference.BudgetScopeID(id), State: domaininference.BudgetScopeActive, Route: domaininference.BudgetRoute{EndpointID: fixture.endpoint.ID, ModelID: fixture.model.ID, CapabilityID: fixture.capability.ID, Operation: fixture.capability.Operation}, Limits: domaininference.BudgetLimits{MaxRequests: 10, MaxAttempts: 20, MaxRetryAttempts: 10, MaxConcurrentProviderCalls: 10, BatchingMode: domaininference.BatchingModeSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxOutputTokensPerRequest: 100, MaxInputTokens: 1000, MaxOutputTokens: 1000, MaxProviderMillisPerRequest: 1000, MaxProviderMillis: 10_000, Deadline: now.Add(time.Hour)}, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour), RetentionUntil: now.Add(time.Hour + 24*time.Hour)}
+	return domaininference.BudgetScope{ID: domaininference.BudgetScopeID(id), State: domaininference.BudgetScopeActive, Route: domaininference.BudgetRoute{EndpointID: fixture.endpoint.ID, ModelID: fixture.model.ID, CapabilityID: fixture.capability.ID, Operation: fixture.capability.Operation}, Limits: domaininference.BudgetLimits{MaxRequests: 10, MaxAttempts: 20, MaxRetryAttempts: 10, MaxRetriesPerRequest: 10, MaxConcurrentProviderCalls: 10, BatchingMode: domaininference.BatchingModeSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 100, MaxOutputTokensPerRequest: 100, MaxInputTokens: 1000, MaxOutputTokens: 1000, MaxProviderMillisPerRequest: 1000, MaxProviderMillis: 10_000, Deadline: now.Add(time.Hour)}, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour), RetentionUntil: now.Add(time.Hour + 24*time.Hour)}
 }
 
 func TestBudgetPersistenceFailurePoisonsFurtherProviderReservations(t *testing.T) {
@@ -660,6 +814,28 @@ func TestBudgetScopePruneDeletesTerminalAndNaturallyExpiredScopes(t *testing.T) 
 	}
 	if _, err := module.GetBudgetScope(ctx, active.ID); !errors.Is(err, inferencestorage.ErrBudgetScopeNotFound) {
 		t.Fatalf("naturally expired scope error=%v", err)
+	}
+}
+
+func TestCreateBudgetScopePrunesRetentionEligibleScopes(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	now := time.Now().UTC()
+	expired := newTestBudgetScope(fixture, "scope-retention-expired", now.Add(-4*time.Hour))
+	expired.ScopeSequence = 1
+	expired.State = domaininference.BudgetScopeCompleted
+	expired.ExpiresAt = now.Add(-3 * time.Hour)
+	expired.Limits.Deadline = expired.ExpiresAt
+	expired.RetentionUntil = now.Add(-time.Hour)
+	if _, err := module.UsageLedger().UpsertBudgetScope(ctx, expired); err != nil {
+		t.Fatalf("seed retention-eligible scope: %v", err)
+	}
+	fresh := newTestBudgetScope(fixture, "scope-fresh-after-prune", now)
+	if _, err := module.CreateBudgetScope(ctx, fresh); err != nil {
+		t.Fatalf("create scope after automatic prune: %v", err)
+	}
+	if _, err := module.GetBudgetScope(ctx, expired.ID); !errors.Is(err, inferencestorage.ErrBudgetScopeNotFound) {
+		t.Fatalf("retention-eligible scope error=%v", err)
 	}
 }
 

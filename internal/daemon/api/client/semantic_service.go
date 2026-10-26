@@ -55,6 +55,11 @@ func (s *SemanticService) WithLogger(logger *slog.Logger) *SemanticService {
 	return s
 }
 
+func effectiveSemanticRuleForClientRead(rule domainsemantic.SemanticGenerationRule) domainsemantic.SemanticGenerationRule {
+	rule.Enabled = rule.Enabled && rule.ProviderBudgetTransition == ""
+	return rule
+}
+
 func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.ListSemanticRulesRequest) (*clientv1.ListSemanticRulesResponse, error) {
 	_, spaceID, domainID, err := s.authorizeDomainRead(ctx, req.GetSpaceId(), req.GetDomainId())
 	if err != nil {
@@ -70,10 +75,11 @@ func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.L
 	}
 	items := make([]*clientv1.SemanticGenerationRuleSummary, 0, len(rules))
 	for _, rule := range rules {
-		if !req.GetIncludeDisabled() && (!rule.Enabled || !ruleHasSearchBinding(rule)) {
+		effectiveRule := effectiveSemanticRuleForClientRead(rule)
+		if !req.GetIncludeDisabled() && (!effectiveRule.Enabled || !ruleHasSearchBinding(effectiveRule)) {
 			continue
 		}
-		items = append(items, MapSemanticRuleSummaryProto(rule, stateByRule[rule.ID], searchByBinding, stores))
+		items = append(items, MapSemanticRuleSummaryProto(effectiveRule, stateByRule[rule.ID], searchByBinding, stores))
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].GetKey() < items[j].GetKey() })
 	page, next, err := paginateSemantic(items, int(req.GetPageSize()), req.GetPageToken())

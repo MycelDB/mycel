@@ -636,12 +636,19 @@ func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domai
 			break
 		}
 	}
+	transitionID := strings.TrimSpace(rule.ProviderBudgetTransitionID)
+	if transitionID == "" && rule.ProviderBudgetTransitionRequiresRebuild {
+		transitionID = fmt.Sprintf("legacy:%s:%d", rule.ID, rule.UpdatedAt.UnixNano())
+	}
 	for _, rawBinding := range rule.Embeddings {
 		binding := domainsemantic.NormalizeSemanticEmbeddingBinding(rawBinding)
 		if !binding.Enabled {
 			continue
 		}
 		reliability := byBinding[binding.Key]
+		if transitionID != "" && reliability.LastConfigurationTransitionID == transitionID {
+			continue
+		}
 		reliability.EmbeddingBindingKey = binding.Key
 		if reliability.SemanticGeneration == 0 {
 			reliability.SemanticGeneration = 1
@@ -661,6 +668,7 @@ func (m *Module) MarkRuleConfigurationChanged(ctx context.Context, spaceID domai
 		reliability.UnresolvedRanges = nil
 		reliability.CapacityState = "ok"
 		reliability.CapacityReason = ""
+		reliability.LastConfigurationTransitionID = transitionID
 		if err := m.saveReliabilityState(ctx, spaceID, rule.ID, reliability); err != nil {
 			return err
 		}

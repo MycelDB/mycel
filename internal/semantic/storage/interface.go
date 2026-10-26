@@ -36,10 +36,16 @@ type GlobalManager interface {
 	DeleteCredential(ctx context.Context, id domainsemantic.InferenceCredentialID) error
 }
 
-// SemanticRuleEnabledManager applies an ID-qualified, conditional enabled-state
-// mutation without permitting key-based identity replacement.
+// SemanticRuleEnabledManager applies an ID-qualified, conditional full-rule
+// mutation. The historical name is retained for interface compatibility.
 type SemanticRuleEnabledManager interface {
 	SetSemanticRuleEnabled(ctx context.Context, expected domainsemantic.SemanticGenerationRule, desired domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error)
+}
+
+// SemanticRuleConditionalDeleteManager applies an ID- and version-qualified
+// deletion so a stale reconciler cannot delete a newer rule transition.
+type SemanticRuleConditionalDeleteManager interface {
+	DeleteSemanticRuleConditional(ctx context.Context, expected domainsemantic.SemanticGenerationRule, purgeDependents bool) error
 }
 
 // CredentialLifecycleManager applies conditional credential/secret lifecycle
