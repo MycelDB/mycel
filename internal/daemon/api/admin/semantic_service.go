@@ -754,11 +754,107 @@ func triggerFromProto(in *adminv1.SemanticTriggerPolicy) (domainsemantic.Semanti
 	if err != nil {
 		return domainsemantic.SemanticTriggerPolicy{}, err
 	}
-	return domainsemantic.SemanticTriggerPolicy{Events: append([]string(nil), in.GetEvents()...), Labels: append([]string(nil), in.GetLabels()...), Debounce: debounce}, nil
+	legacyEvents, err := normalizedLegacyTriggerEvents(in.GetEvents())
+	if err != nil {
+		return domainsemantic.SemanticTriggerPolicy{}, err
+	}
+	typedEvents, err := semanticTriggerEventsFromProto(in.GetEventTypes())
+	if err != nil {
+		return domainsemantic.SemanticTriggerPolicy{}, err
+	}
+	if len(legacyEvents) > 0 && len(typedEvents) > 0 && !reflect.DeepEqual(legacyEvents, typedEvents) {
+		return domainsemantic.SemanticTriggerPolicy{}, status.Error(codes.InvalidArgument, "trigger.event_types conflicts with trigger.events")
+	}
+	events := typedEvents
+	if len(events) == 0 {
+		events = legacyEvents
+	}
+	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: events, Labels: append([]string(nil), in.GetLabels()...), Debounce: debounce}), nil
+}
+
+func normalizedLegacyTriggerEvents(events []string) ([]string, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+	for i, raw := range events {
+		normalized := domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: []string{raw}}).Events[0]
+		if _, ok := semanticTriggerEventToProto(normalized); !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "trigger.events[%d] contains unsupported semantic trigger event %q", i, normalized)
+		}
+	}
+	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: append([]string(nil), events...)}).Events, nil
+}
+
+func semanticTriggerEventsFromProto(values []adminv1.SemanticTriggerEventType) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	events := make([]string, 0, len(values))
+	for i, value := range values {
+		event, ok := semanticTriggerEventFromProto(value)
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "trigger.event_types[%d] contains unsupported semantic trigger event value %d", i, value)
+		}
+		events = append(events, event)
+	}
+	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: events}).Events, nil
+}
+
+func semanticTriggerEventFromProto(value adminv1.SemanticTriggerEventType) (string, bool) {
+	switch value {
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED:
+		return domainsemantic.DefaultSemanticTriggerEventChanged, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_CREATED:
+		return domainsemantic.SemanticTriggerEventNodeCreated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED:
+		return domainsemantic.SemanticTriggerEventNodeUpdated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_DELETED:
+		return domainsemantic.SemanticTriggerEventNodeDeleted, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CHANGED:
+		return domainsemantic.SemanticTriggerEventEdgeChanged, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CREATED:
+		return domainsemantic.SemanticTriggerEventEdgeCreated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_UPDATED:
+		return domainsemantic.SemanticTriggerEventEdgeUpdated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED:
+		return domainsemantic.SemanticTriggerEventEdgeDeleted, true
+	default:
+		return "", false
+	}
+}
+
+func semanticTriggerEventToProto(event string) (adminv1.SemanticTriggerEventType, bool) {
+	switch event {
+	case domainsemantic.DefaultSemanticTriggerEventChanged:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED, true
+	case domainsemantic.SemanticTriggerEventNodeCreated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_CREATED, true
+	case domainsemantic.SemanticTriggerEventNodeUpdated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED, true
+	case domainsemantic.SemanticTriggerEventNodeDeleted:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_DELETED, true
+	case domainsemantic.SemanticTriggerEventEdgeChanged:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CHANGED, true
+	case domainsemantic.SemanticTriggerEventEdgeCreated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CREATED, true
+	case domainsemantic.SemanticTriggerEventEdgeUpdated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_UPDATED, true
+	case domainsemantic.SemanticTriggerEventEdgeDeleted:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED, true
+	default:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_UNSPECIFIED, false
+	}
 }
 
 func triggerToProto(in domainsemantic.SemanticTriggerPolicy) *adminv1.SemanticTriggerPolicy {
-	return &adminv1.SemanticTriggerPolicy{Events: append([]string(nil), in.Events...), Labels: append([]string(nil), in.Labels...), Debounce: durationString(in.Debounce)}
+	normalized := domainsemantic.NormalizeSemanticTriggerPolicy(in)
+	typed := make([]adminv1.SemanticTriggerEventType, 0, len(normalized.Events))
+	for _, event := range normalized.Events {
+		if value, ok := semanticTriggerEventToProto(event); ok {
+			typed = append(typed, value)
+		}
+	}
+	return &adminv1.SemanticTriggerPolicy{Events: append([]string(nil), normalized.Events...), Labels: append([]string(nil), normalized.Labels...), Debounce: durationString(normalized.Debounce), EventTypes: typed}
 }
 
 func selectorFromProto(in *adminv1.SemanticTargetSelector) (domainsemantic.SemanticTargetSelector, error) {

@@ -115,7 +115,14 @@ func validateTrigger(out resultAppend, trigger SemanticTriggerPolicy) {
 	}
 	for i, event := range trigger.Events {
 		switch event {
-		case DefaultSemanticTriggerEventChanged, "node.created", "node.updated", "node.deleted", "edge.changed", "edge.created", "edge.updated", "edge.deleted":
+		case DefaultSemanticTriggerEventChanged,
+			SemanticTriggerEventNodeCreated,
+			SemanticTriggerEventNodeUpdated,
+			SemanticTriggerEventNodeDeleted,
+			SemanticTriggerEventEdgeChanged,
+			SemanticTriggerEventEdgeCreated,
+			SemanticTriggerEventEdgeUpdated,
+			SemanticTriggerEventEdgeDeleted:
 		default:
 			out.err(fmt.Sprintf("trigger.events[%d]", i), "unsupported semantic trigger event %q", event)
 		}
