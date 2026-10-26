@@ -481,10 +481,25 @@ func (s *AdminInferenceService) credentialByID(ctx context.Context, id domainsem
 }
 
 func referencedPrecondition(resource string, refs []string) error {
-	if len(refs) > 20 {
-		refs = append(append([]string{}, refs[:20]...), fmt.Sprintf("...%d more", len(refs)-20))
+	refs = uniqueInferenceReferences(refs)
+	const maxReferenceEvidence = 32
+	if len(refs) > maxReferenceEvidence {
+		refs = append(append([]string{}, refs[:maxReferenceEvidence]...), fmt.Sprintf("...%d more", len(refs)-maxReferenceEvidence))
 	}
 	return status.Errorf(codes.FailedPrecondition, "%s is referenced by %s", resource, strings.Join(refs, ", "))
+}
+
+func uniqueInferenceReferences(refs []string) []string {
+	unique := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if _, exists := seen[ref]; exists {
+			continue
+		}
+		seen[ref] = struct{}{}
+		unique = append(unique, ref)
+	}
+	return unique
 }
 
 func (s *AdminInferenceService) standaloneDecisionReferences(ctx context.Context, spaceID string, match func(domaininference.PolicyDecision) bool) ([]string, error) {
