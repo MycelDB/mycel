@@ -163,8 +163,14 @@ func (s *AdminSemanticService) CreateSemanticRule(ctx context.Context, req *admi
 		return nil, mapAdminSemanticError(err, "list semantic rules before create")
 	}
 	for _, existing := range existingRules {
-		if existing.SpaceID == rule.SpaceID && existing.DomainID == rule.DomainID && domainsemantic.NormalizeSemanticRuleKey(existing.Key) == rule.Key {
+		if existing.SpaceID != rule.SpaceID || existing.DomainID != rule.DomainID {
+			continue
+		}
+		if domainsemantic.NormalizeSemanticRuleKey(existing.Key) == rule.Key {
 			return nil, status.Error(codes.AlreadyExists, "semantic rule key already exists")
+		}
+		if displayName := domainsemantic.NormalizeSemanticRuleDisplayName(rule.DisplayName); displayName != "" && domainsemantic.NormalizeSemanticRuleDisplayName(existing.DisplayName) == displayName {
+			return nil, status.Error(codes.AlreadyExists, "semantic rule display_name already exists")
 		}
 	}
 	created := rule
@@ -1083,6 +1089,10 @@ func mapAdminSemanticError(err error, action string) error {
 	}
 	if errors.Is(err, storesemantic.ErrNotFound) {
 		return status.Error(codes.NotFound, err.Error())
+	}
+	var displayNameConflict *storesemantic.SemanticRuleDisplayNameConflictError
+	if errors.As(err, &displayNameConflict) {
+		return status.Error(codes.AlreadyExists, displayNameConflict.Error())
 	}
 	if errors.Is(err, storesemantic.ErrConflict) {
 		return status.Error(codes.FailedPrecondition, err.Error())

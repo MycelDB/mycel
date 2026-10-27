@@ -33,6 +33,12 @@ func TestSemanticRecordConfigurationHashBindsConcreteRouteAndCompatibleFields(t 
 	}
 }
 
+func TestNormalizeSemanticRuleDisplayNameUsesCaseInsensitiveTrimmedComparison(t *testing.T) {
+	if got := NormalizeSemanticRuleDisplayName("  Journal SEARCH  "); got != "journal search" {
+		t.Fatalf("NormalizeSemanticRuleDisplayName() = %q, want journal search", got)
+	}
+}
+
 func TestNormalizeSemanticTriggerPolicyDefaultsToChanged(t *testing.T) {
 	got := NormalizeSemanticTriggerPolicy(SemanticTriggerPolicy{})
 	if len(got.Events) != 1 || got.Events[0] != DefaultSemanticTriggerEventChanged {
