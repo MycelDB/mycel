@@ -92,13 +92,12 @@ storage:
   physical_index: exact
 ```
 
-The Admin gRPC API uses typed `trigger.event_types`. The deprecated string
-`trigger.events` representation remains available for older clients and is
-populated alongside the typed field in responses. During migration, requests
-may supply both only when they normalize to the same set. Omitting both defaults
-to `CHANGED`; explicit `UNSPECIFIED` and unknown numeric values are rejected.
-Persisted daemon state and CLI rule files remain transport-neutral and use
-canonical event names rather than generated protobuf values. Persisted catalogs,
+The Admin gRPC API uses the enum-only `trigger.events` field. Omitting the set
+defaults to `CHANGED`; explicit `UNSPECIFIED` and unknown numeric values are
+rejected. Legacy string events and the transitional `trigger.event_types` field
+are not accepted or projected. Persisted daemon state and CLI rule files remain
+transport-neutral and use canonical event names rather than generated protobuf
+values. Persisted catalogs,
 Raft snapshots, and restored backups containing duplicate normalized non-empty
 rule display names in one space/domain are rejected rather than repaired or
 silently renamed.

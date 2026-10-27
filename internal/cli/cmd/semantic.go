@@ -787,7 +787,7 @@ func semanticRuleFromFlags(key, spaceID, domainID string, f semanticRuleCLIFlags
 	if strings.TrimSpace(f.VectorStoreID) != "" {
 		binding.VectorStoreId = strings.TrimSpace(f.VectorStoreID)
 	}
-	return &adminv1.SemanticGenerationRule{SpaceId: spaceID, DomainId: domainID, Key: strings.TrimSpace(key), DisplayName: firstNonEmpty(f.DisplayName, strings.TrimSpace(key)), Description: strings.TrimSpace(f.Description), Enabled: f.Enabled, Trigger: &adminv1.SemanticTriggerPolicy{Events: []string{domainsemantic.DefaultSemanticTriggerEventChanged}, Labels: labels, Debounce: strings.TrimSpace(f.DirtyCooldown)}, Selector: &adminv1.SemanticTargetSelector{Mode: firstNonEmpty(f.SelectorMode, string(domainsemantic.SemanticTargetSelectorNodeType)), Labels: labels}, Source: &adminv1.SemanticSourceAssemblyPolicy{Mode: firstNonEmpty(f.SourceMode, string(domainsemantic.SemanticSourceSelf)), IncludeProperties: append([]string(nil), f.IncludeProps...), ExcludeProperties: append([]string(nil), f.ExcludeProps...)}, Embeddings: []*adminv1.SemanticEmbeddingBinding{binding}, Maintenance: &adminv1.SemanticMaintenancePolicy{DirtyCooldown: strings.TrimSpace(f.DirtyCooldown)}, Storage: &adminv1.SemanticStoragePolicy{Searchable: f.Searchable, PhysicalIndex: firstNonEmpty(f.PhysicalIndex, domainsemantic.SemanticPhysicalIndexExact)}, OwnerPrincipalId: strings.TrimSpace(f.OwnerPrincipalID)}
+	return &adminv1.SemanticGenerationRule{SpaceId: spaceID, DomainId: domainID, Key: strings.TrimSpace(key), DisplayName: firstNonEmpty(f.DisplayName, strings.TrimSpace(key)), Description: strings.TrimSpace(f.Description), Enabled: f.Enabled, Trigger: &adminv1.SemanticTriggerPolicy{Events: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED}, Labels: labels, Debounce: strings.TrimSpace(f.DirtyCooldown)}, Selector: &adminv1.SemanticTargetSelector{Mode: firstNonEmpty(f.SelectorMode, string(domainsemantic.SemanticTargetSelectorNodeType)), Labels: labels}, Source: &adminv1.SemanticSourceAssemblyPolicy{Mode: firstNonEmpty(f.SourceMode, string(domainsemantic.SemanticSourceSelf)), IncludeProperties: append([]string(nil), f.IncludeProps...), ExcludeProperties: append([]string(nil), f.ExcludeProps...)}, Embeddings: []*adminv1.SemanticEmbeddingBinding{binding}, Maintenance: &adminv1.SemanticMaintenancePolicy{DirtyCooldown: strings.TrimSpace(f.DirtyCooldown)}, Storage: &adminv1.SemanticStoragePolicy{Searchable: f.Searchable, PhysicalIndex: firstNonEmpty(f.PhysicalIndex, domainsemantic.SemanticPhysicalIndexExact)}, OwnerPrincipalId: strings.TrimSpace(f.OwnerPrincipalID)}
 }
 
 type semanticRuleFile struct {
@@ -876,17 +876,21 @@ func readSemanticRuleFile(path string) (*adminv1.SemanticGenerationRule, error) 
 	if file.Rule != nil {
 		doc = *file.Rule
 	}
-	return semanticRuleDocToProto(doc), nil
+	return semanticRuleDocToProto(doc)
 }
 
-func semanticRuleDocToProto(doc semanticRuleDoc) *adminv1.SemanticGenerationRule {
+func semanticRuleDocToProto(doc semanticRuleDoc) (*adminv1.SemanticGenerationRule, error) {
 	enabled := true
 	if doc.Enabled != nil {
 		enabled = *doc.Enabled
 	}
 	rule := &adminv1.SemanticGenerationRule{SemanticRuleId: strings.TrimSpace(doc.SemanticRuleID), SpaceId: strings.TrimSpace(doc.SpaceID), DomainId: strings.TrimSpace(doc.DomainID), Key: strings.TrimSpace(doc.Key), DisplayName: strings.TrimSpace(doc.DisplayName), Description: strings.TrimSpace(doc.Description), Enabled: enabled, OwnerPrincipalId: strings.TrimSpace(doc.OwnerPrincipalID), CreatedByPrincipalId: strings.TrimSpace(doc.CreatedByPrincipalID)}
 	if doc.Trigger != nil {
-		rule.Trigger = &adminv1.SemanticTriggerPolicy{Events: append([]string(nil), doc.Trigger.Events...), Labels: append([]string(nil), doc.Trigger.Labels...), Debounce: strings.TrimSpace(doc.Trigger.Debounce)}
+		events, err := semanticTriggerEventTypes(doc.Trigger.Events)
+		if err != nil {
+			return nil, err
+		}
+		rule.Trigger = &adminv1.SemanticTriggerPolicy{Events: events, Labels: append([]string(nil), doc.Trigger.Labels...), Debounce: strings.TrimSpace(doc.Trigger.Debounce)}
 	}
 	if doc.Selector != nil {
 		rule.Selector = &adminv1.SemanticTargetSelector{Mode: strings.TrimSpace(doc.Selector.Mode), Labels: append([]string(nil), doc.Selector.Labels...), Gql: doc.Selector.GQL, TargetAlias: strings.TrimSpace(doc.Selector.TargetAlias), MaxResults: doc.Selector.MaxResults, NodeIds: append([]string(nil), doc.Selector.NodeIDs...)}
@@ -911,7 +915,36 @@ func semanticRuleDocToProto(doc semanticRuleDoc) *adminv1.SemanticGenerationRule
 		}
 		rule.Storage = &adminv1.SemanticStoragePolicy{Searchable: searchable, PhysicalIndex: strings.TrimSpace(doc.Storage.PhysicalIndex)}
 	}
-	return rule
+	return rule, nil
+}
+
+func semanticTriggerEventTypes(events []string) ([]adminv1.SemanticTriggerEventType, error) {
+	values := make([]adminv1.SemanticTriggerEventType, 0, len(events))
+	for i, event := range events {
+		var value adminv1.SemanticTriggerEventType
+		switch strings.TrimSpace(event) {
+		case domainsemantic.DefaultSemanticTriggerEventChanged:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED
+		case domainsemantic.SemanticTriggerEventNodeCreated:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_CREATED
+		case domainsemantic.SemanticTriggerEventNodeUpdated:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED
+		case domainsemantic.SemanticTriggerEventNodeDeleted:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_DELETED
+		case domainsemantic.SemanticTriggerEventEdgeChanged:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CHANGED
+		case domainsemantic.SemanticTriggerEventEdgeCreated:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CREATED
+		case domainsemantic.SemanticTriggerEventEdgeUpdated:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_UPDATED
+		case domainsemantic.SemanticTriggerEventEdgeDeleted:
+			value = adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED
+		default:
+			return nil, fmt.Errorf("trigger.events[%d] contains unsupported semantic trigger event %q", i, event)
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func bindingKeys(bindings []*clientv1.SemanticEmbeddingBindingSummary) []string {

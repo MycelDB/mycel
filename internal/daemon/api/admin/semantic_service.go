@@ -27,6 +27,7 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -756,39 +757,38 @@ func triggerFromProto(in *adminv1.SemanticTriggerPolicy) (domainsemantic.Semanti
 	if in == nil {
 		return domainsemantic.SemanticTriggerPolicy{}, nil
 	}
+	if semanticTriggerHasReservedEventTypes(in) {
+		return domainsemantic.SemanticTriggerPolicy{}, status.Error(codes.InvalidArgument, "trigger.event_types is no longer supported; use typed trigger.events")
+	}
 	debounce, err := optionalDuration(in.GetDebounce(), "trigger.debounce")
 	if err != nil {
 		return domainsemantic.SemanticTriggerPolicy{}, err
 	}
-	legacyEvents, err := normalizedLegacyTriggerEvents(in.GetEvents())
+	events, err := semanticTriggerEventsFromProto(in.GetEvents())
 	if err != nil {
 		return domainsemantic.SemanticTriggerPolicy{}, err
-	}
-	typedEvents, err := semanticTriggerEventsFromProto(in.GetEventTypes())
-	if err != nil {
-		return domainsemantic.SemanticTriggerPolicy{}, err
-	}
-	if len(legacyEvents) > 0 && len(typedEvents) > 0 && !reflect.DeepEqual(legacyEvents, typedEvents) {
-		return domainsemantic.SemanticTriggerPolicy{}, status.Error(codes.InvalidArgument, "trigger.event_types conflicts with trigger.events")
-	}
-	events := typedEvents
-	if len(events) == 0 {
-		events = legacyEvents
 	}
 	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: events, Labels: append([]string(nil), in.GetLabels()...), Debounce: debounce}), nil
 }
 
-func normalizedLegacyTriggerEvents(events []string) ([]string, error) {
-	if len(events) == 0 {
-		return nil, nil
-	}
-	for i, raw := range events {
-		normalized := domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: []string{raw}}).Events[0]
-		if _, ok := semanticTriggerEventToProto(normalized); !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "trigger.events[%d] contains unsupported semantic trigger event %q", i, normalized)
+func semanticTriggerHasReservedEventTypes(in *adminv1.SemanticTriggerPolicy) bool {
+	unknown := in.ProtoReflect().GetUnknown()
+	for len(unknown) > 0 {
+		number, wireType, tagLength := protowire.ConsumeTag(unknown)
+		if tagLength < 0 {
+			return false
 		}
+		unknown = unknown[tagLength:]
+		valueLength := protowire.ConsumeFieldValue(number, wireType, unknown)
+		if valueLength < 0 {
+			return false
+		}
+		if number == 4 {
+			return true
+		}
+		unknown = unknown[valueLength:]
 	}
-	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: append([]string(nil), events...)}).Events, nil
+	return false
 }
 
 func semanticTriggerEventsFromProto(values []adminv1.SemanticTriggerEventType) ([]string, error) {
@@ -799,7 +799,7 @@ func semanticTriggerEventsFromProto(values []adminv1.SemanticTriggerEventType) (
 	for i, value := range values {
 		event, ok := semanticTriggerEventFromProto(value)
 		if !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "trigger.event_types[%d] contains unsupported semantic trigger event value %d", i, value)
+			return nil, status.Errorf(codes.InvalidArgument, "trigger.events[%d] contains unsupported semantic trigger event value %d", i, value)
 		}
 		events = append(events, event)
 	}
@@ -860,7 +860,7 @@ func triggerToProto(in domainsemantic.SemanticTriggerPolicy) *adminv1.SemanticTr
 			typed = append(typed, value)
 		}
 	}
-	return &adminv1.SemanticTriggerPolicy{Events: append([]string(nil), normalized.Events...), Labels: append([]string(nil), normalized.Labels...), Debounce: durationString(normalized.Debounce), EventTypes: typed}
+	return &adminv1.SemanticTriggerPolicy{Events: typed, Labels: append([]string(nil), normalized.Labels...), Debounce: durationString(normalized.Debounce)}
 }
 
 func selectorFromProto(in *adminv1.SemanticTargetSelector) (domainsemantic.SemanticTargetSelector, error) {

@@ -18,6 +18,8 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 type semanticRuleResponseManager struct {
@@ -319,16 +321,15 @@ func TestSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(t *testing.T
 	}
 }
 
-func TestSemanticTriggerPolicyTypedAndLegacyCompatibility(t *testing.T) {
-	typed := []adminv1.SemanticTriggerEventType{
-		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED,
-		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED,
-	}
+func TestSemanticTriggerPolicyTypedEvents(t *testing.T) {
 	got, err := triggerFromProto(&adminv1.SemanticTriggerPolicy{
-		Events:     []string{"node_updated", "edge.deleted", "node.updated"},
-		EventTypes: typed,
-		Labels:     []string{"Note"},
-		Debounce:   "30s",
+		Events: []adminv1.SemanticTriggerEventType{
+			adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED,
+			adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED,
+			adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED,
+		},
+		Labels:   []string{"Note"},
+		Debounce: "30s",
 	})
 	if err != nil {
 		t.Fatalf("triggerFromProto() error = %v", err)
@@ -339,46 +340,30 @@ func TestSemanticTriggerPolicyTypedAndLegacyCompatibility(t *testing.T) {
 	}
 
 	projected := triggerToProto(got)
-	if !reflect.DeepEqual(projected.GetEvents(), want) {
-		t.Fatalf("triggerToProto() legacy events = %v, want %v", projected.GetEvents(), want)
-	}
 	wantTyped := []adminv1.SemanticTriggerEventType{
 		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED,
 		adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED,
 	}
-	if !reflect.DeepEqual(projected.GetEventTypes(), wantTyped) {
-		t.Fatalf("triggerToProto() event types = %v, want %v", projected.GetEventTypes(), wantTyped)
+	if !reflect.DeepEqual(projected.GetEvents(), wantTyped) {
+		t.Fatalf("triggerToProto() events = %v, want %v", projected.GetEvents(), wantTyped)
 	}
 }
 
-func TestSemanticTriggerPolicyRejectsConflictingOrUnknownTypedEvents(t *testing.T) {
+func TestSemanticTriggerPolicyRejectsUnknownTypedEvents(t *testing.T) {
 	tests := []struct {
 		name string
 		in   *adminv1.SemanticTriggerPolicy
 	}{
 		{
-			name: "conflicting representations",
-			in: &adminv1.SemanticTriggerPolicy{
-				Events:     []string{"node.created"},
-				EventTypes: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED},
-			},
-		},
-		{
-			name: "unsupported legacy event",
-			in: &adminv1.SemanticTriggerPolicy{
-				Events: []string{"future.changed"},
-			},
-		},
-		{
 			name: "unspecified",
 			in: &adminv1.SemanticTriggerPolicy{
-				EventTypes: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_UNSPECIFIED},
+				Events: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_UNSPECIFIED},
 			},
 		},
 		{
 			name: "unknown numeric value",
 			in: &adminv1.SemanticTriggerPolicy{
-				EventTypes: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType(99)},
+				Events: []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType(99)},
 			},
 		},
 	}
@@ -392,7 +377,34 @@ func TestSemanticTriggerPolicyRejectsConflictingOrUnknownTypedEvents(t *testing.
 	}
 }
 
-func TestSemanticTriggerPolicyDefaultsBothRepresentationsToChanged(t *testing.T) {
+func TestSemanticTriggerPolicyRejectsTransitionalEventTypesWirePayload(t *testing.T) {
+	packedEvents := protowire.AppendVarint(nil, uint64(adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED))
+	payload := protowire.AppendTag(nil, 4, protowire.BytesType)
+	payload = protowire.AppendBytes(payload, packedEvents)
+	var trigger adminv1.SemanticTriggerPolicy
+	if err := proto.Unmarshal(payload, &trigger); err != nil {
+		t.Fatalf("proto.Unmarshal() error = %v", err)
+	}
+	_, err := triggerFromProto(&trigger)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("triggerFromProto() code = %v, err = %v; want InvalidArgument", status.Code(err), err)
+	}
+}
+
+func TestSemanticTriggerPolicyRejectsLegacyStringWirePayload(t *testing.T) {
+	payload := protowire.AppendTag(nil, 1, protowire.BytesType)
+	payload = protowire.AppendString(payload, "changed")
+	var trigger adminv1.SemanticTriggerPolicy
+	if err := proto.Unmarshal(payload, &trigger); err != nil {
+		t.Fatalf("proto.Unmarshal() error = %v", err)
+	}
+	_, err := triggerFromProto(&trigger)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("triggerFromProto() code = %v, err = %v; want InvalidArgument", status.Code(err), err)
+	}
+}
+
+func TestSemanticTriggerPolicyDefaultsToChanged(t *testing.T) {
 	got, err := triggerFromProto(&adminv1.SemanticTriggerPolicy{})
 	if err != nil {
 		t.Fatalf("triggerFromProto() error = %v", err)
@@ -401,8 +413,9 @@ func TestSemanticTriggerPolicyDefaultsBothRepresentationsToChanged(t *testing.T)
 		t.Fatalf("triggerFromProto() events = %v, want [changed]", got.Events)
 	}
 	projected := triggerToProto(got)
-	if !reflect.DeepEqual(projected.GetEvents(), []string{"changed"}) || !reflect.DeepEqual(projected.GetEventTypes(), []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED}) {
-		t.Fatalf("triggerToProto() = %+v, want dual changed representations", projected)
+	want := []adminv1.SemanticTriggerEventType{adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED}
+	if !reflect.DeepEqual(projected.GetEvents(), want) {
+		t.Fatalf("triggerToProto() events = %v, want %v", projected.GetEvents(), want)
 	}
 }
 
