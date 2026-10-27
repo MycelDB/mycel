@@ -359,10 +359,12 @@ func (m *Module) commitTransaction(ctx context.Context, principalID string, tran
 	now := time.Now().UTC()
 	key := revisionKey(tx.SpaceID, tx.DomainID)
 	if committedRevision > 0 {
-		if committedRevision < m.revisions[key] {
-			return sessionmodel.TransactionCommit{}, ErrInvalidState
+		// Graph commits are already durable before session finalization. Independent
+		// commits can finalize here out of revision order, so retain the monotonic
+		// high-water mark without rejecting an older durable result.
+		if committedRevision > m.revisions[key] {
+			m.revisions[key] = committedRevision
 		}
-		m.revisions[key] = committedRevision
 	} else if operationCount > 0 {
 		m.revisions[key]++
 		committedRevision = m.revisions[key]

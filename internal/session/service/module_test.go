@@ -157,6 +157,52 @@ func TestModuleNoopReadWriteCommitDoesNotAdvanceRevision(t *testing.T) {
 	}
 }
 
+func TestModuleCommitFinalizationAcceptsDurableRevisionsOutOfOrder(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	firstSession, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "user-1", SpaceID: spaceID, DomainID: domainID})
+	if err != nil {
+		t.Fatalf("OpenSession(first) error = %v", err)
+	}
+	secondSession, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "user-1", SpaceID: spaceID, DomainID: domainID})
+	if err != nil {
+		t.Fatalf("OpenSession(second) error = %v", err)
+	}
+	first, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: firstSession.ID, Mode: sessionmodel.TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction(first) error = %v", err)
+	}
+	second, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: secondSession.ID, Mode: sessionmodel.TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction(second) error = %v", err)
+	}
+
+	secondCommit, err := m.CommitTransactionAtRevision(ctx, "user-1", second.ID, 1, 2)
+	if err != nil {
+		t.Fatalf("CommitTransactionAtRevision(second) error = %v", err)
+	}
+	firstCommit, err := m.CommitTransactionAtRevision(ctx, "user-1", first.ID, 1, 1)
+	if err != nil {
+		t.Fatalf("CommitTransactionAtRevision(first) error = %v", err)
+	}
+	if firstCommit.CommittedRevision != 1 || secondCommit.CommittedRevision != 2 {
+		t.Fatalf("committed revisions = (%d, %d), want (1, 2)", firstCommit.CommittedRevision, secondCommit.CommittedRevision)
+	}
+
+	next, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "user-1", SessionID: firstSession.ID, Mode: sessionmodel.TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction(next) error = %v", err)
+	}
+	if next.BaseRevision != 2 {
+		t.Fatalf("next base revision = %d, want monotonic high-water 2", next.BaseRevision)
+	}
+}
+
 func TestModuleTransactionFinalizationPreservesModeSemantics(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
