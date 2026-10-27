@@ -258,7 +258,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
 	rt.Encryption = enc
-	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: raftRuntimeConfigured(cfg), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
+	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: cfg.Cluster.RaftRuntimeConfigured(), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
 	if err != nil {
 		_ = rt.Close()
 		return nil, fmt.Errorf("initialize clustering: %w", err)
@@ -376,7 +376,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		_ = rt.Close()
 		return nil, err
 	}
-	if raftRuntimeConfigured(cfg) {
+	if cfg.Cluster.RaftRuntimeConfigured() {
 		backupService.PrepareExperimentalRaftMode()
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
@@ -523,7 +523,7 @@ type graphCommitSinkPolicy struct {
 
 func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
 	policy := graphCommitSinkPolicy{AsyncGraphConsumers: []string{"lexical"}}
-	if raftRuntimeConfigured(cfg) {
+	if cfg.Cluster.RaftRuntimeConfigured() {
 		policy.Clustered = true
 		policy.RaftApplySinks = []string{"graph_change_notification"}
 		policy.AsyncGraphConsumers = append(policy.AsyncGraphConsumers, "semantic")
@@ -531,13 +531,6 @@ func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
 	}
 	policy.SynchronousSinks = []string{"graph_change_notification", "semantic"}
 	return policy
-}
-
-func raftRuntimeConfigured(cfg config.Config) bool {
-	// A daemon with an explicit Raft node address map participates in clustered Raft.
-	// A single-node Raft configuration is also valid for local tests/dev. Default
-	// standalone daemons without Raft addresses remain non-clustered.
-	return len(cfg.Cluster.RaftNodeAddrs) > 0 || cfg.Cluster.RaftNodeCount == 1
 }
 
 func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {

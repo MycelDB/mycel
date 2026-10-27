@@ -152,6 +152,13 @@ type ClusterConfig struct {
 	RaftSnapshotMinRetainEntries   int
 }
 
+// RaftRuntimeConfigured reports whether the daemon should start a Raft runtime.
+// Default Raft sizing values are inert until an address map is configured;
+// RaftNodeCount=1 remains an explicit single-node Raft configuration.
+func (c ClusterConfig) RaftRuntimeConfigured() bool {
+	return len(c.RaftNodeAddrs) > 0 || c.RaftNodeCount == 1
+}
+
 type Config struct {
 	DataDir                      string
 	Mode                         string

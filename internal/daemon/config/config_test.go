@@ -54,6 +54,9 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if cfg.Cluster.RaftNodeCount != DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != DefaultClusterRaftPartitionCount || cfg.Cluster.RaftReplicaFactor != DefaultClusterRaftReplicaFactor || cfg.Cluster.RaftLocalNodeID != DefaultClusterRaftLocalNodeID {
 		t.Fatalf("unexpected cluster raft defaults: %+v", cfg.Cluster)
 	}
+	if cfg.Cluster.RaftRuntimeConfigured() {
+		t.Fatalf("default standalone cluster config must not enable the raft runtime: %+v", cfg.Cluster)
+	}
 	if cfg.Cluster.RaftElectionTick != DefaultClusterRaftElectionTick || cfg.Cluster.RaftHeartbeatTick != DefaultClusterRaftHeartbeatTick || cfg.Cluster.RaftSendTimeout != DefaultClusterRaftSendTimeout {
 		t.Fatalf("unexpected cluster raft timing defaults: %+v", cfg.Cluster)
 	}
@@ -68,6 +71,25 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.Search.HybridRRFK != DefaultSearchHybridRRFK {
 		t.Fatalf("unexpected search defaults: %+v", cfg.Search)
+	}
+}
+
+func TestClusterConfigRaftRuntimeConfigured(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  ClusterConfig
+		want bool
+	}{
+		{name: "default numeric settings remain inert", cfg: ClusterConfig{RaftNodeCount: DefaultClusterRaftNodeCount, RaftPartitionCount: DefaultClusterRaftPartitionCount, RaftReplicaFactor: DefaultClusterRaftReplicaFactor, RaftLocalNodeID: DefaultClusterRaftLocalNodeID}},
+		{name: "explicit single node raft", cfg: ClusterConfig{RaftNodeCount: 1, RaftPartitionCount: 1, RaftReplicaFactor: 1, RaftLocalNodeID: 1}, want: true},
+		{name: "multi node address map", cfg: ClusterConfig{RaftNodeCount: 3, RaftNodeAddrs: []string{"node-a:9091", "node-b:9091", "node-c:9091"}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.RaftRuntimeConfigured(); got != tt.want {
+				t.Fatalf("RaftRuntimeConfigured() = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }
 
