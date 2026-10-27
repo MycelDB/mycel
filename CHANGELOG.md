@@ -34,6 +34,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
+- Concurrent disjoint graph commits that become durable in revision order but finalize daemon-local sessions in reverse order now both return success while the session revision view remains monotonic; exact idempotent replay continues to return the original commit before and after restart (#267).
 - Default standalone daemons now report client/read/write readiness and healthy cluster status without requiring Raft groups; explicit single-node and multi-node Raft runtimes continue to fail closed on missing groups or leaders (#268).
 - Raft-cluster semantic backfill, dirty-work processing, and rebuild requests now execute on the semantic partition leader that owns the authoritative derived vector index used by forwarded search. Routing requires authenticated cluster transport, operation leases revalidate leader and term through publication/completion, rebuild ownership permits safe new-term takeover of abandoned work, and per-node projection leases prevent promoted empty or stale nodes from serving search until a reconciled local baseline with current provenance and authoritative freshness is established. Rebuild also holds the backup gate throughout orchestration; missing or changed leadership fails closed instead of acknowledging locally invisible records.
 - Raft-forwarded graph reads now preserve deterministic graph error codes across the internal backend boundary, including `NotFound` for absent entities instead of relabeling absence as `Internal`.

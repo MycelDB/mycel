@@ -166,6 +166,173 @@ func TestTransactionServiceReturnsDurableIdempotentCommitAndReplay(t *testing.T)
 	}
 }
 
+type outOfOrderFinalizationGraph struct {
+	delegate     *daegraph.Module
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+}
+
+func newOutOfOrderFinalizationGraph(delegate *daegraph.Module) *outOfOrderFinalizationGraph {
+	return &outOfOrderFinalizationGraph{
+		delegate:     delegate,
+		firstEntered: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+}
+
+func (g *outOfOrderFinalizationGraph) RequireLocalGraphWriteLeader(ctx context.Context, spaceID string) error {
+	return g.delegate.RequireLocalGraphWriteLeader(ctx, spaceID)
+}
+
+func (g *outOfOrderFinalizationGraph) CurrentRevision(ctx context.Context, spaceID string) (int64, error) {
+	return g.delegate.CurrentRevision(ctx, spaceID)
+}
+
+func (g *outOfOrderFinalizationGraph) CurrentDomainRevision(ctx context.Context, spaceID, domainID string) (int64, error) {
+	return g.delegate.CurrentDomainRevision(ctx, spaceID, domainID)
+}
+
+func (g *outOfOrderFinalizationGraph) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	result, err := g.delegate.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	if tx.IdempotencyKey == "disjoint-first" {
+		close(g.firstEntered)
+		select {
+		case <-ctx.Done():
+			return graphchange.CommitResult{}, ctx.Err()
+		case <-g.releaseFirst:
+		}
+	}
+	return result, nil
+}
+
+func (g *outOfOrderFinalizationGraph) LookupIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) (graphchange.CommitResult, bool, error) {
+	return g.delegate.LookupIdempotentCommit(ctx, principalID, spaceID, domainID, key)
+}
+
+func (g *outOfOrderFinalizationGraph) DiscardTransactionGraph(ctx context.Context, transactionID string) error {
+	return g.delegate.DiscardTransactionGraph(ctx, transactionID)
+}
+
+func (g *outOfOrderFinalizationGraph) AcknowledgeTransactionFinalization(ctx context.Context, tx sessionmodel.GraphTransaction) error {
+	return g.delegate.AcknowledgeTransactionFinalization(ctx, tx)
+}
+
+func TestTransactionServiceConcurrentDisjointCommitsFinalizeOutOfOrder(t *testing.T) {
+	fixture := initDomainPolicyClientAPITest(t, domainPolicyFixtureOptions{})
+	sessionSvc := NewSessionService(fixture.sessions, fixture.spaces)
+	graph := newOutOfOrderFinalizationGraph(fixture.graphs)
+	defer func() {
+		select {
+		case <-graph.releaseFirst:
+		default:
+			close(graph.releaseFirst)
+		}
+	}()
+	txSvc := NewTransactionService(fixture.sessions, graph, fixture.spaces)
+	graphSvc := NewGraphService(fixture.sessions, fixture.graphs)
+
+	openSession := func() string {
+		t.Helper()
+		opened, err := sessionSvc.OpenSession(fixture.ctx, &clientv1.OpenSessionRequest{SpaceId: fixture.spaceID, DomainId: fixture.domainID})
+		if err != nil {
+			t.Fatalf("OpenSession() error = %v", err)
+		}
+		return opened.GetSession().GetSessionId()
+	}
+	beginTransaction := func(sessionID string) string {
+		t.Helper()
+		begun, err := txSvc.BeginTransaction(fixture.ctx, &clientv1.BeginTransactionRequest{SessionId: sessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+		if err != nil {
+			t.Fatalf("BeginTransaction() error = %v", err)
+		}
+		if begun.GetTransaction().GetBaseRevision() != 0 {
+			t.Fatalf("transaction base revision = %d, want 0", begun.GetTransaction().GetBaseRevision())
+		}
+		return begun.GetTransaction().GetTransactionId()
+	}
+	firstSessionID := fixture.sessionID
+	secondSessionID := openSession()
+	firstTxID := beginTransaction(firstSessionID)
+	secondTxID := beginTransaction(secondSessionID)
+	firstNodeID := uuid.NewString()
+	secondNodeID := uuid.NewString()
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: firstTxID, Node: &clientv1.NodeCreate{NodeId: &firstNodeID, Labels: []string{"DisjointFirst"}}}); err != nil {
+		t.Fatalf("CreateNode(first) error = %v", err)
+	}
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: secondTxID, Node: &clientv1.NodeCreate{NodeId: &secondNodeID, Labels: []string{"DisjointSecond"}}}); err != nil {
+		t.Fatalf("CreateNode(second) error = %v", err)
+	}
+	firstReq := &clientv1.CommitTransactionRequest{TransactionId: firstTxID, IdempotencyKey: "disjoint-first", SpaceId: fixture.spaceID, DomainId: fixture.domainID}
+	secondReq := &clientv1.CommitTransactionRequest{TransactionId: secondTxID, IdempotencyKey: "disjoint-second", SpaceId: fixture.spaceID, DomainId: fixture.domainID}
+
+	type commitOutcome struct {
+		response *clientv1.CommitTransactionResponse
+		err      error
+	}
+	firstOutcome := make(chan commitOutcome, 1)
+	go func() {
+		response, err := txSvc.CommitTransaction(fixture.ctx, firstReq)
+		firstOutcome <- commitOutcome{response: response, err: err}
+	}()
+	select {
+	case <-graph.firstEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first graph commit did not reach durable result")
+	}
+	secondResponse, err := txSvc.CommitTransaction(fixture.ctx, secondReq)
+	if err != nil {
+		t.Fatalf("CommitTransaction(second) error = %v", err)
+	}
+	if secondResponse.GetCommit().GetCommittedRevision() != 2 {
+		t.Fatalf("second committed revision = %d, want 2", secondResponse.GetCommit().GetCommittedRevision())
+	}
+	close(graph.releaseFirst)
+	var first commitOutcome
+	select {
+	case first = <-firstOutcome:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first session finalization did not complete")
+	}
+	if first.err != nil {
+		t.Fatalf("CommitTransaction(first) error = %v", first.err)
+	}
+	if first.response.GetCommit().GetCommittedRevision() != 1 {
+		t.Fatalf("first committed revision = %d, want 1", first.response.GetCommit().GetCommittedRevision())
+	}
+
+	next, err := txSvc.BeginTransaction(fixture.ctx, &clientv1.BeginTransactionRequest{SessionId: firstSessionID, Mode: clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE})
+	if err != nil {
+		t.Fatalf("BeginTransaction(next) error = %v", err)
+	}
+	if next.GetTransaction().GetBaseRevision() != 2 {
+		t.Fatalf("next base revision = %d, want monotonic high-water 2", next.GetTransaction().GetBaseRevision())
+	}
+
+	for name, req := range map[string]*clientv1.CommitTransactionRequest{"first": firstReq, "second": secondReq} {
+		replay, err := txSvc.CommitTransaction(fixture.ctx, req)
+		if err != nil {
+			t.Fatalf("CommitTransaction(%s replay) error = %v", name, err)
+		}
+		if !replay.GetIdempotentReplay() || replay.GetCommit().GetTransactionId() != req.GetTransactionId() {
+			t.Fatalf("%s replay response = %#v", name, replay)
+		}
+	}
+
+	restarted := NewTransactionService(nil, graph)
+	for name, req := range map[string]*clientv1.CommitTransactionRequest{"first": firstReq, "second": secondReq} {
+		replay, err := restarted.CommitTransaction(fixture.ctx, req)
+		if err != nil {
+			t.Fatalf("CommitTransaction(%s restart replay) error = %v", name, err)
+		}
+		if !replay.GetIdempotentReplay() || replay.GetCommit().GetTransactionId() != req.GetTransactionId() {
+			t.Fatalf("%s restart replay response = %#v", name, replay)
+		}
+	}
+}
+
 func TestTransactionServiceIdempotencyLookupSurvivesMissingSession(t *testing.T) {
 	userID := uuid.NewString()
 	spaceID := uuid.NewString()
