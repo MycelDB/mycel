@@ -30,6 +30,7 @@ import (
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -678,7 +679,7 @@ func writeLexicalTestNode(t *testing.T, ctx context.Context, transactions *clien
 
 func assertLexicalSearchResult(t *testing.T, ctx context.Context, search *clientapi.SearchService, spaceID string, domainID string, query string, nodeID string) {
 	t.Helper()
-	result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Query: query, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
+	result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String(query)}, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
 	if err != nil {
 		t.Fatalf("Search(%q) error = %v", query, err)
 	}
@@ -691,7 +692,7 @@ func eventuallyLexicalSearchResult(t *testing.T, ctx context.Context, search *cl
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Query: query, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
+		result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String(query)}, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
 		if err == nil && len(result.GetResults()) == 1 && result.GetResults()[0].GetNodeId() == nodeID {
 			return
 		}

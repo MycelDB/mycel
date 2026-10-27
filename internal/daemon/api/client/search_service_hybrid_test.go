@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
-	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestHybridOptionsFromProtoDefaultsAndNormalizes(t *testing.T) {
@@ -67,23 +67,34 @@ func TestSearchFiltersFromProtoRejectsUnsupportedOperator(t *testing.T) {
 	}
 }
 
-func TestEffectiveSearchQueriesUseChannelOverridesAndLegacyFallback(t *testing.T) {
-	legacy := &clientv1.SearchRequest{Query: "legacy shared query"}
-	if got := effectiveLexicalSearchQuery(legacy); got != "legacy shared query" {
-		t.Fatalf("effective lexical fallback = %q", got)
+func TestEffectiveSearchQueriesUseOnlyChannelQueries(t *testing.T) {
+	empty := &clientv1.SearchRequest{}
+	if got := effectiveLexicalSearchQuery(empty); got != "" {
+		t.Fatalf("effective lexical query = %q, want empty", got)
 	}
-	if got := effectiveSemanticSearchQuery(legacy); got != "legacy shared query" {
-		t.Fatalf("effective semantic fallback = %q", got)
+	if got := effectiveSemanticSearchQuery(empty); got != "" {
+		t.Fatalf("effective semantic query = %q, want empty", got)
 	}
 
-	request := &clientv1.SearchRequest{Query: "legacy shared query", Lexical: &clientv1.LexicalSearchOptions{}, Semantic: &clientv1.SemanticSearchOptions{}}
-	setLexicalSearchQueryOverrideForTest(request.Lexical, `"team" OR "recovery"`)
-	setSemanticSearchQueryOverrideForTest(request.Semantic, "how can a team recover calmly")
+	legacy := &clientv1.SearchRequest{}
+	unknown := protowire.AppendTag(nil, 4, protowire.BytesType)
+	legacy.ProtoReflect().SetUnknown(protowire.AppendString(unknown, "legacy shared query"))
+	if got := effectiveLexicalSearchQuery(legacy); got != "" {
+		t.Fatalf("effective lexical query accepted reserved field 4: %q", got)
+	}
+	if got := effectiveSemanticSearchQuery(legacy); got != "" {
+		t.Fatalf("effective semantic query accepted reserved field 4: %q", got)
+	}
+
+	request := &clientv1.SearchRequest{
+		Lexical:  &clientv1.LexicalSearchOptions{Query: proto.String(`"team" OR "recovery"`)},
+		Semantic: &clientv1.SemanticSearchOptions{Query: proto.String("how can a team recover calmly")},
+	}
 	if got := effectiveLexicalSearchQuery(request); got != `"team" OR "recovery"` {
-		t.Fatalf("effective lexical override = %q", got)
+		t.Fatalf("effective lexical query = %q", got)
 	}
 	if got := effectiveSemanticSearchQuery(request); got != "how can a team recover calmly" {
-		t.Fatalf("effective semantic override = %q", got)
+		t.Fatalf("effective semantic query = %q", got)
 	}
 }
 
@@ -114,7 +125,7 @@ func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 		t.Fatalf("semantic SearchInput MinScore = %v, want %v", semantic.lastInput.MinScore, minScore)
 	}
 	if semantic.lastInput.Text != "team recovery" {
-		t.Fatalf("semantic SearchInput Text = %q, want lexical-query fallback", semantic.lastInput.Text)
+		t.Fatalf("semantic SearchInput Text = %q, want channel query", semantic.lastInput.Text)
 	}
 	if len(candidates) != 1 || candidates[0].NodeID != highNodeID.String() {
 		t.Fatalf("candidates = %#v, want only high-scoring semantic candidate %s", candidates, highNodeID)
@@ -128,25 +139,6 @@ func TestIsNoSemanticSearchAvailable(t *testing.T) {
 	if isNoSemanticSearchAvailable(status.Error(codes.Internal, "no enabled semantic search rule is available for the domain")) {
 		t.Fatalf("internal error should not be treated as safe semantic unavailability")
 	}
-}
-
-func setLexicalSearchQueryOverrideForTest(options *clientv1.LexicalSearchOptions, query string) {
-	setSearchOptionQueryForTest(options.ProtoReflect(), lexicalSearchQueryFieldNumber, query)
-}
-
-func setSemanticSearchQueryOverrideForTest(options *clientv1.SemanticSearchOptions, query string) {
-	setSearchOptionQueryForTest(options.ProtoReflect(), semanticSearchQueryFieldNumber, query)
-}
-
-func setSearchOptionQueryForTest(message protoreflect.Message, fieldNumber protoreflect.FieldNumber, query string) {
-	if field := message.Descriptor().Fields().ByNumber(fieldNumber); field != nil {
-		message.Set(field, protoreflect.ValueOfString(query))
-		return
-	}
-	unknown := message.GetUnknown()
-	unknown = protowire.AppendTag(unknown, protowire.Number(fieldNumber), protowire.BytesType)
-	unknown = protowire.AppendString(unknown, query)
-	message.SetUnknown(unknown)
 }
 
 type fakeHybridSemanticManager struct {

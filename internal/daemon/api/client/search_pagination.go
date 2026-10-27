@@ -34,7 +34,6 @@ type searchPageCursor struct {
 	RankingVersion       string `json:"ranking_version"`
 	Offset               int    `json:"offset"`
 	CandidateFingerprint string `json:"candidates,omitempty"`
-	Legacy               bool   `json:"-"`
 }
 
 type searchPageCursorEnvelope struct {
@@ -110,11 +109,7 @@ func decodeSearchPageCursor(token string) (searchPageCursor, error) {
 		return searchPageCursor{}, fmt.Errorf("invalid search page token payload")
 	}
 	if envelope.Checksum == "" {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &fields); err != nil || fields["offset"] == nil || envelope.Offset < 0 {
-			return searchPageCursor{}, fmt.Errorf("invalid legacy search page token")
-		}
-		return searchPageCursor{Offset: envelope.Offset, Legacy: true}, nil
+		return searchPageCursor{}, fmt.Errorf("unsupported legacy search page token")
 	}
 	if envelope.Offset != envelope.Cursor.Offset {
 		return searchPageCursor{}, fmt.Errorf("invalid search page token offset")
@@ -138,15 +133,6 @@ func searchPageOffset(req *clientv1.SearchRequest, mode string, freshness lexica
 	cursor, err := decodeSearchPageCursor(req.GetPageToken())
 	if err != nil {
 		return 0, err
-	}
-	if cursor.Legacy {
-		// Legacy lexical cursors predate request and revision binding. Accept them
-		// only for the behavior old nodes supported during a rolling upgrade; the
-		// next response replaces them with the bound envelope format.
-		if mode != searchCursorModeLexical || searchRequestHasFilters(req) {
-			return 0, fmt.Errorf("legacy search page token is only valid for unfiltered lexical search")
-		}
-		return cursor.Offset, nil
 	}
 	if err := validateSearchPageCursor(cursor, req, mode, freshness); err != nil {
 		return 0, err
@@ -186,11 +172,6 @@ func searchRankingVersion(mode string) string {
 	default:
 		return ""
 	}
-}
-
-func searchRequestHasFilters(req *clientv1.SearchRequest) bool {
-	filters := req.GetFilters()
-	return filters != nil && (len(filters.GetNodeLabels()) > 0 || len(filters.GetNodeIds()) > 0 || len(filters.GetProperties()) > 0)
 }
 
 func orderedSearchNodeFingerprint(nodeIDs []string) string {

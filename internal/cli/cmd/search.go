@@ -25,22 +25,19 @@ func NewSearchCommand(a *app.App) *cobra.Command {
 	}}
 	bindLexicalSearchFlags(lexical)
 	lexical.AddCommand(newLexicalStatusCommand(a), newLexicalRebuildCommand(a))
-	hybrid := &cobra.Command{Use: "hybrid [QUERY]", Short: "Run hybrid lexical + semantic search", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		query, _ := cmd.Flags().GetString("query")
-		if len(args) == 1 && strings.TrimSpace(query) == "" {
-			query = args[0]
-		}
-		return runHybridSearch(cmd, a, query)
+	hybrid := &cobra.Command{Use: "hybrid", Short: "Run hybrid lexical + semantic search", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		lexicalQuery, _ := cmd.Flags().GetString("lexical-query")
+		semanticQuery, _ := cmd.Flags().GetString("semantic-query")
+		return runHybridSearch(cmd, a, lexicalQuery, semanticQuery)
 	}}
 	bindHybridSearchFlags(hybrid)
 	cmd.AddCommand(lexical, hybrid)
 	return cmd
 }
 
-func bindLexicalSearchFlags(cmd *cobra.Command) {
+func bindSearchFlags(cmd *cobra.Command) {
 	cmd.Flags().String("space-id", "", "space ID")
 	cmd.Flags().String("domain", model.DefaultDomainKey, "domain key or ID")
-	cmd.Flags().String("query", "", "query text")
 	cmd.Flags().Int32("page-size", 20, "page size")
 	cmd.Flags().String("page-token", "", "page token")
 	cmd.Flags().Bool("allow-stale", false, "allow stale lexical index results")
@@ -49,8 +46,15 @@ func bindLexicalSearchFlags(cmd *cobra.Command) {
 	_ = cmd.MarkFlagRequired("space-id")
 }
 
+func bindLexicalSearchFlags(cmd *cobra.Command) {
+	bindSearchFlags(cmd)
+	cmd.Flags().String("query", "", "lexical query expression")
+}
+
 func bindHybridSearchFlags(cmd *cobra.Command) {
-	bindLexicalSearchFlags(cmd)
+	bindSearchFlags(cmd)
+	cmd.Flags().String("lexical-query", "", "lexical query expression")
+	cmd.Flags().String("semantic-query", "", "natural-language semantic query")
 	cmd.Flags().Float64("lexical-weight", 0.5, "hybrid lexical weight")
 	cmd.Flags().Float64("semantic-weight", 0.5, "hybrid semantic weight")
 	cmd.Flags().Bool("require-both", false, "require both lexical and semantic matches")
@@ -88,7 +92,7 @@ func runLexicalSearch(cmd *cobra.Command, a *app.App, query string) error {
 	if err != nil {
 		return err
 	}
-	res, err := clientv1.NewSearchServiceClient(conn).Search(authCtx, &clientv1.SearchRequest{SpaceId: spaceID.String(), DomainId: domainID, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Query: query, PageSize: pageSize, PageToken: pageToken, AllowStale: allowStale, MaxRevisionLag: maxLag, IncludeDiagnostics: diagnostics})
+	res, err := clientv1.NewSearchServiceClient(conn).Search(authCtx, &clientv1.SearchRequest{SpaceId: spaceID.String(), DomainId: domainID, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Lexical: &clientv1.LexicalSearchOptions{Query: stringPtr(strings.TrimSpace(query))}, PageSize: pageSize, PageToken: pageToken, AllowStale: allowStale, MaxRevisionLag: maxLag, IncludeDiagnostics: diagnostics})
 	if err != nil {
 		return err
 	}
@@ -110,9 +114,12 @@ func runLexicalSearch(cmd *cobra.Command, a *app.App, query string) error {
 	return nil
 }
 
-func runHybridSearch(cmd *cobra.Command, a *app.App, query string) error {
-	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("query is required")
+func runHybridSearch(cmd *cobra.Command, a *app.App, lexicalQuery string, semanticQuery string) error {
+	lexicalWeight, _ := cmd.Flags().GetFloat64("lexical-weight")
+	semanticWeight, _ := cmd.Flags().GetFloat64("semantic-weight")
+	requireBoth, _ := cmd.Flags().GetBool("require-both")
+	if err := validateHybridSearchQueries(lexicalQuery, semanticQuery, lexicalWeight, semanticWeight, requireBoth); err != nil {
+		return err
 	}
 	conn, authCtx, _, err := loginDaemonPrincipal(cmd.Context(), a)
 	if err != nil {
@@ -122,12 +129,10 @@ func runHybridSearch(cmd *cobra.Command, a *app.App, query string) error {
 	spaceIDText, _ := cmd.Flags().GetString("space-id")
 	domainRef, _ := cmd.Flags().GetString("domain")
 	pageSize, _ := cmd.Flags().GetInt32("page-size")
+	pageToken, _ := cmd.Flags().GetString("page-token")
 	allowStale, _ := cmd.Flags().GetBool("allow-stale")
 	maxLag, _ := cmd.Flags().GetInt64("max-revision-lag")
 	diagnostics, _ := cmd.Flags().GetBool("diagnostics")
-	lexicalWeight, _ := cmd.Flags().GetFloat64("lexical-weight")
-	semanticWeight, _ := cmd.Flags().GetFloat64("semantic-weight")
-	requireBoth, _ := cmd.Flags().GetBool("require-both")
 	lexicalCandidates, _ := cmd.Flags().GetInt32("lexical-candidates")
 	semanticCandidates, _ := cmd.Flags().GetInt32("semantic-candidates")
 	semanticRuleID, _ := cmd.Flags().GetString("semantic-rule-id")
@@ -146,6 +151,9 @@ func runHybridSearch(cmd *cobra.Command, a *app.App, query string) error {
 		return err
 	}
 	semantic := &clientv1.SemanticSearchOptions{CandidateCount: semanticCandidates}
+	if query := strings.TrimSpace(semanticQuery); query != "" {
+		semantic.Query = stringPtr(query)
+	}
 	if strings.TrimSpace(semanticRuleID) != "" {
 		semantic.SemanticRuleId = stringPtr(strings.TrimSpace(semanticRuleID))
 	}
@@ -155,11 +163,29 @@ func runHybridSearch(cmd *cobra.Command, a *app.App, query string) error {
 	if cmd.Flags().Changed("semantic-min-score") {
 		semantic.MinScore = float64Ptr(semanticMinScore)
 	}
-	res, err := clientv1.NewSearchServiceClient(conn).Search(authCtx, &clientv1.SearchRequest{SpaceId: spaceID.String(), DomainId: domainID, Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID, Query: query, PageSize: pageSize, AllowStale: allowStale, MaxRevisionLag: maxLag, IncludeDiagnostics: diagnostics, Filters: filters, Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: lexicalWeight, SemanticWeight: semanticWeight, FusionStrategy: clientv1.HybridFusionStrategy_HYBRID_FUSION_STRATEGY_WEIGHTED_RECIPROCAL_RANK, RequireBoth: requireBoth}, Lexical: &clientv1.LexicalSearchOptions{CandidateCount: lexicalCandidates}, Semantic: semantic})
+	lexical := &clientv1.LexicalSearchOptions{CandidateCount: lexicalCandidates}
+	if query := strings.TrimSpace(lexicalQuery); query != "" {
+		lexical.Query = stringPtr(query)
+	}
+	res, err := clientv1.NewSearchServiceClient(conn).Search(authCtx, &clientv1.SearchRequest{SpaceId: spaceID.String(), DomainId: domainID, Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID, PageSize: pageSize, PageToken: pageToken, AllowStale: allowStale, MaxRevisionLag: maxLag, IncludeDiagnostics: diagnostics, Filters: filters, Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: lexicalWeight, SemanticWeight: semanticWeight, FusionStrategy: clientv1.HybridFusionStrategy_HYBRID_FUSION_STRATEGY_WEIGHTED_RECIPROCAL_RANK, RequireBoth: requireBoth}, Lexical: lexical, Semantic: semantic})
 	if err != nil {
 		return err
 	}
 	return printSearchResponse(a, res, diagnostics)
+}
+
+func validateHybridSearchQueries(lexicalQuery string, semanticQuery string, lexicalWeight float64, semanticWeight float64, requireBoth bool) error {
+	if lexicalWeight < 0 || semanticWeight < 0 {
+		return fmt.Errorf("hybrid weights must be non-negative")
+	}
+	useDefaults := lexicalWeight == 0 && semanticWeight == 0
+	if (useDefaults || lexicalWeight > 0 || requireBoth) && strings.TrimSpace(lexicalQuery) == "" {
+		return fmt.Errorf("--lexical-query is required when lexical retrieval is enabled")
+	}
+	if (useDefaults || semanticWeight > 0 || requireBoth) && strings.TrimSpace(semanticQuery) == "" {
+		return fmt.Errorf("--semantic-query is required when semantic retrieval is enabled")
+	}
+	return nil
 }
 
 func printSearchResponse(a *app.App, res *clientv1.SearchResponse, diagnostics bool) error {

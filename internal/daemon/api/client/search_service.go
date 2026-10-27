@@ -21,9 +21,7 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
@@ -296,73 +294,18 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 	return candidates, append([]string(nil), result.Warnings...), nil
 }
 
-const (
-	lexicalSearchQueryFieldNumber  protoreflect.FieldNumber = 2
-	semanticSearchQueryFieldNumber protoreflect.FieldNumber = 5
-)
-
 func effectiveLexicalSearchQuery(req *clientv1.SearchRequest) string {
 	if req == nil {
 		return ""
 	}
-	if override := strings.TrimSpace(lexicalSearchQueryOverride(req.GetLexical())); override != "" {
-		return override
-	}
-	return strings.TrimSpace(req.GetQuery())
+	return strings.TrimSpace(req.GetLexical().GetQuery())
 }
 
 func effectiveSemanticSearchQuery(req *clientv1.SearchRequest) string {
 	if req == nil {
 		return ""
 	}
-	if override := strings.TrimSpace(semanticSearchQueryOverride(req.GetSemantic())); override != "" {
-		return override
-	}
-	return strings.TrimSpace(req.GetQuery())
-}
-
-// The override readers accept channel-specific query fields from both current
-// generated protobufs and older clients that preserve them as unknown wire data
-// during the additive API rollout.
-func lexicalSearchQueryOverride(options *clientv1.LexicalSearchOptions) string {
-	if options == nil {
-		return ""
-	}
-	return searchOptionQuery(options.ProtoReflect(), lexicalSearchQueryFieldNumber)
-}
-
-func semanticSearchQueryOverride(options *clientv1.SemanticSearchOptions) string {
-	if options == nil {
-		return ""
-	}
-	return searchOptionQuery(options.ProtoReflect(), semanticSearchQueryFieldNumber)
-}
-
-func searchOptionQuery(message protoreflect.Message, fieldNumber protoreflect.FieldNumber) string {
-	if field := message.Descriptor().Fields().ByNumber(fieldNumber); field != nil && message.Has(field) {
-		return message.Get(field).String()
-	}
-	unknown := message.GetUnknown()
-	for len(unknown) > 0 {
-		number, wireType, tagLength := protowire.ConsumeTag(unknown)
-		if tagLength < 0 {
-			return ""
-		}
-		unknown = unknown[tagLength:]
-		if number == protowire.Number(fieldNumber) && wireType == protowire.BytesType {
-			value, valueLength := protowire.ConsumeString(unknown)
-			if valueLength < 0 {
-				return ""
-			}
-			return value
-		}
-		valueLength := protowire.ConsumeFieldValue(number, wireType, unknown)
-		if valueLength < 0 {
-			return ""
-		}
-		unknown = unknown[valueLength:]
-	}
-	return ""
+	return strings.TrimSpace(req.GetSemantic().GetQuery())
 }
 
 func (s *SearchService) semanticSearchEnabled(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID) (bool, error) {
