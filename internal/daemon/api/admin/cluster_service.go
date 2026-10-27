@@ -331,7 +331,7 @@ func (s *AdminClusterService) clusterAdmissionRequired() bool {
 	if s == nil || s.cluster == nil {
 		return false
 	}
-	if s.raftGroups != nil || s.clusterConfig.RaftNodeCount == 1 || len(s.clusterConfig.RaftNodeAddrs) > 0 {
+	if s.raftRuntimeConfigured() {
 		return true
 	}
 	return s.cluster.State() != model.NodeStateStandalone
@@ -372,7 +372,7 @@ func (s *AdminClusterService) raftRuntimeConfigured() bool {
 	if s == nil {
 		return false
 	}
-	return s.raftGroups != nil || s.clusterConfig.RaftNodeCount > 0 || s.clusterConfig.RaftPartitionCount > 0 || s.clusterConfig.RaftLocalNodeID > 0 || len(s.clusterConfig.RaftNodeAddrs) > 0
+	return s.raftGroups != nil || (s.cluster != nil && s.cluster.RaftRuntimeConfigured())
 }
 
 func (s *AdminClusterService) localRaftGroupsHaveLeaders() (bool, string) {
