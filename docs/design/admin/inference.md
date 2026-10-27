@@ -117,14 +117,33 @@ Daemon-backed package application:
 ```sh
 ./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
   inference package apply examples/inference/standard-openai-embeddings.json
+./bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' \
+  inference package apply examples/inference/standard-openai-chat.json
 ```
 
-Example packages live under `examples/inference/`. mycel examples should focus on semantic/embedding resources, for example:
+Example packages live under `examples/inference/`:
 
 - `standard-openai-embeddings.json`
+- `standard-openai-chat.json` for daemon-owned automation and image-analysis workloads
 - `deterministic-token-basis-v1.json` (test-only, local fake connector)
 
-Chat catalogs/packages belong in applications such as Knot PKM, not in mycel.
+The bundled OpenAI packages were reviewed against the official provider model
+pages on 2026-10-27. The chat package pins the concrete model IDs
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; it does not use the moving
+`gpt-5.6` alias. Each has a 1,050,000-token context window, a 128,000-token
+maximum output, text and image input, and uses `max_completion_tokens` with the
+OpenAI-compatible Chat Completions connector. JSON-object response mode is
+supported by that connector; tool definitions and tool calls are not currently
+serialized by the Mycel connector, so the package does not advertise connector
+tool-call support.
+
+The embedding package pins `text-embedding-3-small` at 1,536 dimensions and
+`text-embedding-3-large` at 3,072 dimensions. OpenAI supports shortening these
+models with a request `dimensions` parameter, but Mycel's current connector does
+not send that parameter and semantic vector spaces require one declared fixed
+dimension. The bundled capabilities therefore use the provider defaults. Source
+references are retained in each model's metadata under `documentation_url`; the
+package endpoint metadata records the verification date.
 
 Daemon-backed discovery:
 

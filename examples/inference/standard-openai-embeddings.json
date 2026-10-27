@@ -1,6 +1,6 @@
 {
   "name": "standard-openai-embeddings",
-  "version": "2026-06",
+  "version": "2026-10",
   "source": "examples/inference/standard-openai-embeddings.json",
   "model_endpoints": [
     {
@@ -14,7 +14,10 @@
       "operations": ["embeddings"],
       "enabled": true,
       "metadata": {
-        "provider": "openai"
+        "provider": "openai",
+        "docs": "https://developers.openai.com/api/docs/guides/embeddings",
+        "verified_at": "2026-10-27",
+        "connector_uses_fixed_dimensions": true
       }
     }
   ],
@@ -30,7 +33,12 @@
       "output_modalities": ["embedding"],
       "metadata": {
         "provider": "openai",
-        "display_name": "OpenAI text-embedding-3-small"
+        "display_name": "OpenAI text-embedding-3-small",
+        "max_input_tokens": 8192,
+        "default_dimensions": 1536,
+        "provider_supports_adjustable_dimensions": true,
+        "connector_uses_fixed_dimensions": true,
+        "documentation_url": "https://developers.openai.com/api/docs/models/text-embedding-3-small"
       }
     },
     {
@@ -44,7 +52,12 @@
       "output_modalities": ["embedding"],
       "metadata": {
         "provider": "openai",
-        "display_name": "OpenAI text-embedding-3-large"
+        "display_name": "OpenAI text-embedding-3-large",
+        "max_input_tokens": 8192,
+        "default_dimensions": 3072,
+        "provider_supports_adjustable_dimensions": true,
+        "connector_uses_fixed_dimensions": true,
+        "documentation_url": "https://developers.openai.com/api/docs/models/text-embedding-3-large"
       }
     }
   ],
@@ -62,13 +75,21 @@
       "model_endpoint": "openai",
       "model": "openai/text-embedding-3-small",
       "operation": "embeddings",
-      "enabled": true
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 8192,
+        "dimensions": 1536
+      }
     },
     {
       "model_endpoint": "openai",
       "model": "openai/text-embedding-3-large",
       "operation": "embeddings",
-      "enabled": true
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 8192,
+        "dimensions": 3072
+      }
     }
   ]
 }

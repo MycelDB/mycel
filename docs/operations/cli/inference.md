@@ -26,6 +26,7 @@ paging is exposed by the daemon API.
 
 ```sh
 mycel inference package apply examples/inference/standard-openai-embeddings.json
+mycel inference package apply examples/inference/standard-openai-chat.json
 mycel inference package list
 
 mycel inference endpoint list
@@ -66,7 +67,7 @@ mycel inference grant openai-key \
   --semantic-rule notes-search \
   --operation chat \
   --model-endpoint openai \
-  --model gpt-4o-mini \
+  --model openai/gpt-5.6-terra \
   --grantee-principal-id automation \
   --allow-on-behalf-of-principal-id <owner-principal-id>
 
@@ -89,7 +90,10 @@ completion field, set model or capability metadata:
 ```
 
 Capability metadata takes precedence over model metadata. The bundled
-`standard-openai-chat` package sets this for GPT-5.6 capabilities.
+`standard-openai-chat` package sets this for the concrete `gpt-5.6-sol`,
+`gpt-5.6-terra`, and `gpt-5.6-luna` capabilities. Those package entries were
+reviewed against the official provider model pages on 2026-10-27 and intentionally
+do not use the moving `gpt-5.6` alias.
 
 ## Profiles and policies
 
@@ -99,7 +103,7 @@ mycel inference profile create summarize-page \
   --operation chat \
   --purpose automation \
   --domain default \
-  --model gpt-4o-mini \
+  --model openai/gpt-5.6-terra \
   --privacy-class third_party
 
 mycel inference profile list --space-id <space-id> --purpose automation
