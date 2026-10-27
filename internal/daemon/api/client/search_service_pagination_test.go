@@ -25,8 +25,7 @@ import (
 
 func TestLexicalSearchUsesChannelQueryWithoutLegacyQuery(t *testing.T) {
 	fixture := newSearchPaginationFixture(1)
-	lexicalOptions := &clientv1.LexicalSearchOptions{}
-	setLexicalSearchQueryOverrideForTest(lexicalOptions, `"raft" OR "recovery"`)
+	lexicalOptions := &clientv1.LexicalSearchOptions{Query: proto.String(`"raft" OR "recovery"`)}
 	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(),
 		Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Lexical: lexicalOptions,
@@ -58,7 +57,7 @@ func TestSearchSelectiveFiltersReachBelowInitialCandidateWindow(t *testing.T) {
 	}
 
 	for _, mode := range []clientv1.SearchMode{clientv1.SearchMode_SEARCH_MODE_LEXICAL, clientv1.SearchMode_SEARCH_MODE_HYBRID} {
-		response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: mode, Query: "raft", Filters: filters, PageSize: 1, Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0}})
+		response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: mode, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String("raft")}, Filters: filters, PageSize: 1, Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0}})
 		if err != nil {
 			t.Fatalf("Search(%s) error = %v", mode, err)
 		}
@@ -80,8 +79,7 @@ func TestHybridSearchSelectiveSemanticFilterReachesBelowInitialWindow(t *testing
 		semantic.results = append(semantic.results, semanticsearch.SearchResult{NodeID: graph.NodeID(uuid.MustParse(item.NodeID)), Score: float64(len(fixture.lexical.results) - i)})
 	}
 	fixture.service.semantic = semantic
-	semanticOptions := &clientv1.SemanticSearchOptions{}
-	setSemanticSearchQueryOverrideForTest(semanticOptions, "how does raft recover")
+	semanticOptions := &clientv1.SemanticSearchOptions{Query: proto.String("how does raft recover")}
 	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
 		PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Selected"}},
@@ -106,14 +104,12 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 		fixture.graphs.nodes[id] = node
 	}
 	lexicalQuery := `"raft" OR "recovery"`
-	lexicalOptions := &clientv1.LexicalSearchOptions{}
-	setLexicalSearchQueryOverrideForTest(lexicalOptions, lexicalQuery)
+	lexicalOptions := &clientv1.LexicalSearchOptions{Query: proto.String(lexicalQuery)}
 	semanticQuery := "how does raft recover"
-	semanticOptions := &clientv1.SemanticSearchOptions{}
-	setSemanticSearchQueryOverrideForTest(semanticOptions, semanticQuery)
+	semanticOptions := &clientv1.SemanticSearchOptions{Query: proto.String(semanticQuery)}
 	request := &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
-		Query: "raft", PageSize: 2, AllowStale: true,
+		PageSize: 2, AllowStale: true,
 		Filters:  &clientv1.SearchFilters{NodeLabels: []string{"Note"}, Properties: []*clientv1.PropertyFilter{{Path: "status", Operator: clientv1.FilterOperator_FILTER_OPERATOR_EQUALS, Values: []string{"open"}}}},
 		Hybrid:   &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0},
 		Lexical:  lexicalOptions,
@@ -158,22 +154,14 @@ func TestHybridSearchPaginationIsStableAndBoundToRequestAndRevision(t *testing.T
 	fixture.lexical.analyzerVersion = "analyzer-v1"
 	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
-	mismatch.Query = "different"
-	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("query-mismatched cursor error = %v, want InvalidArgument", err)
-	}
-	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
-	mismatch.PageToken = firstToken
-	mismatch.Lexical = &clientv1.LexicalSearchOptions{}
-	setLexicalSearchQueryOverrideForTest(mismatch.Lexical, `"raft" OR "failure"`)
+	mismatch.Lexical = &clientv1.LexicalSearchOptions{Query: proto.String(`"raft" OR "failure"`)}
 	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("lexical-query-mismatched cursor error = %v, want InvalidArgument", err)
 	}
 	mismatch = proto.Clone(request).(*clientv1.SearchRequest)
 	mismatch.PageToken = firstToken
 	changedSemanticQuery := "how does raft fail"
-	mismatch.Semantic = &clientv1.SemanticSearchOptions{}
-	setSemanticSearchQueryOverrideForTest(mismatch.Semantic, changedSemanticQuery)
+	mismatch.Semantic = &clientv1.SemanticSearchOptions{Query: proto.String(changedSemanticQuery)}
 	if _, err := fixture.service.Search(fixture.ctx, mismatch); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("semantic-query-mismatched cursor error = %v, want InvalidArgument", err)
 	}
@@ -209,7 +197,7 @@ func TestFilteredLexicalPaginationResumesAfterExaminedCandidate(t *testing.T) {
 		fixture.graphs.nodes[item.NodeID] = node
 		want = append(want, item.NodeID)
 	}
-	request := &clientv1.SearchRequest{SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Query: "raft", PageSize: 2, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}}}
+	request := &clientv1.SearchRequest{SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String("raft")}, PageSize: 2, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}}}
 	first, err := fixture.service.Search(fixture.ctx, request)
 	if err != nil {
 		t.Fatalf("Search(page 1) error = %v", err)
@@ -233,7 +221,7 @@ func TestFilteredSearchFailsClosedOnHydrationErrors(t *testing.T) {
 	fixture.graphs.revisionErr = errors.New("snapshot unavailable")
 	_, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL,
-		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}},
+		Lexical: &clientv1.LexicalSearchOptions{Query: proto.String("raft")}, PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}},
 	})
 	if err == nil {
 		t.Fatal("filtered lexical search returned nil error for snapshot failure")
@@ -243,7 +231,7 @@ func TestFilteredSearchFailsClosedOnHydrationErrors(t *testing.T) {
 	fixture.graphs.getNodeErr = errors.New("node read unavailable")
 	_, err = fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
-		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}},
+		Lexical: &clientv1.LexicalSearchOptions{Query: proto.String("raft")}, PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"Note"}},
 		Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0},
 	})
 	if err == nil {
@@ -255,7 +243,7 @@ func TestFilteredLexicalSearchBoundsHydrationAndReturnsContinuation(t *testing.T
 	fixture := newSearchPaginationFixture(1500)
 	response, err := fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL,
-		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"missing"}}, Lexical: &clientv1.LexicalSearchOptions{CandidateCount: 1},
+		PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"missing"}}, Lexical: &clientv1.LexicalSearchOptions{CandidateCount: 1, Query: proto.String("raft")},
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -272,7 +260,7 @@ func TestFilteredLexicalSearchBoundsHydrationAndReturnsContinuation(t *testing.T
 	fixture.graphs.getNodeCalls = 0
 	response, err = fixture.service.Search(fixture.ctx, &clientv1.SearchRequest{
 		SpaceId: fixture.spaceID.String(), DomainId: fixture.domainID.String(), Mode: clientv1.SearchMode_SEARCH_MODE_HYBRID,
-		Query: "raft", PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"missing"}},
+		Lexical: &clientv1.LexicalSearchOptions{Query: proto.String("raft")}, PageSize: 1, Filters: &clientv1.SearchFilters{NodeLabels: []string{"missing"}},
 		Hybrid: &clientv1.HybridSearchOptions{LexicalWeight: 1, SemanticWeight: 0},
 	})
 	if err != nil {

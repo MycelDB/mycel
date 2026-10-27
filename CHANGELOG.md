@@ -17,6 +17,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Changed
 
+- Search now requires channel-owned query text in `lexical.query` and `semantic.query`, rejects continuation tokens from the removed shared-query fallback contract, and binds new tokens only to explicit channel queries. The CLI lexical command populates `lexical.query`; hybrid search uses separate `--lexical-query` and `--semantic-query` flags (#242).
 - Non-empty semantic-rule display names are now case-insensitively unique within each space/domain. Admin collisions return `ALREADY_EXISTS`, concurrent storage mutations revalidate the authoritative catalog, and persisted catalogs or restored snapshots containing duplicate normalized names fail closed without changing the protobuf or JSON field shape (#262).
 - Admin semantic rules now require enum-only graph-change trigger events in `trigger.events`, reject `UNSPECIFIED` and unknown values, canonicalize trigger sets deterministically, and no longer accept or project legacy string events (#257). This intentionally requires regenerated clients.
 - Vector-store package application and catalog updates now use UUID identity, preserve semantic-rule references across display-name changes, reject case/whitespace-normalized collisions atomically, and never select an arbitrary duplicate legacy key (#258).
