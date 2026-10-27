@@ -1096,6 +1096,91 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 	}
 }
 
+func TestSpaceManagerSemanticRuleDisplayNamesAreUniqueWithinDomain(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	dir := t.TempDir()
+	first := NewSpaceManager()
+	if err := first.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	stale := NewSpaceManager()
+	if err := stale.Init(ctx, dir, spaceID); err != nil {
+		t.Fatal(err)
+	}
+	newRule := func(key, displayName string, domainID graph.DomainID) domainsemantic.SemanticGenerationRule {
+		return domainsemantic.SemanticGenerationRule{
+			SpaceID: spaceID, DomainID: domainID, Key: key, DisplayName: displayName, Enabled: true,
+			Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+			Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+		}
+	}
+	created, err := first.UpsertSemanticRule(ctx, newRule("first", "Journal Search", domainID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A manager opened before the first write must reload while holding the
+	// shared mutation lock rather than committing against stale catalog state.
+	_, err = stale.UpsertSemanticRule(ctx, newRule("second", "  journal SEARCH  ", domainID))
+	var conflict *SemanticRuleDisplayNameConflictError
+	if !errors.As(err, &conflict) || conflict.NormalizedValue != "journal search" || len(conflict.ConflictingIDs) != 1 || conflict.ConflictingIDs[0] != created.ID {
+		t.Fatalf("display-name collision error=%v conflict=%+v", err, conflict)
+	}
+
+	otherDomain, err := first.UpsertSemanticRule(ctx, newRule("other-domain", "JOURNAL SEARCH", graph.DomainID(uuid.New())))
+	if err != nil {
+		t.Fatalf("same name in another domain: %v", err)
+	}
+	if otherDomain.ID == created.ID {
+		t.Fatal("cross-domain create reused rule identity")
+	}
+
+	created.DisplayName = " JOURNAL SEARCH "
+	created.UpdatedAt = created.UpdatedAt.Add(time.Second)
+	updated, err := first.UpsertSemanticRule(ctx, created)
+	if err != nil {
+		t.Fatalf("retain own normalized display name: %v", err)
+	}
+	if updated.DisplayName != "JOURNAL SEARCH" || updated.ID != created.ID {
+		t.Fatalf("unexpected self-update: %+v", updated)
+	}
+
+	third, err := first.UpsertSemanticRule(ctx, newRule("third", "Third Rule", domainID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := third
+	desired.DisplayName = "journal search"
+	desired.UpdatedAt = third.UpdatedAt.Add(time.Second)
+	if _, err := first.(SemanticRuleEnabledManager).SetSemanticRuleEnabled(ctx, third, desired); !errors.As(err, &conflict) {
+		t.Fatalf("conditional rename collision error=%v, want display-name conflict", err)
+	}
+}
+
+func TestSpaceManagerRejectsDuplicatePersistedSemanticRuleDisplayNames(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	dir := t.TempDir()
+	state := semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{
+		{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "first", DisplayName: "Duplicate"},
+		{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "second", DisplayName: " duplicate "},
+	}}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, semanticRulesFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewSpaceManager()
+	if err := mgr.Init(ctx, dir, spaceID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Init() error=%v, want ErrConflict", err)
+	}
+}
+
 func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())

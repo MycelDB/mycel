@@ -38,6 +38,14 @@ embedding binding summaries, maintenance status, and physical search-index statu
 where available. Validation returns diagnostics suitable for CLI and Console
 presentation before a rule is persisted.
 
+A rule UUID is its authoritative identity. A non-empty `display_name` is an
+operator-facing label and must be unique within the rule's `space_id` and
+`domain_id` after trimming surrounding whitespace and case-folding for
+comparison. The authored casing is preserved. The same display name may be used
+in another domain or space, and blank display names remain available for callers
+that use the rule key as their visible fallback. Display names are never used as
+durable foreign keys.
+
 `DeleteSemanticRule` is explicit and reference-safe. `purge_vectors` removes
 rule vector records and derived physical search-index state for the deleted rule.
 Credential/secret management, profile discovery, grants, policies, and usage
@@ -90,7 +98,10 @@ populated alongside the typed field in responses. During migration, requests
 may supply both only when they normalize to the same set. Omitting both defaults
 to `CHANGED`; explicit `UNSPECIFIED` and unknown numeric values are rejected.
 Persisted daemon state and CLI rule files remain transport-neutral and use
-canonical event names rather than generated protobuf values.
+canonical event names rather than generated protobuf values. Persisted catalogs,
+Raft snapshots, and restored backups containing duplicate normalized non-empty
+rule display names in one space/domain are rejected rather than repaired or
+silently renamed.
 
 Embedding bindings reference Intelligence Access profiles and vector stores by
 ID whenever available. A vector-store UUID is the authoritative durable

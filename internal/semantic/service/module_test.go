@@ -3,8 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -85,6 +87,33 @@ func (f *recoveryBudgetInvoker) ReactivateBudgetScope(_ context.Context, id doma
 		}
 	}
 	return domaininference.BudgetScope{ID: id}, nil
+}
+
+func TestModuleInitRejectsDuplicatePersistedSemanticRuleDisplayNames(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	rules := map[string]any{"rules": []domainsemantic.SemanticGenerationRule{
+		{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "first", DisplayName: "Duplicate"},
+		{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "second", DisplayName: " duplicate "},
+	}}
+	data, err := json.Marshal(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semanticDir := filepath.Join(dataDir, "graphs", spaceID.String(), "semantic")
+	if err := os.MkdirAll(semanticDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semanticDir, "rules.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	module := NewModule()
+	result := module.Init(ctx, &daemonruntime.Runtime{Config: daemonconfig.Config{DataDir: dataDir}, LoggerValue: slog.Default()})
+	if result.OK || !errors.Is(result.Error, storesemantic.ErrConflict) {
+		t.Fatalf("Init() result=%+v, want semantic catalog conflict", result)
+	}
 }
 
 func TestCompleteSemanticProviderBudgetsPreflightsAllBindingsAndCompensates(t *testing.T) {

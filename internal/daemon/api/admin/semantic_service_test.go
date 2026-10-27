@@ -120,6 +120,14 @@ func newSemanticRuleServiceTest(t *testing.T) (context.Context, domainspace.Spac
 	return ctx, spaceID, space, created, global
 }
 
+func TestMapAdminSemanticErrorMapsDisplayNameConflictToAlreadyExists(t *testing.T) {
+	err := storesemantic.NewSemanticRuleDisplayNameConflict("duplicate", []uuid.UUID{uuid.New()})
+	mapped := mapAdminSemanticError(err, "create semantic rule")
+	if status.Code(mapped) != codes.AlreadyExists {
+		t.Fatalf("mapAdminSemanticError() code=%v error=%v, want AlreadyExists", status.Code(mapped), mapped)
+	}
+}
+
 func TestSemanticProviderBudgetConfigurationChangeIncludesAuthorizationInputs(t *testing.T) {
 	base := domainsemantic.SemanticGenerationRule{DomainID: graph.DomainID(uuid.New()), OwnerPrincipalID: "owner-a", Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Enabled: true, ProviderBudget: &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: "run"}}}}
 	changedDomain := base

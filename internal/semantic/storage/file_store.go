@@ -835,6 +835,9 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 		}
 		m.rules.Rules[i] = normalized
 	}
+	if err := ValidateSemanticRuleCatalog(m.rules.Rules); err != nil {
+		return err
+	}
 	if rulesChanged {
 		if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
 			return err
@@ -880,6 +883,50 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	return os.MkdirAll(filepath.Join(location, maintenanceDirName), fsperm.SharedDir)
 }
 
+// ValidateSemanticRuleCatalog rejects duplicate non-empty normalized display
+// names within a space/domain scope. It intentionally does not infer or repair
+// names: rule UUIDs remain authoritative and invalid catalogs fail closed.
+func ValidateSemanticRuleCatalog(rules []domainsemantic.SemanticGenerationRule) error {
+	type displayNameScope struct {
+		spaceID     domainspace.SpaceID
+		domainID    graphmodel.DomainID
+		displayName string
+	}
+	seen := make(map[displayNameScope][]uuid.UUID, len(rules))
+	for _, rule := range rules {
+		displayName := domainsemantic.NormalizeSemanticRuleDisplayName(rule.DisplayName)
+		if displayName == "" {
+			continue
+		}
+		scope := displayNameScope{spaceID: rule.SpaceID, domainID: rule.DomainID, displayName: displayName}
+		if ids := seen[scope]; len(ids) > 0 {
+			return NewSemanticRuleDisplayNameConflict(displayName, append(ids, rule.ID))
+		}
+		seen[scope] = []uuid.UUID{rule.ID}
+	}
+	return nil
+}
+
+func semanticRuleDisplayNameConflict(rules []domainsemantic.SemanticGenerationRule, candidate domainsemantic.SemanticGenerationRule, self int) error {
+	displayName := domainsemantic.NormalizeSemanticRuleDisplayName(candidate.DisplayName)
+	if displayName == "" {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, 1)
+	for i, existing := range rules {
+		if i == self || existing.SpaceID != candidate.SpaceID || existing.DomainID != candidate.DomainID {
+			continue
+		}
+		if domainsemantic.NormalizeSemanticRuleDisplayName(existing.DisplayName) == displayName {
+			ids = append(ids, existing.ID)
+		}
+	}
+	if len(ids) > 0 {
+		return NewSemanticRuleDisplayNameConflict(displayName, ids)
+	}
+	return nil
+}
+
 func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err
@@ -891,6 +938,14 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 	rule = validation.Rule
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var latest semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if err := ValidateSemanticRuleCatalog(latest.Rules); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.rules = latest
 	now := time.Now().UTC()
 	if rule.ID == uuid.Nil {
 		rule.ID = newID()
@@ -902,13 +957,13 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 		rule.UpdatedAt = now
 	}
 	match := -1
-	for i, existing := range m.rules.Rules {
+	for i, existing := range latest.Rules {
 		if existing.ID == rule.ID {
 			match = i
 			break
 		}
 	}
-	for i, existing := range m.rules.Rules {
+	for i, existing := range latest.Rules {
 		if existing.SpaceID == rule.SpaceID && existing.DomainID == rule.DomainID && normalizeKey(existing.Key) == rule.Key {
 			if match >= 0 && i != match {
 				return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule key conflicts with existing rule", ErrInvalidInput)
@@ -917,14 +972,22 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 			break
 		}
 	}
-	if match >= 0 {
-		rule.ID = m.rules.Rules[match].ID
-		rule.CreatedAt = m.rules.Rules[match].CreatedAt
-		m.rules.Rules[match] = rule
-		return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
+	if err := semanticRuleDisplayNameConflict(latest.Rules, rule, match); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
 	}
-	m.rules.Rules = append(m.rules.Rules, rule)
-	return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
+	next := semanticRulesState{Rules: append([]domainsemantic.SemanticGenerationRule(nil), latest.Rules...)}
+	if match >= 0 {
+		rule.ID = latest.Rules[match].ID
+		rule.CreatedAt = latest.Rules[match].CreatedAt
+		next.Rules[match] = rule
+	} else {
+		next.Rules = append(next.Rules, rule)
+	}
+	if err := m.persist(m.path(semanticRulesFileName), next); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.rules = next
+	return rule, nil
 }
 
 func semanticRuleStateEqual(left, right domainsemantic.SemanticGenerationRule) (bool, error) {
@@ -946,6 +1009,12 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected doma
 	if expected.ID == uuid.Nil || desired.ID != expected.ID {
 		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: matching semantic_rule_id values are required", ErrInvalidInput)
 	}
+	expected = domainsemantic.NormalizeSemanticGenerationRule(expected)
+	validation := domainsemantic.ValidateSemanticGenerationRuleForStorage(m.spaceID, desired)
+	if !validation.Valid {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: %s", ErrInvalidInput, semanticValidationMessage(validation.Diagnostics))
+	}
+	desired = validation.Rule
 	expected.UpdatedAt = expected.UpdatedAt.UTC()
 	desired.UpdatedAt = desired.UpdatedAt.UTC()
 	if expected.UpdatedAt.IsZero() || desired.UpdatedAt.IsZero() || !desired.UpdatedAt.After(expected.UpdatedAt) {
@@ -955,6 +1024,9 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected doma
 	defer m.mu.Unlock()
 	var latest semanticRulesState
 	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if err := ValidateSemanticRuleCatalog(latest.Rules); err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err
 	}
 	m.rules = latest
@@ -976,8 +1048,11 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected doma
 		if !equal {
 			return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule changed since it was read", ErrConflict)
 		}
+		if err := semanticRuleDisplayNameConflict(m.rules.Rules, desired, i); err != nil {
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
 		m.rules.Rules[i] = desired
-		if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
+		if err := m.persist(m.path(semanticRulesFileName), m.rules); err != nil {
 			m.rules.Rules[i] = rule
 			return domainsemantic.SemanticGenerationRule{}, err
 		}

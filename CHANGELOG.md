@@ -17,6 +17,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Changed
 
+- Non-empty semantic-rule display names are now case-insensitively unique within each space/domain. Admin collisions return `ALREADY_EXISTS`, concurrent storage mutations revalidate the authoritative catalog, and persisted catalogs or restored snapshots containing duplicate normalized names fail closed without changing the protobuf or JSON field shape (#262).
 - Admin semantic rules now accept typed graph-change trigger events, reject unknown or conflicting typed/legacy representations, canonicalize trigger sets deterministically, and dual-project equivalent legacy strings for older clients (#257).
 - Vector-store package application and catalog updates now use UUID identity, preserve semantic-rule references across display-name changes, reject case/whitespace-normalized collisions atomically, and never select an arbitrary duplicate legacy key (#258).
 - Procedure-inference RPCs are additive for existing clients; the new CLI audit/control commands require the matching unreleased API/SDK contract merged through `mycel-api` #43, Go SDK #32, and Rust SDK #31. The daemon release API ref pins the exact merged contract until an approved API tag exists. After procedure-inference/control Raft or snapshot state is written, downgrade requires a supported full backup/restore path and an older daemon must not consume the newer retained state directly.

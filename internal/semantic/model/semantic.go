@@ -374,6 +374,12 @@ func NormalizeSemanticRuleKey(key string) string {
 	return strings.ToLower(strings.TrimSpace(key))
 }
 
+// NormalizeSemanticRuleDisplayName returns the comparison form used to enforce
+// display-name uniqueness. The authored casing remains preserved on the rule.
+func NormalizeSemanticRuleDisplayName(displayName string) string {
+	return strings.ToLower(strings.TrimSpace(displayName))
+}
+
 func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTriggerPolicy {
 	if len(policy.Events) == 0 {
 		policy.Events = []string{DefaultSemanticTriggerEventChanged}

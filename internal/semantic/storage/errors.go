@@ -46,3 +46,21 @@ func NewVectorStoreConflict(field VectorStoreConflictField, normalizedValue stri
 	copied := append([]uuid.UUID(nil), ids...)
 	return &VectorStoreConflictError{Field: field, NormalizedValue: strings.TrimSpace(normalizedValue), ConflictingIDs: copied, Legacy: legacy}
 }
+
+// SemanticRuleDisplayNameConflictError reports a semantic rule display-name
+// collision without exposing the conflicting rule identities in its message.
+type SemanticRuleDisplayNameConflictError struct {
+	NormalizedValue string
+	ConflictingIDs  []uuid.UUID
+}
+
+func (e *SemanticRuleDisplayNameConflictError) Error() string {
+	return fmt.Sprintf("%s: semantic rule display_name already exists", ErrConflict)
+}
+
+func (e *SemanticRuleDisplayNameConflictError) Unwrap() error { return ErrConflict }
+
+func NewSemanticRuleDisplayNameConflict(normalizedValue string, ids []uuid.UUID) error {
+	copied := append([]uuid.UUID(nil), ids...)
+	return &SemanticRuleDisplayNameConflictError{NormalizedValue: strings.TrimSpace(normalizedValue), ConflictingIDs: copied}
+}
