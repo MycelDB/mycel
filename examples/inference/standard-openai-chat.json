@@ -1,6 +1,6 @@
 {
   "name": "standard-openai-chat",
-  "version": "2026-08",
+  "version": "2026-10",
   "source": "examples/inference/standard-openai-chat.json",
   "model_endpoints": [
     {
@@ -8,192 +8,247 @@
       "name": "OpenAI",
       "connector_type": "openai-compatible",
       "endpoint_url": "https://api.openai.com/v1",
-      "network_class": "public_internet",
+      "network_class": "external_https",
       "privacy_class": "third_party",
-      "auth_modes": ["api_key"],
-      "operations": ["chat", "summarize", "classify", "image_analysis"],
+      "auth_modes": [
+        "api_key"
+      ],
+      "operations": [
+        "chat",
+        "summarize",
+        "classify",
+        "image_analysis"
+      ],
       "enabled": true,
       "metadata": {
         "provider": "openai",
-        "docs": "https://platform.openai.com/docs",
-        "package_notes": "OpenAI 5.6 generation models for graph automation chat, summarization, and classification."
+        "docs": "https://developers.openai.com/api/docs/models",
+        "verified_at": "2026-10-27",
+        "connector_supports_json_mode": true,
+        "connector_supports_tool_calls": false,
+        "package_notes": "Concrete OpenAI GPT-5.6 model IDs for supported chat-like Mycel operations."
       }
     }
   ],
   "models": [
     {
-      "key": "openai/gpt-5.6-mini",
+      "key": "openai/gpt-5.6-sol",
       "kind": "generative",
-      "model_name": "gpt-5.6-mini",
-      "connector_types": ["openai-compatible"],
-      "input_modalities": ["text"],
-      "output_modalities": ["text", "json"],
-      "context_tokens": 1047576,
-      "max_output_tokens": 32768,
+      "model_name": "gpt-5.6-sol",
+      "connector_types": [
+        "openai-compatible"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text",
+        "json"
+      ],
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000,
       "enabled": true,
       "metadata": {
         "provider": "openai",
-        "display_name": "OpenAI GPT-5.6 mini",
-        "recommended_for": ["graph automation", "summarization", "classification", "cost-sensitive workflows"],
-        "output_token_parameter": "max_completion_tokens"
+        "display_name": "OpenAI GPT-5.6 Sol",
+        "recommended_for": ["complex graph automation", "long-context synthesis", "high-accuracy classification", "image analysis"],
+        "context_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens",
+        "supports_json_mode": true,
+        "documentation_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
       }
     },
     {
-      "key": "openai/gpt-5.6",
+      "key": "openai/gpt-5.6-terra",
       "kind": "generative",
-      "model_name": "gpt-5.6",
-      "connector_types": ["openai-compatible"],
-      "input_modalities": ["text", "image"],
-      "output_modalities": ["text", "json"],
-      "context_tokens": 1047576,
-      "max_output_tokens": 32768,
+      "model_name": "gpt-5.6-terra",
+      "connector_types": [
+        "openai-compatible"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text",
+        "json"
+      ],
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000,
       "enabled": true,
       "metadata": {
         "provider": "openai",
-        "display_name": "OpenAI GPT-5.6",
-        "recommended_for": ["graph automation", "high-quality summarization", "structured extraction", "image analysis"],
-        "output_token_parameter": "max_completion_tokens"
+        "display_name": "OpenAI GPT-5.6 Terra",
+        "recommended_for": ["graph automation", "summarization", "classification", "image analysis", "balanced-cost workflows"],
+        "context_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens",
+        "supports_json_mode": true,
+        "documentation_url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
       }
     },
     {
-      "key": "openai/gpt-5.6-pro",
+      "key": "openai/gpt-5.6-luna",
       "kind": "generative",
-      "model_name": "gpt-5.6-pro",
-      "connector_types": ["openai-compatible"],
-      "input_modalities": ["text"],
-      "output_modalities": ["text", "json"],
-      "context_tokens": 1047576,
-      "max_output_tokens": 65536,
+      "model_name": "gpt-5.6-luna",
+      "connector_types": [
+        "openai-compatible"
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "output_modalities": [
+        "text",
+        "json"
+      ],
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000,
       "enabled": true,
       "metadata": {
         "provider": "openai",
-        "display_name": "OpenAI GPT-5.6 pro",
-        "recommended_for": ["complex graph automation", "long-context synthesis", "high-accuracy classification"],
-        "output_token_parameter": "max_completion_tokens"
+        "display_name": "OpenAI GPT-5.6 Luna",
+        "recommended_for": ["graph automation", "summarization", "classification", "image analysis", "cost-sensitive high-volume workflows"],
+        "context_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens",
+        "supports_json_mode": true,
+        "documentation_url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
       }
     }
   ],
   "model_endpoint_capabilities": [
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6-mini",
+      "model": "openai/gpt-5.6-sol",
       "operation": "chat",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "supports_tool_calls": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     },
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6-mini",
+      "model": "openai/gpt-5.6-sol",
       "operation": "summarize",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     },
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6-mini",
+      "model": "openai/gpt-5.6-sol",
       "operation": "classify",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     },
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6",
-      "operation": "chat",
-      "enabled": true,
-      "metadata": {
-        "supports_json_mode": true,
-        "supports_tool_calls": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
-        "output_token_parameter": "max_completion_tokens"
-      }
-    },
-    {
-      "model_endpoint": "openai",
-      "model": "openai/gpt-5.6",
-      "operation": "summarize",
-      "enabled": true,
-      "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
-        "output_token_parameter": "max_completion_tokens"
-      }
-    },
-    {
-      "model_endpoint": "openai",
-      "model": "openai/gpt-5.6",
-      "operation": "classify",
-      "enabled": true,
-      "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
-        "output_token_parameter": "max_completion_tokens"
-      }
-    },
-    {
-      "model_endpoint": "openai",
-      "model": "openai/gpt-5.6",
+      "model": "openai/gpt-5.6-sol",
       "operation": "image_analysis",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 32768,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     },
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6-pro",
+      "model": "openai/gpt-5.6-terra",
       "operation": "chat",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "supports_tool_calls": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 65536,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     },
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6-pro",
+      "model": "openai/gpt-5.6-terra",
       "operation": "summarize",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 65536,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     },
     {
       "model_endpoint": "openai",
-      "model": "openai/gpt-5.6-pro",
+      "model": "openai/gpt-5.6-terra",
       "operation": "classify",
       "enabled": true,
       "metadata": {
-        "supports_json_mode": true,
-        "max_input_tokens": 1047576,
-        "max_output_tokens": 65536,
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens"
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-terra",
+      "operation": "image_analysis",
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens"
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-luna",
+      "operation": "chat",
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens"
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-luna",
+      "operation": "summarize",
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens"
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-luna",
+      "operation": "classify",
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "output_token_parameter": "max_completion_tokens"
+      }
+    },
+    {
+      "model_endpoint": "openai",
+      "model": "openai/gpt-5.6-luna",
+      "operation": "image_analysis",
+      "enabled": true,
+      "metadata": {
+        "max_input_tokens": 1050000,
+        "max_output_tokens": 128000,
         "output_token_parameter": "max_completion_tokens"
       }
     }

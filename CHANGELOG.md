@@ -17,6 +17,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Changed
 
+- Refreshed the bundled OpenAI inference packages to use the concrete supported `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` IDs with verified 1,050,000-token context, 128,000-token output, image-input, operation, and `max_completion_tokens` metadata; retained the supported `text-embedding-3-small` and `text-embedding-3-large` entries with verified dimensions and removed unsupported or moving GPT-5.6 names (#261).
 - Search now requires channel-owned query text in `lexical.query` and `semantic.query`, rejects continuation tokens from the removed shared-query fallback contract, and binds new tokens only to explicit channel queries. The CLI lexical command populates `lexical.query`; hybrid search uses separate `--lexical-query` and `--semantic-query` flags (#242).
 - Non-empty semantic-rule display names are now case-insensitively unique within each space/domain. Admin collisions return `ALREADY_EXISTS`, concurrent storage mutations revalidate the authoritative catalog, and persisted catalogs or restored snapshots containing duplicate normalized names fail closed without changing the protobuf or JSON field shape (#262).
 - Admin semantic rules now require enum-only graph-change trigger events in `trigger.events`, reject `UNSPECIFIED` and unknown values, canonicalize trigger sets deterministically, and no longer accept or project legacy string events (#257). This intentionally requires regenerated clients.

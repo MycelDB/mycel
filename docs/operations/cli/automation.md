@@ -164,7 +164,7 @@ mycel inference profile create image-attachment-summary \
   --domain default \
   --operation image_analysis \
   --purpose automation \
-  --model openai/gpt-5.6 \
+  --model openai/gpt-5.6-sol \
   --privacy-class third_party \
   --max-output-tokens 512
 
@@ -173,7 +173,7 @@ mycel inference grant openai-key \
   --domain default \
   --operation image_analysis \
   --model-endpoint openai \
-  --model openai/gpt-5.6 \
+  --model openai/gpt-5.6-sol \
   --grantee-principal-id automation \
   --allow-on-behalf-of-principal-id <owner-principal-id>
 
@@ -214,9 +214,9 @@ RETURN i.properties.name, s.payload.text
 FETCH FIRST 20 ROWS ONLY
 ```
 
-The bundled OpenAI package marks GPT-5.6 capabilities with
-`output_token_parameter=max_completion_tokens`, so profiles can use
-`--max-output-tokens` with models that reject legacy `max_tokens`.
+The bundled OpenAI package marks its concrete GPT-5.6 Sol, Terra, and Luna
+capabilities with `output_token_parameter=max_completion_tokens`, so profiles
+can use `--max-output-tokens` with models that reject legacy `max_tokens`.
 
 ## Procedure control and inference audit evidence
 
