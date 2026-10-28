@@ -239,6 +239,21 @@ func TestPlannerPreservesInferenceAuthorizationDenialWhenAllBindingsSkipped(t *t
 	}
 }
 
+func TestPlannerPreservesInferenceAuthorizationDenialAlongsideRebuildBlockedBinding(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "mixed", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID), env.binding("summary", env.vectorStore.ID)})
+	if _, err := env.spaceMgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: rule.ID, State: "stale", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildState: "required"}}}); err != nil {
+		t.Fatal(err)
+	}
+	env.connector.denyBindings = map[string]error{rule.ID.String() + "/summary": inferenceruntime.ErrDenied}
+
+	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if !errors.Is(err, inferenceruntime.ErrDenied) {
+		t.Fatalf("expected inference authorization denial, got %v", err)
+	}
+}
+
 func TestPlannerAllowsSuccessfulBindingAlongsideInferenceDenial(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)

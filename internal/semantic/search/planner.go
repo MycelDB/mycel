@@ -66,6 +66,7 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		perBindingScanLimit++
 	}
 	successfulSearches := 0
+	completedVectorSearches := 0
 	var authorizationDenied error
 	for _, item := range selected {
 		if item.rebuildRequired {
@@ -107,6 +108,7 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 			return res, err
 		}
 		successfulSearches++
+		completedVectorSearches++
 		if len(results) > perBindingLimit {
 			res.CandidateScanTruncated = true
 			results = results[:perBindingLimit]
@@ -142,10 +144,10 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 	}
 	p.observeStage("merge-rank-results")
 	res.Results = mergeAndRank(res.Results, in.Limit)
+	if authorizationDenied != nil && completedVectorSearches == 0 {
+		return res, authorizationDenied
+	}
 	if successfulSearches == 0 {
-		if authorizationDenied != nil {
-			return res, authorizationDenied
-		}
 		return res, fmt.Errorf("all semantic search bindings were skipped or unavailable")
 	}
 	p.observeStage("complete")
