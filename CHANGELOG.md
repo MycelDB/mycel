@@ -8,7 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
-- Semantic inference authorization denials now return `PermissionDenied` for both local and Raft-forwarded searches. The internal semantic-read boundary preserves categorized gRPC status codes instead of relabeling a leader's denial as `Internal`.
+- Semantic inference authorization denials now survive the planner's all-bindings-skipped fallback and return `PermissionDenied` for both local and Raft-forwarded searches. Partial search remains available when another binding succeeds, and the internal semantic-read boundary preserves categorized gRPC status codes instead of relabeling a leader's denial as `Internal`.
 
 ## [v0.21.0] - 2026-10-27
 
