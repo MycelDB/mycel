@@ -11,12 +11,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type raftSemanticReadRequest struct {
@@ -495,12 +498,19 @@ func (m *Module) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID strin
 		}
 		v, err := m.searchLocal(ctx, req.Search)
 		if err != nil {
-			return nil, err
+			return nil, raftSemanticSearchError(err)
 		}
 		return json.Marshal(raftSemanticSearchResponse{Result: v})
 	default:
 		return nil, fmt.Errorf("unsupported raft semantic read op %q", req.Op)
 	}
+}
+
+func raftSemanticSearchError(err error) error {
+	if errors.Is(err, inferenceruntime.ErrDenied) {
+		return status.Error(codes.PermissionDenied, "semantic inference authorization denied")
+	}
+	return err
 }
 
 func newRaftSemanticBackfillResponse(result semanticbackfill.Result) raftSemanticBackfillResponse {

@@ -17,6 +17,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	identity "github.com/myceldb/mycel/internal/identity/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	semanticdiagnostics "github.com/myceldb/mycel/internal/semantic/diagnostics"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
@@ -597,6 +598,9 @@ func mapSemanticError(err error, action string) error {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.Error(codes.Unavailable, err.Error())
+	}
+	if errors.Is(err, inferenceruntime.ErrDenied) {
+		return status.Error(codes.PermissionDenied, "semantic inference authorization denied")
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "not found") {

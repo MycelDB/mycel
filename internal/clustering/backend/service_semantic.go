@@ -22,6 +22,9 @@ func (s *Service) ExecuteRaftSemanticRead(ctx context.Context, req *clusterpb.Ex
 	}
 	payload, err := reader.ExecuteLocalRaftSemanticRead(ctx, req.GetSpaceId(), req.GetPayload())
 	if err != nil {
+		if semanticStatus, ok := status.FromError(err); ok && semanticStatus.Code() != codes.Unknown {
+			return nil, semanticStatus.Err()
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &clusterpb.ExecuteRaftSemanticReadResponse{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, Payload: payload}, nil
