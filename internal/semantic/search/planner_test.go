@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	identity "github.com/myceldb/mycel/internal/identity/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	"github.com/myceldb/mycel/internal/semantic/connectors"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
@@ -223,6 +224,36 @@ func TestPlannerAllBindingsSkippedReturnsError(t *testing.T) {
 	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
 	if err == nil || !strings.Contains(err.Error(), "all semantic search bindings") {
 		t.Fatalf("expected all-skipped error, got %v", err)
+	}
+}
+
+func TestPlannerPreservesInferenceAuthorizationDenialWhenAllBindingsSkipped(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "denied", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
+	env.connector.denyBindings = map[string]error{rule.ID.String() + "/search": inferenceruntime.ErrDenied}
+
+	_, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if !errors.Is(err, inferenceruntime.ErrDenied) {
+		t.Fatalf("expected inference authorization denial, got %v", err)
+	}
+}
+
+func TestPlannerAllowsSuccessfulBindingAlongsideInferenceDenial(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	rule := env.addRule(t, "mixed", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID), env.binding("summary", env.vectorStore.ID)})
+	if _, err := env.vector.Upsert(ctx, env.record(rule.ID, "search", graph.NodeID(uuid.New()), []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))); err != nil {
+		t.Fatal(err)
+	}
+	env.connector.denyBindings = map[string]error{rule.ID.String() + "/summary": inferenceruntime.ErrDenied}
+
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, Text: "query", Limit: 10})
+	if err != nil {
+		t.Fatalf("expected successful binding to preserve partial search, got %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0].EmbeddingBindingKey != "search" {
+		t.Fatalf("unexpected partial-search result: %+v", result.Results)
 	}
 }
 

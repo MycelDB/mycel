@@ -66,6 +66,7 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		perBindingScanLimit++
 	}
 	successfulSearches := 0
+	var authorizationDenied error
 	for _, item := range selected {
 		if item.rebuildRequired {
 			addWarning(&res, Warning{Code: "semantic_generation_stale", Message: fmt.Sprintf("rule %s binding %q requires rebuild", item.rule.Key, item.binding.Key), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key})
@@ -79,6 +80,9 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return res, ctxErr
+			}
+			if authorizationDenied == nil && connectors.IsInferenceDenied(err) {
+				authorizationDenied = err
 			}
 			code := embeddingWarningCode(err)
 			addWarning(&res, Warning{Code: code, Message: fmt.Sprintf("rule %s binding %q skipped: %s", item.rule.Key, item.binding.Key, code), SemanticRuleID: item.rule.ID, EmbeddingBindingKey: item.binding.Key, Retryable: true})
@@ -139,6 +143,9 @@ func (p Planner) Search(ctx context.Context, in Input) (Result, error) {
 	p.observeStage("merge-rank-results")
 	res.Results = mergeAndRank(res.Results, in.Limit)
 	if successfulSearches == 0 {
+		if authorizationDenied != nil {
+			return res, authorizationDenied
+		}
 		return res, fmt.Errorf("all semantic search bindings were skipped or unavailable")
 	}
 	p.observeStage("complete")
