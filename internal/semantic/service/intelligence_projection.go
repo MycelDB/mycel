@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -132,6 +133,52 @@ func (m *Module) projectSemanticGlobalMutation(ctx context.Context, r semanticMu
 		var v domainsemantic.InferenceCredentialID
 		_ = json.Unmarshal(r.Payload, &v)
 		err = projector.DeleteDerivedCredential(ctx, domaininference.CredentialID(v))
+	case "credential.create":
+		var v credentialCreateMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		result, resultErr := m.credentialLifecycleResult(ctx, v.Credential.ID, v.Credential.Key)
+		if resultErr != nil {
+			err = resultErr
+			break
+		}
+		if result.Secret != nil {
+			_, err = projector.UpsertDerivedSecret(ctx, semanticSecretToInference(*result.Secret))
+		}
+		if err == nil {
+			_, err = projector.UpsertDerivedCredential(ctx, semanticCredentialToInference(result.Credential))
+		}
+	case "credential.rotate":
+		var v credentialRotateMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		result, resultErr := m.credentialLifecycleResult(ctx, v.CredentialID, "")
+		if resultErr != nil {
+			err = resultErr
+			break
+		}
+		if result.Secret != nil {
+			_, err = projector.UpsertDerivedSecret(ctx, semanticSecretToInference(*result.Secret))
+		}
+		if err == nil {
+			_, err = projector.UpsertDerivedCredential(ctx, semanticCredentialToInference(result.Credential))
+		}
+	case "credential.set_status":
+		var v credentialStatusMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		result, resultErr := m.credentialLifecycleResult(ctx, v.CredentialID, "")
+		if resultErr != nil {
+			err = resultErr
+			break
+		}
+		_, err = projector.UpsertDerivedCredential(ctx, semanticCredentialToInference(result.Credential))
+	case "credential.delete_lifecycle":
+		var v credentialDeleteMutation
+		_ = json.Unmarshal(r.Payload, &v)
+		credentialErr := projector.DeleteDerivedCredential(ctx, domaininference.CredentialID(v.CredentialID))
+		var secretErr error
+		if v.DeleteSecret && v.ExpectedSecretRef != uuid.Nil {
+			secretErr = projector.DeleteDerivedSecret(ctx, domaininference.SecretID(v.ExpectedSecretRef))
+		}
+		err = errors.Join(credentialErr, secretErr)
 	}
 	m.logProjectionError(logger, "global", r.Kind, err)
 	return nil
@@ -201,6 +248,18 @@ func (m *Module) rebuildInferenceProjection(ctx context.Context) error {
 	for _, space := range spaces {
 		if err := m.rebuildInferenceSpaceProjection(ctx, space.SpaceID.String(), space.Manager); err != nil {
 			return err
+		}
+		m.mu.Lock()
+		sink := m.authorizationRevisionSink
+		m.mu.Unlock()
+		if sink != nil {
+			revision, err := spaceAuthorizationRevisionFromManager(ctx, space.Manager)
+			if err != nil {
+				return err
+			}
+			if err := sink.ApplySpaceAuthorizationRevision(ctx, space.SpaceID.String(), revision); err != nil {
+				return err
+			}
 		}
 	}
 	m.markInferenceProjectionHealthy()
@@ -344,17 +403,6 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 			return err
 		}
 	}
-	existingSecrets, err := projector.ListDerivedSecrets(ctx)
-	if err != nil {
-		return err
-	}
-	for _, existing := range existingSecrets {
-		if _, ok := secretIDs[existing.ID.String()]; !ok {
-			if err := projector.DeleteDerivedSecret(ctx, existing.ID); err != nil {
-				return err
-			}
-		}
-	}
 	credentials, err := m.globalBase.ListCredentials(ctx)
 	if err != nil {
 		return err
@@ -373,6 +421,19 @@ func (m *Module) rebuildInferenceGlobalProjection(ctx context.Context) error {
 	for _, existing := range existingCredentials {
 		if _, ok := credentialIDs[existing.ID.String()]; !ok {
 			if err := projector.DeleteDerivedCredential(ctx, existing.ID); err != nil {
+				return err
+			}
+		}
+	}
+	// Delete stale secrets only after every stale credential is gone. This keeps
+	// derived SecretRef relationships valid throughout recovery publication.
+	existingSecrets, err := projector.ListDerivedSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, existing := range existingSecrets {
+		if _, ok := secretIDs[existing.ID.String()]; !ok {
+			if err := projector.DeleteDerivedSecret(ctx, existing.ID); err != nil {
 				return err
 			}
 		}
@@ -544,7 +605,7 @@ func semanticGrantToInference(spaceID string, in domainsemantic.CredentialGrant)
 }
 
 func semanticPolicyToInference(spaceID string, in domainsemantic.InferencePolicy) domaininference.Policy {
-	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
+	out := domaininference.Policy{ID: domaininference.PolicyID(in.ID), SpaceID: spaceID, Scope: semanticScopeToInference(in.Scope), Operations: inferenceOperationsFromSemantic(in.Operations), EndpointRefs: append([]string(nil), in.EndpointRefs...), ModelRefs: append([]string(nil), in.ModelRefs...), CapabilityRefs: append([]string(nil), in.CapabilityRefs...), Action: inferencePolicyActionFromSemantic(in.Effect), NoInference: in.NoInference, AllowedPrivacyClasses: inferencePrivacyClassesFromSemantic(in.AllowedPrivacyClasses), RequireLocalEndpoint: in.RequireLocalEndpoint, DisallowThirdParty: in.DisallowThirdParty, State: domaininference.PolicyStateActive, CreatedBy: in.CreatedBy, CreatedAt: in.CreatedAt, Reason: in.Reason}
 	if in.ExpiresAt != nil {
 		out.ExpiresAt = *in.ExpiresAt
 		if !in.ExpiresAt.After(time.Now()) {
@@ -555,7 +616,7 @@ func semanticPolicyToInference(spaceID string, in domainsemantic.InferencePolicy
 }
 
 func semanticScopeToInference(in domainsemantic.ProcessingScope) domaininference.Scope {
-	return domaininference.Scope{SpaceID: uuidOrEmptyProjection(in.SpaceID), DomainID: uuidOrEmptyProjection(in.DomainID), SemanticRuleID: uuidOrEmptyProjection(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyProjection(in.SemanticIndexID), NodeID: uuidOrEmptyProjection(in.NodeID), IncludeDescendants: in.IncludeDescendants}
+	return domaininference.Scope{SpaceID: uuidOrEmptyProjection(in.SpaceID), DomainID: uuidOrEmptyProjection(in.DomainID), SemanticRuleID: uuidOrEmptyProjection(in.SemanticRuleID), EmbeddingBindingKey: in.EmbeddingBindingKey, SemanticIndexID: uuidOrEmptyProjection(in.SemanticIndexID), NodeID: uuidOrEmptyProjection(in.NodeID), IncludeDescendants: in.IncludeDescendants, ProcedureID: in.ProcedureID, ProcedureVersion: in.ProcedureVersion, BindingID: in.BindingID, BindingVersion: in.BindingVersion, InvocationID: in.InvocationID, RunID: in.RunID}
 }
 
 func uuidOrEmptyProjection[T ~[16]byte](id T) string {
@@ -660,12 +721,14 @@ func inferenceOwnerTypeFromSemantic(value domainsemantic.CredentialOwnerType) do
 
 func inferenceCredentialStatusFromSemantic(value domainsemantic.CredentialStatus) domaininference.CredentialStatus {
 	switch value {
+	case domainsemantic.CredentialStatusActive:
+		return domaininference.CredentialStatusActive
 	case domainsemantic.CredentialStatusDisabled:
 		return domaininference.CredentialStatusDisabled
 	case domainsemantic.CredentialStatusRevoked, domainsemantic.CredentialStatusExpired:
 		return domaininference.CredentialStatusRevoked
 	default:
-		return domaininference.CredentialStatusActive
+		return domaininference.CredentialStatusRevoked
 	}
 }
 

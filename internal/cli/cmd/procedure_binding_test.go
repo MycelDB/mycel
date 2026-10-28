@@ -118,7 +118,7 @@ func TestProcedurePutCreatesAndUpdatesThroughDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &updated); err != nil {
 		t.Fatalf("decode updated procedure: %v\n%s", err, out)
 	}
-	if updated.ID != "cli.procedure-put" || updated.Name != "updated procedure" || updated.Version != 1 {
+	if updated.ID != "cli.procedure-put" || updated.Name != "updated procedure" || updated.Version != 2 {
 		t.Fatalf("unexpected updated procedure: %#v", updated)
 	}
 

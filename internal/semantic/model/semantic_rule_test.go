@@ -9,6 +9,36 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 )
 
+func TestSemanticRecordConfigurationHashBindsConcreteRouteAndCompatibleFields(t *testing.T) {
+	rule := SemanticGenerationRule{ID: uuid.New(), SpaceID: uuid.New(), DomainID: uuid.New(), Key: "rule", DisplayName: "display-a", Selector: SemanticTargetSelector{Mode: SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: SemanticSourceAssemblyPolicy{Mode: SemanticSourceSelf, IncludeProperties: []string{"text"}}, Embeddings: []SemanticEmbeddingBinding{{Key: "search", IntelligenceProfileID: uuid.New(), VectorStoreID: uuid.New(), Enabled: true}}, Storage: DefaultSemanticStoragePolicy()}
+	binding := rule.Embeddings[0]
+	endpointID, modelID, capabilityID := ModelEndpointID(uuid.New()), InferenceModelID(uuid.New()), ModelEndpointCapabilityID(uuid.New())
+	baseline := SemanticRecordConfigurationHash(rule, binding, endpointID, modelID, capabilityID, "fixture/8", 8)
+	compatible := rule
+	compatible.DisplayName = "display-b"
+	if got := SemanticRecordConfigurationHash(compatible, binding, endpointID, modelID, capabilityID, "fixture/8", 8); got != baseline {
+		t.Fatalf("display-only update rotated configuration hash: %q != %q", got, baseline)
+	}
+	budgetOnly := rule
+	budgetOnly.Embeddings = append([]SemanticEmbeddingBinding(nil), rule.Embeddings...)
+	budgetOnly.Embeddings[0].ProviderBudget = &SemanticProviderBudgetPolicy{CorrelationID: "changed-budget", MaxRequests: 2}
+	if got := SemanticRuleConfigurationHash(budgetOnly); got != SemanticRuleConfigurationHash(rule) {
+		t.Fatalf("provider-budget-only update rotated configuration hash: %q != %q", got, SemanticRuleConfigurationHash(rule))
+	}
+	if got := SemanticRecordConfigurationHash(rule, binding, endpointID, InferenceModelID(uuid.New()), capabilityID, "fixture/8", 8); got == baseline {
+		t.Fatal("model route change did not rotate configuration hash")
+	}
+	if got := SemanticRecordConfigurationHash(rule, binding, endpointID, modelID, capabilityID, "fixture/16", 16); got == baseline {
+		t.Fatal("vector-space/dimension change did not rotate configuration hash")
+	}
+}
+
+func TestNormalizeSemanticRuleDisplayNameUsesCaseInsensitiveTrimmedComparison(t *testing.T) {
+	if got := NormalizeSemanticRuleDisplayName("  Journal SEARCH  "); got != "journal search" {
+		t.Fatalf("NormalizeSemanticRuleDisplayName() = %q, want journal search", got)
+	}
+}
+
 func TestNormalizeSemanticTriggerPolicyDefaultsToChanged(t *testing.T) {
 	got := NormalizeSemanticTriggerPolicy(SemanticTriggerPolicy{})
 	if len(got.Events) != 1 || got.Events[0] != DefaultSemanticTriggerEventChanged {
@@ -19,6 +49,14 @@ func TestNormalizeSemanticTriggerPolicyDefaultsToChanged(t *testing.T) {
 func TestNormalizeSemanticTriggerPolicyAcceptsLegacyUnderscoreGraphEventAliases(t *testing.T) {
 	got := NormalizeSemanticTriggerPolicy(SemanticTriggerPolicy{Events: []string{"node_created", "node_updated", "node_deleted", "edge_changed", "edge_created", "edge_updated", "edge_deleted"}})
 	want := []string{"node.created", "node.updated", "node.deleted", "edge.changed", "edge.created", "edge.updated", "edge.deleted"}
+	if !reflect.DeepEqual(got.Events, want) {
+		t.Fatalf("NormalizeSemanticTriggerPolicy() events = %#v, want %#v", got.Events, want)
+	}
+}
+
+func TestNormalizeSemanticTriggerPolicyCanonicalizesSetOrderAndDuplicates(t *testing.T) {
+	got := NormalizeSemanticTriggerPolicy(SemanticTriggerPolicy{Events: []string{"edge.deleted", "node_updated", "changed", "node.updated", "edge.created"}})
+	want := []string{"changed", "node.updated", "edge.created", "edge.deleted"}
 	if !reflect.DeepEqual(got.Events, want) {
 		t.Fatalf("NormalizeSemanticTriggerPolicy() events = %#v, want %#v", got.Events, want)
 	}

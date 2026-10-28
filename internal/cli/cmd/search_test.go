@@ -6,6 +6,34 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 )
 
+func TestValidateHybridSearchQueries(t *testing.T) {
+	tests := []struct {
+		name           string
+		lexicalQuery   string
+		semanticQuery  string
+		lexicalWeight  float64
+		semanticWeight float64
+		requireBoth    bool
+		wantErr        bool
+	}{
+		{name: "default channels", lexicalQuery: "raft", semanticQuery: "how raft works"},
+		{name: "missing default semantic", lexicalQuery: "raft", wantErr: true},
+		{name: "lexical only", lexicalQuery: "raft", lexicalWeight: 1},
+		{name: "semantic only", semanticQuery: "how raft works", semanticWeight: 1},
+		{name: "require both", lexicalQuery: "raft", semanticQuery: "how raft works", lexicalWeight: 1, requireBoth: true},
+		{name: "require both missing semantic", lexicalQuery: "raft", lexicalWeight: 1, requireBoth: true, wantErr: true},
+		{name: "negative weight", lexicalQuery: "raft", semanticQuery: "how raft works", lexicalWeight: -1, semanticWeight: 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateHybridSearchQueries(tt.lexicalQuery, tt.semanticQuery, tt.lexicalWeight, tt.semanticWeight, tt.requireBoth)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateHybridSearchQueries() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestParsePropertyFilterSpec(t *testing.T) {
 	filter, err := parsePropertyFilterSpec("tags:contains:k3s")
 	if err != nil {

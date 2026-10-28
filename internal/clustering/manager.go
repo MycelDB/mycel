@@ -98,6 +98,18 @@ func (m *Manager) State() model.NodeState {
 	defer m.mu.RUnlock()
 	return m.state
 }
+
+// RaftRuntimeConfigured reports the immutable runtime mode selected when the
+// clustering manager was constructed.
+func (m *Manager) RaftRuntimeConfigured() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.raftMode
+}
+
 func (m *Manager) Topology() *topology.Registry {
 	if m == nil {
 		return nil

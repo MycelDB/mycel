@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,24 +22,29 @@ import (
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 )
 
-var ErrInvalidInput = errors.New("invalid inference storage input")
+var (
+	ErrInvalidInput        = errors.New("invalid inference storage input")
+	ErrBudgetScopeNotFound = errors.New("inference budget scope not found")
+)
 
 const (
-	inferenceDirName     = "inference"
-	secretsDirName       = "secrets"
-	credentialsDirName   = "credentials"
-	packagesFileName     = "packages.json"
-	endpointsFileName    = "endpoints.json"
-	modelsFileName       = "models.json"
-	capabilitiesFileName = "capabilities.json"
-	vectorStoresFileName = "vector_stores.json"
-	secretsFileName      = "secrets.json"
-	credentialsFileName  = "credentials.json"
-	profilesFileName     = "profiles.json"
-	grantsFileName       = "credential_grants.json"
-	policiesFileName     = "policies.json"
-	decisionsFileName    = "policy_decisions.json"
-	usageFileName        = "usage_events.json"
+	inferenceDirName                 = "inference"
+	secretsDirName                   = "secrets"
+	credentialsDirName               = "credentials"
+	packagesFileName                 = "packages.json"
+	endpointsFileName                = "endpoints.json"
+	modelsFileName                   = "models.json"
+	capabilitiesFileName             = "capabilities.json"
+	vectorStoresFileName             = "vector_stores.json"
+	secretsFileName                  = "secrets.json"
+	credentialsFileName              = "credentials.json"
+	profilesFileName                 = "profiles.json"
+	grantsFileName                   = "credential_grants.json"
+	policiesFileName                 = "policies.json"
+	decisionsFileName                = "policy_decisions.json"
+	usageFileName                    = "usage_events.json"
+	budgetScopesFileName             = "budget_scopes.json"
+	inferenceSnapshotJournalFileName = "snapshot_restore_journal.json"
 )
 
 type packagesState struct {
@@ -76,6 +82,16 @@ type decisionsState struct {
 }
 type usageState struct {
 	Events []domaininference.UsageEvent `json:"usage_events"`
+}
+
+type budgetScopesState struct {
+	Scopes            []domaininference.BudgetScope `json:"budget_scopes"`
+	HighWaterSequence uint64                        `json:"high_water_sequence,omitempty"`
+}
+
+type inferenceSnapshotRestoreJournal struct {
+	Budgets budgetScopesState `json:"budgets"`
+	Usage   usageState        `json:"usage"`
 }
 
 type globalManager struct {
@@ -357,6 +373,11 @@ func (m *globalManager) DeleteSecret(ctx context.Context, id domaininference.Sec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	for _, credential := range m.credentials.Credentials {
+		if credential.SecretID == id {
+			return fmt.Errorf("%w: secret is referenced by credential %s", ErrInvalidInput, credential.ID)
+		}
+	}
 	m.secrets.Secrets = deleteByID(m.secrets.Secrets, id, func(v domaininference.Secret) uuid.UUID { return v.ID })
 	return m.writeJSON(ctx, m.secretsPath(), m.secrets)
 }
@@ -481,6 +502,16 @@ func (m *spaceManager) DeleteProfile(ctx context.Context, id domaininference.Pro
 	return m.writeJSON(ctx, m.profilesPath(), m.profiles)
 }
 
+func (m *spaceManager) DeleteCachedProfile(ctx context.Context, id domaininference.ProfileID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.profiles.Profiles = deleteByID(m.profiles.Profiles, id, func(v domaininference.Profile) uuid.UUID { return v.ID })
+	return nil
+}
+
 func (m *spaceManager) UpsertCredentialGrant(ctx context.Context, item domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -592,10 +623,12 @@ func (m *spaceManager) DeletePolicyDecision(ctx context.Context, id domaininfere
 }
 
 type usageLedger struct {
-	mu         sync.RWMutex
-	encryption *encryption.Service
-	location   string
-	state      usageState
+	mu            sync.RWMutex
+	encryption    *encryption.Service
+	location      string
+	state         usageState
+	budgets       budgetScopesState
+	writeOverride func(context.Context, string, any) error
 }
 
 func (m *usageLedger) Init(ctx context.Context, location string) error {
@@ -611,9 +644,35 @@ func (m *usageLedger) Init(ctx context.Context, location string) error {
 	if err := os.MkdirAll(location, fsperm.SharedDir); err != nil {
 		return err
 	}
-	return m.readJSON(ctx, m.path(), &m.state)
+	if err := m.readJSON(ctx, m.path(), &m.state); err != nil {
+		return err
+	}
+	var budgets budgetScopesState
+	if err := m.readJSON(ctx, m.budgetScopesPath(), &budgets); err != nil {
+		return err
+	}
+	migrated, changed, err := migrateLegacyBudgetScopeSequences(budgets)
+	if err != nil {
+		return err
+	}
+	if changed {
+		if err := m.writeJSON(ctx, m.budgetScopesPath(), migrated); err != nil {
+			return err
+		}
+	}
+	m.budgets = migrated
+	if err := m.recoverInferenceSnapshotRestore(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 func (m *usageLedger) path() string { return filepath.Join(m.location, usageFileName) }
+func (m *usageLedger) budgetScopesPath() string {
+	return filepath.Join(m.location, budgetScopesFileName)
+}
+func (m *usageLedger) snapshotJournalPath() string {
+	return filepath.Join(m.location, inferenceSnapshotJournalFileName)
+}
 func (m *usageLedger) AppendUsageEvent(ctx context.Context, item domaininference.UsageEvent) (domaininference.UsageEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -642,6 +701,284 @@ func (m *usageLedger) ListUsageEvents(ctx context.Context) ([]domaininference.Us
 		return nil, err
 	}
 	return append([]domaininference.UsageEvent(nil), m.state.Events...), nil
+}
+
+func (m *usageLedger) ReplaceUsageEvents(ctx context.Context, events []domaininference.UsageEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	replaced := usageState{Events: make([]domaininference.UsageEvent, 0, len(events))}
+	seen := make(map[uuid.UUID]struct{}, len(events))
+	for _, event := range events {
+		if event.ID == uuid.Nil {
+			return fmt.Errorf("invalid replacement usage event")
+		}
+		if _, exists := seen[event.ID]; exists {
+			return fmt.Errorf("duplicate replacement usage event")
+		}
+		seen[event.ID] = struct{}{}
+		replaced.Events = append(replaced.Events, event)
+	}
+	if err := m.writeJSON(ctx, m.path(), replaced); err != nil {
+		return err
+	}
+	m.state = replaced
+	return nil
+}
+
+func (m *usageLedger) UpsertBudgetScope(ctx context.Context, scope domaininference.BudgetScope) (domaininference.BudgetScope, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return scope, err
+	}
+	if strings.TrimSpace(string(scope.ID)) == "" {
+		return scope, fmt.Errorf("%w: budget scope id is required", ErrInvalidInput)
+	}
+	scope = cloneBudgetScope(scope)
+	next := cloneBudgetScopesState(m.budgets)
+	if scope.ScopeSequence > next.HighWaterSequence {
+		next.HighWaterSequence = scope.ScopeSequence
+	}
+	replaced := false
+	for i, existing := range next.Scopes {
+		if existing.ID == scope.ID {
+			next.Scopes[i] = scope
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next.Scopes = append(next.Scopes, scope)
+	}
+	if err := m.writeJSON(ctx, m.budgetScopesPath(), next); err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	m.budgets = next
+	return cloneBudgetScope(scope), nil
+}
+
+func (m *usageLedger) GetBudgetScope(ctx context.Context, id domaininference.BudgetScopeID) (domaininference.BudgetScope, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	for _, scope := range m.budgets.Scopes {
+		if scope.ID == id {
+			return cloneBudgetScope(scope), nil
+		}
+	}
+	return domaininference.BudgetScope{}, ErrBudgetScopeNotFound
+}
+
+func (m *usageLedger) ListBudgetScopes(ctx context.Context) ([]domaininference.BudgetScope, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]domaininference.BudgetScope, 0, len(m.budgets.Scopes))
+	for _, scope := range m.budgets.Scopes {
+		out = append(out, cloneBudgetScope(scope))
+	}
+	return out, nil
+}
+
+func (m *usageLedger) BudgetScopeHighWater(ctx context.Context) (uint64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return m.budgets.HighWaterSequence, nil
+}
+
+func (m *usageLedger) DeleteBudgetScope(ctx context.Context, id domaininference.BudgetScopeID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	next := cloneBudgetScopesState(m.budgets)
+	out := make([]domaininference.BudgetScope, 0, len(next.Scopes))
+	for _, scope := range next.Scopes {
+		if scope.ID != id {
+			out = append(out, scope)
+		}
+	}
+	next.Scopes = out
+	if err := m.writeJSON(ctx, m.budgetScopesPath(), next); err != nil {
+		return err
+	}
+	m.budgets = next
+	return nil
+}
+
+func (m *usageLedger) ReplaceBudgetScopes(ctx context.Context, scopes []domaininference.BudgetScope, highWater uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	replaced, _, err := migrateLegacyBudgetScopeSequences(budgetScopesState{HighWaterSequence: highWater, Scopes: scopes})
+	if err != nil {
+		return err
+	}
+	seen := make(map[domaininference.BudgetScopeID]struct{}, len(replaced.Scopes))
+	for _, scope := range replaced.Scopes {
+		if scope.ID == "" || scope.ScopeSequence == 0 || scope.ScopeSequence > replaced.HighWaterSequence {
+			return fmt.Errorf("invalid replacement budget scope")
+		}
+		if _, exists := seen[scope.ID]; exists {
+			return fmt.Errorf("duplicate replacement budget scope")
+		}
+		seen[scope.ID] = struct{}{}
+	}
+	if err := m.writeJSON(ctx, m.budgetScopesPath(), replaced); err != nil {
+		return err
+	}
+	m.budgets = replaced
+	return nil
+}
+
+func prepareInferenceSnapshot(scopes []domaininference.BudgetScope, highWater uint64, events []domaininference.UsageEvent) (budgetScopesState, usageState, error) {
+	replacedBudgets, _, err := migrateLegacyBudgetScopeSequences(budgetScopesState{HighWaterSequence: highWater, Scopes: scopes})
+	if err != nil {
+		return budgetScopesState{}, usageState{}, err
+	}
+	seenScopes := make(map[domaininference.BudgetScopeID]struct{}, len(replacedBudgets.Scopes))
+	for _, scope := range replacedBudgets.Scopes {
+		if scope.ID == "" || scope.ScopeSequence == 0 || scope.ScopeSequence > replacedBudgets.HighWaterSequence {
+			return budgetScopesState{}, usageState{}, fmt.Errorf("invalid replacement budget scope")
+		}
+		if _, exists := seenScopes[scope.ID]; exists {
+			return budgetScopesState{}, usageState{}, fmt.Errorf("duplicate replacement budget scope")
+		}
+		seenScopes[scope.ID] = struct{}{}
+	}
+	replacedUsage := usageState{Events: make([]domaininference.UsageEvent, 0, len(events))}
+	seenEvents := make(map[uuid.UUID]struct{}, len(events))
+	for _, event := range events {
+		if event.ID == uuid.Nil {
+			return budgetScopesState{}, usageState{}, fmt.Errorf("invalid replacement usage event")
+		}
+		if _, exists := seenEvents[event.ID]; exists {
+			return budgetScopesState{}, usageState{}, fmt.Errorf("duplicate replacement usage event")
+		}
+		seenEvents[event.ID] = struct{}{}
+		replacedUsage.Events = append(replacedUsage.Events, event)
+	}
+	return replacedBudgets, replacedUsage, nil
+}
+
+func (m *usageLedger) ReplaceInferenceSnapshot(ctx context.Context, scopes []domaininference.BudgetScope, highWater uint64, events []domaininference.UsageEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	budgets, usage, err := prepareInferenceSnapshot(scopes, highWater, events)
+	if err != nil {
+		return err
+	}
+	journal := inferenceSnapshotRestoreJournal{Budgets: budgets, Usage: usage}
+	if err := m.writeJSON(ctx, m.snapshotJournalPath(), journal); err != nil {
+		return err
+	}
+	if err := m.writeJSON(ctx, m.budgetScopesPath(), budgets); err != nil {
+		return err
+	}
+	if err := m.writeJSON(ctx, m.path(), usage); err != nil {
+		return err
+	}
+	if err := os.Remove(m.snapshotJournalPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	m.budgets = budgets
+	m.state = usage
+	return nil
+}
+
+func (m *usageLedger) recoverInferenceSnapshotRestore(ctx context.Context) error {
+	if _, err := os.Stat(m.snapshotJournalPath()); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	var journal inferenceSnapshotRestoreJournal
+	if err := m.readJSON(ctx, m.snapshotJournalPath(), &journal); err != nil {
+		return err
+	}
+	budgets, usage, err := prepareInferenceSnapshot(journal.Budgets.Scopes, journal.Budgets.HighWaterSequence, journal.Usage.Events)
+	if err != nil {
+		return err
+	}
+	if err := m.writeJSON(ctx, m.budgetScopesPath(), budgets); err != nil {
+		return err
+	}
+	if err := m.writeJSON(ctx, m.path(), usage); err != nil {
+		return err
+	}
+	if err := os.Remove(m.snapshotJournalPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	m.budgets = budgets
+	m.state = usage
+	return nil
+}
+
+func cloneBudgetScope(scope domaininference.BudgetScope) domaininference.BudgetScope {
+	scope.Attempts = append([]domaininference.BudgetAttempt(nil), scope.Attempts...)
+	scope.AttemptEvents = append([]domaininference.BudgetAttemptEvent(nil), scope.AttemptEvents...)
+	return scope
+}
+
+func migrateLegacyBudgetScopeSequences(state budgetScopesState) (budgetScopesState, bool, error) {
+	out := cloneBudgetScopesState(state)
+	highWater := out.HighWaterSequence
+	legacy := make([]int, 0)
+	seen := make(map[uint64]struct{}, len(out.Scopes))
+	for i, scope := range out.Scopes {
+		if scope.ScopeSequence == 0 {
+			legacy = append(legacy, i)
+			continue
+		}
+		if _, duplicate := seen[scope.ScopeSequence]; duplicate {
+			return budgetScopesState{}, false, fmt.Errorf("duplicate budget scope sequence %d", scope.ScopeSequence)
+		}
+		seen[scope.ScopeSequence] = struct{}{}
+		if scope.ScopeSequence > highWater {
+			highWater = scope.ScopeSequence
+		}
+	}
+	sort.Slice(legacy, func(i, j int) bool {
+		left, right := out.Scopes[legacy[i]], out.Scopes[legacy[j]]
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.Before(right.CreatedAt)
+		}
+		return left.ID < right.ID
+	})
+	for _, index := range legacy {
+		if highWater == ^uint64(0) {
+			return budgetScopesState{}, false, fmt.Errorf("budget scope sequence is exhausted")
+		}
+		highWater++
+		out.Scopes[index].ScopeSequence = highWater
+	}
+	changed := len(legacy) != 0 || out.HighWaterSequence != highWater
+	out.HighWaterSequence = highWater
+	return out, changed, nil
+}
+
+func cloneBudgetScopesState(state budgetScopesState) budgetScopesState {
+	out := budgetScopesState{HighWaterSequence: state.HighWaterSequence, Scopes: make([]domaininference.BudgetScope, 0, len(state.Scopes))}
+	for _, scope := range state.Scopes {
+		out.Scopes = append(out.Scopes, cloneBudgetScope(scope))
+	}
+	return out
 }
 
 func upsert[T any](items []T, item T, id func(T) uuid.UUID) []T {
@@ -685,6 +1022,9 @@ func (m *usageLedger) readJSON(ctx context.Context, path string, target any) err
 }
 
 func (m *usageLedger) writeJSON(ctx context.Context, path string, value any) error {
+	if m.writeOverride != nil {
+		return m.writeOverride(ctx, path, value)
+	}
 	return writeJSONEncrypted(ctx, path, value, m.encryption)
 }
 

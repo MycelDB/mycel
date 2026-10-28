@@ -12,6 +12,7 @@ import (
 	"github.com/myceldb/mycel/internal/automation/storage"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,6 +24,7 @@ type raftAutomationRuntimeReadRequest struct {
 	PartitionID uint32                   `json:"partition_id"`
 	Filter      storage.InvocationFilter `json:"filter,omitempty"`
 	RunID       string                   `json:"run_id,omitempty"`
+	SpaceID     string                   `json:"space_id,omitempty"`
 }
 
 type raftAutomationInvocationsResponse struct {
@@ -31,6 +33,10 @@ type raftAutomationInvocationsResponse struct {
 
 type raftAutomationRunResponse struct {
 	Run automation.Run `json:"run"`
+}
+
+type raftProcedureInferenceLedgerResponse struct {
+	Ledger automation.ProcedureInferenceLedger `json:"ledger"`
 }
 
 func (m *AutomationManager) forwardedAutomationRuntimeReadsEnabled() bool {
@@ -95,6 +101,25 @@ func (m *AutomationManager) getRunRaftForwarded(ctx context.Context, domainID gr
 	return automation.Run{}, storage.ErrNotFound
 }
 
+func (m *AutomationManager) getProcedureInferenceLedgerRaftForwarded(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error) {
+	if m.raftPartitionCount == 0 {
+		return automation.ProcedureInferenceLedger{}, status.Error(codes.Unavailable, "procedure inference read is unavailable: raft partition count is not configured")
+	}
+	partitionID, err := partitioning.PartitionForSpace(spaceID, m.raftPartitionCount)
+	if err != nil {
+		return automation.ProcedureInferenceLedger{}, status.Error(codes.InvalidArgument, err.Error())
+	}
+	var res raftProcedureInferenceLedgerResponse
+	req := raftAutomationRuntimeReadRequest{Op: "get_procedure_inference_ledger", PartitionID: uint32(partitionID), SpaceID: spaceID}
+	if err := m.readAutomationRuntimePartition(ctx, uint32(partitionID), req, &res); err != nil {
+		if status.Code(err) == codes.NotFound {
+			return automation.ProcedureInferenceLedger{}, storage.ErrNotFound
+		}
+		return automation.ProcedureInferenceLedger{}, err
+	}
+	return res.Ledger, ctx.Err()
+}
+
 func (m *AutomationManager) readAutomationRuntimePartition(ctx context.Context, partitionID uint32, req raftAutomationRuntimeReadRequest, out any) error {
 	leader, local, _, err := m.automationRuntimePartitionRoute(partitionID)
 	if err != nil {
@@ -134,11 +159,28 @@ func (m *AutomationManager) ExecuteLocalRaftAutomationRuntimeRead(ctx context.Co
 }
 
 func (m *AutomationManager) executeLocalRaftAutomationRuntimeRead(ctx context.Context, req raftAutomationRuntimeReadRequest) ([]byte, error) {
-	if req.DomainID == (graph.DomainID{}) {
-		return nil, status.Error(codes.InvalidArgument, "domain_id is required")
-	}
 	if err := m.ensureCommittedExecutionPartitionRead(ctx, req.PartitionID, true); err != nil {
 		return nil, err
+	}
+	if req.Op == "get_procedure_inference_ledger" {
+		if strings.TrimSpace(req.SpaceID) == "" {
+			return nil, status.Error(codes.InvalidArgument, "space_id is required")
+		}
+		expected, err := partitioning.PartitionForSpace(req.SpaceID, m.raftPartitionCount)
+		if err != nil || uint32(expected) != req.PartitionID {
+			return nil, status.Error(codes.InvalidArgument, "procedure inference space partition mismatch")
+		}
+		ledger, err := m.store.GetProcedureInferenceLedger(ctx, req.SpaceID)
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, status.Error(codes.NotFound, "procedure inference ledger not found")
+		}
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		return json.Marshal(raftProcedureInferenceLedgerResponse{Ledger: ledger})
+	}
+	if req.DomainID == (graph.DomainID{}) {
+		return nil, status.Error(codes.InvalidArgument, "domain_id is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

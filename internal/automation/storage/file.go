@@ -435,6 +435,178 @@ func (s *FileStore) ListRuns(ctx context.Context, domainID graph.DomainID) ([]au
 	return out, nil
 }
 
+func (s *FileStore) PutProcedureInferenceLedger(ctx context.Context, ledger automation.ProcedureInferenceLedger) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(ledger.SpaceID) == "" {
+		return fmt.Errorf("procedure inference ledger space_id is required")
+	}
+	return writeJSONAtomic(s.procedureInferenceLedgerPath(ledger.SpaceID), ledger)
+}
+
+func (s *FileStore) GetProcedureInferenceLedger(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.ProcedureInferenceLedger{}, err
+	}
+	var out automation.ProcedureInferenceLedger
+	if err := readJSON(s.procedureInferenceLedgerPath(spaceID), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteProcedureInferenceLedger(ctx context.Context, spaceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.procedureInferenceLedgerPath(spaceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListProcedureInferenceLedgers(ctx context.Context) ([]automation.ProcedureInferenceLedger, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[automation.ProcedureInferenceLedger](filepath.Join(s.root, "procedure-inference-ledgers"))
+}
+
+func (s *FileStore) PutSpaceAuthorizationRevision(ctx context.Context, revision SpaceAuthorizationRevision) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(revision.SpaceID) == "" || revision.Revision == 0 {
+		return fmt.Errorf("invalid space authorization revision")
+	}
+	return writeJSONAtomic(s.spaceAuthorizationRevisionPath(revision.SpaceID), revision)
+}
+
+func (s *FileStore) GetSpaceAuthorizationRevision(ctx context.Context, spaceID string) (SpaceAuthorizationRevision, error) {
+	if err := ctx.Err(); err != nil {
+		return SpaceAuthorizationRevision{}, err
+	}
+	var out SpaceAuthorizationRevision
+	if err := readJSON(s.spaceAuthorizationRevisionPath(spaceID), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteSpaceAuthorizationRevision(ctx context.Context, spaceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.spaceAuthorizationRevisionPath(spaceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListSpaceAuthorizationRevisions(ctx context.Context) ([]SpaceAuthorizationRevision, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[SpaceAuthorizationRevision](filepath.Join(s.root, "space-authorization-revisions"))
+}
+
+func (s *FileStore) PutProcedureControlFence(ctx context.Context, fence automation.ProcedureControlFence) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if fence.DomainID == graph.DomainID(uuid.Nil) || strings.TrimSpace(fence.ProcedureID) == "" || fence.ControlEpoch == 0 {
+		return fmt.Errorf("invalid procedure control fence")
+	}
+	return writeJSONAtomic(s.procedureControlFencePath(fence.PartitionID, fence.DomainID, fence.ProcedureID), fence)
+}
+
+func (s *FileStore) GetProcedureControlFence(ctx context.Context, partitionID uint32, domainID graph.DomainID, procedureID string) (automation.ProcedureControlFence, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.ProcedureControlFence{}, err
+	}
+	var out automation.ProcedureControlFence
+	if err := readJSON(s.procedureControlFencePath(partitionID, domainID, procedureID), &out); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, ErrNotFound
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *FileStore) DeleteProcedureControlFence(ctx context.Context, partitionID uint32, domainID graph.DomainID, procedureID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.procedureControlFencePath(partitionID, domainID, procedureID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListProcedureControlFences(ctx context.Context) ([]automation.ProcedureControlFence, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[automation.ProcedureControlFence](filepath.Join(s.root, "procedure-control-fences"))
+}
+
+func (s *FileStore) procedureControlBarrierPath(domainID graph.DomainID, procedureID string) string {
+	return filepath.Join(s.root, "procedure-control-barriers", domainID.String()+"-"+safeName(procedureID)+".json")
+}
+
+func (s *FileStore) PutProcedureControlBarrier(ctx context.Context, barrier automation.ProcedureControlBarrier) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if barrier.DomainID == graph.DomainID(uuid.Nil) || strings.TrimSpace(barrier.ProcedureID) == "" || barrier.ControlEpoch == 0 {
+		return fmt.Errorf("invalid procedure control barrier")
+	}
+	return writeJSONAtomic(s.procedureControlBarrierPath(barrier.DomainID, barrier.ProcedureID), barrier)
+}
+
+func (s *FileStore) GetProcedureControlBarrier(ctx context.Context, domainID graph.DomainID, procedureID string) (automation.ProcedureControlBarrier, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.ProcedureControlBarrier{}, err
+	}
+	var barrier automation.ProcedureControlBarrier
+	if err := readJSON(s.procedureControlBarrierPath(domainID, procedureID), &barrier); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return barrier, ErrNotFound
+		}
+		return barrier, err
+	}
+	return barrier, nil
+}
+
+func (s *FileStore) DeleteProcedureControlBarrier(ctx context.Context, domainID graph.DomainID, procedureID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.procedureControlBarrierPath(domainID, procedureID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListProcedureControlBarriers(ctx context.Context) ([]automation.ProcedureControlBarrier, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return listJSONFiles[automation.ProcedureControlBarrier](filepath.Join(s.root, "procedure-control-barriers"))
+}
+
 func (s *FileStore) PutProposal(ctx context.Context, proposal automation.Proposal) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -807,6 +979,18 @@ func (s *FileStore) bindingPath(domainID graph.DomainID, id string) string {
 
 func (s *FileStore) definitionPath(domainID graph.DomainID, id string) string {
 	return filepath.Join(s.root, "definitions", domainID.String(), safeName(id)+".json")
+}
+
+func (s *FileStore) procedureInferenceLedgerPath(spaceID string) string {
+	return filepath.Join(s.root, "procedure-inference-ledgers", safeName(spaceID)+".json")
+}
+
+func (s *FileStore) spaceAuthorizationRevisionPath(spaceID string) string {
+	return filepath.Join(s.root, "space-authorization-revisions", safeName(spaceID)+".json")
+}
+
+func (s *FileStore) procedureControlFencePath(partitionID uint32, domainID graph.DomainID, procedureID string) string {
+	return filepath.Join(s.root, "procedure-control-fences", fmt.Sprintf("%d-%s-%s.json", partitionID, domainID.String(), safeName(procedureID)))
 }
 
 func (s *FileStore) scheduleCheckpointPath(domainID graph.DomainID, automationID string) string {

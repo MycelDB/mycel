@@ -8,6 +8,7 @@ import (
 	daemonauth "github.com/myceldb/mycel/internal/daemon/auth"
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -15,12 +16,17 @@ import (
 // Reference resolution and authorization helpers for AdminInferenceService.
 
 func (s *AdminInferenceService) resolveModelEndpointID(ctx context.Context, ref string) (domainsemantic.ModelEndpointID, error) {
-	if id, err := uuid.Parse(strings.TrimSpace(ref)); err == nil && id != uuid.Nil {
-		return domainsemantic.ModelEndpointID(id), nil
-	}
 	items, err := s.semantic.GlobalManager().ListModelEndpoints(ctx)
 	if err != nil {
 		return uuid.Nil, mapAdminInferenceError(err, "list model endpoints")
+	}
+	if id, err := uuid.Parse(strings.TrimSpace(ref)); err == nil && id != uuid.Nil {
+		for _, item := range items {
+			if item.ID == domainsemantic.ModelEndpointID(id) {
+				return item.ID, nil
+			}
+		}
+		return uuid.Nil, status.Errorf(codes.NotFound, "model endpoint %q not found", ref)
 	}
 	key := strings.ToLower(strings.TrimSpace(ref))
 	for _, item := range items {
@@ -57,10 +63,21 @@ func (s *AdminInferenceService) resolveVectorStoreID(ctx context.Context, ref st
 		return uuid.Nil, mapAdminInferenceError(err, "list vector stores")
 	}
 	key := strings.ToLower(strings.TrimSpace(ref))
+	matches := make([]domainsemantic.VectorStoreID, 0, 1)
 	for _, item := range items {
 		if strings.ToLower(strings.TrimSpace(item.Key)) == key {
-			return item.ID, nil
+			matches = append(matches, item.ID)
 		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		ids := make([]uuid.UUID, len(matches))
+		for i, id := range matches {
+			ids[i] = id
+		}
+		return uuid.Nil, mapAdminInferenceError(storesemantic.NewVectorStoreConflict(storesemantic.VectorStoreConflictKey, key, ids, true), "resolve vector store")
 	}
 	return uuid.Nil, status.Errorf(codes.NotFound, "vector store %q not found", ref)
 }

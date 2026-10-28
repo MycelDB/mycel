@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
@@ -22,24 +23,29 @@ import (
 const recordTypeAutomationMutation wal.RecordType = "automation.mutation.v1"
 
 type automationMutationRecord struct {
-	Kind     string          `json:"kind"`
-	DomainID graph.DomainID  `json:"domain_id"`
-	SpaceID  string          `json:"space_id,omitempty"`
-	ID       string          `json:"id,omitempty"`
-	Payload  json.RawMessage `json:"payload,omitempty"`
+	Kind        string          `json:"kind"`
+	DomainID    graph.DomainID  `json:"domain_id"`
+	SpaceID     string          `json:"space_id,omitempty"`
+	ID          string          `json:"id,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	CommittedAt time.Time       `json:"committed_at,omitempty"`
 }
 
 type automationSnapshot struct {
-	Version                int                            `json:"version"`
-	Procedures             []automation.Procedure         `json:"procedures,omitempty"`
-	Bindings               []automation.Binding           `json:"bindings,omitempty"`
-	Invocations            []automation.Invocation        `json:"invocations,omitempty"`
-	Runs                   []automation.Run               `json:"runs,omitempty"`
-	SuccessfulInputIndexes []storage.SuccessfulInputIndex `json:"successful_input_indexes,omitempty"`
-	WorkflowInstances      []automation.WorkflowInstance  `json:"workflow_instances,omitempty"`
-	WorkflowStepRuns       []automation.WorkflowStepRun   `json:"workflow_step_runs,omitempty"`
-	ScheduleCheckpoints    []storage.ScheduleCheckpoint   `json:"schedule_checkpoints,omitempty"`
-	GraphReplayCursors     []storage.GraphReplayCursor    `json:"graph_replay_cursors,omitempty"`
+	Version                     int                                   `json:"version"`
+	Procedures                  []automation.Procedure                `json:"procedures,omitempty"`
+	Bindings                    []automation.Binding                  `json:"bindings,omitempty"`
+	Invocations                 []automation.Invocation               `json:"invocations,omitempty"`
+	Runs                        []automation.Run                      `json:"runs,omitempty"`
+	ProcedureInferenceLedgers   []automation.ProcedureInferenceLedger `json:"procedure_inference_ledgers,omitempty"`
+	SpaceAuthorizationRevisions []storage.SpaceAuthorizationRevision  `json:"space_authorization_revisions,omitempty"`
+	ProcedureControlFences      []automation.ProcedureControlFence    `json:"procedure_control_fences,omitempty"`
+	ProcedureControlBarriers    []automation.ProcedureControlBarrier  `json:"procedure_control_barriers,omitempty"`
+	SuccessfulInputIndexes      []storage.SuccessfulInputIndex        `json:"successful_input_indexes,omitempty"`
+	WorkflowInstances           []automation.WorkflowInstance         `json:"workflow_instances,omitempty"`
+	WorkflowStepRuns            []automation.WorkflowStepRun          `json:"workflow_step_runs,omitempty"`
+	ScheduleCheckpoints         []storage.ScheduleCheckpoint          `json:"schedule_checkpoints,omitempty"`
+	GraphReplayCursors          []storage.GraphReplayCursor           `json:"graph_replay_cursors,omitempty"`
 }
 
 type RaftStateMachine struct {
@@ -92,6 +98,9 @@ func rawAutomation(v any) json.RawMessage {
 }
 
 func (m *AutomationManager) commitAutomationMutation(ctx context.Context, rec automationMutationRecord) error {
+	if rec.CommittedAt.IsZero() {
+		rec.CommittedAt = m.now().UTC()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -137,20 +146,26 @@ func (m *AutomationManager) buildAutomationRaftCommand(rec automationMutationRec
 }
 
 func (m *AutomationManager) proposeAutomationRaftCommand(ctx context.Context, cmd consensus.RaftCommand) error {
+	_, err := m.proposeAutomationRaftCommandWithResult(ctx, cmd)
+	return err
+}
+
+func (m *AutomationManager) proposeAutomationRaftCommandWithResult(ctx context.Context, cmd consensus.RaftCommand) (consensus.ProposalResult, error) {
 	if m.raftGroups == nil {
-		return status.Error(codes.Unavailable, "automation raft groups are not configured")
+		return consensus.ProposalResult{}, status.Error(codes.Unavailable, "automation raft groups are not configured")
 	}
 	group, ok := m.raftGroups.Group(consensus.PartitionGroupID(cmd.PartitionID))
 	if !ok || group == nil {
-		return status.Errorf(codes.Unavailable, "automation raft partition group %d is not available", cmd.PartitionID)
+		return consensus.ProposalResult{}, status.Errorf(codes.Unavailable, "automation raft partition group %d is not available", cmd.PartitionID)
 	}
 	if group.Leader() == 0 {
-		return status.Errorf(codes.Unavailable, "automation raft partition group %d has no leader", cmd.PartitionID)
+		return consensus.ProposalResult{}, status.Errorf(codes.Unavailable, "automation raft partition group %d has no leader", cmd.PartitionID)
 	}
-	if _, err := group.Propose(ctx, cmd); err != nil {
-		return status.Errorf(codes.Unavailable, "automation raft proposal for partition %d failed: %v", cmd.PartitionID, err)
+	result, err := group.Propose(ctx, cmd)
+	if err != nil {
+		return consensus.ProposalResult{}, status.Errorf(codes.Unavailable, "automation raft proposal for partition %d failed: %v", cmd.PartitionID, err)
 	}
-	return nil
+	return result, nil
 }
 
 func (m *AutomationManager) applyAutomationRaftCommand(ctx context.Context, cmd consensus.RaftCommand, partitionCount uint32) error {
@@ -187,6 +202,14 @@ func (m *AutomationManager) applyAutomationMutation(ctx context.Context, rec aut
 
 func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Context, apply consensus.ApplyContext, rec automationMutationRecord) error {
 	switch rec.Kind {
+	case "procedure.create", "procedure.update", "procedure.control", "procedure.delete", "binding.create", "binding.update", "binding.delete":
+		// Raft serializes each partition, but standalone mutations also require
+		// one atomic check-and-write section so conflicting N+1 definitions
+		// cannot both report success.
+		m.definitionMutationMu.Lock()
+		defer m.definitionMutationMu.Unlock()
+	}
+	switch rec.Kind {
 	case "procedure.create", "procedure.update":
 		var procedure automation.Procedure
 		if err := json.Unmarshal(rec.Payload, &procedure); err != nil {
@@ -194,19 +217,156 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 		}
 		procedure.DomainID = rec.DomainID
 		if rec.Kind == "procedure.create" {
+			barriers, err := m.store.ListProcedureControlBarriers(ctx)
+			if err != nil {
+				return mapStoreError(err)
+			}
+			for _, barrier := range barriers {
+				if barrier.DomainID == rec.DomainID && barrier.ProcedureID == procedure.ID {
+					return fmt.Errorf("graph procedure %q cannot reuse an identity with retained control barriers", procedure.ID)
+				}
+			}
+			fences, err := m.store.ListProcedureControlFences(ctx)
+			if err != nil {
+				return mapStoreError(err)
+			}
+			for _, fence := range fences {
+				if fence.DomainID == rec.DomainID && fence.ProcedureID == procedure.ID {
+					return fmt.Errorf("graph procedure %q cannot reuse an identity with retained control fences", procedure.ID)
+				}
+			}
 			if existing, err := m.store.GetProcedure(ctx, rec.DomainID, procedure.ID); err == nil {
-				if automationJSONEqual(existing.Normalize(), procedure.Normalize()) {
+				existing = existing.Normalize()
+				procedure = procedure.Normalize()
+				if automationJSONEqual(existing, procedure) {
+					return nil
+				}
+				if apply.Replay && automationDefinitionDominatesReplay(existing.Version, existing.UpdatedAt, procedure.Version, procedure.UpdatedAt) {
 					return nil
 				}
 				return fmt.Errorf("graph procedure %q already exists with different content", procedure.ID)
 			} else if err != storage.ErrNotFound {
 				return mapStoreError(err)
 			}
-		} else if _, err := m.store.GetProcedure(ctx, rec.DomainID, procedure.ID); err != nil {
-			return mapStoreError(err)
+		} else {
+			existing, err := m.store.GetProcedure(ctx, rec.DomainID, procedure.ID)
+			if err != nil {
+				return mapStoreError(err)
+			}
+			if err := m.ensureNoPendingProcedureControl(ctx, rec.DomainID, procedure.ID); err != nil {
+				return err
+			}
+			existing = existing.Normalize()
+			procedure = procedure.Normalize()
+			if automationJSONEqual(existing, procedure) {
+				return nil
+			}
+			if apply.Replay && existing.Version > procedure.Version {
+				return nil
+			}
+			if procedure.Version != existing.Version+1 {
+				return fmt.Errorf("graph procedure %q version must advance from %d to %d", procedure.ID, existing.Version, existing.Version+1)
+			}
+			if procedure.Status != existing.Status || procedure.ControlEpoch != existing.ControlEpoch || procedure.ControlledBy != existing.ControlledBy || !procedure.ControlledAt.Equal(existing.ControlledAt) {
+				return fmt.Errorf("graph procedure %q update cannot change control state", procedure.ID)
+			}
 		}
 		return mapStoreError(m.store.PutProcedure(ctx, procedure.Normalize()))
+	case "procedure.control":
+		var controlled automation.Procedure
+		if err := json.Unmarshal(rec.Payload, &controlled); err != nil {
+			return err
+		}
+		controlled.DomainID = rec.DomainID
+		existing, err := m.store.GetProcedure(ctx, rec.DomainID, controlled.ID)
+		if err != nil {
+			return mapStoreError(err)
+		}
+		existing = existing.Normalize()
+		controlled = controlled.Normalize()
+		if automationJSONEqual(existing, controlled) {
+			return nil
+		}
+		if apply.Replay && existing.ControlEpoch > controlled.ControlEpoch {
+			return nil
+		}
+		if controlled.Version != existing.Version || controlled.ControlEpoch != existing.ControlEpoch+1 {
+			return fmt.Errorf("graph procedure %q control epoch must advance from %d to %d without changing execution version %d", controlled.ID, existing.ControlEpoch, existing.ControlEpoch+1, existing.Version)
+		}
+		immutableExisting := existing
+		immutableControlled := controlled
+		immutableExisting.Status, immutableControlled.Status = "", ""
+		immutableExisting.ControlEpoch, immutableControlled.ControlEpoch = 0, 0
+		immutableExisting.ControlledBy, immutableControlled.ControlledBy = "", ""
+		immutableExisting.ControlledAt, immutableControlled.ControlledAt = time.Time{}, time.Time{}
+		if !automationJSONEqual(immutableExisting, immutableControlled) {
+			return fmt.Errorf("graph procedure %q control mutation changed immutable execution configuration", controlled.ID)
+		}
+		return mapStoreError(m.store.PutProcedure(ctx, controlled))
+	case "procedure.control_barrier":
+		var barrier automation.ProcedureControlBarrier
+		if err := json.Unmarshal(rec.Payload, &barrier); err != nil {
+			return err
+		}
+		existing, err := m.store.GetProcedureControlBarrier(ctx, barrier.DomainID, barrier.ProcedureID)
+		if err == nil {
+			if existing.ControlEpoch > barrier.ControlEpoch {
+				return nil
+			}
+			if existing.ControlEpoch == barrier.ControlEpoch {
+				if existing.TargetStatus != barrier.TargetStatus || existing.ProcedureVersion != barrier.ProcedureVersion || existing.SpaceID != barrier.SpaceID || existing.ControllingPrincipalID != barrier.ControllingPrincipalID || !existing.CommittedAt.Equal(barrier.CommittedAt) || !uint32SlicesEqual(existing.AffectedPartitions, barrier.AffectedPartitions) {
+					return fmt.Errorf("graph procedure %q control barrier epoch %d conflicts with committed operation", barrier.ProcedureID, barrier.ControlEpoch)
+				}
+				if len(barrier.PreparedPartitions) < len(existing.PreparedPartitions) || !uint32SliceContainsAll(barrier.PreparedPartitions, existing.PreparedPartitions) || !uint32SliceContainsAll(barrier.AffectedPartitions, barrier.PreparedPartitions) || len(barrier.AcknowledgedPartitions) < len(existing.AcknowledgedPartitions) || !uint32SliceContainsAll(barrier.AcknowledgedPartitions, existing.AcknowledgedPartitions) || !uint32SliceContainsAll(barrier.AffectedPartitions, barrier.AcknowledgedPartitions) || (existing.Completed && !barrier.Completed) {
+					return fmt.Errorf("graph procedure %q control barrier regressed", barrier.ProcedureID)
+				}
+			}
+		} else if err != storage.ErrNotFound {
+			return mapStoreError(err)
+		}
+		return mapStoreError(m.store.PutProcedureControlBarrier(ctx, barrier))
+	case "procedure.control_fence":
+		var fence automation.ProcedureControlFence
+		if err := json.Unmarshal(rec.Payload, &fence); err != nil {
+			return err
+		}
+		if strings.TrimSpace(fence.SpaceID) == "" || strings.TrimSpace(fence.ProcedureID) == "" || fence.ControlEpoch == 0 {
+			return fmt.Errorf("invalid graph procedure control fence")
+		}
+		spaceID, err := uuid.Parse(fence.SpaceID)
+		if err != nil {
+			return fmt.Errorf("invalid graph procedure control fence space_id: %w", err)
+		}
+		partitionID, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), m.raftPartitionCount)
+		if err != nil {
+			return err
+		}
+		if uint32(partitionID) != fence.PartitionID {
+			return fmt.Errorf("graph procedure control fence partition mismatch")
+		}
+		m.procedureControlMu.Lock()
+		defer m.procedureControlMu.Unlock()
+		existing, err := m.store.GetProcedureControlFence(ctx, fence.PartitionID, fence.DomainID, fence.ProcedureID)
+		if err == nil && existing.ControlEpoch == fence.ControlEpoch {
+			if automationJSONEqual(existing, fence) {
+				return nil
+			}
+			if existing.TargetStatus == "enabling" && fence.TargetStatus == automation.StatusEnabled && existing.SpaceID == fence.SpaceID && existing.DomainID == fence.DomainID && existing.ProcedureID == fence.ProcedureID && existing.ProcedureVersion == fence.ProcedureVersion && existing.ControlledBy == fence.ControlledBy && existing.CommittedAt.Equal(fence.CommittedAt) {
+				return mapStoreError(m.store.PutProcedureControlFence(ctx, fence))
+			}
+			return fmt.Errorf("graph procedure %q control fence epoch %d conflicts with committed target", fence.ProcedureID, fence.ControlEpoch)
+		}
+		if err == nil && existing.ControlEpoch > fence.ControlEpoch {
+			return nil
+		}
+		if err != nil && err != storage.ErrNotFound {
+			return mapStoreError(err)
+		}
+		return mapStoreError(m.store.PutProcedureControlFence(ctx, fence))
 	case "procedure.delete":
+		if err := m.ensureNoPendingProcedureControl(ctx, rec.DomainID, strings.TrimSpace(rec.ID)); err != nil {
+			return err
+		}
 		err := m.store.DeleteProcedure(ctx, rec.DomainID, strings.TrimSpace(rec.ID))
 		if err == nil || err == storage.ErrNotFound {
 			return nil
@@ -218,20 +378,51 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 			return err
 		}
 		binding.DomainID = rec.DomainID
+		if err := m.ensureNoPendingProcedureControl(ctx, rec.DomainID, binding.ProcedureID); err != nil {
+			return err
+		}
 		if rec.Kind == "binding.create" {
 			if existing, err := m.store.GetBinding(ctx, rec.DomainID, binding.ID); err == nil {
-				if automationJSONEqual(existing.Normalize(), binding.Normalize()) {
+				existing = existing.Normalize()
+				binding = binding.Normalize()
+				if automationJSONEqual(existing, binding) {
+					return nil
+				}
+				if apply.Replay && automationBindingDominatesReplay(existing, binding) {
 					return nil
 				}
 				return fmt.Errorf("graph automation binding %q already exists with different content", binding.ID)
 			} else if err != storage.ErrNotFound {
 				return mapStoreError(err)
 			}
-		} else if _, err := m.store.GetBinding(ctx, rec.DomainID, binding.ID); err != nil {
-			return mapStoreError(err)
+		} else {
+			existing, err := m.store.GetBinding(ctx, rec.DomainID, binding.ID)
+			if err != nil {
+				return mapStoreError(err)
+			}
+			existing = existing.Normalize()
+			binding = binding.Normalize()
+			if automationJSONEqual(existing, binding) {
+				return nil
+			}
+			if apply.Replay && existing.Version > binding.Version {
+				return nil
+			}
+			if binding.Version != existing.Version+1 {
+				return fmt.Errorf("graph automation binding %q version must advance from %d to %d", binding.ID, existing.Version, existing.Version+1)
+			}
 		}
 		return mapStoreError(m.store.PutBinding(ctx, binding.Normalize()))
 	case "binding.delete":
+		binding, getErr := m.store.GetBinding(ctx, rec.DomainID, strings.TrimSpace(rec.ID))
+		if getErr != nil && getErr != storage.ErrNotFound {
+			return mapStoreError(getErr)
+		}
+		if getErr == nil {
+			if err := m.ensureNoPendingProcedureControl(ctx, rec.DomainID, binding.ProcedureID); err != nil {
+				return err
+			}
+		}
 		err := m.store.DeleteBinding(ctx, rec.DomainID, strings.TrimSpace(rec.ID))
 		if err == nil || err == storage.ErrNotFound {
 			return nil
@@ -264,14 +455,32 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 		}
 		run.DomainID = rec.DomainID
 		if existing, err := m.store.GetRun(ctx, rec.DomainID, run.ID); err == nil {
-			if !automationJSONEqual(existing, run) {
-				return fmt.Errorf("automation run %q already exists with different content", run.ID)
+			merged, mergeErr := mergeAutomationRunUpdate(existing, run)
+			if mergeErr != nil {
+				return mergeErr
 			}
-			return nil
+			if automationJSONEqual(existing, merged) {
+				return nil
+			}
+			existingStatus := strings.ToLower(strings.TrimSpace(existing.Status))
+			if existingStatus != "running" && existingStatus != "retryable" {
+				return fmt.Errorf("automation run %q terminal state is immutable", run.ID)
+			}
+			return mapStoreError(m.store.PutRun(ctx, merged))
 		} else if err != storage.ErrNotFound {
 			return mapStoreError(err)
 		}
 		return mapStoreError(m.store.PutRun(ctx, run))
+	case "procedure_inference_attempt.transition":
+		var attempt automation.ProcedureInferenceAttempt
+		if err := json.Unmarshal(rec.Payload, &attempt); err != nil {
+			return err
+		}
+		attempt.DomainID = rec.DomainID
+		if strings.TrimSpace(attempt.SpaceID) == "" {
+			attempt.SpaceID = strings.TrimSpace(rec.SpaceID)
+		}
+		return m.applyProcedureInferenceAttemptTransition(ctx, attempt, rec.CommittedAt)
 	case "workflow_instance.upsert":
 		var instance automation.WorkflowInstance
 		if err := json.Unmarshal(rec.Payload, &instance); err != nil {
@@ -457,6 +666,26 @@ func (m *AutomationManager) restoreAutomationPartition(ctx context.Context, data
 			return mapStoreError(err)
 		}
 	}
+	for _, ledger := range snap.ProcedureInferenceLedgers {
+		if err := m.store.PutProcedureInferenceLedger(ctx, ledger); err != nil {
+			return mapStoreError(err)
+		}
+	}
+	for _, revision := range snap.SpaceAuthorizationRevisions {
+		if err := m.store.PutSpaceAuthorizationRevision(ctx, revision); err != nil {
+			return mapStoreError(err)
+		}
+	}
+	for _, fence := range snap.ProcedureControlFences {
+		if err := m.store.PutProcedureControlFence(ctx, fence); err != nil {
+			return mapStoreError(err)
+		}
+	}
+	for _, barrier := range snap.ProcedureControlBarriers {
+		if err := m.store.PutProcedureControlBarrier(ctx, barrier); err != nil {
+			return mapStoreError(err)
+		}
+	}
 	for _, instance := range snap.WorkflowInstances {
 		if err := m.store.PutWorkflowInstance(ctx, instance); err != nil {
 			return mapStoreError(err)
@@ -519,6 +748,35 @@ func (m *AutomationManager) deleteAutomationPartitionDefinitions(ctx context.Con
 		}
 	}
 	return nil
+}
+
+func automationDefinitionDominatesReplay(existingVersion int, existingUpdatedAt time.Time, incomingVersion int, incomingUpdatedAt time.Time) bool {
+	if existingVersion != incomingVersion {
+		return existingVersion > incomingVersion
+	}
+	return !existingUpdatedAt.IsZero() && !incomingUpdatedAt.IsZero() && existingUpdatedAt.After(incomingUpdatedAt)
+}
+
+func automationBindingDominatesReplay(existing, incoming automation.Binding) bool {
+	if existing.Version != incoming.Version {
+		return existing.Version > incoming.Version
+	}
+	if existing.ProcedureVersion != incoming.ProcedureVersion {
+		return existing.ProcedureVersion > incoming.ProcedureVersion
+	}
+	return !existing.UpdatedAt.IsZero() && !incoming.UpdatedAt.IsZero() && existing.UpdatedAt.After(incoming.UpdatedAt)
+}
+
+func mergeAutomationRunUpdate(existing, incoming automation.Run) (automation.Run, error) {
+	if existing.InvocationID != incoming.InvocationID || existing.AttemptNumber != incoming.AttemptNumber || existing.ProcedureID != incoming.ProcedureID || existing.ProcedureVersion != incoming.ProcedureVersion || existing.BindingID != incoming.BindingID || existing.BindingVersion != incoming.BindingVersion {
+		return incoming, fmt.Errorf("automation run %q immutable identity changed", incoming.ID)
+	}
+	mergedReferences := append([]string(nil), existing.InferenceAttemptIDs...)
+	for _, attemptID := range incoming.InferenceAttemptIDs {
+		mergedReferences = appendUniqueString(mergedReferences, attemptID)
+	}
+	incoming.InferenceAttemptIDs = mergedReferences
+	return incoming, nil
 }
 
 func automationJSONEqual(a any, b any) bool {

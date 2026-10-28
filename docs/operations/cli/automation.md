@@ -164,7 +164,7 @@ mycel inference profile create image-attachment-summary \
   --domain default \
   --operation image_analysis \
   --purpose automation \
-  --model openai/gpt-5.6 \
+  --model openai/gpt-5.6-sol \
   --privacy-class third_party \
   --max-output-tokens 512
 
@@ -173,7 +173,7 @@ mycel inference grant openai-key \
   --domain default \
   --operation image_analysis \
   --model-endpoint openai \
-  --model openai/gpt-5.6 \
+  --model openai/gpt-5.6-sol \
   --grantee-principal-id automation \
   --allow-on-behalf-of-principal-id <owner-principal-id>
 
@@ -214,9 +214,119 @@ RETURN i.properties.name, s.payload.text
 FETCH FIRST 20 ROWS ONLY
 ```
 
-The bundled OpenAI package marks GPT-5.6 capabilities with
-`output_token_parameter=max_completion_tokens`, so profiles can use
-`--max-output-tokens` with models that reject legacy `max_tokens`.
+The bundled OpenAI package marks its concrete GPT-5.6 Sol, Terra, and Luna
+capabilities with `output_token_parameter=max_completion_tokens`, so profiles
+can use `--max-output-tokens` with models that reject legacy `max_tokens`.
+
+## Procedure control and inference audit evidence
+
+Disable or re-enable a logical procedure with a committed execution-partition
+barrier:
+
+```sh
+mycel automation procedure disable <procedure-id> --space-id <space-id> --domain default
+mycel automation procedure enable <procedure-id> --space-id <space-id> --domain default
+```
+
+A successful response includes the control epoch plus affected and acknowledged
+partitions. Disablement prevents later provider starts and suppresses unpublished
+output from calls that were already accepted by a provider. It cannot retract an
+already accepted provider request, so operators must still treat that request as
+conservatively accounted. Enablement does not complete until its partition fences
+are committed.
+
+Inspect the daemon-owned, sanitized attempt ledger:
+
+```sh
+mycel automation inference-attempt list --space-id <space-id> \
+  --procedure-id <procedure-id>
+mycel automation inference-attempt get <attempt-id> --space-id <space-id>
+mycel automation inference-attempt changes --space-id <space-id> \
+  --after-cursor <snapshot-or-next-cursor>
+```
+
+Start polling with the `snapshot_cursor` returned by `list`. Cursors are opaque
+and bound to the principal, space, and filter; do not parse or reuse them under a
+different identity or filter. Delivery is at least once, so consumers must
+deduplicate by immutable event ID. A reported history gap is not an empty result
+and a fresh snapshot does not prove the missed interval complete. Stop cursor
+advancement, preserve the old cursor, alert, and capture the returned history
+and state watermarks. A fresh list snapshot contains only retained current state;
+compare it with retained runs and invocation references and record an explicit
+operator reconciliation decision before resuming from a new snapshot cursor.
+There is no automated reconciliation RPC in this release. If the state watermark
+also passed the consumer's snapshot, historical completeness can be
+unrecoverable from the attempt ledger alone.
+
+These read surfaces require both `automation.read` and `inference.audit.read`.
+They intentionally exclude prompts, rendered graph content, outputs, vectors,
+credential material, provider request/body identifiers, raw errors, and
+arbitrary metadata. Use bounded policy-decision, credential-grant, configuration,
+and authorization revisions for correlation instead.
+
+Capacity is bounded per space. Capacity errors fail before provider access.
+The initial fixed limits are 10,000 materialized attempts and 50,000 immutable
+changes per space, 64 MiB of materialized attempt state, and 64 MiB of
+serialized change history. Normal retention targets at most 8,000 attempts,
+20,000 changes, 30 days, 48 MiB of materialized state, and 48 MiB of change
+history. Each attempt record also has a 64 KiB encoded bound and each persisted
+evidence string has a 1,024-byte bound. The hard limits are intentionally higher
+than the retention targets so a transition can
+prune before admitting new work. These are safety bounds, not API promises, and
+may change in a later release.
+
+Raft-owned retention prunes oldest immutable changes by age, count, and bytes,
+then prunes only old terminal materialized attempts; active and ambiguous
+attempts are retained. A terminal attempt that is still referenced by a
+retained run is not pruned; it becomes eligible only after run retention removes
+the reference. Retention advances explicit history/state watermarks past every
+snapshot that can no longer be reconstructed, so collectors must handle gaps as
+described above. Do not delete ledger files or active attempt state manually.
+
+Automation instrumentation records process-local Raft/WAL-apply lifecycle
+counters for requested, authorized, started, terminal, and ambiguous
+transitions. Ambiguous is both terminal and a separately reported subset. Replay
+after process start may contribute to these counters. Instrumentation also
+records attempt/change and state/history-byte capacity rejections, pruned
+attempts/changes/state/history bytes, retention-gap advances, process-local
+aggregate retained counts/bytes for ledgers observed since startup, active and
+ambiguous counts, and the configured
+hard/retention targets. An idempotently replayed transition does not increment
+lifecycle counters.
+
+Operators retrieve the bounded diagnostics from daemon structured logs. At
+startup, collect records whose message is
+`procedure_inference_capacity_bounds`; they contain every fixed count, byte,
+30-day age, 64 KiB attempt, and 1,024-byte evidence-string bound. On a capacity
+rejection or retention-gap advance, collect warning records whose message is
+`procedure_inference_capacity_diagnostics`. Those records contain process-local
+observed aggregate gauges and counters plus a closed `reason` value. Event
+records are rate-limited to one per minute per closed reason per process and
+include `suppressed_events`; alert when any record has a capacity-rejection reason, when
+`retention_gap_advances` grows repeatedly, or when `suppressed_events` is
+nonzero. These records contain only counts, closed reasons, and bounds; they
+contain no IDs, graph content, prompts, outputs, provider data, authorization
+material, or raw errors. Counters and observed aggregate gauges reset when the
+process restarts and repopulate as ledgers are applied; durable list/change
+watermarks remain authoritative.
+
+A growing ambiguous-attempt population requires investigation because ambiguous attempts
+are deliberately not pruned. Polling consumers should compute feed lag from the
+returned high-water sequence and their last committed cursor, and must treat an
+earliest-retained sequence beyond that cursor as a resnapshot condition rather
+than ordinary lag.
+
+Provider start and output publication use two committed authorization fences:
+global endpoint/model/capability/credential state is derived from authoritative
+semantic catalog state and asserted in system-Raft order, while the semantic
+partition state machine passes the exact profile/grant/policy revision into the
+automation-owned execution-partition fence. Startup/rebuild backfills that fence
+for existing spaces. The combined revision remains available for correlation,
+but state-machine decisions use the separately committed scope revisions and do
+not depend on derived inference projections or a node-local decision counter. Raft snapshots
+include current attempts, retained immutable changes, and procedure control
+fences, so restored partitions retain polling watermarks and start/publication
+fencing.
 
 ## Legacy combined automation definitions
 

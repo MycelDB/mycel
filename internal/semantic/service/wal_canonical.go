@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 )
 
 func semanticNewID() uuid.UUID {
@@ -127,17 +128,36 @@ func (w *walGlobalManager) canonicalCapability(ctx context.Context, v domainsema
 func (w *walGlobalManager) canonicalVectorStore(ctx context.Context, v domainsemantic.VectorStoreBackend) (domainsemantic.VectorStoreBackend, error) {
 	now := time.Now().UTC()
 	v.Key = semanticKey(v.Key)
-	if v.Name == "" {
-		v.Name = v.Key
-	}
+	v.Name = strings.TrimSpace(v.Name)
 	items, err := w.inner.ListVectorStores(ctx)
 	if err != nil {
 		return domainsemantic.VectorStoreBackend{}, err
 	}
-	for _, existing := range items {
-		if semanticKey(existing.Key) == v.Key {
-			v.ID = existing.ID
-			v.CreatedAt = existing.CreatedAt
+	if v.ID != uuid.Nil {
+		for _, existing := range items {
+			if existing.ID == v.ID {
+				v.CreatedAt = existing.CreatedAt
+				v.UpdatedAt = now
+				return v, nil
+			}
+		}
+	} else {
+		matches := make([]domainsemantic.VectorStoreBackend, 0, 1)
+		for _, existing := range items {
+			if semanticKey(existing.Key) == v.Key {
+				matches = append(matches, existing)
+			}
+		}
+		if len(matches) > 1 {
+			ids := make([]uuid.UUID, 0, len(matches))
+			for _, match := range matches {
+				ids = append(ids, match.ID)
+			}
+			return domainsemantic.VectorStoreBackend{}, storesemantic.NewVectorStoreConflict(storesemantic.VectorStoreConflictKey, v.Key, ids, true)
+		}
+		if len(matches) == 1 {
+			v.ID = matches[0].ID
+			v.CreatedAt = matches[0].CreatedAt
 			v.UpdatedAt = now
 			return v, nil
 		}

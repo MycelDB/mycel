@@ -3,6 +3,7 @@ package semantic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,35 +23,41 @@ import (
 )
 
 const (
-	inferenceDirName             = "inference"
-	secretsDirName               = "secrets"
-	credentialsDirName           = "credentials"
-	packagesFileName             = "packages.json"
-	modelEndpointsFileName       = "model_endpoints.json"
-	modelsFileName               = "models.json"
-	modelEndpointCapsFileName    = "model_endpoint_capabilities.json"
-	vectorStoresFileName         = "vector_stores.json"
-	secretsFileName              = "secrets.json"
-	credentialsFileName          = "credentials.json"
-	semanticRulesFileName        = "rules.json"
-	semanticIndexesFileName      = "indexes.json"
-	intelligenceProfilesFileName = "intelligence_profiles.json"
-	credentialGrantsFileName     = "credential_grants.json"
-	inferencePoliciesFileName    = "inference_policies.json"
-	dirtyQueueFileName           = "dirty_queue.json"
-	ruleStateFileName            = "rule_state.json"
-	searchIndexStateFileName     = "search_index_state.json"
-	indexStateFileName           = "index_state.json"
-	policyDecisionsFileName      = "policy_decisions.json"
-	maintenanceDirName           = "maintenance"
-	graphDirtyEventsDirName      = "dirty"
-	graphDirtyEventsFileName     = "graph-dirty-000001.ksem"
-	workStateDirName             = "work"
-	workStateFileName            = "state.json"
-	workEventsFileName           = "work-000001.ksem"
-	checkpointsFileName          = "checkpoints.json"
-	defaultVectorStoreKey        = "mycel-file"
-	defaultVectorStoreName       = "Mycel embedded file vector store"
+	inferenceDirName                        = "inference"
+	secretsDirName                          = "secrets"
+	credentialsDirName                      = "credentials"
+	packagesFileName                        = "packages.json"
+	modelEndpointsFileName                  = "model_endpoints.json"
+	modelsFileName                          = "models.json"
+	modelEndpointCapsFileName               = "model_endpoint_capabilities.json"
+	vectorStoresFileName                    = "vector_stores.json"
+	secretsFileName                         = "secrets.json"
+	credentialsFileName                     = "credentials.json"
+	credentialLifecycleIntentFileName       = "lifecycle_intent.json"
+	semanticRulesFileName                   = "rules.json"
+	semanticIndexesFileName                 = "indexes.json"
+	intelligenceProfilesFileName            = "intelligence_profiles.json"
+	credentialGrantsFileName                = "credential_grants.json"
+	inferencePoliciesFileName               = "inference_policies.json"
+	dirtyQueueFileName                      = "dirty_queue.json"
+	ruleStateFileName                       = "rule_state.json"
+	searchIndexStateFileName                = "search_index_state.json"
+	indexStateFileName                      = "index_state.json"
+	policyDecisionsFileName                 = "policy_decisions.json"
+	maintenanceDirName                      = "maintenance"
+	graphDirtyEventsDirName                 = "dirty"
+	graphDirtyEventsFileName                = "graph-dirty-000001.ksem"
+	workStateDirName                        = "work"
+	workStateFileName                       = "state.json"
+	workEventsFileName                      = "work-000001.ksem"
+	checkpointsFileName                     = "checkpoints.json"
+	maxRetainedDirtyEvents                  = 100000
+	maxRetainedDirtyWorkItems               = 100000
+	maxWorkLogMutationRecords               = 4096
+	maxWorkLogBytes                   int64 = 8 << 20
+	maxWorkLogCheckpointBytes               = 256 << 20
+	defaultVectorStoreKey                   = "mycel-file"
+	defaultVectorStoreName                  = "Mycel embedded file vector store"
 )
 
 type packagesState struct {
@@ -133,15 +140,16 @@ type policyDecisionsState struct {
 }
 
 type globalManager struct {
-	mu           sync.RWMutex
-	metaDir      string
-	packages     packagesState
-	endpoints    modelEndpointsState
-	models       modelsState
-	capabilities modelEndpointCapabilitiesState
-	vectorStores vectorStoresState
-	secrets      secretsState
-	credentials  credentialsState
+	mu                 sync.RWMutex
+	metaDir            string
+	packages           packagesState
+	endpoints          modelEndpointsState
+	models             modelsState
+	capabilities       modelEndpointCapabilitiesState
+	vectorStores       vectorStoresState
+	secrets            secretsState
+	credentials        credentialsState
+	persistFailureHook func(operation, path string) error
 }
 
 func (m *globalManager) Init(ctx context.Context, metaDir string) error {
@@ -181,7 +189,69 @@ func (m *globalManager) Init(ctx context.Context, metaDir string) error {
 	if err := loadJSON(m.path(secretsFileName), &m.secrets, secretsState{Secrets: []domainsemantic.Secret{}}); err != nil {
 		return err
 	}
-	return loadJSON(m.path(credentialsFileName), &m.credentials, credentialsState{Credentials: []domainsemantic.InferenceCredential{}})
+	if err := loadJSON(m.path(credentialsFileName), &m.credentials, credentialsState{Credentials: []domainsemantic.InferenceCredential{}}); err != nil {
+		return err
+	}
+	_, err := m.recoverCredentialLifecycleLocked(ctx)
+	return err
+}
+
+// ValidateVectorStoreCatalog checks the authoritative identity and uniqueness
+// invariants required for snapshot and backup restore. Live startup deliberately
+// does not call this validator so a legacy catalog remains readable for
+// UUID-directed remediation.
+func ValidateVectorStoreCatalog(stores []domainsemantic.VectorStoreBackend) error {
+	ids := make(map[uuid.UUID]struct{}, len(stores))
+	keys := make(map[string][]uuid.UUID, len(stores))
+	names := make(map[string][]uuid.UUID, len(stores))
+	for _, store := range stores {
+		if store.ID == uuid.Nil {
+			return fmt.Errorf("%w: vector store id is required for restore", ErrInvalidInput)
+		}
+		if _, exists := ids[store.ID]; exists {
+			return fmt.Errorf("%w: duplicate vector store id %s", ErrInvalidInput, store.ID)
+		}
+		ids[store.ID] = struct{}{}
+		key := normalizeKey(store.Key)
+		if key == "" {
+			return fmt.Errorf("%w: vector store key is required for restore", ErrInvalidInput)
+		}
+		name := normalizeKey(store.Name)
+		if name == "" {
+			return fmt.Errorf("%w: vector store name is required for restore", ErrInvalidInput)
+		}
+		keys[key] = append(keys[key], store.ID)
+		names[name] = append(names[name], store.ID)
+	}
+	for key, conflictingIDs := range keys {
+		if len(conflictingIDs) > 1 {
+			return NewVectorStoreConflict(VectorStoreConflictKey, key, conflictingIDs, true)
+		}
+	}
+	for name, conflictingIDs := range names {
+		if len(conflictingIDs) > 1 {
+			return NewVectorStoreConflict(VectorStoreConflictName, name, conflictingIDs, true)
+		}
+	}
+	return nil
+}
+
+// ValidatePersistedVectorStoreCatalog validates the optional catalog stored
+// beneath a daemon meta directory without creating or modifying any files.
+func ValidatePersistedVectorStoreCatalog(metaDir string) error {
+	path := filepath.Join(metaDir, inferenceDirName, vectorStoresFileName)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var state vectorStoresState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return fmt.Errorf("decode vector-store catalog: %w", err)
+	}
+	return ValidateVectorStoreCatalog(state.VectorStores)
 }
 
 func (m *globalManager) EnsureDefaultVectorStore(ctx context.Context) (domainsemantic.VectorStoreBackend, error) {
@@ -189,13 +259,23 @@ func (m *globalManager) EnsureDefaultVectorStore(ctx context.Context) (domainsem
 		return domainsemantic.VectorStoreBackend{}, err
 	}
 	m.mu.RLock()
+	matches := make([]domainsemantic.VectorStoreBackend, 0, 1)
 	for _, existing := range m.vectorStores.VectorStores {
 		if normalizeKey(existing.Key) == defaultVectorStoreKey {
-			m.mu.RUnlock()
-			return existing, nil
+			matches = append(matches, existing)
 		}
 	}
 	m.mu.RUnlock()
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		ids := make([]uuid.UUID, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, match.ID)
+		}
+		return domainsemantic.VectorStoreBackend{}, NewVectorStoreConflict(VectorStoreConflictKey, defaultVectorStoreKey, ids, true)
+	}
 	return m.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
 		Key:          defaultVectorStoreKey,
 		Name:         defaultVectorStoreName,
@@ -265,6 +345,11 @@ func (m *globalManager) UpsertModelEndpoint(ctx context.Context, endpoint domain
 		if normalizeKey(existing.Key) == endpoint.Key {
 			endpoint.ID = existing.ID
 			endpoint.CreatedAt = existing.CreatedAt
+			for _, credential := range m.credentials.Credentials {
+				if credential.ModelEndpointID == endpoint.ID && !endpointSupportsCredentialAuth(endpoint, credential.AuthType) {
+					return domainsemantic.ModelEndpoint{}, fmt.Errorf("%w: endpoint auth modes would invalidate credential %s", ErrConflict, credential.ID)
+				}
+			}
 			m.endpoints.ModelEndpoints[i] = endpoint
 			return endpoint, m.persistLocked(m.path(modelEndpointsFileName), m.endpoints)
 		}
@@ -366,10 +451,68 @@ func (m *globalManager) UpsertVectorStore(ctx context.Context, vectorStore domai
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	now := time.Now().UTC()
 	vectorStore.Key = normalizeKey(vectorStore.Key)
-	if vectorStore.Name == "" {
-		vectorStore.Name = vectorStore.Key
+	vectorStore.Name = strings.TrimSpace(vectorStore.Name)
+	normalizedName := normalizeKey(vectorStore.Name)
+
+	idIndex := -1
+	keyMatchIndexes := make([]int, 0, 1)
+	for i, existing := range m.vectorStores.VectorStores {
+		if vectorStore.ID != uuid.Nil && existing.ID == vectorStore.ID {
+			idIndex = i
+		}
+		if normalizeKey(existing.Key) == vectorStore.Key {
+			keyMatchIndexes = append(keyMatchIndexes, i)
+		}
+	}
+	if vectorStore.ID == uuid.Nil {
+		if len(keyMatchIndexes) > 1 {
+			return domainsemantic.VectorStoreBackend{}, vectorStoreConflictForIndexes(m.vectorStores.VectorStores, VectorStoreConflictKey, vectorStore.Key, keyMatchIndexes, true)
+		}
+		if len(keyMatchIndexes) == 1 {
+			idIndex = keyMatchIndexes[0]
+			vectorStore.ID = m.vectorStores.VectorStores[idIndex].ID
+		}
+	}
+
+	keyConflicts := make([]int, 0, 1)
+	nameConflicts := make([]int, 0, 1)
+	for i, existing := range m.vectorStores.VectorStores {
+		if i == idIndex {
+			continue
+		}
+		if normalizeKey(existing.Key) == vectorStore.Key {
+			keyConflicts = append(keyConflicts, i)
+		}
+		if normalizeKey(existing.Name) == normalizedName {
+			nameConflicts = append(nameConflicts, i)
+		}
+	}
+	if len(keyConflicts) > 0 {
+		legacy := len(keyConflicts) > 1 || (idIndex >= 0 && normalizeKey(m.vectorStores.VectorStores[idIndex].Key) == vectorStore.Key)
+		return domainsemantic.VectorStoreBackend{}, vectorStoreConflictForIndexes(m.vectorStores.VectorStores, VectorStoreConflictKey, vectorStore.Key, keyConflicts, legacy)
+	}
+	if len(nameConflicts) > 0 {
+		legacy := len(nameConflicts) > 1 || (idIndex >= 0 && normalizeKey(m.vectorStores.VectorStores[idIndex].Name) == normalizedName)
+		return domainsemantic.VectorStoreBackend{}, vectorStoreConflictForIndexes(m.vectorStores.VectorStores, VectorStoreConflictName, normalizedName, nameConflicts, legacy)
+	}
+
+	if idIndex >= 0 {
+		existing := m.vectorStores.VectorStores[idIndex]
+		vectorStore.ID = existing.ID
+		vectorStore.CreatedAt = existing.CreatedAt
+		if vectorStore.UpdatedAt.IsZero() {
+			vectorStore.UpdatedAt = now
+		}
+		next := vectorStoresState{VectorStores: append([]domainsemantic.VectorStoreBackend(nil), m.vectorStores.VectorStores...)}
+		next.VectorStores[idIndex] = vectorStore
+		if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+			return domainsemantic.VectorStoreBackend{}, err
+		}
+		m.vectorStores = next
+		return vectorStore, nil
 	}
 	if vectorStore.ID == uuid.Nil {
 		vectorStore.ID = newID()
@@ -380,16 +523,21 @@ func (m *globalManager) UpsertVectorStore(ctx context.Context, vectorStore domai
 	if vectorStore.UpdatedAt.IsZero() {
 		vectorStore.UpdatedAt = now
 	}
-	for i, existing := range m.vectorStores.VectorStores {
-		if normalizeKey(existing.Key) == vectorStore.Key {
-			vectorStore.ID = existing.ID
-			vectorStore.CreatedAt = existing.CreatedAt
-			m.vectorStores.VectorStores[i] = vectorStore
-			return vectorStore, m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
-		}
+	next := vectorStoresState{VectorStores: append([]domainsemantic.VectorStoreBackend(nil), m.vectorStores.VectorStores...)}
+	next.VectorStores = append(next.VectorStores, vectorStore)
+	if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+		return domainsemantic.VectorStoreBackend{}, err
 	}
-	m.vectorStores.VectorStores = append(m.vectorStores.VectorStores, vectorStore)
-	return vectorStore, m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
+	m.vectorStores = next
+	return vectorStore, nil
+}
+
+func vectorStoreConflictForIndexes(stores []domainsemantic.VectorStoreBackend, field VectorStoreConflictField, normalizedValue string, indexes []int, legacy bool) error {
+	ids := make([]uuid.UUID, 0, len(indexes))
+	for _, index := range indexes {
+		ids = append(ids, stores[index].ID)
+	}
+	return NewVectorStoreConflict(field, normalizedValue, ids, legacy)
 }
 
 func (m *globalManager) ListVectorStores(ctx context.Context) ([]domainsemantic.VectorStoreBackend, error) {
@@ -487,6 +635,11 @@ func (m *globalManager) DeleteModelEndpoint(ctx context.Context, id domainsemant
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, credential := range m.credentials.Credentials {
+		if credential.ModelEndpointID == id {
+			return fmt.Errorf("%w: model endpoint is referenced by credential %s", ErrConflict, credential.ID)
+		}
+	}
 	for i, item := range m.endpoints.ModelEndpoints {
 		if item.ID == id {
 			m.endpoints.ModelEndpoints = append(m.endpoints.ModelEndpoints[:i], m.endpoints.ModelEndpoints[i+1:]...)
@@ -534,8 +687,14 @@ func (m *globalManager) DeleteVectorStore(ctx context.Context, id domainsemantic
 	defer m.mu.Unlock()
 	for i, item := range m.vectorStores.VectorStores {
 		if item.ID == id {
-			m.vectorStores.VectorStores = append(m.vectorStores.VectorStores[:i], m.vectorStores.VectorStores[i+1:]...)
-			return m.persistLocked(m.path(vectorStoresFileName), m.vectorStores)
+			next := vectorStoresState{VectorStores: make([]domainsemantic.VectorStoreBackend, 0, len(m.vectorStores.VectorStores)-1)}
+			next.VectorStores = append(next.VectorStores, m.vectorStores.VectorStores[:i]...)
+			next.VectorStores = append(next.VectorStores, m.vectorStores.VectorStores[i+1:]...)
+			if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+				return err
+			}
+			m.vectorStores = next
+			return nil
 		}
 	}
 	return ErrNotFound
@@ -573,7 +732,7 @@ func (m *globalManager) DeleteCredential(ctx context.Context, id domainsemantic.
 
 func (m *globalManager) path(name string) string {
 	switch name {
-	case packagesFileName, modelEndpointsFileName, modelsFileName, modelEndpointCapsFileName, vectorStoresFileName:
+	case packagesFileName, modelEndpointsFileName, modelsFileName, modelEndpointCapsFileName, vectorStoresFileName, credentialLifecycleIntentFileName:
 		return filepath.Join(m.metaDir, inferenceDirName, name)
 	case secretsFileName:
 		return filepath.Join(m.metaDir, secretsDirName, name)
@@ -584,10 +743,34 @@ func (m *globalManager) path(name string) string {
 	}
 }
 
-func (m *globalManager) persistLocked(path string, v any) error { return persistJSON(path, v) }
+func (m *globalManager) persistLocked(path string, v any) error {
+	if m.persistFailureHook != nil {
+		if err := m.persistFailureHook("write", path); err != nil {
+			return err
+		}
+	}
+	return persistJSON(path, v)
+}
+
+func (m *globalManager) SetCredentialLifecyclePersistenceFaultInjector(inject func(operation, path string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.persistFailureHook = inject
+}
+
+var spaceManagerLocks sync.Map
+
+func sharedSpaceManagerLock(location string) *sync.RWMutex {
+	key, err := filepath.Abs(filepath.Clean(location))
+	if err != nil {
+		key = filepath.Clean(location)
+	}
+	lock, _ := spaceManagerLocks.LoadOrStore(key, &sync.RWMutex{})
+	return lock.(*sync.RWMutex)
+}
 
 type spaceManager struct {
-	mu                sync.RWMutex
+	mu                *sync.RWMutex
 	location          string
 	spaceID           domainspace.SpaceID
 	rules             semanticRulesState
@@ -599,6 +782,7 @@ type spaceManager struct {
 	searchIndexStates semanticSearchIndexStatesState
 	indexStates       indexStatesState
 	policyDecisions   policyDecisionsState
+	persistOverride   func(string, any) error
 }
 
 type dirtyWorkKey struct {
@@ -608,15 +792,18 @@ type dirtyWorkKey struct {
 }
 
 type maintenanceManager struct {
-	mu                   sync.RWMutex
-	location             string
-	spaceID              domainspace.SpaceID
-	dirtyQueue           dirtyQueueState
-	checkpoints          maintenanceCheckpointState
-	dirtyEvents          []domainsemantic.GraphDirtyEvent
-	dirtyEventByTxnID    map[uuid.UUID]int
-	checkpointByConsumer map[string]int
-	workItemByKey        map[dirtyWorkKey]int
+	mu                         sync.RWMutex
+	location                   string
+	spaceID                    domainspace.SpaceID
+	dirtyQueue                 dirtyQueueState
+	checkpoints                maintenanceCheckpointState
+	dirtyEvents                []domainsemantic.GraphDirtyEvent
+	dirtyEventByTxnID          map[uuid.UUID]int
+	checkpointByConsumer       map[string]int
+	workItemByKey              map[dirtyWorkKey]int
+	workLogRecords             int
+	workLogMutationRecordLimit int
+	workLogByteLimit           int64
 }
 
 func (m *spaceManager) Init(ctx context.Context, location string, spaceID domainspace.SpaceID) error {
@@ -629,6 +816,7 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	if spaceID == uuid.Nil {
 		return fmt.Errorf("%w: space_id is required", ErrInvalidInput)
 	}
+	m.mu = sharedSpaceManagerLock(location)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.location = location
@@ -646,6 +834,9 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 			rulesChanged = true
 		}
 		m.rules.Rules[i] = normalized
+	}
+	if err := ValidateSemanticRuleCatalog(m.rules.Rules); err != nil {
+		return err
 	}
 	if rulesChanged {
 		if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
@@ -692,6 +883,50 @@ func (m *spaceManager) Init(ctx context.Context, location string, spaceID domain
 	return os.MkdirAll(filepath.Join(location, maintenanceDirName), fsperm.SharedDir)
 }
 
+// ValidateSemanticRuleCatalog rejects duplicate non-empty normalized display
+// names within a space/domain scope. It intentionally does not infer or repair
+// names: rule UUIDs remain authoritative and invalid catalogs fail closed.
+func ValidateSemanticRuleCatalog(rules []domainsemantic.SemanticGenerationRule) error {
+	type displayNameScope struct {
+		spaceID     domainspace.SpaceID
+		domainID    graphmodel.DomainID
+		displayName string
+	}
+	seen := make(map[displayNameScope][]uuid.UUID, len(rules))
+	for _, rule := range rules {
+		displayName := domainsemantic.NormalizeSemanticRuleDisplayName(rule.DisplayName)
+		if displayName == "" {
+			continue
+		}
+		scope := displayNameScope{spaceID: rule.SpaceID, domainID: rule.DomainID, displayName: displayName}
+		if ids := seen[scope]; len(ids) > 0 {
+			return NewSemanticRuleDisplayNameConflict(displayName, append(ids, rule.ID))
+		}
+		seen[scope] = []uuid.UUID{rule.ID}
+	}
+	return nil
+}
+
+func semanticRuleDisplayNameConflict(rules []domainsemantic.SemanticGenerationRule, candidate domainsemantic.SemanticGenerationRule, self int) error {
+	displayName := domainsemantic.NormalizeSemanticRuleDisplayName(candidate.DisplayName)
+	if displayName == "" {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, 1)
+	for i, existing := range rules {
+		if i == self || existing.SpaceID != candidate.SpaceID || existing.DomainID != candidate.DomainID {
+			continue
+		}
+		if domainsemantic.NormalizeSemanticRuleDisplayName(existing.DisplayName) == displayName {
+			ids = append(ids, existing.ID)
+		}
+	}
+	if len(ids) > 0 {
+		return NewSemanticRuleDisplayNameConflict(displayName, ids)
+	}
+	return nil
+}
+
 func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.SemanticGenerationRule{}, err
@@ -703,6 +938,14 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 	rule = validation.Rule
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var latest semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if err := ValidateSemanticRuleCatalog(latest.Rules); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.rules = latest
 	now := time.Now().UTC()
 	if rule.ID == uuid.Nil {
 		rule.ID = newID()
@@ -714,13 +957,13 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 		rule.UpdatedAt = now
 	}
 	match := -1
-	for i, existing := range m.rules.Rules {
+	for i, existing := range latest.Rules {
 		if existing.ID == rule.ID {
 			match = i
 			break
 		}
 	}
-	for i, existing := range m.rules.Rules {
+	for i, existing := range latest.Rules {
 		if existing.SpaceID == rule.SpaceID && existing.DomainID == rule.DomainID && normalizeKey(existing.Key) == rule.Key {
 			if match >= 0 && i != match {
 				return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule key conflicts with existing rule", ErrInvalidInput)
@@ -729,14 +972,93 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 			break
 		}
 	}
-	if match >= 0 {
-		rule.ID = m.rules.Rules[match].ID
-		rule.CreatedAt = m.rules.Rules[match].CreatedAt
-		m.rules.Rules[match] = rule
-		return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
+	if err := semanticRuleDisplayNameConflict(latest.Rules, rule, match); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
 	}
-	m.rules.Rules = append(m.rules.Rules, rule)
-	return rule, persistJSON(m.path(semanticRulesFileName), m.rules)
+	next := semanticRulesState{Rules: append([]domainsemantic.SemanticGenerationRule(nil), latest.Rules...)}
+	if match >= 0 {
+		rule.ID = latest.Rules[match].ID
+		rule.CreatedAt = latest.Rules[match].CreatedAt
+		next.Rules[match] = rule
+	} else {
+		next.Rules = append(next.Rules, rule)
+	}
+	if err := m.persist(m.path(semanticRulesFileName), next); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.rules = next
+	return rule, nil
+}
+
+func semanticRuleStateEqual(left, right domainsemantic.SemanticGenerationRule) (bool, error) {
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		return false, err
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		return false, err
+	}
+	return string(leftJSON) == string(rightJSON), nil
+}
+
+func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected domainsemantic.SemanticGenerationRule, desired domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
+	if err := ctx.Err(); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if expected.ID == uuid.Nil || desired.ID != expected.ID {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: matching semantic_rule_id values are required", ErrInvalidInput)
+	}
+	expected = domainsemantic.NormalizeSemanticGenerationRule(expected)
+	validation := domainsemantic.ValidateSemanticGenerationRuleForStorage(m.spaceID, desired)
+	if !validation.Valid {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: %s", ErrInvalidInput, semanticValidationMessage(validation.Diagnostics))
+	}
+	desired = validation.Rule
+	expected.UpdatedAt = expected.UpdatedAt.UTC()
+	desired.UpdatedAt = desired.UpdatedAt.UTC()
+	if expected.UpdatedAt.IsZero() || desired.UpdatedAt.IsZero() || !desired.UpdatedAt.After(expected.UpdatedAt) {
+		return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule timestamps must advance", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if err := ValidateSemanticRuleCatalog(latest.Rules); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	m.rules = latest
+	for i, rule := range m.rules.Rules {
+		if rule.ID != expected.ID {
+			continue
+		}
+		equal, err := semanticRuleStateEqual(rule, desired)
+		if err != nil {
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
+		if equal {
+			return rule, nil
+		}
+		equal, err = semanticRuleStateEqual(rule, expected)
+		if err != nil {
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
+		if !equal {
+			return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule changed since it was read", ErrConflict)
+		}
+		if err := semanticRuleDisplayNameConflict(m.rules.Rules, desired, i); err != nil {
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
+		m.rules.Rules[i] = desired
+		if err := m.persist(m.path(semanticRulesFileName), m.rules); err != nil {
+			m.rules.Rules[i] = rule
+			return domainsemantic.SemanticGenerationRule{}, err
+		}
+		return desired, nil
+	}
+	return domainsemantic.SemanticGenerationRule{}, fmt.Errorf("%w: semantic rule not found", ErrNotFound)
 }
 
 func (m *spaceManager) ListSemanticRules(ctx context.Context) ([]domainsemantic.SemanticGenerationRule, error) {
@@ -757,84 +1079,128 @@ func (m *spaceManager) DeleteSemanticRule(ctx context.Context, id domainsemantic
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	found := false
-	for i, item := range m.rules.Rules {
-		if item.ID == id {
-			m.rules.Rules = append(m.rules.Rules[:i], m.rules.Rules[i+1:]...)
-			found = true
-			break
+	return m.deleteSemanticRuleLocked(id, purgeDependents)
+}
+
+func (m *spaceManager) DeleteSemanticRuleConditional(ctx context.Context, expected domainsemantic.SemanticGenerationRule, purgeDependents bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if expected.ID == uuid.Nil || expected.UpdatedAt.IsZero() {
+		return fmt.Errorf("%w: semantic rule identity and version are required", ErrInvalidInput)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latest, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return err
+	}
+	m.rules = latest
+	for _, current := range m.rules.Rules {
+		if current.ID != expected.ID {
+			continue
 		}
+		equal, err := semanticRuleStateEqual(current, expected)
+		if err != nil {
+			return err
+		}
+		if !equal {
+			return fmt.Errorf("%w: semantic rule changed since it was read", ErrConflict)
+		}
+		return m.deleteSemanticRuleLocked(expected.ID, purgeDependents)
+	}
+	return ErrNotFound
+}
+
+func (m *spaceManager) persist(path string, value any) error {
+	if m.persistOverride != nil {
+		return m.persistOverride(path, value)
+	}
+	return persistJSON(path, value)
+}
+
+func (m *spaceManager) deleteSemanticRuleLocked(id domainsemantic.SemanticRuleID, purgeDependents bool) error {
+	nextRules := semanticRulesState{Rules: make([]domainsemantic.SemanticGenerationRule, 0, len(m.rules.Rules))}
+	found := false
+	for _, item := range m.rules.Rules {
+		if item.ID == id {
+			found = true
+			continue
+		}
+		nextRules.Rules = append(nextRules.Rules, item)
 	}
 	if !found {
 		return ErrNotFound
 	}
-	if purgeDependents {
-		grants := m.grants.Grants[:0]
-		for _, grant := range m.grants.Grants {
-			if !scopeMatchesSemanticRule(grant.Scope, id) {
-				grants = append(grants, grant)
-			}
+	if !purgeDependents {
+		if err := m.persist(m.path(semanticRulesFileName), nextRules); err != nil {
+			return err
 		}
-		m.grants.Grants = grants
-		policies := m.policies.Policies[:0]
-		for _, policy := range m.policies.Policies {
-			if !scopeMatchesSemanticRule(policy.Scope, id) {
-				policies = append(policies, policy)
-			}
-		}
-		m.policies.Policies = policies
-		ruleStates := m.ruleStates.States[:0]
-		for _, state := range m.ruleStates.States {
-			if state.SemanticRuleID != id {
-				ruleStates = append(ruleStates, state)
-			}
-		}
-		m.ruleStates.States = ruleStates
-		searchStates := m.searchIndexStates.States[:0]
-		for _, state := range m.searchIndexStates.States {
-			if state.SemanticRuleID != id {
-				searchStates = append(searchStates, state)
-			}
-		}
-		m.searchIndexStates.States = searchStates
-		states := m.indexStates.States[:0]
-		for _, state := range m.indexStates.States {
-			if state.SemanticIndexID != domainsemantic.SemanticIndexID(id) && state.SemanticRuleID != id {
-				states = append(states, state)
-			}
-		}
-		m.indexStates.States = states
-		decisions := m.policyDecisions.Decisions[:0]
-		for _, decision := range m.policyDecisions.Decisions {
-			if !scopeMatchesSemanticRule(decision.Scope, id) {
-				decisions = append(decisions, decision)
-			}
-		}
-		m.policyDecisions.Decisions = decisions
+		m.rules = nextRules
+		return nil
 	}
-	if err := persistJSON(m.path(semanticRulesFileName), m.rules); err != nil {
-		return err
+	nextGrants := credentialGrantsState{Grants: make([]domainsemantic.CredentialGrant, 0, len(m.grants.Grants))}
+	for _, grant := range m.grants.Grants {
+		if !scopeMatchesSemanticRule(grant.Scope, id) {
+			nextGrants.Grants = append(nextGrants.Grants, grant)
+		}
 	}
-	if purgeDependents {
-		if err := persistJSON(m.path(credentialGrantsFileName), m.grants); err != nil {
-			return err
+	nextPolicies := inferencePoliciesState{Policies: make([]domainsemantic.InferencePolicy, 0, len(m.policies.Policies))}
+	for _, policy := range m.policies.Policies {
+		if !scopeMatchesSemanticRule(policy.Scope, id) {
+			nextPolicies.Policies = append(nextPolicies.Policies, policy)
 		}
-		if err := persistJSON(m.path(inferencePoliciesFileName), m.policies); err != nil {
-			return err
+	}
+	nextRuleStates := semanticRuleStatesState{States: make([]domainsemantic.SemanticRuleState, 0, len(m.ruleStates.States))}
+	for _, state := range m.ruleStates.States {
+		if state.SemanticRuleID != id {
+			nextRuleStates.States = append(nextRuleStates.States, state)
 		}
-		if err := persistJSON(m.path(ruleStateFileName), m.ruleStates); err != nil {
-			return err
+	}
+	nextSearchStates := semanticSearchIndexStatesState{States: make([]domainsemantic.SemanticSearchIndexState, 0, len(m.searchIndexStates.States))}
+	for _, state := range m.searchIndexStates.States {
+		if state.SemanticRuleID != id {
+			nextSearchStates.States = append(nextSearchStates.States, state)
 		}
-		if err := persistJSON(m.path(searchIndexStateFileName), m.searchIndexStates); err != nil {
-			return err
+	}
+	nextIndexStates := indexStatesState{States: make([]domainsemantic.SemanticIndexState, 0, len(m.indexStates.States))}
+	for _, state := range m.indexStates.States {
+		if state.SemanticIndexID != domainsemantic.SemanticIndexID(id) && state.SemanticRuleID != id {
+			nextIndexStates.States = append(nextIndexStates.States, state)
 		}
-		if err := persistJSON(m.path(indexStateFileName), m.indexStates); err != nil {
-			return err
+	}
+	nextDecisions := policyDecisionsState{Decisions: make([]domainsemantic.PolicyDecision, 0, len(m.policyDecisions.Decisions))}
+	for _, decision := range m.policyDecisions.Decisions {
+		if !scopeMatchesSemanticRule(decision.Scope, id) {
+			nextDecisions.Decisions = append(nextDecisions.Decisions, decision)
 		}
-		if err := persistJSON(m.path(policyDecisionsFileName), m.policyDecisions); err != nil {
+	}
+	// Persist idempotent dependent cleanup before deleting the rule that owns
+	// the durable transition journal. A partial failure therefore remains
+	// discoverable and can be rolled forward after restart.
+	for _, item := range []struct {
+		path  string
+		value any
+	}{
+		{m.path(credentialGrantsFileName), nextGrants},
+		{m.path(inferencePoliciesFileName), nextPolicies},
+		{m.path(ruleStateFileName), nextRuleStates},
+		{m.path(searchIndexStateFileName), nextSearchStates},
+		{m.path(indexStateFileName), nextIndexStates},
+		{m.path(policyDecisionsFileName), nextDecisions},
+		{m.path(semanticRulesFileName), nextRules},
+	} {
+		if err := m.persist(item.path, item.value); err != nil {
 			return err
 		}
 	}
+	m.grants = nextGrants
+	m.policies = nextPolicies
+	m.ruleStates = nextRuleStates
+	m.searchIndexStates = nextSearchStates
+	m.indexStates = nextIndexStates
+	m.policyDecisions = nextDecisions
+	m.rules = nextRules
 	return nil
 }
 
@@ -1123,6 +1489,12 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	defer m.mu.Unlock()
 	m.location = location
 	m.spaceID = spaceID
+	if m.workLogMutationRecordLimit <= 0 {
+		m.workLogMutationRecordLimit = maxWorkLogMutationRecords
+	}
+	if m.workLogByteLimit <= 0 {
+		m.workLogByteLimit = maxWorkLogBytes
+	}
 	if err := os.MkdirAll(filepath.Join(location, graphDirtyEventsDirName), fsperm.SharedDir); err != nil {
 		return err
 	}
@@ -1140,11 +1512,12 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	// The append-only work event log is the durable mutation stream for dirty
 	// work. Replay it on every load so state.json can act as a compacted
 	// snapshot without becoming more authoritative than later log records.
-	rebuilt, err := readWorkItemsFromLog(m.workEventsPath())
+	rebuilt, workLogRecords, err := readWorkItemsFromLog(m.workEventsPath())
 	if err != nil {
 		return err
 	}
-	if len(rebuilt) > 0 {
+	m.workLogRecords = workLogRecords
+	if workLogRecords > 0 {
 		m.dirtyQueue = dirtyQueueState{Items: rebuilt}
 		persistRebuiltWork = true
 	}
@@ -1158,7 +1531,18 @@ func (m *maintenanceManager) Init(ctx context.Context, location string, spaceID 
 	}
 	m.rebuildMaintenanceIndexesLocked()
 	if persistRebuiltWork {
-		return persistJSON(m.workStatePath(), m.dirtyQueue)
+		if err := persistJSON(m.workStatePath(), m.dirtyQueue); err != nil {
+			return err
+		}
+	}
+	workLogSize := int64(0)
+	if info, err := os.Stat(m.workEventsPath()); err == nil {
+		workLogSize = info.Size()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if (m.workLogRecords == 0 && len(m.dirtyQueue.Items) > 0) || m.workLogRecords >= m.workLogMutationRecordLimit || workLogSize > m.workLogByteLimit {
+		return m.rewriteWorkLogLocked(m.dirtyQueue.Items)
 	}
 	return nil
 }
@@ -1233,6 +1617,11 @@ func (m *maintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Context
 		timing.Deduplicate = time.Since(stepStart)
 		timing.Total = time.Since(traceStart)
 		return m.dirtyEvents[idx], timing, nil
+	}
+	if len(m.dirtyEvents) >= maxRetainedDirtyEvents {
+		timing.Deduplicate = time.Since(stepStart)
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, fmt.Errorf("semantic dirty-event retention capacity exhausted; analysis required")
 	}
 	timing.Deduplicate = time.Since(stepStart)
 	if event.ID == uuid.Nil {
@@ -1357,6 +1746,11 @@ func (m *maintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domai
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	normalized := normalizeDirtyWorkItem(item)
+	key := dirtyWorkKey{semanticRuleID: normalized.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(normalized.EmbeddingBindingKey), targetNodeID: normalized.TargetNodeID}
+	if _, exists := m.workItemByKey[key]; !exists && len(m.dirtyQueue.Items) >= maxRetainedDirtyWorkItems {
+		return domainsemantic.SemanticDirtyWorkItem{}, fmt.Errorf("semantic dirty-work retention capacity exhausted; analysis required")
+	}
 	originalItems := append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...)
 	originalIndex := cloneDirtyWorkIndex(m.workItemByKey)
 	updated := m.upsertDirtyWorkItemLocked(item, time.Now().UTC())
@@ -1382,6 +1776,18 @@ func (m *maintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []d
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	newKeys := map[dirtyWorkKey]struct{}{}
+	for _, item := range items {
+		normalized := normalizeDirtyWorkItem(item)
+		key := dirtyWorkKey{semanticRuleID: normalized.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(normalized.EmbeddingBindingKey), targetNodeID: normalized.TargetNodeID}
+		if _, exists := m.workItemByKey[key]; exists {
+			continue
+		}
+		newKeys[key] = struct{}{}
+	}
+	if len(m.dirtyQueue.Items)+len(newKeys) > maxRetainedDirtyWorkItems {
+		return nil, fmt.Errorf("semantic dirty-work retention capacity exhausted; analysis required")
+	}
 	originalItems := append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...)
 	originalIndex := cloneDirtyWorkIndex(m.workItemByKey)
 	now := time.Now().UTC()
@@ -1428,7 +1834,9 @@ func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.Seman
 		item.CompletedAt = nil
 		item.FailedAt = nil
 	}
-	item.UpdatedAt = now
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = now
+	}
 	key := dirtyWorkKey{semanticRuleID: item.EffectiveSemanticRuleID(), embeddingBindingKey: strings.TrimSpace(item.EmbeddingBindingKey), targetNodeID: item.TargetNodeID}
 	if idx, ok := m.workItemByKey[key]; ok && idx >= 0 && idx < len(m.dirtyQueue.Items) {
 		existing := m.dirtyQueue.Items[idx]
@@ -1438,7 +1846,7 @@ func (m *maintenanceManager) upsertDirtyWorkItemLocked(item domainsemantic.Seman
 		if item.Generation <= 0 {
 			item.Generation = 1
 		}
-		if existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
+		if existing.Status != domainsemantic.SemanticDirtyWorkStatusComplete && existing.FirstGraphRevision != 0 && (item.FirstGraphRevision == 0 || existing.FirstGraphRevision < item.FirstGraphRevision) {
 			item.FirstGraphRevision = existing.FirstGraphRevision
 		}
 		item.SourceTxnIDs = mergeTxnIDs(existing.SourceTxnIDs, item.SourceTxnIDs)
@@ -1468,6 +1876,99 @@ func (m *maintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domainse
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]domainsemantic.SemanticDirtyWorkItem(nil), m.dirtyQueue.Items...), nil
+}
+
+func (m *maintenanceManager) CompactHistory(ctx context.Context, in CompactHistoryInput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	maxEvents := in.MaxRetainedEvents
+	if maxEvents <= 0 || maxEvents > maxRetainedDirtyEvents {
+		maxEvents = maxRetainedDirtyEvents
+	}
+	maxCompleted := in.MaxRetainedCompletedWork
+	if maxCompleted < 0 {
+		maxCompleted = 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	frontierByDomain := map[graphmodel.DomainID]uint64{}
+	for _, consumer := range in.Consumers {
+		if consumer.DomainID == uuid.Nil {
+			continue
+		}
+		frontier, ok := frontierByDomain[consumer.DomainID]
+		if !ok || consumer.LastGraphRevision < frontier {
+			frontierByDomain[consumer.DomainID] = consumer.LastGraphRevision
+		}
+	}
+	latestByDomain := map[graphmodel.DomainID]domainsemantic.GraphDirtyEventID{}
+	for _, event := range m.dirtyEvents {
+		for _, domainID := range event.DomainIDs {
+			latestByDomain[domainID] = event.ID
+		}
+	}
+	retainedEvents := make([]domainsemantic.GraphDirtyEvent, 0, min(len(m.dirtyEvents), maxEvents))
+	for _, event := range m.dirtyEvents {
+		processed := true
+		keepLatest := false
+		for _, domainID := range event.DomainIDs {
+			if latestByDomain[domainID] == event.ID {
+				keepLatest = true
+			}
+			if frontier, ok := frontierByDomain[domainID]; ok && event.GraphRevision > frontier {
+				processed = false
+			}
+		}
+		if !processed || keepLatest {
+			retainedEvents = append(retainedEvents, event)
+		}
+	}
+	if len(retainedEvents) > maxEvents {
+		return fmt.Errorf("semantic dirty-event retention capacity exhausted; analysis required")
+	}
+	completedToDrop := 0
+	for _, item := range m.dirtyQueue.Items {
+		if item.Status == domainsemantic.SemanticDirtyWorkStatusComplete {
+			completedToDrop++
+		}
+	}
+	if completedToDrop > maxCompleted {
+		completedToDrop -= maxCompleted
+	} else {
+		completedToDrop = 0
+	}
+	retainedWork := make([]domainsemantic.SemanticDirtyWorkItem, 0, len(m.dirtyQueue.Items)-completedToDrop)
+	for _, item := range m.dirtyQueue.Items {
+		if item.Status == domainsemantic.SemanticDirtyWorkStatusComplete && completedToDrop > 0 {
+			completedToDrop--
+			continue
+		}
+		retainedWork = append(retainedWork, item)
+	}
+	eventBytes := make([]byte, 0)
+	for _, event := range retainedEvents {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		eventBytes = append(eventBytes, raw...)
+		eventBytes = append(eventBytes, '\n')
+	}
+	if err := filestore.WriteFileAtomic(m.graphDirtyEventsPath(), eventBytes, fsperm.PrivateFile); err != nil {
+		return err
+	}
+	if err := m.rewriteWorkLogLocked(retainedWork); err != nil {
+		return err
+	}
+	if err := persistJSON(m.workStatePath(), dirtyQueueState{Items: retainedWork}); err != nil {
+		return err
+	}
+	m.dirtyEvents = retainedEvents
+	m.dirtyQueue = dirtyQueueState{Items: retainedWork}
+	m.rebuildDirtyEventIndexLocked()
+	m.rebuildWorkItemIndexLocked()
+	return nil
 }
 
 func (m *maintenanceManager) ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {
@@ -1773,14 +2274,30 @@ func (m *maintenanceManager) checkpointsPath() string {
 }
 
 func (m *maintenanceManager) appendWorkLogRecord(kind string, item domainsemantic.SemanticDirtyWorkItem) error {
-	return m.appendWorkLog(workLogRecord{Kind: kind, At: time.Now().UTC(), Item: item})
+	return m.appendWorkLog(workLogRecord{Kind: kind, At: deterministicWorkLogTime(item), Item: item})
 }
 
 func (m *maintenanceManager) appendWorkLogBatchRecord(kind string, items []domainsemantic.SemanticDirtyWorkItem) error {
 	if len(items) == 0 {
 		return nil
 	}
-	return m.appendWorkLog(workLogRecord{Kind: kind, At: time.Now().UTC(), Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)})
+	at := time.Unix(0, 0).UTC()
+	for _, item := range items {
+		if candidate := deterministicWorkLogTime(item); candidate.After(at) {
+			at = candidate
+		}
+	}
+	return m.appendWorkLog(workLogRecord{Kind: kind, At: at, Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)})
+}
+
+func deterministicWorkLogTime(item domainsemantic.SemanticDirtyWorkItem) time.Time {
+	if !item.UpdatedAt.IsZero() {
+		return item.UpdatedAt.UTC()
+	}
+	if !item.CreatedAt.IsZero() {
+		return item.CreatedAt.UTC()
+	}
+	return time.Unix(0, 0).UTC()
 }
 
 func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {
@@ -1788,15 +2305,72 @@ func (m *maintenanceManager) appendWorkLog(record workLogRecord) error {
 	if err != nil {
 		return err
 	}
+	raw = append(raw, '\n')
+	currentBytes := int64(0)
+	if info, err := os.Stat(m.workEventsPath()); err == nil {
+		currentBytes = info.Size()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if m.workLogRecords >= m.workLogMutationRecordLimit || currentBytes+int64(len(raw)) > m.workLogByteLimit {
+		prospective := applyWorkLogRecord(m.dirtyQueue.Items, record)
+		return m.rewriteWorkLogLocked(prospective)
+	}
 	f, err := os.OpenFile(m.workEventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if _, err := f.Write(append(raw, '\n')); err != nil {
+	if _, err := f.Write(raw); err != nil {
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	m.workLogRecords++
+	return nil
+}
+
+func (m *maintenanceManager) rewriteWorkLogLocked(items []domainsemantic.SemanticDirtyWorkItem) error {
+	record := workLogRecord{Kind: "checkpoint", Items: append([]domainsemantic.SemanticDirtyWorkItem(nil), items...)}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if len(raw) > maxWorkLogCheckpointBytes {
+		return fmt.Errorf("semantic dirty-work checkpoint exceeds hard byte capacity")
+	}
+	if err := filestore.WriteFileAtomic(m.workEventsPath(), raw, fsperm.PrivateFile); err != nil {
+		return err
+	}
+	m.workLogRecords = 1
+	return nil
+}
+
+func applyWorkLogRecord(existing []domainsemantic.SemanticDirtyWorkItem, record workLogRecord) []domainsemantic.SemanticDirtyWorkItem {
+	items := append([]domainsemantic.SemanticDirtyWorkItem(nil), existing...)
+	index := make(map[uuid.UUID]int, len(items))
+	for i, item := range items {
+		index[item.ID] = i
+	}
+	loggedItems := []domainsemantic.SemanticDirtyWorkItem{record.Item}
+	if len(record.Items) > 0 {
+		loggedItems = record.Items
+	}
+	for _, item := range loggedItems {
+		item = normalizeDirtyWorkItem(item)
+		if item.ID == uuid.Nil {
+			continue
+		}
+		if pos, ok := index[item.ID]; ok {
+			items[pos] = item
+			continue
+		}
+		index[item.ID] = len(items)
+		items = append(items, item)
+	}
+	return items
 }
 
 func (m *spaceManager) path(name string) string { return filepath.Join(m.location, name) }
@@ -1823,42 +2397,32 @@ func readGraphDirtyEvents(path string) ([]domainsemantic.GraphDirtyEvent, error)
 	return out, nil
 }
 
-func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, error) {
+func readWorkItemsFromLog(path string) ([]domainsemantic.SemanticDirtyWorkItem, int, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []domainsemantic.SemanticDirtyWorkItem{}, nil
+			return []domainsemantic.SemanticDirtyWorkItem{}, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	items := []domainsemantic.SemanticDirtyWorkItem{}
-	index := map[uuid.UUID]int{}
+	records := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		var record workLogRecord
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		loggedItems := []domainsemantic.SemanticDirtyWorkItem{record.Item}
-		if record.Kind == "upsert_batch" {
-			loggedItems = record.Items
+		records++
+		if record.Kind == "checkpoint" {
+			items = append([]domainsemantic.SemanticDirtyWorkItem(nil), record.Items...)
+			continue
 		}
-		for _, item := range loggedItems {
-			item = normalizeDirtyWorkItem(item)
-			if item.ID == uuid.Nil {
-				continue
-			}
-			if pos, ok := index[item.ID]; ok {
-				items[pos] = item
-				continue
-			}
-			index[item.ID] = len(items)
-			items = append(items, item)
-		}
+		items = applyWorkLogRecord(items, record)
 	}
-	return items, nil
+	return items, records, nil
 }
 
 func mergeTxnIDs(a, b []uuid.UUID) []uuid.UUID {
@@ -1985,6 +2549,9 @@ func validateVectorStore(ctx context.Context, vectorStore domainsemantic.VectorS
 	if strings.TrimSpace(vectorStore.Key) == "" {
 		return fmt.Errorf("%w: vector store key is required", ErrInvalidInput)
 	}
+	if strings.TrimSpace(vectorStore.Name) == "" {
+		return fmt.Errorf("%w: vector store name is required", ErrInvalidInput)
+	}
 	if vectorStore.Type == "" {
 		return fmt.Errorf("%w: vector store type is required", ErrInvalidInput)
 	}
@@ -2011,6 +2578,15 @@ func validateSecret(ctx context.Context, secret domainsemantic.Secret) error {
 		return fmt.Errorf("%w: ciphertext is required", ErrInvalidInput)
 	}
 	return nil
+}
+
+func endpointSupportsCredentialAuth(endpoint domainsemantic.ModelEndpoint, authType domainsemantic.AuthMode) bool {
+	for _, supported := range endpoint.AuthModes {
+		if supported == authType {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCredential(ctx context.Context, credential domainsemantic.InferenceCredential) error {

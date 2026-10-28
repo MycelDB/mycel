@@ -35,6 +35,16 @@ func TestGraphMutationDigestCanonicalizesSetOrderAndEmptyCollections(t *testing.
 	}
 }
 
+func TestGraphIdempotencyMaintenanceCommandIDsIncludeReceiptGeneration(t *testing.T) {
+	firstRetain := graphIdempotencyMaintenanceCommandID("retain-", "principal", "space", "domain", "key", "same-digest", "commit-1")
+	secondRetain := graphIdempotencyMaintenanceCommandID("retain-", "principal", "space", "domain", "key", "same-digest", "commit-2")
+	firstAck := graphIdempotencyMaintenanceCommandID("ack-", "principal", "space", "domain", "key", "same-digest", "commit-1")
+	secondAck := graphIdempotencyMaintenanceCommandID("ack-", "principal", "space", "domain", "key", "same-digest", "commit-2")
+	if firstRetain == secondRetain || firstAck == secondAck || firstRetain == firstAck {
+		t.Fatalf("maintenance command IDs are not generation/action bound: %q %q %q %q", firstRetain, secondRetain, firstAck, secondAck)
+	}
+}
+
 func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	ctx := context.Background()
 	m, dataDir := newTestGraphModuleWithDataDir(t, ctx)
@@ -64,6 +74,7 @@ func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	}
 
 	retryTx := idempotencyGraphTx(spaceID, domainID, principalID, 1, "capture-1")
+	retryTx.RetainIdempotencyUntilAcknowledged = true
 	if _, err := m.UpsertNode(ctx, retryTx, domaingraph.NodeInput{NodeID: nodeID, Content: "stable mutation", Props: map[string]any{"rank": int64(1)}}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +87,17 @@ func TestGraphCommitIdempotencyReplayConflictAndRestart(t *testing.T) {
 	}
 	if len(replay.Changes) != 0 {
 		t.Fatalf("replay changes = %#v, want none", replay.Changes)
+	}
+	store, err := m.store(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, found, err := store.GetIdempotencyRecord(ctx, principalID, "capture-1")
+	if err != nil || !found || !promoted.RetainUntilAcknowledged {
+		t.Fatalf("promoted receipt=%+v found=%v err=%v", promoted, found, err)
+	}
+	if err := m.AcknowledgeIdempotentCommit(ctx, principalID, spaceID, domainID, "capture-1", "replacement-generation"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("replacement-generation acknowledgement error=%v, want conflict", err)
 	}
 
 	conflictTx := idempotencyGraphTx(spaceID, domainID, principalID, 1, "capture-1")

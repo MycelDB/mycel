@@ -35,14 +35,16 @@ const (
 type RecordKind uint8
 
 const (
-	RecordKindTxnBegin             RecordKind = 1
-	RecordKindTxnCommit            RecordKind = 2
-	RecordKindIdempotencyRestore   RecordKind = 3
-	RecordKindIdempotencyDelivered RecordKind = 4
-	RecordKindNodePut              RecordKind = 10
-	RecordKindNodeTombstone        RecordKind = 11
-	RecordKindEdgePut              RecordKind = 20
-	RecordKindEdgeTombstone        RecordKind = 21
+	RecordKindTxnBegin                RecordKind = 1
+	RecordKindTxnCommit               RecordKind = 2
+	RecordKindIdempotencyRestore      RecordKind = 3
+	RecordKindIdempotencyDelivered    RecordKind = 4
+	RecordKindIdempotencyAcknowledged RecordKind = 5
+	RecordKindIdempotencyRetained     RecordKind = 6
+	RecordKindNodePut                 RecordKind = 10
+	RecordKindNodeTombstone           RecordKind = 11
+	RecordKindEdgePut                 RecordKind = 20
+	RecordKindEdgeTombstone           RecordKind = 21
 )
 
 type SegmentKind uint8
@@ -125,15 +127,17 @@ type Store interface {
 // commit marker. Scope is owned by the caller; graph service uses the
 // authenticated principal while each LocalStore already scopes space/domain.
 type IdempotencyRecord struct {
-	Scope             string          `json:"scope"`
-	Key               string          `json:"key"`
-	Digest            string          `json:"digest"`
-	Metadata          json.RawMessage `json:"metadata,omitempty"`
-	StorageTxnID      uuid.UUID       `json:"storage_txn_id"`
-	CommittedRevision uint64          `json:"committed_revision"`
-	CommittedAt       time.Time       `json:"committed_at"`
-	ExpiresAt         time.Time       `json:"expires_at"`
-	Delivered         bool            `json:"delivered,omitempty"`
+	Scope                   string          `json:"scope"`
+	Key                     string          `json:"key"`
+	Digest                  string          `json:"digest"`
+	Metadata                json.RawMessage `json:"metadata,omitempty"`
+	StorageTxnID            uuid.UUID       `json:"storage_txn_id"`
+	CommittedRevision       uint64          `json:"committed_revision"`
+	CommittedAt             time.Time       `json:"committed_at"`
+	ExpiresAt               time.Time       `json:"expires_at"`
+	Delivered               bool            `json:"delivered,omitempty"`
+	RetainUntilAcknowledged bool            `json:"retain_until_acknowledged,omitempty"`
+	PublicationAcknowledged bool            `json:"publication_acknowledged,omitempty"`
 }
 
 type CommitInfo struct {

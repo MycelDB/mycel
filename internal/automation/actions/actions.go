@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -25,18 +26,22 @@ type Graphs interface {
 type Engine struct{ Graphs Graphs }
 
 type Context struct {
-	Definition           automation.Definition
-	RunID                string
-	InvocationID         string
-	BindingID            string
-	TargetNodeID         string
-	ClaimOwnerNodeID     uint64
-	ClaimVersion         uint64
-	ClaimToken           string
-	OutputIdempotencyKey string
-	Changed              graph.Node
-	Aliases              map[string]any
-	Result               output.Result
+	Definition                  automation.Definition
+	RunID                       string
+	InvocationID                string
+	BindingID                   string
+	TargetNodeID                string
+	ClaimOwnerNodeID            uint64
+	ClaimVersion                uint64
+	ClaimToken                  string
+	OutputIdempotencyKey        string
+	ProcedureID                 string
+	AuthorizationRevision       uint64
+	GlobalAuthorizationRevision uint64
+	SpaceAuthorizationRevision  uint64
+	Changed                     graph.Node
+	Aliases                     map[string]any
+	Result                      output.Result
 }
 
 type Summary struct {
@@ -339,16 +344,28 @@ func automationMeta(in Context) map[string]any {
 		meta["target_node_id"] = in.TargetNodeID
 	}
 	if in.ClaimOwnerNodeID != 0 {
-		meta["claim_owner_node_id"] = in.ClaimOwnerNodeID
+		meta["claim_owner_node_id"] = strconv.FormatUint(in.ClaimOwnerNodeID, 10)
 	}
 	if in.ClaimVersion != 0 {
-		meta["claim_version"] = in.ClaimVersion
+		meta["claim_version"] = strconv.FormatUint(in.ClaimVersion, 10)
 	}
 	if in.ClaimToken != "" {
 		meta["claim_token"] = in.ClaimToken
 	}
 	if in.OutputIdempotencyKey != "" {
 		meta["output_idempotency_key"] = in.OutputIdempotencyKey
+	}
+	if in.ProcedureID != "" {
+		meta["procedure_id"] = in.ProcedureID
+	}
+	if in.AuthorizationRevision != 0 {
+		meta["authorization_revision"] = strconv.FormatUint(in.AuthorizationRevision, 10)
+	}
+	if in.GlobalAuthorizationRevision != 0 {
+		meta["global_authorization_revision"] = strconv.FormatUint(in.GlobalAuthorizationRevision, 10)
+	}
+	if in.SpaceAuthorizationRevision != 0 {
+		meta["space_authorization_revision"] = strconv.FormatUint(in.SpaceAuthorizationRevision, 10)
 	}
 	return meta
 }

@@ -45,6 +45,10 @@ func (m *Module) validateAutomationOutputFences(ctx context.Context, record grap
 	return nil
 }
 
+func isReplayConvergentAutomationFenceRejection(err error) bool {
+	return status.Code(err) == codes.FailedPrecondition && strings.Contains(strings.ToLower(err.Error()), "automation output fence rejected for invocation")
+}
+
 func automationOutputFenceValidations(record graphCommitRecord) ([]domaingraph.AutomationOutputFenceValidation, error) {
 	out := []domaingraph.AutomationOutputFenceValidation{}
 	nodeFenceIDs := idSet(record.AutomationFenceNodeIDs)
@@ -92,17 +96,21 @@ func automationOutputFenceValidation(spaceID string, domainID domaingraph.Domain
 		return domaingraph.AutomationOutputFenceValidation{}, false, nil
 	}
 	validation := domaingraph.AutomationOutputFenceValidation{
-		SpaceID:              strings.TrimSpace(spaceID),
-		DomainID:             domainID,
-		EntityKind:           entityKind,
-		EntityID:             strings.TrimSpace(entityID),
-		AutomationID:         metadataString(automationMeta, "automation_id"),
-		BindingID:            metadataString(automationMeta, "binding_id"),
-		RunID:                metadataString(automationMeta, "run_id"),
-		InvocationID:         metadataString(automationMeta, "invocation_id"),
-		TargetNodeID:         metadataString(automationMeta, "target_node_id"),
-		ClaimToken:           metadataString(automationMeta, "claim_token"),
-		OutputIdempotencyKey: metadataString(automationMeta, "output_idempotency_key"),
+		SpaceID:                     strings.TrimSpace(spaceID),
+		DomainID:                    domainID,
+		EntityKind:                  entityKind,
+		EntityID:                    strings.TrimSpace(entityID),
+		AutomationID:                metadataString(automationMeta, "automation_id"),
+		BindingID:                   metadataString(automationMeta, "binding_id"),
+		RunID:                       metadataString(automationMeta, "run_id"),
+		InvocationID:                metadataString(automationMeta, "invocation_id"),
+		TargetNodeID:                metadataString(automationMeta, "target_node_id"),
+		ClaimToken:                  metadataString(automationMeta, "claim_token"),
+		OutputIdempotencyKey:        metadataString(automationMeta, "output_idempotency_key"),
+		ProcedureID:                 metadataString(automationMeta, "procedure_id"),
+		AuthorizationRevision:       metadataUint64(automationMeta, "authorization_revision"),
+		GlobalAuthorizationRevision: metadataUint64(automationMeta, "global_authorization_revision"),
+		SpaceAuthorizationRevision:  metadataUint64(automationMeta, "space_authorization_revision"),
 	}
 	validation.ClaimOwnerNodeID = metadataUint64(automationMeta, "claim_owner_node_id")
 	validation.ClaimVersion = metadataUint64(automationMeta, "claim_version")
@@ -123,6 +131,9 @@ func automationOutputFenceValidation(spaceID string, domainID domaingraph.Domain
 	}
 	if validation.OutputIdempotencyKey == "" {
 		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence on %s %s is missing output_idempotency_key", entityKind, entityID)
+	}
+	if validation.ProcedureID == "" || validation.AuthorizationRevision == 0 {
+		return domaingraph.AutomationOutputFenceValidation{}, true, status.Errorf(codes.FailedPrecondition, "automation output fence rejected for invocation %s: %s %s is missing procedure authorization revision", validation.InvocationID, entityKind, entityID)
 	}
 	return validation, true, nil
 }

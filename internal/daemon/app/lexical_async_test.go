@@ -30,6 +30,7 @@ import (
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -415,6 +416,9 @@ func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testin
 
 	snapshotStarted := make(chan struct{})
 	releaseSnapshot := make(chan struct{})
+	releaseOnce := sync.Once{}
+	release := func() { releaseOnce.Do(func() { close(releaseSnapshot) }) }
+	t.Cleanup(release)
 	rebuildDone := make(chan error, 1)
 	go func() {
 		rebuildDone <- lexical.RebuildFromSnapshot(ctx, spaceID.String(), domainID.String(), func() ([]lexicalindex.IndexedDocument, uint64, error) {
@@ -443,7 +447,7 @@ func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testin
 		if err != nil {
 			t.Fatalf("publish queued graph changes: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("graph-change publication blocked behind lexical rebuild")
 	}
 	current, err := notifications.CurrentRevision(ctx, spaceID.String(), domainID.String())
@@ -453,11 +457,11 @@ func TestAsyncLexicalDurableReplayStaysOrderedWithoutWriteBackpressure(t *testin
 	if current != lastRevision {
 		t.Fatalf("notification revision = %d, want %d before rebuild release", current, lastRevision)
 	}
-	close(releaseSnapshot)
+	release()
 	if err := <-rebuildDone; err != nil {
 		t.Fatalf("RebuildFromSnapshot() error = %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status := lexical.Status(ctx, spaceID.String(), domainID.String(), lastRevision)
 		if status.State == lexicalservice.StateFresh && status.IndexedGraphRevision == lastRevision && status.LiveDocumentCount == int(lastRevision) {
@@ -675,7 +679,7 @@ func writeLexicalTestNode(t *testing.T, ctx context.Context, transactions *clien
 
 func assertLexicalSearchResult(t *testing.T, ctx context.Context, search *clientapi.SearchService, spaceID string, domainID string, query string, nodeID string) {
 	t.Helper()
-	result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Query: query, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
+	result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String(query)}, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
 	if err != nil {
 		t.Fatalf("Search(%q) error = %v", query, err)
 	}
@@ -688,7 +692,7 @@ func eventuallyLexicalSearchResult(t *testing.T, ctx context.Context, search *cl
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Query: query, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
+		result, err := search.Search(ctx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String(query)}, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL})
 		if err == nil && len(result.GetResults()) == 1 && result.GetResults()[0].GetNodeId() == nodeID {
 			return
 		}

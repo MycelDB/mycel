@@ -2,16 +2,42 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	"github.com/myceldb/mycel/internal/automation/storage"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type outputFenceRevisionInference struct{ revision uint64 }
+
+type failingSpaceAuthorizationRevisionStore struct {
+	storage.Store
+	err error
+}
+
+func (s failingSpaceAuthorizationRevisionStore) GetSpaceAuthorizationRevision(context.Context, string) (storage.SpaceAuthorizationRevision, error) {
+	return storage.SpaceAuthorizationRevision{}, s.err
+}
+
+func (f *outputFenceRevisionInference) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	return inferenceruntime.InvokeResponse{}, nil
+}
+
+func (f *outputFenceRevisionInference) CurrentAuthorizationRevisions(context.Context, string) (uint64, uint64, error) {
+	return 1, f.revision, nil
+}
+
+func (f *outputFenceRevisionInference) AssertGlobalAuthorizationRevision(context.Context, uint64) error {
+	return nil
+}
 
 func TestValidateAutomationOutputFenceAcceptsCurrentClaim(t *testing.T) {
 	ctx := context.Background()
@@ -19,13 +45,67 @@ func TestValidateAutomationOutputFenceAcceptsCurrentClaim(t *testing.T) {
 	mgr := NewManager(store)
 	spaceID := uuid.NewString()
 	domainID := graph.DomainID(uuid.New())
-	inv := automation.Invocation{ID: "inv-a", DomainID: domainID, SpaceID: spaceID, Status: "running", ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", ClaimExpiresAt: time.Now().Add(time.Minute)}
+	inv := automation.Invocation{ID: "inv-a", DomainID: domainID, SpaceID: spaceID, ProcedureID: "proc", Status: "running", ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", ClaimExpiresAt: time.Now().Add(time.Minute)}
 	if err := store.PutInvocation(ctx, inv); err != nil {
 		t.Fatalf("PutInvocation() error = %v", err)
 	}
-	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: "output-key"}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, EntityKind: "node", EntityID: uuid.NewString(), InvocationID: inv.ID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: 1}
 	if err := mgr.ValidateAutomationOutputFence(ctx, validation); err != nil {
 		t.Fatalf("ValidateAutomationOutputFence() error = %v", err)
+	}
+}
+
+func TestValidateAutomationOutputFenceRejectsChangedAuthorizationRevisionInCluster(t *testing.T) {
+	const (
+		currentRevision uint64 = 4778902782362294898
+		staleRevision   uint64 = 4778902782362294897
+	)
+	ctx := context.Background()
+	store := storage.NewFileStore(t.TempDir())
+	revisions := &outputFenceRevisionInference{revision: currentRevision}
+	mgr := NewManager(store).WithInferenceInvoker(revisions)
+	mgr.raftGroups = &consensus.MultiGroup{}
+	mgr.raftPartitionCount = 1
+	spaceID := uuid.NewString()
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: "inv-a", DomainID: domainID, SpaceID: spaceID, ProcedureID: "proc", Status: "running", ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token"}
+	if err := store.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutProcedure(ctx, automation.Procedure{ID: "proc", Version: 1, DomainID: domainID, Status: automation.StatusEnabled}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutSpaceAuthorizationRevision(ctx, storage.SpaceAuthorizationRevision{SpaceID: spaceID, Revision: currentRevision}); err != nil {
+		t.Fatal(err)
+	}
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: staleRevision, GlobalAuthorizationRevision: 8853358141603235760, SpaceAuthorizationRevision: staleRevision}
+	if err := mgr.ValidateAutomationOutputFence(ctx, validation); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("authorization revision fence error=%v", err)
+	}
+	validation.AuthorizationRevision = currentRevision
+	validation.SpaceAuthorizationRevision = currentRevision
+	if err := mgr.ValidateAutomationOutputFence(ctx, validation); err != nil {
+		t.Fatalf("matching authorization revision error=%v", err)
+	}
+}
+
+func TestValidateAutomationOutputFencePreservesAuthorizationRevisionReadFailure(t *testing.T) {
+	ctx := context.Background()
+	baseStore := storage.NewFileStore(t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := graph.DomainID(uuid.New())
+	inv := automation.Invocation{ID: "inv-read-failure", DomainID: domainID, SpaceID: spaceID, ProcedureID: "proc", Status: "running", ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token"}
+	if err := baseStore.PutInvocation(ctx, inv); err != nil {
+		t.Fatal(err)
+	}
+	readErr := status.Error(codes.Unavailable, "authorization storage unavailable")
+	mgr := NewManager(failingSpaceAuthorizationRevisionStore{Store: baseStore, err: readErr})
+	mgr.raftGroups = &consensus.MultiGroup{}
+	mgr.raftPartitionCount = 1
+	validation := graph.AutomationOutputFenceValidation{SpaceID: spaceID, DomainID: domainID, InvocationID: inv.ID, ClaimOwnerNodeID: 2, ClaimVersion: 7, ClaimToken: "current-token", OutputIdempotencyKey: "output-key", ProcedureID: "proc", AuthorizationRevision: 11, GlobalAuthorizationRevision: 1, SpaceAuthorizationRevision: 11}
+	err := mgr.ValidateAutomationOutputFence(ctx, validation)
+	if !errors.Is(err, readErr) || status.Code(err) != codes.Unavailable {
+		t.Fatalf("authorization revision read error=%v, want preserved Unavailable", err)
 	}
 }
 

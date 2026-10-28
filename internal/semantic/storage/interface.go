@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/graph/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -33,6 +34,36 @@ type GlobalManager interface {
 	UpsertCredential(ctx context.Context, credential domainsemantic.InferenceCredential) (domainsemantic.InferenceCredential, error)
 	ListCredentials(ctx context.Context) ([]domainsemantic.InferenceCredential, error)
 	DeleteCredential(ctx context.Context, id domainsemantic.InferenceCredentialID) error
+}
+
+// SemanticRuleEnabledManager applies an ID-qualified, conditional full-rule
+// mutation. The historical name is retained for interface compatibility.
+type SemanticRuleEnabledManager interface {
+	SetSemanticRuleEnabled(ctx context.Context, expected domainsemantic.SemanticGenerationRule, desired domainsemantic.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error)
+}
+
+// SemanticRuleConditionalDeleteManager applies an ID- and version-qualified
+// deletion so a stale reconciler cannot delete a newer rule transition.
+type SemanticRuleConditionalDeleteManager interface {
+	DeleteSemanticRuleConditional(ctx context.Context, expected domainsemantic.SemanticGenerationRule, purgeDependents bool) error
+}
+
+// CredentialLifecycleManager applies conditional credential/secret lifecycle
+// changes while holding one storage lock. The enclosing WAL/Raft record provides
+// crash replay; this contract prevents concurrently visible partial state.
+// CredentialLifecyclePersistenceFaultInjector is a narrow deterministic test
+// seam for write/remove persistence-boundary failure injection. Production
+// composition does not configure it.
+type CredentialLifecyclePersistenceFaultInjector interface {
+	SetCredentialLifecyclePersistenceFaultInjector(func(operation, path string) error)
+}
+
+type CredentialLifecycleManager interface {
+	RecoverCredentialLifecycle(ctx context.Context) (bool, error)
+	CreateCredentialLifecycle(ctx context.Context, credential domainsemantic.InferenceCredential, secret *domainsemantic.Secret) (domainsemantic.InferenceCredential, *domainsemantic.Secret, error)
+	RotateCredentialLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, expectedSecretRef domainsemantic.SecretID, secret domainsemantic.Secret) (domainsemantic.InferenceCredential, domainsemantic.Secret, error)
+	SetCredentialStatusLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, status domainsemantic.CredentialStatus, updatedAt time.Time) (domainsemantic.InferenceCredential, error)
+	DeleteCredentialLifecycle(ctx context.Context, credentialID domainsemantic.InferenceCredentialID, expectedSecretRef domainsemantic.SecretID, deleteSecret bool) error
 }
 
 // SpaceManager stores space-owned semantic resource metadata under graphs/<space_id>/semantic/.
@@ -108,6 +139,18 @@ type ClaimReadyWorkInput struct {
 }
 
 // WorkResult marks a claimed work item complete.
+type MaintenanceConsumerFrontier struct {
+	Consumer          string
+	DomainID          graph.DomainID
+	LastGraphRevision uint64
+}
+
+type CompactHistoryInput struct {
+	Consumers                []MaintenanceConsumerFrontier
+	MaxRetainedEvents        int
+	MaxRetainedCompletedWork int
+}
+
 type WorkResult struct {
 	CompletedAt time.Time `json:"completed_at,omitempty"`
 	Generation  int       `json:"generation,omitempty"`
@@ -133,6 +176,7 @@ type MaintenanceManager interface {
 	SaveCheckpoint(ctx context.Context, checkpoint MaintenanceCheckpoint) error
 	UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error)
 	ListDirtyWorkItems(ctx context.Context) ([]domainsemantic.SemanticDirtyWorkItem, error)
+	CompactHistory(ctx context.Context, in CompactHistoryInput) error
 	ClaimReadyWork(ctx context.Context, in ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error)
 	CompleteWork(ctx context.Context, id uuid.UUID, result WorkResult) error
 	FailWork(ctx context.Context, id uuid.UUID, failure WorkFailure) error

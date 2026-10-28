@@ -160,13 +160,23 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.LexicalManager != nil {
 		adminv1.RegisterAdminLexicalMaintenanceServiceServer(grpcServer, adminapi.NewAdminLexicalMaintenanceService(cfg.LexicalManager, cfg.GraphManager, cfg.SpaceManager, cfg.PrincipalManager))
 	}
-	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.PrincipalManager))
+	semanticBudgetCursorKey, err := cfg.TokenManager.DeriveKey("semantic-provider-budget-cursor-v1")
+	if err != nil {
+		return nil, fmt.Errorf("derive semantic provider budget cursor integrity key: %w", err)
+	}
+	adminv1.RegisterAdminSemanticMaintenanceServiceServer(grpcServer, adminapi.NewAdminSemanticMaintenanceService(cfg.SemanticManager, cfg.PrincipalManager, cfg.InferenceManager).WithCursorKey(semanticBudgetCursorKey))
 	adminv1.RegisterAdminSemanticMigrationServiceServer(grpcServer, adminapi.NewAdminSemanticMigrationService(cfg.SemanticManager, cfg.SpaceManager, cfg.PrincipalManager))
 	if cfg.SchemaManager != nil {
 		adminv1.RegisterAdminSchemaServiceServer(grpcServer, adminapi.NewAdminSchemaService(cfg.SchemaManager))
 	}
+	var procedureInferenceCursorKey []byte
 	if cfg.AutomationManager != nil {
-		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager, cfg.PrincipalManager).WithDomainResolver(cfg.SpaceManager))
+		var deriveErr error
+		procedureInferenceCursorKey, deriveErr = cfg.TokenManager.DeriveKey("procedure-inference-cursor-v1")
+		if deriveErr != nil {
+			return nil, fmt.Errorf("derive procedure inference cursor integrity key: %w", deriveErr)
+		}
+		adminv1.RegisterAdminAutomationServiceServer(grpcServer, adminapi.NewAdminAutomationService(cfg.AutomationManager, cfg.PrincipalManager).WithDomainResolver(cfg.SpaceManager).WithCursorKey(procedureInferenceCursorKey))
 	}
 	if cfg.ClusteringManager != nil {
 		clusterAdmin := adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.PrincipalManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups, cfg.RaftTransportDiagnostics)
@@ -235,11 +245,15 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		clientv1.RegisterSchemaServiceServer(grpcServer, clientapi.NewSchemaService(cfg.SchemaManager))
 	}
 	if cfg.AutomationManager != nil {
-		clientv1.RegisterAutomationServiceServer(grpcServer, clientapi.NewAutomationService(cfg.AutomationManager))
+		clientv1.RegisterAutomationServiceServer(grpcServer, clientapi.NewAutomationService(cfg.AutomationManager, procedureInferenceCursorKey).WithSpaceManager(cfg.SpaceManager))
 	}
 	clientv1.RegisterImportExportServiceServer(grpcServer, importExportAPI)
 	clientv1.RegisterMetadataCatalogServiceServer(grpcServer, metadataCatalogAPI)
-	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager))
+	semanticCursorKey, deriveErr := cfg.TokenManager.DeriveKey("direct-semantic-cursor-v1")
+	if deriveErr != nil {
+		return nil, fmt.Errorf("derive semantic cursor integrity key: %w", deriveErr)
+	}
+	clientv1.RegisterSemanticServiceServer(grpcServer, clientapi.NewSemanticService(cfg.SemanticManager, cfg.SpaceManager, cfg.GraphManager, semanticCursorKey).WithLogger(cfg.Logger))
 	graphChangeAPI := clientapi.NewGraphChangeService(cfg.GraphChangeManager, cfg.SpaceManager)
 	if checker, ok := cfg.GraphManager.(clientapi.TransactionGraphWriteLeaderChecker); ok {
 		graphChangeAPI.WithGraphWriteLeaderChecker(checker)

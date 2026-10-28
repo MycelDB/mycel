@@ -37,6 +37,11 @@ type derivedInferenceSpaceSync interface {
 	DeleteDerivedPolicy(context.Context, string, domaininference.PolicyID) error
 }
 
+type derivedInferenceSpaceCache interface {
+	ListCachedDerivedProfiles(context.Context, string) ([]domaininference.Profile, bool, error)
+	DeleteCachedDerivedProfile(context.Context, string, domaininference.ProfileID) error
+}
+
 // Synchronization helpers keep the new standalone inference stores populated
 // while existing semantic runtime paths continue to read the legacy semantic
 // inference stores. Later INF phases will make standalone inference authoritative.

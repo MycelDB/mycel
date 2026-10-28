@@ -1,6 +1,11 @@
 package semantic
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,6 +188,13 @@ const (
 
 const (
 	DefaultSemanticTriggerEventChanged = "changed"
+	SemanticTriggerEventNodeCreated    = "node.created"
+	SemanticTriggerEventNodeUpdated    = "node.updated"
+	SemanticTriggerEventNodeDeleted    = "node.deleted"
+	SemanticTriggerEventEdgeChanged    = "edge.changed"
+	SemanticTriggerEventEdgeCreated    = "edge.created"
+	SemanticTriggerEventEdgeUpdated    = "edge.updated"
+	SemanticTriggerEventEdgeDeleted    = "edge.deleted"
 	SemanticPhysicalIndexExact         = "exact"
 )
 
@@ -206,6 +218,13 @@ const (
 // The rule is user-authored, while concrete endpoint/model/capability choices
 // are resolved later through Intelligence Access and stored only as provenance
 // on generated vector records and usage events.
+const (
+	SemanticProviderBudgetTransitionPrepare     = "prepare"
+	SemanticProviderBudgetTransitionComplete    = "complete"
+	SemanticProviderBudgetTransitionDelete      = "delete"
+	SemanticProviderBudgetTransitionReliability = "reliability"
+)
+
 type SemanticGenerationRule struct {
 	ID                   SemanticRuleID               `json:"id"`
 	SpaceID              domainspace.SpaceID          `json:"space_id"`
@@ -224,7 +243,59 @@ type SemanticGenerationRule struct {
 	CreatedByPrincipalID identity.PrincipalID         `json:"created_by_principal_id,omitempty"`
 	CreatedAt            time.Time                    `json:"created_at"`
 	UpdatedAt            time.Time                    `json:"updated_at"`
-	Metadata             map[string]any               `json:"metadata,omitempty"`
+	// ProviderBudgetTransition is an internal durable lifecycle journal. A
+	// non-empty value makes the rule ineligible for semantic work until the
+	// daemon finishes or rolls forward the associated budget transition.
+	ProviderBudgetTransition                string         `json:"provider_budget_transition,omitempty"`
+	ProviderBudgetTransitionID              string         `json:"provider_budget_transition_id,omitempty"`
+	ProviderBudgetTransitionScopeIDs        []string       `json:"provider_budget_transition_scope_ids,omitempty"`
+	ProviderBudgetTransitionRequiresRebuild bool           `json:"provider_budget_transition_requires_rebuild,omitempty"`
+	ProviderBudgetTransitionPurgeVectors    bool           `json:"provider_budget_transition_purge_vectors,omitempty"`
+	Metadata                                map[string]any `json:"metadata,omitempty"`
+}
+
+// SemanticRuleConfigurationHash identifies semantic-output compatibility. It
+// intentionally excludes display text, ownership, timestamps, enabled state,
+// and worker scheduling controls while binding selection, projection, route,
+// vector store, and physical ranking semantics.
+func SemanticRuleConfigurationHash(rule SemanticGenerationRule) string {
+	normalized := NormalizeSemanticGenerationRule(rule)
+	embeddings := append([]SemanticEmbeddingBinding(nil), normalized.Embeddings...)
+	for i := range embeddings {
+		// Provider budgets control whether an invocation may occur; they do not
+		// change the bytes, model route, vector space, or ranking semantics of an
+		// already-produced semantic record.
+		embeddings[i].ProviderBudget = nil
+	}
+	return semanticConfigurationHash(struct {
+		Selector   SemanticTargetSelector       `json:"selector"`
+		Source     SemanticSourceAssemblyPolicy `json:"source"`
+		Embeddings []SemanticEmbeddingBinding   `json:"embeddings"`
+		Storage    SemanticStoragePolicy        `json:"storage"`
+	}{Selector: normalized.Selector, Source: normalized.Source, Embeddings: embeddings, Storage: normalized.Storage})
+}
+
+// SemanticRecordConfigurationHash binds a record to both rule semantics and
+// the concrete configured route/vector shape resolved for its binding.
+func SemanticRecordConfigurationHash(rule SemanticGenerationRule, binding SemanticEmbeddingBinding, endpointID ModelEndpointID, modelID InferenceModelID, capabilityID ModelEndpointCapabilityID, vectorSpaceKey string, dimensions int) string {
+	return semanticConfigurationHash(struct {
+		RuleHash     string `json:"ruleHash"`
+		BindingKey   string `json:"bindingKey"`
+		EndpointID   string `json:"endpointId"`
+		ModelID      string `json:"modelId"`
+		CapabilityID string `json:"capabilityId"`
+		VectorSpace  string `json:"vectorSpace"`
+		Dimensions   int    `json:"dimensions"`
+	}{RuleHash: SemanticRuleConfigurationHash(rule), BindingKey: NormalizeSemanticEmbeddingBinding(binding).Key, EndpointID: endpointID.String(), ModelID: modelID.String(), CapabilityID: capabilityID.String(), VectorSpace: strings.TrimSpace(vectorSpaceKey), Dimensions: dimensions})
+}
+
+func semanticConfigurationHash(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 type SemanticTriggerPolicy struct {
@@ -251,15 +322,41 @@ type SemanticSourceAssemblyPolicy struct {
 	ContextGQL        string                     `json:"context_gql,omitempty"`
 }
 
+type SemanticProviderBatchingMode string
+
+const (
+	SemanticProviderBatchingSingle SemanticProviderBatchingMode = "single"
+	SemanticProviderBatchingBatch  SemanticProviderBatchingMode = "batch"
+)
+
+type SemanticProviderBudgetPolicy struct {
+	CorrelationID               string                       `json:"correlation_id"`
+	MaxRequests                 int64                        `json:"max_requests"`
+	MaxRetryAttempts            int64                        `json:"max_retry_attempts"`
+	MaxRetriesPerRequest        int64                        `json:"max_retries_per_request"`
+	MaxConcurrentProviderCalls  int64                        `json:"max_concurrent_provider_calls"`
+	BatchingMode                SemanticProviderBatchingMode `json:"batching_mode"`
+	MaxBatchItems               int64                        `json:"max_batch_items"`
+	MaxInputTokensPerRequest    int64                        `json:"max_input_tokens_per_request"`
+	MaxInputTokens              int64                        `json:"max_input_tokens"`
+	RequestTimeout              time.Duration                `json:"request_timeout"`
+	TotalTimeout                time.Duration                `json:"total_timeout"`
+	Currency                    string                       `json:"currency"`
+	PriceDefinitionVersion      string                       `json:"price_definition_version"`
+	InputMicrosPerMillionTokens int64                        `json:"input_micros_per_million_tokens"`
+	MaxEstimatedCostMicros      int64                        `json:"max_estimated_cost_micros"`
+}
+
 type SemanticEmbeddingBinding struct {
-	Key                   string                `json:"key"`
-	Purpose               string                `json:"purpose,omitempty"`
-	IntelligenceProfile   string                `json:"intelligence_profile,omitempty"`
-	IntelligenceProfileID IntelligenceProfileID `json:"intelligence_profile_id,omitempty"`
-	VectorStore           string                `json:"vector_store,omitempty"`
-	VectorStoreID         VectorStoreID         `json:"vector_store_id,omitempty"`
-	Enabled               bool                  `json:"enabled"`
-	Metadata              map[string]any        `json:"metadata,omitempty"`
+	Key                   string                        `json:"key"`
+	Purpose               string                        `json:"purpose,omitempty"`
+	IntelligenceProfile   string                        `json:"intelligence_profile,omitempty"`
+	IntelligenceProfileID IntelligenceProfileID         `json:"intelligence_profile_id,omitempty"`
+	VectorStore           string                        `json:"vector_store,omitempty"`
+	VectorStoreID         VectorStoreID                 `json:"vector_store_id,omitempty"`
+	Enabled               bool                          `json:"enabled"`
+	Metadata              map[string]any                `json:"metadata,omitempty"`
+	ProviderBudget        *SemanticProviderBudgetPolicy `json:"provider_budget,omitempty"`
 }
 
 type SemanticMaintenancePolicy struct {
@@ -277,14 +374,37 @@ func NormalizeSemanticRuleKey(key string) string {
 	return strings.ToLower(strings.TrimSpace(key))
 }
 
+// NormalizeSemanticRuleDisplayName returns the comparison form used to enforce
+// display-name uniqueness. The authored casing remains preserved on the rule.
+func NormalizeSemanticRuleDisplayName(displayName string) string {
+	return strings.ToLower(strings.TrimSpace(displayName))
+}
+
 func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTriggerPolicy {
 	if len(policy.Events) == 0 {
 		policy.Events = []string{DefaultSemanticTriggerEventChanged}
 	}
-	events := make([]string, len(policy.Events))
-	for i, event := range policy.Events {
-		events[i] = normalizeSemanticTriggerEvent(event)
+	events := make([]string, 0, len(policy.Events))
+	seen := make(map[string]struct{}, len(policy.Events))
+	for _, event := range policy.Events {
+		event = normalizeSemanticTriggerEvent(event)
+		if _, duplicate := seen[event]; duplicate {
+			continue
+		}
+		seen[event] = struct{}{}
+		events = append(events, event)
 	}
+	sort.SliceStable(events, func(i, j int) bool {
+		left, leftKnown := semanticTriggerEventOrder[events[i]]
+		right, rightKnown := semanticTriggerEventOrder[events[j]]
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if leftKnown {
+			return left < right
+		}
+		return events[i] < events[j]
+	})
 	policy.Events = events
 	labels := make([]string, len(policy.Labels))
 	for i, label := range policy.Labels {
@@ -296,23 +416,34 @@ func NormalizeSemanticTriggerPolicy(policy SemanticTriggerPolicy) SemanticTrigge
 
 func normalizeSemanticTriggerEvent(event string) string {
 	switch strings.ToLower(strings.TrimSpace(event)) {
-	case "node_created", "node.created":
-		return "node.created"
-	case "node_updated", "node.updated":
-		return "node.updated"
-	case "node_deleted", "node.deleted":
-		return "node.deleted"
-	case "edge_changed", "edge.changed":
-		return "edge.changed"
-	case "edge_created", "edge.created":
-		return "edge.created"
-	case "edge_updated", "edge.updated":
-		return "edge.updated"
-	case "edge_deleted", "edge.deleted":
-		return "edge.deleted"
+	case "node_created", SemanticTriggerEventNodeCreated:
+		return SemanticTriggerEventNodeCreated
+	case "node_updated", SemanticTriggerEventNodeUpdated:
+		return SemanticTriggerEventNodeUpdated
+	case "node_deleted", SemanticTriggerEventNodeDeleted:
+		return SemanticTriggerEventNodeDeleted
+	case "edge_changed", SemanticTriggerEventEdgeChanged:
+		return SemanticTriggerEventEdgeChanged
+	case "edge_created", SemanticTriggerEventEdgeCreated:
+		return SemanticTriggerEventEdgeCreated
+	case "edge_updated", SemanticTriggerEventEdgeUpdated:
+		return SemanticTriggerEventEdgeUpdated
+	case "edge_deleted", SemanticTriggerEventEdgeDeleted:
+		return SemanticTriggerEventEdgeDeleted
 	default:
 		return strings.ToLower(strings.TrimSpace(event))
 	}
+}
+
+var semanticTriggerEventOrder = map[string]int{
+	DefaultSemanticTriggerEventChanged: 0,
+	SemanticTriggerEventNodeCreated:    1,
+	SemanticTriggerEventNodeUpdated:    2,
+	SemanticTriggerEventNodeDeleted:    3,
+	SemanticTriggerEventEdgeChanged:    4,
+	SemanticTriggerEventEdgeCreated:    5,
+	SemanticTriggerEventEdgeUpdated:    6,
+	SemanticTriggerEventEdgeDeleted:    7,
 }
 
 func NormalizeSemanticEmbeddingBinding(binding SemanticEmbeddingBinding) SemanticEmbeddingBinding {
@@ -320,6 +451,13 @@ func NormalizeSemanticEmbeddingBinding(binding SemanticEmbeddingBinding) Semanti
 	binding.Purpose = strings.TrimSpace(binding.Purpose)
 	binding.IntelligenceProfile = strings.TrimSpace(binding.IntelligenceProfile)
 	binding.VectorStore = strings.TrimSpace(binding.VectorStore)
+	if binding.ProviderBudget != nil {
+		budget := *binding.ProviderBudget
+		budget.CorrelationID = strings.TrimSpace(budget.CorrelationID)
+		budget.Currency = strings.ToUpper(strings.TrimSpace(budget.Currency))
+		budget.PriceDefinitionVersion = strings.TrimSpace(budget.PriceDefinitionVersion)
+		binding.ProviderBudget = &budget
+	}
 	return binding
 }
 
@@ -448,6 +586,12 @@ type ProcessingScope struct {
 	SemanticIndexID     SemanticIndexID     `json:"semantic_index_id,omitempty"` // transitional alias for existing storage/runtime
 	NodeID              graph.NodeID        `json:"node_id,omitempty"`
 	IncludeDescendants  bool                `json:"include_descendants,omitempty"`
+	ProcedureID         string              `json:"procedure_id,omitempty"`
+	ProcedureVersion    int                 `json:"procedure_version,omitempty"`
+	BindingID           string              `json:"binding_id,omitempty"`
+	BindingVersion      int                 `json:"binding_version,omitempty"`
+	InvocationID        string              `json:"invocation_id,omitempty"`
+	RunID               string              `json:"run_id,omitempty"`
 }
 
 // CredentialGrant is a space-owned authorization to use one credential in one processing scope.
@@ -474,6 +618,9 @@ type InferencePolicy struct {
 	Scope                 ProcessingScope   `json:"scope"`
 	Effect                PolicyEffect      `json:"effect"`
 	Operations            []Operation       `json:"operations,omitempty"`
+	EndpointRefs          []string          `json:"endpoint_refs,omitempty"`
+	ModelRefs             []string          `json:"model_refs,omitempty"`
+	CapabilityRefs        []string          `json:"capability_refs,omitempty"`
 	NoInference           bool              `json:"no_inference,omitempty"`
 	AllowedPrivacyClasses []PrivacyClass    `json:"allowed_privacy_classes,omitempty"`
 	DisallowThirdParty    bool              `json:"disallow_third_party,omitempty"`
@@ -582,6 +729,25 @@ type SemanticIndex struct {
 	UpdatedAt                 time.Time                 `json:"updated_at"`
 }
 
+func SemanticIndexInferenceProfileReference(metadata map[string]any) (string, IntelligenceProfileID) {
+	if len(metadata) == 0 {
+		return "", uuid.Nil
+	}
+	if raw, ok := metadata["inference_profile_id"]; ok {
+		if id, err := uuid.Parse(strings.TrimSpace(fmt.Sprint(raw))); err == nil {
+			return "", id
+		}
+	}
+	for _, field := range []string{"inference_profile", "inference_profile_key", "embedding_profile"} {
+		if raw, ok := metadata[field]; ok {
+			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
+				return value, uuid.Nil
+			}
+		}
+	}
+	return "", uuid.Nil
+}
+
 // SemanticVectorRecord is the rule-native vector record with binding and
 // resolved Intelligence Access/provider provenance.
 type SemanticVectorRecord struct {
@@ -592,6 +758,10 @@ type SemanticVectorRecord struct {
 	EmbeddingBindingKey       string                    `json:"embedding_binding_key"`
 	TargetNodeID              graph.NodeID              `json:"target_node_id"`
 	SourceHash                string                    `json:"source_hash"`
+	SourceGraphRevision       uint64                    `json:"source_graph_revision,omitempty"`
+	SemanticGeneration        uint64                    `json:"semantic_generation,omitempty"`
+	SemanticConfigurationHash string                    `json:"semantic_configuration_hash,omitempty"`
+	RebuildEpoch              string                    `json:"rebuild_epoch,omitempty"`
 	IntelligenceProfileID     IntelligenceProfileID     `json:"intelligence_profile_id,omitempty"`
 	ModelEndpointID           ModelEndpointID           `json:"model_endpoint_id,omitempty"`
 	ModelID                   InferenceModelID          `json:"model_id,omitempty"`
@@ -623,6 +793,10 @@ type AdvancedEmbeddingRecord struct {
 	TargetNodeID              graph.NodeID              `json:"target_node_id,omitempty"`
 	NodeID                    graph.NodeID              `json:"node_id"`
 	SourceHash                string                    `json:"source_hash"`
+	SourceGraphRevision       uint64                    `json:"source_graph_revision,omitempty"`
+	SemanticGeneration        uint64                    `json:"semantic_generation,omitempty"`
+	SemanticConfigurationHash string                    `json:"semantic_configuration_hash,omitempty"`
+	RebuildEpoch              string                    `json:"rebuild_epoch,omitempty"`
 	ModelEndpointID           ModelEndpointID           `json:"model_endpoint_id"`
 	ModelID                   InferenceModelID          `json:"model_id"`
 	ModelEndpointCapabilityID ModelEndpointCapabilityID `json:"model_endpoint_capability_id,omitempty"`
@@ -759,14 +933,43 @@ type SemanticIndexState struct {
 }
 
 type SemanticRuleState struct {
-	SemanticRuleID SemanticRuleID `json:"semantic_rule_id"`
-	State          string         `json:"state"`
-	LastBackfillAt *time.Time     `json:"last_backfill_at,omitempty"`
-	LastRefreshAt  *time.Time     `json:"last_refresh_at,omitempty"`
-	LastError      string         `json:"last_error,omitempty"`
-	DirtyCount     int            `json:"dirty_count,omitempty"`
-	RecordCount    int            `json:"record_count,omitempty"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	SemanticRuleID       SemanticRuleID                      `json:"semantic_rule_id"`
+	State                string                              `json:"state"`
+	LastBackfillAt       *time.Time                          `json:"last_backfill_at,omitempty"`
+	LastRefreshAt        *time.Time                          `json:"last_refresh_at,omitempty"`
+	LastError            string                              `json:"last_error,omitempty"`
+	DirtyCount           int                                 `json:"dirty_count,omitempty"`
+	RecordCount          int                                 `json:"record_count,omitempty"`
+	ReliabilityByBinding map[string]SemanticReliabilityState `json:"reliability_by_binding,omitempty"`
+	UpdatedAt            time.Time                           `json:"updated_at"`
+}
+
+type SemanticRevisionRange struct {
+	FirstRevision uint64 `json:"first_revision"`
+	LastRevision  uint64 `json:"last_revision"`
+}
+
+type SemanticReliabilityState struct {
+	EmbeddingBindingKey           string                  `json:"embedding_binding_key"`
+	ResolvedConfigurationHash     string                  `json:"resolved_configuration_hash,omitempty"`
+	SemanticGeneration            uint64                  `json:"semantic_generation,omitempty"`
+	BaselineFreshThrough          uint64                  `json:"baseline_fresh_through,omitempty"`
+	RebuildEpoch                  string                  `json:"rebuild_epoch,omitempty"`
+	RebuildState                  string                  `json:"rebuild_state,omitempty"`
+	RebuildOwnerNode              uint64                  `json:"rebuild_owner_node,omitempty"`
+	RebuildOwnerTerm              uint64                  `json:"rebuild_owner_term,omitempty"`
+	PinnedTargetRevision          uint64                  `json:"pinned_target_revision,omitempty"`
+	DeltaCatchupRevision          uint64                  `json:"delta_catchup_revision,omitempty"`
+	RebuildStartedAt              *time.Time              `json:"rebuild_started_at,omitempty"`
+	RebuildCompletedAt            *time.Time              `json:"rebuild_completed_at,omitempty"`
+	RebuildErrorSanitized         string                  `json:"rebuild_error_sanitized,omitempty"`
+	LatestObserved                uint64                  `json:"latest_observed,omitempty"`
+	AnalyzedThrough               uint64                  `json:"analyzed_through,omitempty"`
+	FreshThrough                  uint64                  `json:"fresh_through,omitempty"`
+	UnresolvedRanges              []SemanticRevisionRange `json:"unresolved_ranges,omitempty"`
+	CapacityState                 string                  `json:"capacity_state,omitempty"`
+	CapacityReason                string                  `json:"capacity_reason,omitempty"`
+	LastConfigurationTransitionID string                  `json:"last_configuration_transition_id,omitempty"`
 }
 
 type SemanticSearchIndexState struct {

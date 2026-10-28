@@ -16,7 +16,7 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-func TestGraphRaftSnapshotPreservesDeliveredIdempotencyState(t *testing.T) {
+func TestGraphRaftSnapshotPreservesDeliveredAndPromotedIdempotencyState(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
 	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
@@ -33,7 +33,11 @@ func TestGraphRaftSnapshotPreservesDeliveredIdempotencyState(t *testing.T) {
 	if _, err := m.UpsertNode(ctx, tx, input); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+	originalCommit, err := m.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RetainIdempotentCommitUntilAcknowledged(ctx, principalID, spaceID, domainID, "delivered-snapshot", originalCommit.CommitID); err != nil {
 		t.Fatal(err)
 	}
 	if initialSinkCalls != 1 {
@@ -58,6 +62,14 @@ func TestGraphRaftSnapshotPreservesDeliveredIdempotencyState(t *testing.T) {
 	}))
 	if err := (RaftStateMachine{Module: restored, PartitionID: pid.Uint32(), PartitionCount: 4}).RestoreSnapshot(snapshot); err != nil {
 		t.Fatal(err)
+	}
+	restoredStore, err := restored.store(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredReceipt, found, err := restoredStore.GetIdempotencyRecord(ctx, principalID, "delivered-snapshot")
+	if err != nil || !found || !restoredReceipt.RetainUntilAcknowledged {
+		t.Fatalf("restored retained receipt=%+v found=%v err=%v", restoredReceipt, found, err)
 	}
 	retry := idempotencyGraphTx(spaceID, domainID, principalID, 1, "delivered-snapshot")
 	if _, err := restored.UpsertNode(ctx, retry, input); err != nil {

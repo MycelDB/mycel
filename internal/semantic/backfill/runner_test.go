@@ -2,10 +2,12 @@ package backfill
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,17 @@ import (
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
+
+func TestFailureForErrorPreservesSafeRetryMetadata(t *testing.T) {
+	nodeID := graph.NodeID(uuid.New())
+	failure := failureForError(nodeID, connectors.EmbeddingFailure{Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond})
+	if failure.NodeID != nodeID || failure.Category != "rate_limited" || !failure.Retryable || failure.RetryAfter != 250*time.Millisecond {
+		t.Fatalf("unexpected failure: %#v", failure)
+	}
+	if failure.Error != "semantic embedding failed (rate_limited)" {
+		t.Fatalf("unsafe failure error: %q", failure.Error)
+	}
+}
 
 func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	ctx := context.Background()
@@ -88,6 +101,22 @@ func TestRunnerBackfillsSemanticIndexAndSkipsCurrentHash(t *testing.T) {
 	}
 	if result.GeneratedCount != 1 || len(env.connector.calls) != 4 {
 		t.Fatalf("expected model binding change to regenerate despite same source hash, result=%+v calls=%+v", result, env.connector.calls)
+	}
+}
+
+func TestRunnerRecordsBindingFailureForEmptyReconciliationCorpus(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	ruleID := domainsemantic.SemanticRuleID(env.index.ID)
+	if _, err := env.spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: env.spaceID, DomainID: env.domainID, Key: "empty-resolution-failure", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStore: "missing-store", Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", Force: true, Reconcile: true, ContinueOnError: true})
+	if err != nil {
+		t.Fatalf("empty reconciliation returned error with continue_on_error: %v", err)
+	}
+	if result.SelectedCount != 0 || result.TotalSelectedCount != 0 || result.FailedCount != 1 || len(result.Failures) != 1 {
+		t.Fatalf("empty binding resolution failure was not recorded: %+v", result)
 	}
 }
 
@@ -348,6 +377,228 @@ func (f *fakeConnector) Embed(ctx context.Context, in connectors.EmbedInput) (co
 	return connectors.EmbeddingResponse{Vector: []float64{1, 0, 0}, InputTokens: len(strings.Fields(in.Input)), TotalTokens: len(strings.Fields(in.Input)), TokenCountSource: "estimated", EndpointID: f.endpointID, ModelID: f.modelID, CapabilityID: f.capID}, nil
 }
 
+type revisionPinningGraphSource struct {
+	live      GraphSourceReader
+	snapshots map[uint64]GraphSourceReader
+	pinned    []uint64
+}
+
+func (s *revisionPinningGraphSource) AtGraphRevision(revision uint64) GraphSourceReader {
+	s.pinned = append(s.pinned, revision)
+	return s.snapshots[revision]
+}
+
+func (s *revisionPinningGraphSource) ListNodes(ctx context.Context, domainID graph.DomainID) ([]graph.Node, error) {
+	return s.live.ListNodes(ctx, domainID)
+}
+
+func (s *revisionPinningGraphSource) ListEdges(ctx context.Context, domainID graph.DomainID) ([]graph.Edge, error) {
+	return s.live.ListEdges(ctx, domainID)
+}
+
+func TestRunnerReadsPinnedWorkRevisionInsteadOfCurrentGraph(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("revision eleven")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	snapshot := &memoryGraphSource{domainID: env.domainID, nodes: []graph.Node{{ID: root.ID, DomainID: env.domainID, Labels: []string{"Note"}, Content: "revision ten"}}}
+	pinner := &revisionPinningGraphSource{live: env.graph, snapshots: map[uint64]GraphSourceReader{10: snapshot}}
+	env.runner.GraphReader = pinner
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Force: true, SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinner.pinned) != 1 || pinner.pinned[0] != 10 {
+		t.Fatalf("pinned revisions = %v, want [10]", pinner.pinned)
+	}
+	if result.GeneratedCount != 1 || len(env.connector.calls) != 1 || !strings.Contains(env.connector.calls[0], "revision ten") || strings.Contains(env.connector.calls[0], "revision eleven") {
+		t.Fatalf("worker embedded the wrong graph snapshot: result=%+v calls=%v", result, env.connector.calls)
+	}
+}
+
+func TestRunnerDoesNotOverwriteDeltaWhenBaselinePublicationFinishesLater(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("baseline revision ten")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	publicationStarted := make(chan Publication, 1)
+	releaseBaseline := make(chan struct{})
+	env.runner.AcquirePublication = func(_ context.Context, publication Publication) (func(), error) {
+		if publication.NodeID == uuid.Nil {
+			return func() {}, nil
+		}
+		publicationStarted <- publication
+		<-releaseBaseline
+		return nil, ErrSupersededPublication
+	}
+	resultDone := make(chan Result, 1)
+	errorDone := make(chan error, 1)
+	go func() {
+		result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Force: true, SourceGraphRevision: 10, SemanticGeneration: 2, RebuildEpoch: "epoch"})
+		resultDone <- result
+		errorDone <- err
+	}()
+	publication := <-publicationStarted
+	binding := rule.Embeddings[0]
+	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, TargetNodeID: root.ID, SourceGraphRevision: 11, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: publication.SemanticConfigurationHash, ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{0, 1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseBaseline)
+	result := <-resultDone
+	if err := <-errorDone; err != nil {
+		t.Fatal(err)
+	}
+	if result.FailedCount != 0 || result.SkippedCount != 1 || result.GeneratedCount != 0 {
+		t.Fatalf("late baseline was not skipped: %+v", result)
+	}
+	records, err := env.vector.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].SourceGraphRevision != 11 {
+		t.Fatalf("late baseline displaced delta: %+v", records)
+	}
+}
+
+func TestPinnedReconciliationDoesNotDeletePostPinDelta(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	binding := rule.Embeddings[0]
+	nodeID := graph.NodeID(uuid.New())
+	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: nodeID, TargetNodeID: nodeID, SourceGraphRevision: 11, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: "config", ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{1, 0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.runner.reconcileRuleBinding(ctx, rule, binding, binding.VectorStoreID, nil, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 2, RebuildEpoch: "epoch"}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := env.vector.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Tombstone {
+		t.Fatalf("pinned reconciliation deleted post-pin delta: %+v", records)
+	}
+}
+
+func TestCompatibleRebuildReconcilesPriorEpochRecord(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	binding := rule.Embeddings[0]
+	nodeID := graph.NodeID(uuid.New())
+	old, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: nodeID, TargetNodeID: nodeID, SourceMode: "subtree", SourceGraphRevision: 9, SemanticGeneration: 2, RebuildEpoch: "old-epoch", SemanticConfigurationHash: "config", ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{1, 0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.runner.reconcileRuleBinding(ctx, rule, binding, binding.VectorStoreID, nil, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SourceGraphRevision: 10, PinSourceGraphRevision: true, SemanticGeneration: 2, RebuildEpoch: "new-epoch"}); err != nil {
+		t.Fatal(err)
+	}
+	assertRuleNodeAbsentImmediatelyAndAfterRebuild(t, ctx, env, rule, binding, nodeID)
+	records, err := env.vector.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(records) != 2 || !records[1].Tombstone || records[1].DeleteTargetRecordID != old.ID || records[1].RebuildEpoch != "new-epoch" {
+		t.Fatalf("prior-epoch reconciliation provenance mismatch: records=%+v err=%v", records, err)
+	}
+}
+
+func TestCompatibleRebuildTombstonesPriorEpochRecordBelowMinimumText(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("x")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	rule.Source.MinimumTextLength = 10
+	var err error
+	rule, err = env.spaceMgr.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := rule.Embeddings[0]
+	if _, err := env.vector.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, TargetNodeID: root.ID, SourceMode: "subtree", SourceGraphRevision: 9, SemanticGeneration: 2, RebuildEpoch: "old-epoch", SemanticConfigurationHash: "config", ModelEndpointID: env.connector.endpointID, ModelID: env.connector.modelID, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Dimensions: 3, Vector: []float64{1, 0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, Force: true, SourceGraphRevision: 10, SemanticGeneration: 2, RebuildEpoch: "new-epoch"})
+	if err != nil || result.FailedCount != 0 {
+		t.Fatalf("below-minimum compatible rebuild: result=%+v err=%v", result, err)
+	}
+	assertRuleNodeAbsentImmediatelyAndAfterRebuild(t, ctx, env, rule, binding, root.ID)
+}
+
+func assertRuleNodeAbsentImmediatelyAndAfterRebuild(t *testing.T, ctx context.Context, env *backfillTestEnv, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, nodeID graph.NodeID) {
+	t.Helper()
+	search := func(stage string) {
+		results, err := env.vector.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Query: []float64{1, 0, 0}, Limit: 10})
+		if err != nil {
+			t.Fatalf("%s search: %v", stage, err)
+		}
+		for _, result := range results {
+			if result.NodeID == nodeID {
+				t.Fatalf("node %s remained searchable %s", nodeID, stage)
+			}
+		}
+	}
+	search("immediately after tombstone")
+	if _, err := env.vector.RebuildSearchIndex(ctx, vectorstore.SearchIndexKey{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding"}, vectorstore.RebuildLimit{MaxRecords: 100, MaxBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	search("after physical reconstruction")
+}
+
+func TestRunnerTreatsRevisionZeroAsExplicitPinnedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	env.graph.AddNode("created after empty revision")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	empty := &memoryGraphSource{domainID: env.domainID}
+	pinner := &revisionPinningGraphSource{live: env.graph, snapshots: map[uint64]GraphSourceReader{0: empty}}
+	env.runner.GraphReader = pinner
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Force: true, SourceGraphRevision: 0, PinSourceGraphRevision: true, SemanticGeneration: 1, RebuildEpoch: "epoch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinner.pinned) != 1 || pinner.pinned[0] != 0 || result.SelectedCount != 0 || len(env.connector.calls) != 0 {
+		t.Fatalf("revision-zero pin read live graph state: pinned=%v result=%+v calls=%v", pinner.pinned, result, env.connector.calls)
+	}
+}
+
+func TestRunnerPaginatesSemanticRuleBackfillWithoutTruncation(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	roots := make([]graph.Node, 0, 3)
+	for i := 0; i < 3; i++ {
+		root, _ := env.addRootWithChild(t, fmt.Sprintf("root %d", i), fmt.Sprintf("child %d", i))
+		roots = append(roots, root)
+		env.graph.nodes[len(env.graph.nodes)-2].Labels = []string{"Note"}
+		env.graph.nodes[len(env.graph.nodes)-1].Labels = []string{"Note"}
+	}
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{env.semanticBinding("search", true)})
+	seen := map[graph.NodeID]struct{}{}
+	offset := 0
+	for {
+		result, err := env.runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: "search", Limit: 1, Offset: offset, Force: true, SourceGraphRevision: 7, SemanticGeneration: 2, RebuildEpoch: "epoch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.TotalSelectedCount != 3 || result.SelectedCount != 1 || len(result.Records) != 1 {
+			t.Fatalf("unexpected page at offset %d: %+v", offset, result)
+		}
+		seen[result.Records[0].NodeID] = struct{}{}
+		if result.NextOffset == 0 {
+			break
+		}
+		if result.NextOffset <= offset {
+			t.Fatalf("pagination did not advance: %+v", result)
+		}
+		offset = result.NextOffset
+	}
+	if len(seen) != len(roots) {
+		t.Fatalf("backfill pagination missed roots: got %d want %d", len(seen), len(roots))
+	}
+}
+
 func TestRunnerBackfillsSemanticRuleBinding(t *testing.T) {
 	ctx := context.Background()
 	env := newBackfillTestEnv(t)
@@ -464,6 +715,239 @@ func TestRunnerRuleBackfillTombstonesShortSource(t *testing.T) {
 
 func (e *backfillTestEnv) semanticBinding(key string, enabled bool) domainsemantic.SemanticEmbeddingBinding {
 	return domainsemantic.SemanticEmbeddingBinding{Key: key, Purpose: "semantic_search", IntelligenceProfile: "semantic-profile", VectorStoreID: e.index.VectorStoreID, Enabled: enabled}
+}
+
+func TestIncrementalRefreshRepairsPartialPhysicalPublicationOnRetry(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("repairable source")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	failures := 0
+	backend := env.vector
+	backend.BeforePhysicalWrite = func(domainsemantic.AdvancedEmbeddingRecord) error {
+		if failures == 0 {
+			failures++
+			return fmt.Errorf("injected physical publication failure")
+		}
+		return nil
+	}
+	runner := env.runner
+	runner.VectorBackend = backend
+	input := Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1}
+	first, err := runner.Run(ctx, input)
+	if err == nil || first.FailedCount != 1 {
+		t.Fatalf("expected first publication to fail after durable append: result=%+v err=%v", first, err)
+	}
+	second, err := runner.Run(ctx, input)
+	if err != nil || second.FailedCount != 0 || second.SkippedCount != 1 {
+		t.Fatalf("retry did not repair current physical record: result=%+v err=%v", second, err)
+	}
+	results, err := backend.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Query: []float64{1, 0, 0}, Limit: 10})
+	if err != nil || len(results) != 1 || results[0].NodeID != root.ID {
+		records, _ := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+		latest, found, latestErr := backend.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: "subtree", VectorStoreID: binding.VectorStoreID})
+		t.Fatalf("repaired physical record not searchable: results=%+v err=%v records=%+v latest=%+v found=%v latestErr=%v", results, err, records, latest, found, latestErr)
+	}
+	if len(env.connector.calls) != 1 {
+		t.Fatalf("retry re-invoked provider instead of repairing durable record: calls=%v", env.connector.calls)
+	}
+}
+
+func TestIncrementalRefreshResumesPendingAppendBeforeLatestPublication(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("pending publication source")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	failures := 0
+	backend := env.vector
+	backend.AfterSegmentSync = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+		if !record.Tombstone && failures == 0 {
+			failures++
+			return fmt.Errorf("injected post-sync intent-promotion failure")
+		}
+		return nil
+	}
+	runner := env.runner
+	runner.VectorBackend = backend
+	input := Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1}
+	first, err := runner.Run(ctx, input)
+	if err == nil || first.FailedCount != 1 {
+		t.Fatalf("expected pending publication failure: result=%+v err=%v", first, err)
+	}
+	firstHistory, err := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(firstHistory) != 1 {
+		t.Fatalf("expected exactly one durable append before retry: history=%+v err=%v", firstHistory, err)
+	}
+	second, err := runner.Run(ctx, input)
+	if err != nil || second.FailedCount != 0 || second.SkippedCount != 1 {
+		t.Fatalf("pending publication retry did not repair: result=%+v err=%v", second, err)
+	}
+	secondHistory, err := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(secondHistory) != 1 || secondHistory[0].ID != firstHistory[0].ID {
+		t.Fatalf("retry appended a second history record: history=%+v err=%v", secondHistory, err)
+	}
+	if len(env.connector.calls) != 1 {
+		t.Fatalf("retry reinvoked provider for pending durable record: calls=%v", env.connector.calls)
+	}
+	results, err := backend.Search(ctx, vectorstore.SearchInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), VectorStoreID: binding.VectorStoreID, VectorSpaceKey: "test/embedding", Query: []float64{1, 0, 0}, Limit: 10})
+	if err != nil || len(results) != 1 || results[0].NodeID != root.ID {
+		t.Fatalf("pending publication was not repaired: results=%+v err=%v", results, err)
+	}
+}
+
+func TestIncrementalRefreshPublishesChangedSourceBehindPendingAppend(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root := env.graph.AddNode("first pending source")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	fail := true
+	backend := env.vector
+	backend.AfterSegmentSync = func(record domainsemantic.AdvancedEmbeddingRecord) error {
+		if !record.Tombstone && fail {
+			fail = false
+			return fmt.Errorf("injected pending source")
+		}
+		return nil
+	}
+	runner := env.runner
+	runner.VectorBackend = backend
+	first, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SourceGraphRevision: 1, SemanticGeneration: 1})
+	if err == nil || first.FailedCount != 1 {
+		t.Fatalf("expected first source to remain pending: result=%+v err=%v", first, err)
+	}
+	env.graph.UpdateNode(root.ID, "second newer source")
+	second, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SourceGraphRevision: 2, SemanticGeneration: 1})
+	if err != nil || second.GeneratedCount != 1 || second.FailedCount != 0 {
+		t.Fatalf("newer source was not published: result=%+v err=%v", second, err)
+	}
+	if len(env.connector.calls) != 2 || !strings.Contains(env.connector.calls[1], "second newer source") {
+		t.Fatalf("provider calls do not contain changed source: %+v", env.connector.calls)
+	}
+	latest, found, err := backend.LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), NodeID: root.ID, SourceMode: "subtree", VectorStoreID: binding.VectorStoreID})
+	if err != nil || !found || latest.SourceGraphRevision != 2 {
+		t.Fatalf("newer publication did not become latest: latest=%+v found=%v err=%v", latest, found, err)
+	}
+	history, err := backend.ListRecords(ctx, env.spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil || len(history) != 2 {
+		t.Fatalf("changed source history=%+v err=%v", history, err)
+	}
+}
+
+func TestIncrementalRuleRefreshDoesNotRebuildHistoricalSearchIndex(t *testing.T) {
+	ctx := context.Background()
+	env := newBackfillTestEnv(t)
+	root, _ := env.addRootWithChild(t, "root note", "child note")
+	env.graph.nodes[0].Labels = []string{"Note"}
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	backend := &countingSearchIndexBackend{Backend: env.vector, Reader: env.vector, Rebuilder: env.vector, Latest: env.vector, Lister: env.vector}
+	runner := env.runner
+	runner.VectorBackend = backend
+	result, err := runner.Run(ctx, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, NodeIDs: []graph.NodeID{root.ID}, SemanticGeneration: 1})
+	if err != nil || result.GeneratedCount != 1 {
+		t.Fatalf("incremental refresh: result=%+v err=%v", result, err)
+	}
+	if backend.Rebuilds != 0 || backend.HistoricalLists != 0 {
+		t.Fatalf("incremental refresh performed historical work: rebuilds=%d lists=%d", backend.Rebuilds, backend.HistoricalLists)
+	}
+	states, err := env.spaceMgr.ListSearchIndexStates(ctx)
+	if err != nil || len(states) != 1 || states[0].State != "ready" {
+		t.Fatalf("incremental physical-index state was not mirrored: states=%+v err=%v", states, err)
+	}
+}
+
+type countingSearchIndexBackend struct {
+	vectorstore.Backend
+	Reader          vectorstore.SearchIndexStateReader
+	Rebuilder       vectorstore.SearchIndexRebuilder
+	Latest          vectorstore.LatestRecordStore
+	Lister          vectorstore.BoundedRecordLister
+	Rebuilds        int
+	HistoricalLists int
+}
+
+func (b *countingSearchIndexBackend) LatestRecord(ctx context.Context, in vectorstore.LatestRecordInput) (domainsemantic.AdvancedEmbeddingRecord, bool, error) {
+	return b.Latest.LatestRecord(ctx, in)
+}
+
+func (b *countingSearchIndexBackend) EnsureSearchIndexRecord(ctx context.Context, record domainsemantic.AdvancedEmbeddingRecord) error {
+	return b.Latest.EnsureSearchIndexRecord(ctx, record)
+}
+
+func (b *countingSearchIndexBackend) ListRecordsBounded(ctx context.Context, spaceID domainspace.SpaceID, semanticIndexID domainsemantic.SemanticIndexID, limit vectorstore.RebuildLimit) ([]domainsemantic.AdvancedEmbeddingRecord, error) {
+	b.HistoricalLists++
+	return b.Lister.ListRecordsBounded(ctx, spaceID, semanticIndexID, limit)
+}
+
+func (b *countingSearchIndexBackend) ReadSearchIndexState(ctx context.Context, key vectorstore.SearchIndexKey) (domainsemantic.SemanticSearchIndexState, error) {
+	return b.Reader.ReadSearchIndexState(ctx, key)
+}
+
+func (b *countingSearchIndexBackend) RebuildSearchIndex(ctx context.Context, key vectorstore.SearchIndexKey, limit vectorstore.RebuildLimit) (domainsemantic.SemanticSearchIndexState, error) {
+	b.Rebuilds++
+	return b.Rebuilder.RebuildSearchIndex(ctx, key, limit)
+}
+
+func TestSearchIndexRebuildHoldsPublicationFence(t *testing.T) {
+	env := newBackfillTestEnv(t)
+	binding := env.semanticBinding("search", true)
+	rule := env.semanticRule(t, []domainsemantic.SemanticEmbeddingBinding{binding})
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	backend := &blockingSearchIndexBackend{Backend: env.vector, Rebuilder: env.vector, Entered: entered, Resume: resume}
+	runner := env.runner
+	runner.VectorBackend = backend
+	var fence sync.Mutex
+	runner.AcquirePublication = func(context.Context, Publication) (func(), error) {
+		fence.Lock()
+		return fence.Unlock, nil
+	}
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- runner.syncRuleBindingSearchIndexState(context.Background(), rule, binding, binding.VectorStoreID, Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, SemanticGeneration: 1})
+	}()
+	<-entered
+	deltaAcquired := make(chan struct{})
+	go func() {
+		release, err := runner.acquirePublication(context.Background(), Publication{Input: Input{SpaceID: env.spaceID, SemanticRuleID: rule.ID, SemanticGeneration: 1}, NodeID: graph.NodeID(uuid.New())})
+		if err == nil {
+			close(deltaAcquired)
+			release()
+		}
+	}()
+	select {
+	case <-deltaAcquired:
+		t.Fatal("delta publication acquired the fence while physical index rebuild was running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(resume)
+	if err := <-syncDone; err != nil {
+		t.Fatalf("physical index rebuild failed: %v", err)
+	}
+	select {
+	case <-deltaAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("delta publication did not resume after physical index rebuild released the fence")
+	}
+}
+
+type blockingSearchIndexBackend struct {
+	vectorstore.Backend
+	Rebuilder vectorstore.SearchIndexRebuilder
+	Entered   chan<- struct{}
+	Resume    <-chan struct{}
+}
+
+func (b *blockingSearchIndexBackend) RebuildSearchIndex(ctx context.Context, key vectorstore.SearchIndexKey, limit vectorstore.RebuildLimit) (domainsemantic.SemanticSearchIndexState, error) {
+	close(b.Entered)
+	<-b.Resume
+	return b.Rebuilder.RebuildSearchIndex(ctx, key, limit)
 }
 
 func (e *backfillTestEnv) semanticRule(t *testing.T, bindings []domainsemantic.SemanticEmbeddingBinding) domainsemantic.SemanticGenerationRule {

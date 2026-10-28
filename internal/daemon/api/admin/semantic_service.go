@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,12 +19,16 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	identity "github.com/myceldb/mycel/internal/identity/model"
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -62,10 +67,11 @@ func (s *AdminSemanticService) ListSemanticRules(ctx context.Context, req *admin
 	}
 	items := make([]*clientv1.SemanticGenerationRuleSummary, 0, len(rules))
 	for _, rule := range rules {
-		if rule.SpaceID != spaceID || (domainID != uuid.Nil && rule.DomainID != domainID) || (!req.GetIncludeDisabled() && !rule.Enabled) {
+		effectiveRule := semanticRuleEffectiveForRead(rule)
+		if effectiveRule.SpaceID != spaceID || (domainID != uuid.Nil && effectiveRule.DomainID != domainID) || (!req.GetIncludeDisabled() && !effectiveRule.Enabled) {
 			continue
 		}
-		items = append(items, clientapi.MapSemanticRuleSummaryProto(rule, stateByRule[rule.ID], searchByBinding, stores))
+		items = append(items, clientapi.MapSemanticRuleSummaryProto(effectiveRule, stateByRule[rule.ID], searchByBinding, stores))
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].GetKey() < items[j].GetKey() })
 	page, next, err := paginateAdminSemantic(items, int(req.GetPageSize()), req.GetPageToken())
@@ -87,7 +93,7 @@ func (s *AdminSemanticService) GetSemanticRule(ctx context.Context, req *adminv1
 	if _, err := s.spaces.GetSpace(ctx, spaceID.String()); err != nil {
 		return nil, mapSpaceError(err, "get space")
 	}
-	rule, err := s.getRule(ctx, spaceID, ruleID)
+	rule, err := s.lookupRule(ctx, spaceID, ruleID)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +104,8 @@ func (s *AdminSemanticService) GetSemanticRule(ctx context.Context, req *adminv1
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "load semantic rule metadata")
 	}
-	return &adminv1.GetSemanticRuleResponse{Rule: semanticRuleToProto(rule), Summary: clientapi.MapSemanticRuleSummaryProto(rule, stateByRule[rule.ID], searchByBinding, stores)}, nil
+	effectiveRule := semanticRuleEffectiveForRead(rule)
+	return &adminv1.GetSemanticRuleResponse{Rule: semanticRuleToProto(effectiveRule), Summary: clientapi.MapSemanticRuleSummaryProto(effectiveRule, stateByRule[rule.ID], searchByBinding, stores)}, nil
 }
 
 func (s *AdminSemanticService) ValidateSemanticRule(ctx context.Context, req *adminv1.ValidateSemanticRuleRequest) (*adminv1.ValidateSemanticRuleResponse, error) {
@@ -124,9 +131,25 @@ func (s *AdminSemanticService) CreateSemanticRule(ctx context.Context, req *admi
 	if _, _, err := s.validateSpaceDomain(ctx, rule.SpaceID.String(), rule.DomainID.String()); err != nil {
 		return nil, err
 	}
-	if _, err := s.requireSemanticManage(ctx, semanticScope(rule.SpaceID, rule.DomainID)); err != nil {
+	principal, err := s.requireSemanticManage(ctx, semanticScope(rule.SpaceID, rule.DomainID))
+	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(rule.OwnerPrincipalID.String()) == "" {
+		rule.OwnerPrincipalID = identity.PrincipalID(principal.PrincipalID)
+	}
+	if strings.TrimSpace(rule.CreatedByPrincipalID.String()) == "" {
+		rule.CreatedByPrincipalID = identity.PrincipalID(principal.PrincipalID)
+	}
+	// Every create receives a fresh incarnation identity. Durable pending rules
+	// provide crash recovery; reusing a deterministic ID after non-purging
+	// deletion could attach retained vectors or reliability state to a new rule.
+	rule.ID = freshSemanticRuleID()
+	validation := domainsemantic.ValidateSemanticGenerationRuleForStorage(rule.SpaceID, rule)
+	if !validation.Valid {
+		return nil, status.Error(codes.InvalidArgument, "semantic rule is invalid")
+	}
+	rule = validation.Rule
 	ctx, release, err := s.semantic.BeginMutation(ctx)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "begin semantic mutation")
@@ -136,7 +159,46 @@ func (s *AdminSemanticService) CreateSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
 	}
-	created, err := spaceMgr.UpsertSemanticRule(ctx, rule)
+	existingRules, err := spaceMgr.ListSemanticRules(ctx)
+	if err != nil {
+		return nil, mapAdminSemanticError(err, "list semantic rules before create")
+	}
+	for _, existing := range existingRules {
+		if existing.SpaceID != rule.SpaceID || existing.DomainID != rule.DomainID {
+			continue
+		}
+		if domainsemantic.NormalizeSemanticRuleKey(existing.Key) == rule.Key {
+			return nil, status.Error(codes.AlreadyExists, "semantic rule key already exists")
+		}
+		if displayName := domainsemantic.NormalizeSemanticRuleDisplayName(rule.DisplayName); displayName != "" && domainsemantic.NormalizeSemanticRuleDisplayName(existing.DisplayName) == displayName {
+			return nil, status.Error(codes.AlreadyExists, "semantic rule display_name already exists")
+		}
+	}
+	created := rule
+	if rule.Enabled && semanticRuleHasProviderBudget(rule) {
+		if err := s.semantic.PreflightSemanticProviderBudgets(ctx, rule); err != nil {
+			return nil, mapAdminSemanticError(err, "validate semantic provider budget")
+		}
+		staged := rule
+		staged.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionPrepare
+		staged.ProviderBudgetTransitionID = uuid.NewString()
+		staged, err = spaceMgr.UpsertSemanticRule(ctx, staged)
+		if err != nil {
+			return nil, mapAdminSemanticError(err, "stage semantic provider budget creation")
+		}
+		if err = s.semantic.PrepareSemanticProviderBudgets(ctx, staged); err != nil {
+			// Preparation can be partially durable. Preserve the staged rule so
+			// reconciliation can finish the idempotent roll-forward transition.
+			return nil, mapAdminSemanticError(err, "prepare semantic provider budget")
+		}
+		created = staged
+		created.ProviderBudgetTransition = ""
+		created.ProviderBudgetTransitionID = ""
+		created.UpdatedAt = staged.UpdatedAt.Add(time.Nanosecond)
+		err = s.semantic.ConditionalUpsertSemanticRule(ctx, staged, created)
+	} else {
+		created, err = spaceMgr.UpsertSemanticRule(ctx, rule)
+	}
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "create semantic rule")
 	}
@@ -160,6 +222,9 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
+	if existing.ProviderBudgetTransition != "" {
+		return nil, status.Error(codes.FailedPrecondition, "semantic rule lifecycle transition is pending")
+	}
 	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, existing.DomainID)); err != nil {
 		return nil, err
 	}
@@ -180,7 +245,21 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 	if rule.DomainID == uuid.Nil {
 		rule.DomainID = existing.DomainID
 	}
+	if rule.Enabled != existing.Enabled {
+		return nil, status.Error(codes.InvalidArgument, "enabled state must be changed with SetSemanticRuleEnabled")
+	}
 	rule.CreatedAt = existing.CreatedAt
+	if strings.TrimSpace(rule.OwnerPrincipalID.String()) == "" {
+		rule.OwnerPrincipalID = existing.OwnerPrincipalID
+	}
+	if strings.TrimSpace(rule.CreatedByPrincipalID.String()) == "" {
+		rule.CreatedByPrincipalID = existing.CreatedByPrincipalID
+	}
+	validation := domainsemantic.ValidateSemanticGenerationRuleForStorage(spaceID, rule)
+	if !validation.Valid {
+		return nil, status.Error(codes.InvalidArgument, "semantic rule is invalid")
+	}
+	rule = validation.Rule
 	ctx, release, err := s.semantic.BeginMutation(ctx)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "begin semantic mutation")
@@ -190,9 +269,104 @@ func (s *AdminSemanticService) UpdateSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "open semantic space manager")
 	}
-	updated, err := spaceMgr.UpsertSemanticRule(ctx, rule)
-	if err != nil {
-		return nil, mapAdminSemanticError(err, "update semantic rule")
+	configurationChanged := domainsemantic.SemanticRuleConfigurationHash(existing) != domainsemantic.SemanticRuleConfigurationHash(rule)
+	budgetChanged := semanticProviderBudgetConfigurationChanged(existing, rule)
+	var previousBudgetScopeIDs []domaininference.BudgetScopeID
+	updated := rule
+	if budgetChanged {
+		if existing.Enabled && semanticRuleHasProviderBudget(existing) {
+			previousBudgetScopeIDs, err = s.semantic.CurrentSemanticProviderBudgetScopeIDs(ctx, existing)
+			if err != nil {
+				return nil, mapAdminSemanticError(err, "load current semantic provider budgets")
+			}
+		}
+		staged := rule
+		if staged.Enabled && semanticRuleHasProviderBudget(staged) {
+			staged.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionPrepare
+		} else {
+			staged.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionComplete
+		}
+		staged.ProviderBudgetTransitionID = uuid.NewString()
+		staged.ProviderBudgetTransitionScopeIDs = semanticBudgetScopeIDStrings(previousBudgetScopeIDs)
+		staged.ProviderBudgetTransitionRequiresRebuild = configurationChanged
+		if !staged.UpdatedAt.After(existing.UpdatedAt) {
+			staged.UpdatedAt = existing.UpdatedAt.Add(time.Nanosecond)
+		}
+		if staged.Enabled && semanticRuleHasProviderBudget(staged) {
+			if err = s.semantic.PreflightSemanticProviderBudgets(ctx, staged); err != nil {
+				return nil, mapAdminSemanticError(err, "validate replacement semantic provider budget")
+			}
+		}
+		if err = s.semantic.ConditionalUpsertSemanticRule(ctx, existing, staged); err != nil {
+			return nil, mapAdminSemanticError(err, "stage semantic provider budget update")
+		}
+		rollbackRule := func(primary error) error {
+			restored := existing
+			restored.UpdatedAt = staged.UpdatedAt.Add(time.Nanosecond)
+			if rollbackErr := s.semantic.ConditionalUpsertSemanticRule(context.WithoutCancel(ctx), staged, restored); rollbackErr != nil {
+				primary = errors.Join(primary, fmt.Errorf("restore semantic rule after budget transition failure: %w", rollbackErr))
+			}
+			return primary
+		}
+		if existing.Enabled && semanticRuleHasProviderBudget(existing) {
+			if completeErr := s.semantic.CompleteSemanticProviderBudgets(ctx, existing, true); completeErr != nil {
+				if reactivateErr := s.semantic.ReactivateSemanticProviderBudgetScopes(context.WithoutCancel(ctx), previousBudgetScopeIDs); reactivateErr != nil {
+					completeErr = errors.Join(completeErr, fmt.Errorf("reactivate previous semantic provider budgets: %w", reactivateErr))
+					// Preserve the staged journal when compensation is incomplete.
+					return nil, mapAdminSemanticError(completeErr, "complete previous semantic provider budgets")
+				}
+				return nil, mapAdminSemanticError(rollbackRule(completeErr), "complete previous semantic provider budgets")
+			}
+		}
+		if staged.Enabled && semanticRuleHasProviderBudget(staged) {
+			if prepareErr := s.semantic.PrepareSemanticProviderBudgets(ctx, staged); prepareErr != nil {
+				// Preparation may have partially changed several bindings. Keep the
+				// durable roll-forward journal rather than guessing at rollback.
+				return nil, mapAdminSemanticError(prepareErr, "prepare replacement semantic provider budget")
+			}
+		}
+		if configurationChanged {
+			if markErr := s.semantic.MarkRuleConfigurationChanged(ctx, spaceID, staged); markErr != nil {
+				// Reliability persistence may be partial. Reconciliation uses the
+				// durable transition identity to finish this operation idempotently.
+				return nil, mapAdminSemanticError(markErr, "mark semantic rule rebuild required")
+			}
+		}
+		updated = staged
+		updated.ProviderBudgetTransition = ""
+		updated.ProviderBudgetTransitionID = ""
+		updated.ProviderBudgetTransitionScopeIDs = nil
+		updated.ProviderBudgetTransitionRequiresRebuild = false
+		updated.UpdatedAt = staged.UpdatedAt.Add(time.Nanosecond)
+		err = s.semantic.ConditionalUpsertSemanticRule(ctx, staged, updated)
+		if err != nil {
+			return nil, mapAdminSemanticError(err, "finalize semantic provider budget update")
+		}
+	} else if configurationChanged {
+		staged := rule
+		staged.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionReliability
+		staged.ProviderBudgetTransitionID = uuid.NewString()
+		staged.ProviderBudgetTransitionRequiresRebuild = true
+		if err = s.semantic.ConditionalUpsertSemanticRule(ctx, existing, staged); err != nil {
+			return nil, mapAdminSemanticError(err, "stage semantic reliability update")
+		}
+		updated = staged
+		if err := s.semantic.MarkRuleConfigurationChanged(ctx, spaceID, updated); err != nil {
+			return nil, mapAdminSemanticError(err, "mark semantic rule rebuild required")
+		}
+		updated.ProviderBudgetTransition = ""
+		updated.ProviderBudgetTransitionID = ""
+		updated.ProviderBudgetTransitionRequiresRebuild = false
+		updated.UpdatedAt = staged.UpdatedAt.Add(time.Nanosecond)
+		err = s.semantic.ConditionalUpsertSemanticRule(ctx, staged, updated)
+		if err != nil {
+			return nil, mapAdminSemanticError(err, "finalize semantic reliability update")
+		}
+	} else {
+		updated, err = spaceMgr.UpsertSemanticRule(ctx, rule)
+		if err != nil {
+			return nil, mapAdminSemanticError(err, "update semantic rule")
+		}
 	}
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {
@@ -214,23 +388,73 @@ func (s *AdminSemanticService) SetSemanticRuleEnabled(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
+	if rule.ProviderBudgetTransition != "" {
+		return nil, status.Error(codes.FailedPrecondition, "semantic rule lifecycle transition is pending")
+	}
 	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
-	rule.Enabled = req.GetEnabled()
-	rule.UpdatedAt = time.Now().UTC()
+	expectedUpdatedAt := rule.UpdatedAt.UTC()
+	updatedAt := time.Now().UTC()
+	if !updatedAt.After(expectedUpdatedAt) {
+		updatedAt = expectedUpdatedAt.Add(time.Nanosecond)
+	}
 	ctx, release, err := s.semantic.BeginMutation(ctx)
 	if err != nil {
 		return nil, mapAdminSemanticError(err, "begin semantic mutation")
 	}
 	defer release()
-	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
-	if err != nil {
-		return nil, mapAdminSemanticError(err, "open semantic space manager")
+	var disabledBudgetScopeIDs []domaininference.BudgetScopeID
+	transition := ""
+	transitionID := ""
+	if semanticRuleHasProviderBudget(rule) && req.GetEnabled() != rule.Enabled {
+		transitionID = uuid.NewString()
+		if req.GetEnabled() {
+			transition = domainsemantic.SemanticProviderBudgetTransitionPrepare
+		} else {
+			transition = domainsemantic.SemanticProviderBudgetTransitionComplete
+			disabledBudgetScopeIDs, err = s.semantic.CurrentSemanticProviderBudgetScopeIDs(ctx, rule)
+			if err != nil {
+				return nil, mapAdminSemanticError(err, "load semantic provider budgets before disable")
+			}
+		}
 	}
-	updated, err := spaceMgr.UpsertSemanticRule(ctx, rule)
-	if err != nil {
-		return nil, mapAdminSemanticError(err, "set semantic rule enabled")
+	if transition == domainsemantic.SemanticProviderBudgetTransitionPrepare {
+		candidate := rule
+		candidate.Enabled = true
+		if err := s.semantic.PreflightSemanticProviderBudgets(ctx, candidate); err != nil {
+			return nil, mapAdminSemanticError(err, "validate semantic provider budget before enable")
+		}
+	}
+	if err := s.semantic.SetSemanticRuleEnabled(ctx, daemonsemantic.SemanticRuleEnabledInput{
+		Rule: rule, ExpectedUpdatedAt: expectedUpdatedAt, Enabled: req.GetEnabled(), UpdatedAt: updatedAt, ProviderBudgetTransition: transition, ProviderBudgetTransitionID: transitionID, ProviderBudgetTransitionScopeIDs: semanticBudgetScopeIDStrings(disabledBudgetScopeIDs),
+	}); err != nil {
+		return nil, mapAdminSemanticError(err, "stage semantic rule enabled state")
+	}
+	rule.Enabled = req.GetEnabled()
+	rule.UpdatedAt = updatedAt
+	rule.ProviderBudgetTransition = transition
+	rule.ProviderBudgetTransitionID = transitionID
+	rule.ProviderBudgetTransitionScopeIDs = semanticBudgetScopeIDStrings(disabledBudgetScopeIDs)
+	if transition == domainsemantic.SemanticProviderBudgetTransitionPrepare {
+		if err := s.semantic.PrepareSemanticProviderBudgets(ctx, rule); err != nil {
+			return nil, mapAdminSemanticError(err, "prepare semantic provider budget before enable")
+		}
+	} else if transition == domainsemantic.SemanticProviderBudgetTransitionComplete {
+		if err := s.semantic.CompleteSemanticProviderBudgets(ctx, rule, false); err != nil {
+			return nil, mapAdminSemanticError(err, "complete semantic provider budget before disable")
+		}
+	}
+	updated := rule
+	if transition != "" {
+		updated.ProviderBudgetTransition = ""
+		updated.ProviderBudgetTransitionID = ""
+		updated.ProviderBudgetTransitionScopeIDs = nil
+		updated.UpdatedAt = rule.UpdatedAt.Add(time.Nanosecond)
+		err = s.semantic.ConditionalUpsertSemanticRule(ctx, rule, updated)
+		if err != nil {
+			return nil, mapAdminSemanticError(err, "finalize semantic rule enabled state")
+		}
 	}
 	stateByRule, searchByBinding, stores, err := s.ruleSummaryMetadata(ctx, spaceID)
 	if err != nil {
@@ -252,6 +476,9 @@ func (s *AdminSemanticService) DeleteSemanticRule(ctx context.Context, req *admi
 	if err != nil {
 		return nil, err
 	}
+	if rule.ProviderBudgetTransition != "" {
+		return nil, status.Error(codes.FailedPrecondition, "semantic rule lifecycle transition is pending")
+	}
 	if _, err := s.requireSemanticManage(ctx, semanticScope(spaceID, rule.DomainID)); err != nil {
 		return nil, err
 	}
@@ -272,20 +499,62 @@ func (s *AdminSemanticService) DeleteSemanticRule(ctx context.Context, req *admi
 			}
 		}
 	}
-	if err := spaceMgr.DeleteSemanticRule(ctx, ruleID, req.GetPurgeVectors()); err != nil {
+	var deletedBudgetScopeIDs []domaininference.BudgetScopeID
+	originalRule := rule
+	if semanticRuleHasProviderBudget(rule) {
+		deletedBudgetScopeIDs, err = s.semantic.CurrentSemanticProviderBudgetScopeIDs(ctx, rule)
+		if err != nil {
+			return nil, mapAdminSemanticError(err, "load semantic provider budgets before delete")
+		}
+		rule.ProviderBudgetTransition = domainsemantic.SemanticProviderBudgetTransitionDelete
+		rule.ProviderBudgetTransitionID = uuid.NewString()
+		rule.ProviderBudgetTransitionScopeIDs = semanticBudgetScopeIDStrings(deletedBudgetScopeIDs)
+		rule.ProviderBudgetTransitionPurgeVectors = req.GetPurgeVectors()
+		rule.UpdatedAt = time.Now().UTC()
+		if !rule.UpdatedAt.After(originalRule.UpdatedAt) {
+			rule.UpdatedAt = originalRule.UpdatedAt.Add(time.Nanosecond)
+		}
+		if err = s.semantic.ConditionalUpsertSemanticRule(ctx, originalRule, rule); err != nil {
+			return nil, mapAdminSemanticError(err, "stage semantic provider budget deletion")
+		}
+		if err = s.semantic.CompleteSemanticProviderBudgets(ctx, rule, false); err != nil {
+			return nil, mapAdminSemanticError(err, "complete semantic provider budget before delete")
+		}
+		if rule.ProviderBudgetTransitionPurgeVectors {
+			if err = s.semantic.PurgeVectorIndex(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID)); err != nil {
+				return nil, mapAdminSemanticError(err, "purge semantic rule vectors before delete")
+			}
+		}
+	}
+	if semanticRuleHasProviderBudget(rule) {
+		err = s.semantic.ConditionalDeleteSemanticRule(ctx, rule, rule.ProviderBudgetTransitionPurgeVectors)
+	} else {
+		if req.GetPurgeVectors() {
+			if err = s.semantic.PurgeVectorIndex(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID)); err != nil {
+				return nil, mapAdminSemanticError(err, "purge semantic rule vectors before delete")
+			}
+		}
+		err = spaceMgr.DeleteSemanticRule(ctx, ruleID, req.GetPurgeVectors())
+	}
+	if err != nil {
 		return nil, mapAdminSemanticError(err, "delete semantic rule")
 	}
-	vectorsPurged := false
-	if req.GetPurgeVectors() {
-		if err := s.semantic.PurgeVectorIndex(ctx, spaceID, domainsemantic.SemanticIndexID(ruleID)); err != nil {
-			return nil, mapAdminSemanticError(err, "purge semantic rule vectors")
-		}
-		vectorsPurged = true
-	}
+	vectorsPurged := req.GetPurgeVectors()
 	return &adminv1.DeleteSemanticRuleResponse{SemanticRuleId: ruleID.String(), VectorsPurged: vectorsPurged, WorkItemsDeleted: 0, PolicyDecisionsDeleted: int32(decisionRefs)}, nil
 }
 
 func (s *AdminSemanticService) getRule(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) (domainsemantic.SemanticGenerationRule, error) {
+	rule, err := s.lookupRule(ctx, spaceID, ruleID)
+	if err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
+	if rule.ProviderBudgetTransition != "" {
+		return domainsemantic.SemanticGenerationRule{}, status.Error(codes.FailedPrecondition, "semantic provider budget transition is pending reconciliation")
+	}
+	return rule, nil
+}
+
+func (s *AdminSemanticService) lookupRule(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID) (domainsemantic.SemanticGenerationRule, error) {
 	spaceMgr, err := s.semantic.SpaceManager(ctx, spaceID)
 	if err != nil {
 		return domainsemantic.SemanticGenerationRule{}, mapAdminSemanticError(err, "open semantic space manager")
@@ -380,6 +649,46 @@ func semanticScope(spaceID domainspace.SpaceID, domainID graph.DomainID) princip
 	return principalservice.AccessScope{Type: "system"}
 }
 
+func semanticBudgetScopeIDStrings(ids []domaininference.BudgetScopeID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			out = append(out, string(id))
+		}
+	}
+	return out
+}
+
+func semanticRuleHasProviderBudget(rule domainsemantic.SemanticGenerationRule) bool {
+	for _, binding := range rule.Embeddings {
+		if binding.ProviderBudget != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticProviderBudgetConfigurationChanged(left, right domainsemantic.SemanticGenerationRule) bool {
+	if left.DomainID != right.DomainID || left.OwnerPrincipalID != right.OwnerPrincipalID {
+		return true
+	}
+	leftByKey := make(map[string]domainsemantic.SemanticEmbeddingBinding, len(left.Embeddings))
+	for _, binding := range left.Embeddings {
+		leftByKey[domainsemantic.NormalizeSemanticEmbeddingBinding(binding).Key] = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+	}
+	if len(left.Embeddings) != len(right.Embeddings) {
+		return true
+	}
+	for _, binding := range right.Embeddings {
+		normalized := domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+		previous, ok := leftByKey[normalized.Key]
+		if !ok || previous.IntelligenceProfile != normalized.IntelligenceProfile || previous.IntelligenceProfileID != normalized.IntelligenceProfileID || previous.Enabled != normalized.Enabled || !reflect.DeepEqual(previous.ProviderBudget, normalized.ProviderBudget) {
+			return true
+		}
+	}
+	return false
+}
+
 func semanticRuleFromProto(in *adminv1.SemanticGenerationRule) (domainsemantic.SemanticGenerationRule, error) {
 	if in == nil {
 		return domainsemantic.SemanticGenerationRule{}, status.Error(codes.InvalidArgument, "rule is required")
@@ -429,23 +738,129 @@ func semanticRuleFromProto(in *adminv1.SemanticGenerationRule) (domainsemantic.S
 	return domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: in.GetKey(), DisplayName: in.GetDisplayName(), Description: in.GetDescription(), Enabled: in.GetEnabled(), Trigger: trigger, Selector: selector, Source: source, Embeddings: bindings, Maintenance: maintenance, Storage: storageFromProto(in.GetStorage()), OwnerPrincipalID: ownerID, CreatedByPrincipalID: createdByID, CreatedAt: createdAt, UpdatedAt: updatedAt}, nil
 }
 
+func freshSemanticRuleID() domainsemantic.SemanticRuleID {
+	return domainsemantic.SemanticRuleID(uuid.New())
+}
+
+func semanticRuleEffectiveForRead(rule domainsemantic.SemanticGenerationRule) domainsemantic.SemanticGenerationRule {
+	if rule.ProviderBudgetTransition != "" {
+		rule.Enabled = false
+	}
+	return rule
+}
+
 func semanticRuleToProto(rule domainsemantic.SemanticGenerationRule) *adminv1.SemanticGenerationRule {
-	return &adminv1.SemanticGenerationRule{SemanticRuleId: rule.ID.String(), SpaceId: rule.SpaceID.String(), DomainId: rule.DomainID.String(), Key: rule.Key, DisplayName: rule.DisplayName, Description: rule.Description, Enabled: rule.Enabled, Trigger: triggerToProto(rule.Trigger), Selector: selectorToProto(rule.Selector), Source: sourceAssemblyToProto(rule.Source), Embeddings: embeddingsToProto(rule.Embeddings), Maintenance: maintenanceToProto(rule.Maintenance), Storage: storageToProto(rule.Storage), OwnerPrincipalId: strings.TrimSpace(rule.OwnerPrincipalID.String()), CreatedByPrincipalId: strings.TrimSpace(rule.CreatedByPrincipalID.String()), CreatedAt: timeValueString(rule.CreatedAt), UpdatedAt: timeValueString(rule.UpdatedAt)}
+	return &adminv1.SemanticGenerationRule{SemanticRuleId: rule.ID.String(), SpaceId: rule.SpaceID.String(), DomainId: rule.DomainID.String(), Key: rule.Key, DisplayName: rule.DisplayName, Description: rule.Description, Enabled: rule.Enabled && rule.ProviderBudgetTransition == "", Trigger: triggerToProto(rule.Trigger), Selector: selectorToProto(rule.Selector), Source: sourceAssemblyToProto(rule.Source), Embeddings: embeddingsToProto(rule.Embeddings), Maintenance: maintenanceToProto(rule.Maintenance), Storage: storageToProto(rule.Storage), OwnerPrincipalId: strings.TrimSpace(rule.OwnerPrincipalID.String()), CreatedByPrincipalId: strings.TrimSpace(rule.CreatedByPrincipalID.String()), CreatedAt: timeValueString(rule.CreatedAt), UpdatedAt: timeValueString(rule.UpdatedAt)}
 }
 
 func triggerFromProto(in *adminv1.SemanticTriggerPolicy) (domainsemantic.SemanticTriggerPolicy, error) {
 	if in == nil {
 		return domainsemantic.SemanticTriggerPolicy{}, nil
 	}
+	if semanticTriggerHasReservedEventTypes(in) {
+		return domainsemantic.SemanticTriggerPolicy{}, status.Error(codes.InvalidArgument, "trigger.event_types is no longer supported; use typed trigger.events")
+	}
 	debounce, err := optionalDuration(in.GetDebounce(), "trigger.debounce")
 	if err != nil {
 		return domainsemantic.SemanticTriggerPolicy{}, err
 	}
-	return domainsemantic.SemanticTriggerPolicy{Events: append([]string(nil), in.GetEvents()...), Labels: append([]string(nil), in.GetLabels()...), Debounce: debounce}, nil
+	events, err := semanticTriggerEventsFromProto(in.GetEvents())
+	if err != nil {
+		return domainsemantic.SemanticTriggerPolicy{}, err
+	}
+	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: events, Labels: append([]string(nil), in.GetLabels()...), Debounce: debounce}), nil
+}
+
+func semanticTriggerHasReservedEventTypes(in *adminv1.SemanticTriggerPolicy) bool {
+	unknown := in.ProtoReflect().GetUnknown()
+	for len(unknown) > 0 {
+		number, wireType, tagLength := protowire.ConsumeTag(unknown)
+		if tagLength < 0 {
+			return false
+		}
+		unknown = unknown[tagLength:]
+		valueLength := protowire.ConsumeFieldValue(number, wireType, unknown)
+		if valueLength < 0 {
+			return false
+		}
+		if number == 4 {
+			return true
+		}
+		unknown = unknown[valueLength:]
+	}
+	return false
+}
+
+func semanticTriggerEventsFromProto(values []adminv1.SemanticTriggerEventType) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	events := make([]string, 0, len(values))
+	for i, value := range values {
+		event, ok := semanticTriggerEventFromProto(value)
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument, "trigger.events[%d] contains unsupported semantic trigger event value %d", i, value)
+		}
+		events = append(events, event)
+	}
+	return domainsemantic.NormalizeSemanticTriggerPolicy(domainsemantic.SemanticTriggerPolicy{Events: events}).Events, nil
+}
+
+func semanticTriggerEventFromProto(value adminv1.SemanticTriggerEventType) (string, bool) {
+	switch value {
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED:
+		return domainsemantic.DefaultSemanticTriggerEventChanged, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_CREATED:
+		return domainsemantic.SemanticTriggerEventNodeCreated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED:
+		return domainsemantic.SemanticTriggerEventNodeUpdated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_DELETED:
+		return domainsemantic.SemanticTriggerEventNodeDeleted, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CHANGED:
+		return domainsemantic.SemanticTriggerEventEdgeChanged, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CREATED:
+		return domainsemantic.SemanticTriggerEventEdgeCreated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_UPDATED:
+		return domainsemantic.SemanticTriggerEventEdgeUpdated, true
+	case adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED:
+		return domainsemantic.SemanticTriggerEventEdgeDeleted, true
+	default:
+		return "", false
+	}
+}
+
+func semanticTriggerEventToProto(event string) (adminv1.SemanticTriggerEventType, bool) {
+	switch event {
+	case domainsemantic.DefaultSemanticTriggerEventChanged:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_CHANGED, true
+	case domainsemantic.SemanticTriggerEventNodeCreated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_CREATED, true
+	case domainsemantic.SemanticTriggerEventNodeUpdated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_UPDATED, true
+	case domainsemantic.SemanticTriggerEventNodeDeleted:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_NODE_DELETED, true
+	case domainsemantic.SemanticTriggerEventEdgeChanged:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CHANGED, true
+	case domainsemantic.SemanticTriggerEventEdgeCreated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_CREATED, true
+	case domainsemantic.SemanticTriggerEventEdgeUpdated:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_UPDATED, true
+	case domainsemantic.SemanticTriggerEventEdgeDeleted:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_EDGE_DELETED, true
+	default:
+		return adminv1.SemanticTriggerEventType_SEMANTIC_TRIGGER_EVENT_TYPE_UNSPECIFIED, false
+	}
 }
 
 func triggerToProto(in domainsemantic.SemanticTriggerPolicy) *adminv1.SemanticTriggerPolicy {
-	return &adminv1.SemanticTriggerPolicy{Events: append([]string(nil), in.Events...), Labels: append([]string(nil), in.Labels...), Debounce: durationString(in.Debounce)}
+	normalized := domainsemantic.NormalizeSemanticTriggerPolicy(in)
+	typed := make([]adminv1.SemanticTriggerEventType, 0, len(normalized.Events))
+	for _, event := range normalized.Events {
+		if value, ok := semanticTriggerEventToProto(event); ok {
+			typed = append(typed, value)
+		}
+	}
+	return &adminv1.SemanticTriggerPolicy{Events: typed, Labels: append([]string(nil), normalized.Labels...), Debounce: durationString(normalized.Debounce)}
 }
 
 func selectorFromProto(in *adminv1.SemanticTargetSelector) (domainsemantic.SemanticTargetSelector, error) {
@@ -507,7 +922,11 @@ func embeddingsFromProto(in []*adminv1.SemanticEmbeddingBinding) ([]domainsemant
 		if item.GetMetadata() != nil {
 			metadata = item.GetMetadata().AsMap()
 		}
-		out = append(out, domainsemantic.SemanticEmbeddingBinding{Key: item.GetKey(), Purpose: item.GetPurpose(), IntelligenceProfile: item.GetIntelligenceProfile(), IntelligenceProfileID: profileID, VectorStore: item.GetVectorStore(), VectorStoreID: storeID, Enabled: item.GetEnabled(), Metadata: metadata})
+		budget, err := semanticProviderBudgetFromProto(item.GetProviderBudget(), fmt.Sprintf("embeddings[%d].provider_budget", i))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, domainsemantic.SemanticEmbeddingBinding{Key: item.GetKey(), Purpose: item.GetPurpose(), IntelligenceProfile: item.GetIntelligenceProfile(), IntelligenceProfileID: profileID, VectorStore: item.GetVectorStore(), VectorStoreID: storeID, Enabled: item.GetEnabled(), Metadata: metadata, ProviderBudget: budget})
 	}
 	return out, nil
 }
@@ -516,9 +935,53 @@ func embeddingsToProto(in []domainsemantic.SemanticEmbeddingBinding) []*adminv1.
 	out := make([]*adminv1.SemanticEmbeddingBinding, 0, len(in))
 	for _, item := range in {
 		metadata, _ := structpb.NewStruct(item.Metadata)
-		out = append(out, &adminv1.SemanticEmbeddingBinding{Key: item.Key, Purpose: item.Purpose, IntelligenceProfile: item.IntelligenceProfile, IntelligenceProfileId: uuidText(item.IntelligenceProfileID), VectorStore: item.VectorStore, VectorStoreId: uuidText(item.VectorStoreID), Enabled: item.Enabled, Metadata: metadata})
+		out = append(out, &adminv1.SemanticEmbeddingBinding{Key: item.Key, Purpose: item.Purpose, IntelligenceProfile: item.IntelligenceProfile, IntelligenceProfileId: uuidText(item.IntelligenceProfileID), VectorStore: item.VectorStore, VectorStoreId: uuidText(item.VectorStoreID), Enabled: item.Enabled, Metadata: metadata, ProviderBudget: semanticProviderBudgetToProto(item.ProviderBudget)})
 	}
 	return out
+}
+
+func semanticProviderBudgetFromProto(in *adminv1.SemanticProviderBudgetPolicy, path string) (*domainsemantic.SemanticProviderBudgetPolicy, error) {
+	if in == nil {
+		return nil, nil
+	}
+	if in.MaxRequests == nil || in.MaxRetryAttempts == nil || in.MaxRetriesPerRequest == nil || in.MaxConcurrentProviderCalls == nil || in.BatchingMode == nil || in.MaxBatchItems == nil || in.MaxInputTokensPerRequest == nil || in.MaxInputTokens == nil || in.GetRequestTimeout() == nil || in.GetTotalTimeout() == nil || in.GetCost() == nil || in.GetCost().InputMicrosPerMillionTokens == nil || in.GetCost().MaxEstimatedCostMicros == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s must explicitly set every provider budget field", path)
+	}
+	if err := in.GetRequestTimeout().CheckValid(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s.request_timeout is invalid", path)
+	}
+	if err := in.GetTotalTimeout().CheckValid(); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s.total_timeout is invalid", path)
+	}
+	batching := domainsemantic.SemanticProviderBatchingMode("")
+	switch in.GetBatchingMode() {
+	case adminv1.SemanticProviderBatchingMode_SEMANTIC_PROVIDER_BATCHING_MODE_SINGLE:
+		batching = domainsemantic.SemanticProviderBatchingSingle
+	case adminv1.SemanticProviderBatchingMode_SEMANTIC_PROVIDER_BATCHING_MODE_BATCH:
+		batching = domainsemantic.SemanticProviderBatchingBatch
+	}
+	cost := in.GetCost()
+	return &domainsemantic.SemanticProviderBudgetPolicy{CorrelationID: in.GetCorrelationId(), MaxRequests: in.GetMaxRequests(), MaxRetryAttempts: in.GetMaxRetryAttempts(), MaxRetriesPerRequest: in.GetMaxRetriesPerRequest(), MaxConcurrentProviderCalls: in.GetMaxConcurrentProviderCalls(), BatchingMode: batching, MaxBatchItems: in.GetMaxBatchItems(), MaxInputTokensPerRequest: in.GetMaxInputTokensPerRequest(), MaxInputTokens: in.GetMaxInputTokens(), RequestTimeout: in.GetRequestTimeout().AsDuration(), TotalTimeout: in.GetTotalTimeout().AsDuration(), Currency: cost.GetCurrency(), PriceDefinitionVersion: cost.GetPriceDefinitionVersion(), InputMicrosPerMillionTokens: cost.GetInputMicrosPerMillionTokens(), MaxEstimatedCostMicros: cost.GetMaxEstimatedCostMicros()}, nil
+}
+
+func semanticProviderBudgetToProto(in *domainsemantic.SemanticProviderBudgetPolicy) *adminv1.SemanticProviderBudgetPolicy {
+	if in == nil {
+		return nil
+	}
+	batching := adminv1.SemanticProviderBatchingMode_SEMANTIC_PROVIDER_BATCHING_MODE_UNSPECIFIED
+	switch in.BatchingMode {
+	case domainsemantic.SemanticProviderBatchingSingle:
+		batching = adminv1.SemanticProviderBatchingMode_SEMANTIC_PROVIDER_BATCHING_MODE_SINGLE
+	case domainsemantic.SemanticProviderBatchingBatch:
+		batching = adminv1.SemanticProviderBatchingMode_SEMANTIC_PROVIDER_BATCHING_MODE_BATCH
+	}
+	return &adminv1.SemanticProviderBudgetPolicy{CorrelationId: in.CorrelationID, MaxRequests: int64Pointer(in.MaxRequests), MaxRetryAttempts: int64Pointer(in.MaxRetryAttempts), MaxRetriesPerRequest: int64Pointer(in.MaxRetriesPerRequest), MaxConcurrentProviderCalls: int64Pointer(in.MaxConcurrentProviderCalls), BatchingMode: semanticBatchingPointer(batching), MaxBatchItems: int64Pointer(in.MaxBatchItems), MaxInputTokensPerRequest: int64Pointer(in.MaxInputTokensPerRequest), MaxInputTokens: int64Pointer(in.MaxInputTokens), RequestTimeout: durationpb.New(in.RequestTimeout), TotalTimeout: durationpb.New(in.TotalTimeout), Cost: &adminv1.SemanticProviderCostLimit{Currency: in.Currency, PriceDefinitionVersion: in.PriceDefinitionVersion, InputMicrosPerMillionTokens: int64Pointer(in.InputMicrosPerMillionTokens), MaxEstimatedCostMicros: int64Pointer(in.MaxEstimatedCostMicros)}}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
+func semanticBatchingPointer(value adminv1.SemanticProviderBatchingMode) *adminv1.SemanticProviderBatchingMode {
+	return &value
 }
 
 func maintenanceFromProto(in *adminv1.SemanticMaintenancePolicy) (domainsemantic.SemanticMaintenancePolicy, error) {
@@ -623,6 +1086,19 @@ func paginateAdminSemantic[T any](items []T, pageSize int, pageToken string) ([]
 func mapAdminSemanticError(err error, action string) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, storesemantic.ErrNotFound) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	var displayNameConflict *storesemantic.SemanticRuleDisplayNameConflictError
+	if errors.As(err, &displayNameConflict) {
+		return status.Error(codes.AlreadyExists, displayNameConflict.Error())
+	}
+	if errors.Is(err, storesemantic.ErrConflict) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, storesemantic.ErrInvalidInput) {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
 		return err

@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	identity "github.com/myceldb/mycel/internal/identity/model"
+	semanticdiagnostics "github.com/myceldb/mycel/internal/semantic/diagnostics"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
@@ -24,17 +28,36 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const semanticMaxPageSize = 500
+const (
+	semanticMaxPageSize             = 500
+	semanticMaxCandidateExamination = 100000
+)
 
 type SemanticService struct {
 	clientv1.UnimplementedSemanticServiceServer
-	semantic daemonsemantic.Manager
-	spaces   daemonspace.Manager
-	graphs   daegraph.Manager
+	semantic     daemonsemantic.Manager
+	spaces       daemonspace.Manager
+	graphs       daegraph.Manager
+	cursorMACKey []byte
+	logger       *slog.Logger
 }
 
-func NewSemanticService(semantic daemonsemantic.Manager, spaces daemonspace.Manager, graphs daegraph.Manager) *SemanticService {
-	return &SemanticService{semantic: semantic, spaces: spaces, graphs: graphs}
+func NewSemanticService(semantic daemonsemantic.Manager, spaces daemonspace.Manager, graphs daegraph.Manager, cursorMACKey ...[]byte) *SemanticService {
+	key := semanticCursorMACKey
+	if len(cursorMACKey) > 0 && len(cursorMACKey[0]) >= 32 {
+		key = append([]byte(nil), cursorMACKey[0]...)
+	}
+	return &SemanticService{semantic: semantic, spaces: spaces, graphs: graphs, cursorMACKey: key}
+}
+
+func (s *SemanticService) WithLogger(logger *slog.Logger) *SemanticService {
+	s.logger = logger
+	return s
+}
+
+func effectiveSemanticRuleForClientRead(rule domainsemantic.SemanticGenerationRule) domainsemantic.SemanticGenerationRule {
+	rule.Enabled = rule.Enabled && rule.ProviderBudgetTransition == ""
+	return rule
 }
 
 func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.ListSemanticRulesRequest) (*clientv1.ListSemanticRulesResponse, error) {
@@ -52,10 +75,11 @@ func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.L
 	}
 	items := make([]*clientv1.SemanticGenerationRuleSummary, 0, len(rules))
 	for _, rule := range rules {
-		if !req.GetIncludeDisabled() && (!rule.Enabled || !ruleHasSearchBinding(rule)) {
+		effectiveRule := effectiveSemanticRuleForClientRead(rule)
+		if !req.GetIncludeDisabled() && (!effectiveRule.Enabled || !ruleHasSearchBinding(effectiveRule)) {
 			continue
 		}
-		items = append(items, MapSemanticRuleSummaryProto(rule, stateByRule[rule.ID], searchByBinding, stores))
+		items = append(items, MapSemanticRuleSummaryProto(effectiveRule, stateByRule[rule.ID], searchByBinding, stores))
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].GetKey() < items[j].GetKey() })
 	page, next, err := paginateSemantic(items, int(req.GetPageSize()), req.GetPageToken())
@@ -66,14 +90,24 @@ func (s *SemanticService) ListSemanticRules(ctx context.Context, req *clientv1.L
 }
 
 func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.SemanticSearchRequest) (*clientv1.SemanticSearchResponse, error) {
+	trace, stopTrace := semanticdiagnostics.BeginCancellationTrace(ctx, s.logger, "authorize-domain", "semantic search request canceled")
+	defer stopTrace()
 	principal, spaceID, domainID, err := s.authorizeDomainRead(ctx, req.GetSpaceId(), req.GetDomainId())
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	query := strings.TrimSpace(req.GetQuery())
 	if query == "" {
 		return nil, status.Error(codes.InvalidArgument, "query is required")
 	}
+	normalizedFilter, err := normalizeSemanticFilter(req.GetFilter())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	req.Filter = normalizedFilter
 	limit := int(req.GetLimit())
 	if limit <= 0 {
 		limit = 10
@@ -85,35 +119,145 @@ func (s *SemanticService) SemanticSearch(ctx context.Context, req *clientv1.Sema
 	if bindingKey != "" && strings.TrimSpace(req.GetSemanticRuleId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "embedding_binding_key requires semantic_rule_id")
 	}
+	trace.SetStage("resolve-rules")
 	selectedRuleIDs, err := s.resolveSearchRules(ctx, spaceID, domainID, req.GetSemanticRuleId())
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	actorID, err := parseIdentityPrincipalID(principal.PrincipalID)
 	if err != nil {
 		return nil, err
 	}
+	trace.SetStage("read-graph-revision")
+	graphRevision, err := s.semanticGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapSemanticError(err, "read semantic graph revision")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	trace.SetStage("read-semantic-view")
+	semanticView, err := s.semanticViewFingerprint(ctx, spaceID, domainID, selectedRuleIDs, bindingKey)
+	if err != nil {
+		return nil, mapSemanticError(err, "read semantic index view")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	offset, cursor, err := semanticPageOffsetWithKey(req, principal.PrincipalID, graphRevision, semanticView, s.cursorIntegrityKey())
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "invalid semantic page token") {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if offset > semanticMaxPaginationRecords {
+		return nil, status.Error(codes.ResourceExhausted, "semantic page token position exceeds the bounded result window")
+	}
 	minScore := 0.0
 	if req.MinScore != nil {
 		minScore = req.GetMinScore()
 	}
-	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: actorID})
+	plannerMinScore := minScore
+	if normalizedFilter != nil {
+		plannerMinScore = -math.MaxFloat64
+	}
+	trace.SetStage("execute-semantic-search")
+	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: semanticMaxCandidateExamination, MinScore: plannerMinScore, ActorPrincipalID: actorID})
 	if err != nil {
 		return nil, mapSemanticError(err, "semantic search")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	trace.SetStage("hydrate-graph-results")
 	nodeByID, warnings := s.loadSearchNodes(ctx, principal.PrincipalID, spaceID, domainID, result.Results)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	out := make([]*clientv1.SemanticSearchResult, 0, len(result.Results))
+	examinedAuthorizedCandidates := 0
+	eligibleCandidates := 0
 	for _, item := range result.Results {
 		node := nodeByID[item.NodeID]
 		if node == nil {
 			continue
 		}
+		examinedAuthorizedCandidates++
+		if !semanticNodeEligible(node, normalizedFilter) {
+			continue
+		}
+		eligibleCandidates++
+		if req.MinScore != nil && item.Score < minScore {
+			continue
+		}
 		matched := recordIDsForResult(item)
-		out = append(out, &clientv1.SemanticSearchResult{SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, RecordId: item.RecordID.String(), NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: matched, Snippet: semanticSnippet(nodePayloadText(node))})
+		out = append(out, &clientv1.SemanticSearchResult{SemanticRuleId: item.SemanticRuleID.String(), EmbeddingBindingKey: item.EmbeddingBindingKey, RecordId: item.RecordID.String(), NodeId: item.NodeID.String(), Score: item.Score, Node: node, MatchedChunkIds: matched, Snippet: semanticSnippet(nodePayloadText(node)), Provenance: mapSemanticResultProvenance(item)})
+	}
+	if err := semanticCandidateBoundError(normalizedFilter != nil, result, examinedAuthorizedCandidates); err != nil {
+		return nil, err
+	}
+	trace.SetStage("recheck-graph-revision")
+	finalGraphRevision, err := s.semanticGraphRevision(ctx, spaceID, domainID)
+	if err != nil {
+		return nil, mapSemanticError(err, "recheck semantic graph revision")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if finalGraphRevision != graphRevision {
+		return nil, status.Error(codes.Aborted, "semantic graph view changed while building the page")
+	}
+	candidateFingerprint := semanticCandidateFingerprint(out)
+	if strings.TrimSpace(req.GetPageToken()) != "" && subtle.ConstantTimeCompare([]byte(cursor.CandidateFingerprint), []byte(candidateFingerprint)) != 1 {
+		return nil, status.Error(codes.FailedPrecondition, "semantic page token was invalidated because the candidate ranking changed")
+	}
+	if offset > len(out) {
+		return nil, status.Error(codes.FailedPrecondition, "semantic page token position is beyond the current candidate set")
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	page := out[offset:end]
+	nextPageToken := ""
+	if end < len(out) {
+		nextPageToken, err = encodeSemanticNextPageTokenWithKey(req, principal.PrincipalID, graphRevision, semanticView, candidateFingerprint, end, s.cursorIntegrityKey())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "encode semantic page token: %v", err)
+		}
 	}
 	allWarnings := append([]string{}, result.Warnings...)
 	allWarnings = append(allWarnings, warnings...)
-	return &clientv1.SemanticSearchResponse{Results: out, Warnings: allWarnings}, nil
+	filterMode := ""
+	if normalizedFilter != nil {
+		filterMode = "authorized_candidate_post_filter"
+	}
+	trace.SetStage("complete")
+	return &clientv1.SemanticSearchResponse{Results: page, Warnings: allWarnings, NextPageToken: nextPageToken, FilterExecutionMode: filterMode, ExaminedSemanticCandidates: int32(examinedAuthorizedCandidates), EligibleSemanticCandidates: int32(eligibleCandidates)}, nil
+}
+
+func mapSemanticResultProvenance(item semanticsearch.SearchResult) *clientv1.SemanticResultProvenance {
+	// Configured catalog route identity is known. Provider-observed route
+	// identity is intentionally unknown until a connector returns independent
+	// provider response metadata; configured IDs must never be relabeled actual.
+	return &clientv1.SemanticResultProvenance{
+		SourceGraphRevision: item.SourceGraphRevision, SemanticGeneration: item.SemanticGeneration,
+		SemanticConfigurationHash: item.SemanticConfigurationHash, OpaqueSourceVersion: item.RecordID.String(), Dimensions: int32(item.Dimensions), VectorSpaceKey: item.VectorSpaceKey,
+		ConfiguredIntelligenceProfileId: semanticUUIDText(uuid.UUID(item.IntelligenceProfileID)), ConfiguredModelEndpointId: semanticUUIDText(uuid.UUID(item.ModelEndpointID)), ConfiguredModelId: semanticUUIDText(uuid.UUID(item.ModelID)), ConfiguredCapabilityId: semanticUUIDText(uuid.UUID(item.ModelEndpointCapabilityID)),
+		ActualRouteKnown: false, RebuildEpoch: item.RebuildEpoch,
+		GeneratedAt: item.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func semanticUUIDText(id uuid.UUID) string {
+	if id == uuid.Nil {
+		return ""
+	}
+	return id.String()
 }
 
 func (s *SemanticService) authorizeDomainRead(ctx context.Context, spaceIDText, domainIDText string) (principalUser, domainspace.SpaceID, graph.DomainID, error) {
@@ -427,6 +571,13 @@ func parseSemanticRuleID(raw string) (domainsemantic.SemanticRuleID, error) {
 		return uuid.Nil, status.Error(codes.InvalidArgument, "semantic_rule_id must be a UUID")
 	}
 	return domainsemantic.SemanticRuleID(id), nil
+}
+
+func semanticCandidateBoundError(hasHardFilter bool, result semanticsearch.Result, examinedAuthorizedCandidates int) error {
+	if (hasHardFilter && result.CandidateScanTruncated) || len(result.Results) >= semanticMaxCandidateExamination || examinedAuthorizedCandidates > semanticMaxPaginationRecords {
+		return status.Error(codes.ResourceExhausted, "direct semantic candidate examination exceeded the bounded pagination window")
+	}
+	return nil
 }
 
 func parseIdentityPrincipalID(raw string) (identity.PrincipalID, error) {

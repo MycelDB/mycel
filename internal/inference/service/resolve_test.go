@@ -33,6 +33,52 @@ func TestResolveAllowsMatchingProfileGrantAndPolicy(t *testing.T) {
 	}
 }
 
+type fixedAuthorizationRevisionSource struct {
+	global uint64
+	space  uint64
+}
+
+func (s fixedAuthorizationRevisionSource) GlobalAuthorizationRevision(context.Context) (uint64, error) {
+	return s.global, nil
+}
+
+func (s fixedAuthorizationRevisionSource) SpaceAuthorizationRevision(context.Context, string) (uint64, error) {
+	return s.space, nil
+}
+
+func TestResolveUsesAuthoritativeAuthorizationRevisionSource(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	module.WithAuthorizationRevisionSource(fixedAuthorizationRevisionSource{global: 11, space: 22})
+	result, err := module.Resolve(ctx, inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.GlobalAuthorizationRevision != 11 || result.Decision.SpaceAuthorizationRevision != 22 || result.Decision.AuthorizationRevision != combineAuthorizationRevisions(11, 22) {
+		t.Fatalf("decision revisions=%+v", result.Decision)
+	}
+}
+
+func TestAuthorizationRevisionChangesWhenGlobalCredentialIsRevoked(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	before, err := module.CurrentAuthorizationRevision(ctx, fixture.spaceID)
+	if err != nil {
+		t.Fatalf("current revision before revoke: %v", err)
+	}
+	fixture.credential.Status = domaininference.CredentialStatusRevoked
+	if _, err := module.GlobalManager().UpsertCredential(ctx, fixture.credential); err != nil {
+		t.Fatalf("revoke credential: %v", err)
+	}
+	after, err := module.CurrentAuthorizationRevision(ctx, fixture.spaceID)
+	if err != nil {
+		t.Fatalf("current revision after revoke: %v", err)
+	}
+	if before == after {
+		t.Fatalf("credential revocation did not advance authorization revision %d", before)
+	}
+}
+
 func TestResolveAllowsSummarizeCapabilityOnGenerativeModel(t *testing.T) {
 	ctx := context.Background()
 	module, fixture := newResolverFixture(t, ctx)
@@ -118,6 +164,60 @@ func TestResolveDenyPolicyWins(t *testing.T) {
 	}
 	if result.Allowed || result.Decision.Action != domaininference.PolicyDecisionDenied || result.Decision.Reason != "operator disabled automation inference" {
 		t.Fatalf("expected deny policy decision, got %#v", result.Decision)
+	}
+}
+
+func TestResolveProcedureScopeRequiresExactPositiveVersionAndLogicalDenyCoversVersions(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fixture.policy.Scope = domaininference.Scope{SpaceID: fixture.spaceID, DomainID: "domain-a", ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, fixture.policy); err != nil {
+		t.Fatalf("update exact policy: %v", err)
+	}
+	request := inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", ProcedureID: "proc", ProcedureVersion: 1, BindingID: "binding", BindingVersion: 1, InvocationID: "inv", RunID: "run", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}
+	allowed, err := module.Resolve(ctx, request)
+	if err != nil || !allowed.Allowed {
+		t.Fatalf("exact procedure authorization allowed=%t decision=%+v err=%v", allowed.Allowed, allowed.Decision, err)
+	}
+	if allowed.Decision.ProcedureID != "proc" || allowed.Decision.ProcedureVersion != 1 || allowed.Decision.BindingID != "binding" || allowed.Decision.BindingVersion != 1 || allowed.Decision.InvocationID != "inv" || allowed.Decision.RunID != "run" {
+		t.Fatalf("decision lost procedure attribution: %+v", allowed.Decision)
+	}
+	request.ProcedureVersion = 2
+	denied, err := module.Resolve(ctx, request)
+	if err != nil || denied.Allowed || !strings.Contains(denied.Decision.Reason, "policy") {
+		t.Fatalf("changed procedure version=%+v err=%v", denied.Decision, err)
+	}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, domaininference.Policy{SpaceID: fixture.spaceID, Scope: domaininference.Scope{SpaceID: fixture.spaceID, ProcedureID: "proc"}, Operations: []domaininference.Operation{domaininference.OperationChat}, Action: domaininference.PolicyActionDeny, State: domaininference.PolicyStateActive, Reason: "logical procedure revoked"}); err != nil {
+		t.Fatalf("upsert logical deny: %v", err)
+	}
+	request.ProcedureVersion = 1
+	denied, err = module.Resolve(ctx, request)
+	if err != nil || denied.Allowed || denied.Decision.Reason != "logical procedure revoked" {
+		t.Fatalf("logical deny=%+v err=%v", denied.Decision, err)
+	}
+}
+
+func TestResolvePolicyRouteSelectorsAreConjunctive(t *testing.T) {
+	ctx := context.Background()
+	module, fixture := newResolverFixture(t, ctx)
+	fixture.policy.EndpointRefs = []string{uuid.NewString()}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, fixture.policy); err != nil {
+		t.Fatal(err)
+	}
+	request := inferenceruntime.ResolveRequest{SpaceID: fixture.spaceID, DomainID: "domain-a", Operation: domaininference.OperationChat, UsageMode: domaininference.UsageModeAutomation, ProfileRef: fixture.profile.Key, ActorPrincipalID: "actor-a"}
+	denied, err := module.Resolve(ctx, request)
+	if err != nil || denied.Allowed {
+		t.Fatalf("mismatched endpoint selector allowed=%t err=%v", denied.Allowed, err)
+	}
+	fixture.policy.EndpointRefs = []string{fixture.endpoint.ID.String()}
+	fixture.policy.ModelRefs = []string{fixture.model.ID.String()}
+	fixture.policy.CapabilityRefs = []string{fixture.capability.ID.String()}
+	if _, err := fixture.spaceMgr.UpsertPolicy(ctx, fixture.policy); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := module.Resolve(ctx, request)
+	if err != nil || !allowed.Allowed {
+		t.Fatalf("matching route selectors decision=%+v err=%v", allowed.Decision, err)
 	}
 }
 

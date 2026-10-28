@@ -8,7 +8,7 @@ Proposed design. Implementation should not begin until this design and the relat
 
 Hybrid search is a first-class MycelDB search mode that combines lexical full-text retrieval and semantic/vector retrieval into one ranked, non-streaming result set. Metadata/tag/property criteria are hard eligibility filters, not ranking signals.
 
-The first version should extend the existing `SearchService.Search` API with a `SEARCH_MODE_HYBRID` mode. A hybrid request runs lexical and semantic candidate retrieval for the same query, applies structured metadata filters, deduplicates candidates by graph node ID, fuses lexical and semantic ranks using configurable weights, and returns a bounded top-K response with optional diagnostics.
+The first version should extend the existing `SearchService.Search` API with a `SEARCH_MODE_HYBRID` mode. A hybrid request runs lexical and semantic candidate retrieval with channel-specific query representations, applies structured metadata filters, deduplicates candidates by graph node ID, fuses lexical and semantic ranks using configurable weights, and returns a bounded top-K response with optional diagnostics.
 
 ## Goals
 
@@ -73,7 +73,9 @@ message SearchRequest {
   string space_id = 1;
   string domain_id = 2;
   SearchMode mode = 3;
-  string query = 4;
+
+  reserved 4;
+  reserved "query";
 
   // Hard eligibility filters. These do not contribute to score.
   SearchFilters filters = 5;
@@ -110,6 +112,10 @@ message LexicalSearchOptions {
   // Number of lexical candidates to retrieve before filtering/fusion. If unset,
   // the server chooses a bounded value such as max(page_size * 5, 50).
   int32 candidate_count = 1;
+
+  // Lucene-style lexical expression. Required whenever lexical retrieval is
+  // enabled.
+  optional string query = 2;
 }
 
 message SemanticSearchOptions {
@@ -126,6 +132,10 @@ message SemanticSearchOptions {
   // Number of semantic candidates to retrieve before filtering/fusion. If unset,
   // the server chooses a bounded value such as max(page_size * 5, 50).
   int32 candidate_count = 4;
+
+  // Natural-language embedding text. Required whenever semantic retrieval is
+  // enabled.
+  optional string query = 5;
 }
 
 enum HybridFusionStrategy {
@@ -272,7 +282,8 @@ Example:
 ```json
 {
   "mode": "SEARCH_MODE_HYBRID",
-  "query": "raft recovery",
+  "lexical": {"query": "\"raft\" OR \"recovery\""},
+  "semantic": {"query": "how does raft recover?"},
   "filters": {
     "node_labels": ["Note"],
     "properties": [
@@ -283,7 +294,7 @@ Example:
 }
 ```
 
-This means: retrieve and rank candidates for `raft recovery`, but only return nodes that are `Note`s, contain tag `k3s`, and have status `published`.
+This means: use the safe lexical expression for BM25 and the natural-language question for embedding, but only return nodes that are `Note`s, contain tag `k3s`, and have status `published`. Query text is channel-owned; the daemon does not read a shared top-level fallback.
 
 Implementation should apply filters as early as feasible for efficiency. Correctness requires filters to be enforced before results are returned, even if early filtering is not available for one backend.
 
@@ -293,8 +304,8 @@ For `SEARCH_MODE_HYBRID`:
 
 1. Validate request, authorization, weights, limits, and filters.
 2. Choose lexical and semantic candidate counts.
-3. Run lexical candidate retrieval for the query.
-4. Run semantic candidate retrieval for the query and selected semantic binding scope, applying `semantic.min_score` before returning semantic candidates.
+3. Resolve and run lexical candidate retrieval from the required `lexical.query`.
+4. Resolve and run semantic candidate retrieval from the required `semantic.query`, and apply `semantic.min_score` before returning semantic candidates.
 5. Merge candidates by `node_id`.
 6. Read enough graph/node metadata to enforce authorization and hard filters.
 7. If `require_both=true`, drop candidates not present in both lexical and semantic result sets.
@@ -344,12 +355,12 @@ Diagnostics must not leak unauthorized terms, field paths, snippets, rule metada
 
 ## Pagination and limits
 
-Hybrid ranking is produced by fusing bounded candidate sets. V1 should prefer a simple top-K contract:
+Hybrid ranking is produced by fusing bounded candidate sets:
 
-- `page_size` controls the returned top-K count;
+- `page_size` controls the returned page size;
 - the daemon may cap `page_size` and candidate counts;
-- hybrid mode may return an empty `next_page_token` until stable pagination semantics are designed;
-- if pagination is supported, the page token must encode the request shape and candidate/fusion state sufficiently to avoid inconsistent continuation behavior.
+- continuation tokens bind the explicit lexical and semantic queries, filters, ranking options, freshness identity, and candidate fingerprint;
+- tokens created under the removed top-level-query fallback contract are rejected as unbound legacy tokens.
 
 Candidate count defaults should over-fetch relative to `page_size`, for example:
 
@@ -367,7 +378,8 @@ Use `mycel search hybrid` for app-facing fused ranking:
 mycel search hybrid \
   --space-id <space-id> \
   --domain default \
-  --query "raft recovery" \
+  --lexical-query '"raft" OR "recovery"' \
+  --semantic-query "how does raft recover?" \
   --page-size 20 \
   --lexical-weight 1.0 \
   --semantic-weight 0.7 \
@@ -393,7 +405,6 @@ CLI defaults match API defaults:
   "space_id": "space-1",
   "domain_id": "notes",
   "mode": "SEARCH_MODE_HYBRID",
-  "query": "authentication timeout after pod restart",
   "page_size": 20,
   "include_diagnostics": true,
   "filters": {
@@ -408,11 +419,13 @@ CLI defaults match API defaults:
     "fusion_strategy": "HYBRID_FUSION_STRATEGY_WEIGHTED_RECIPROCAL_RANK"
   },
   "lexical": {
-    "candidate_count": 100
+    "candidate_count": 100,
+    "query": "authentication AND timeout"
   },
   "semantic": {
     "candidate_count": 100,
-    "min_score": 0.50
+    "min_score": 0.50,
+    "query": "authentication timeout after pod restart"
   }
 }
 ```

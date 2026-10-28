@@ -338,19 +338,20 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		"daemon.backup.delete.v1":               "backup",
 	}
 	partitionRecords := map[wal.RecordType]string{
-		"space.create_with_default_domain.v1": "space",
-		"space.domain.create.v1":              "space",
-		"space.domain.update.v1":              "space",
-		"space.domain.delete.v1":              "space",
-		"space.delete.v1":                     "space",
-		"schema.put.v1":                       "schema",
-		"schema.delete.v1":                    "schema",
-		"graph.commit.v1":                     "graph",
-		"blob.meta.put.v1":                    "blob",
-		"blob.meta.delete.v1":                 "blob",
-		"semantic.space.mutation.v1":          "semantic",
-		"semantic.maintenance.mutation.v1":    "semantic",
-		"automation.mutation.v1":              "automation",
+		"space.create_with_default_domain.v1":    "space",
+		"space.domain.create.v1":                 "space",
+		"space.domain.update.v1":                 "space",
+		"space.domain.delete.v1":                 "space",
+		"space.delete.v1":                        "space",
+		"schema.put.v1":                          "schema",
+		"schema.delete.v1":                       "schema",
+		"graph.commit.v1":                        "graph",
+		"blob.meta.put.v1":                       "blob",
+		"blob.meta.delete.v1":                    "blob",
+		"semantic.space.mutation.v1":             "semantic",
+		"semantic.space.conditional-mutation.v2": "semantic",
+		"semantic.maintenance.mutation.v1":       "semantic",
+		"automation.mutation.v1":                 "automation",
 	}
 	for recordType, want := range systemRecords {
 		cmd := consensus.RaftCommand{Scope: consensus.CommandScopeSystem, RecordType: recordType, CommandID: "test"}

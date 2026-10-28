@@ -101,13 +101,13 @@ func (m *Module) snapshotSemanticRaft(ctx context.Context, scope string, partiti
 		snap.Spaces = parts
 		spaces = spaceSet
 	}
-	m.mu.Lock()
+	m.raftAppliedCommandsMu.Lock()
 	for id := range m.raftAppliedCommands {
 		if semanticCommandIDBelongsToScope(id, scope, spaces) {
 			snap.AppliedCommands = append(snap.AppliedCommands, id)
 		}
 	}
-	m.mu.Unlock()
+	m.raftAppliedCommandsMu.Unlock()
 	sort.Strings(snap.AppliedCommands)
 	return json.Marshal(snap)
 }
@@ -141,7 +141,8 @@ func (m *Module) restoreSemanticRaft(ctx context.Context, data []byte, expectedS
 			return err
 		}
 	}
-	m.mu.Lock()
+	m.raftAppliedCommandsMu.Lock()
+	defer m.raftAppliedCommandsMu.Unlock()
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
@@ -155,15 +156,19 @@ func (m *Module) restoreSemanticRaft(ctx context.Context, data []byte, expectedS
 			m.raftAppliedCommands[id] = struct{}{}
 		}
 	}
-	m.mu.Unlock()
-	return m.persistRaftAppliedCommands(ctx)
+	return m.persistRaftAppliedCommandsLocked(ctx)
 }
 
 func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnapshot, error) {
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
 	var out semanticGlobalSnapshot
 	var err error
 	if m.globalBase == nil {
 		return out, fmt.Errorf("semantic global stores are not initialized")
+	}
+	if err := m.recoverCredentialLifecycle(ctx); err != nil {
+		return out, err
 	}
 	if out.Packages, err = m.globalBase.ListPackages(ctx); err != nil {
 		return out, err
@@ -190,6 +195,8 @@ func (m *Module) snapshotSemanticGlobal(ctx context.Context) (semanticGlobalSnap
 }
 
 func (m *Module) restoreSemanticGlobal(ctx context.Context, snap semanticGlobalSnapshot) error {
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
 	if err := validateSemanticGlobalSnapshotByApply(ctx, snap); err != nil {
 		return err
 	}
@@ -331,6 +338,7 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 		m.logSnapshotProjectionError("partition-cache", err)
 	}
 	for _, space := range spaces {
+		space = semanticSnapshotRequiringRebuild(space)
 		spaceMgr := storesemantic.NewSpaceManager()
 		if err := spaceMgr.Init(ctx, m.spaceSemanticDir(space.SpaceID), space.SpaceID); err != nil {
 			return err
@@ -385,12 +393,12 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 			return err
 		}
 		for _, v := range space.DirtyEvents {
-			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, v); err != nil {
+			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, normalizeRestoredSemanticDirtyEvent(v)); err != nil {
 				return err
 			}
 		}
 		for _, v := range space.Checkpoints {
-			if err := maintMgr.SaveCheckpoint(ctx, v); err != nil {
+			if err := maintMgr.SaveCheckpoint(ctx, normalizeRestoredSemanticCheckpoint(v)); err != nil {
 				return err
 			}
 		}
@@ -416,6 +424,73 @@ func (m *Module) restoreSemanticPartition(ctx context.Context, spaces []semantic
 	return nil
 }
 
+func semanticSnapshotRequiringRebuild(space semanticSpaceSnapshot) semanticSpaceSnapshot {
+	stateIndex := map[domainsemantic.SemanticRuleID]int{}
+	for i := range space.RuleStates {
+		stateIndex[space.RuleStates[i].SemanticRuleID] = i
+	}
+	for _, rule := range space.Rules {
+		idx, ok := stateIndex[rule.ID]
+		if !ok {
+			space.RuleStates = append(space.RuleStates, domainsemantic.SemanticRuleState{SemanticRuleID: rule.ID, ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{}})
+			idx = len(space.RuleStates) - 1
+			stateIndex[rule.ID] = idx
+		}
+		state := &space.RuleStates[idx]
+		if state.ReliabilityByBinding == nil {
+			state.ReliabilityByBinding = map[string]domainsemantic.SemanticReliabilityState{}
+		}
+		for _, rawBinding := range rule.Embeddings {
+			binding := domainsemantic.NormalizeSemanticEmbeddingBinding(rawBinding)
+			if !binding.Enabled {
+				continue
+			}
+			if _, ok := state.ReliabilityByBinding[binding.Key]; !ok {
+				state.ReliabilityByBinding[binding.Key] = domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: binding.Key, SemanticGeneration: 1}
+			}
+		}
+	}
+	for i := range space.RuleStates {
+		state := &space.RuleStates[i]
+		if state.ReliabilityByBinding == nil {
+			state.ReliabilityByBinding = map[string]domainsemantic.SemanticReliabilityState{}
+		}
+		for key, reliability := range state.ReliabilityByBinding {
+			reliability.EmbeddingBindingKey = key
+			if reliability.SemanticGeneration == 0 {
+				reliability.SemanticGeneration = 1
+			}
+			reliability.BaselineFreshThrough = 0
+			reliability.FreshThrough = 0
+			reliability.RebuildState = "required"
+			reliability.RebuildCompletedAt = nil
+			reliability.RebuildErrorSanitized = "derived semantic vectors omitted from raft snapshot; rebuild required"
+			state.ReliabilityByBinding[key] = reliability
+		}
+		state.State = "stale"
+		state.LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
+		if state.UpdatedAt.IsZero() {
+			state.UpdatedAt = deterministicSemanticRestoreEpoch()
+		}
+	}
+	for i := range space.SearchIndexStates {
+		space.SearchIndexStates[i].State = "missing"
+		space.SearchIndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
+		if space.SearchIndexStates[i].UpdatedAt.IsZero() {
+			space.SearchIndexStates[i].UpdatedAt = deterministicSemanticRestoreEpoch()
+		}
+	}
+	for i := range space.IndexStates {
+		space.IndexStates[i].State = "missing"
+		space.IndexStates[i].LastError = "derived semantic vectors omitted from raft snapshot; rebuild required"
+		space.IndexStates[i].RecordCount = 0
+		if space.IndexStates[i].UpdatedAt.IsZero() {
+			space.IndexStates[i].UpdatedAt = deterministicSemanticRestoreEpoch()
+		}
+	}
+	return space
+}
+
 func (m *Module) logSnapshotProjectionError(scope string, err error) {
 	if err == nil {
 		return
@@ -429,6 +504,9 @@ func (m *Module) logSnapshotProjectionError(scope string, err error) {
 }
 
 func validateSemanticGlobalSnapshotByApply(ctx context.Context, snap semanticGlobalSnapshot) error {
+	if err := storesemantic.ValidateVectorStoreCatalog(snap.VectorStores); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "mycel-semantic-global-snapshot-validate-*")
 	if err != nil {
 		return err
@@ -537,12 +615,12 @@ func validateSemanticPartitionSnapshotByApply(ctx context.Context, spaces []sema
 			return err
 		}
 		for _, v := range space.DirtyEvents {
-			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, v); err != nil {
+			if _, err := maintMgr.AppendGraphDirtyEvent(ctx, normalizeRestoredSemanticDirtyEvent(v)); err != nil {
 				return err
 			}
 		}
 		for _, v := range space.Checkpoints {
-			if err := maintMgr.SaveCheckpoint(ctx, v); err != nil {
+			if err := maintMgr.SaveCheckpoint(ctx, normalizeRestoredSemanticCheckpoint(v)); err != nil {
 				return err
 			}
 		}
@@ -717,14 +795,40 @@ func (m *Module) deleteInferenceProjectionPartitionDirs(partitionID, partitionCo
 	return nil
 }
 
+func normalizeRestoredSemanticDirtyEvent(event domainsemantic.GraphDirtyEvent) domainsemantic.GraphDirtyEvent {
+	if event.CommittedAt.IsZero() {
+		event.CommittedAt = deterministicSemanticRestoreEpoch()
+	}
+	return event
+}
+
+func normalizeRestoredSemanticCheckpoint(checkpoint storesemantic.MaintenanceCheckpoint) storesemantic.MaintenanceCheckpoint {
+	if checkpoint.UpdatedAt.IsZero() {
+		checkpoint.UpdatedAt = deterministicSemanticRestoreEpoch()
+	}
+	return checkpoint
+}
+
 func normalizeRestoredSemanticWork(item domainsemantic.SemanticDirtyWorkItem) domainsemantic.SemanticDirtyWorkItem {
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = item.UpdatedAt
+		if item.CreatedAt.IsZero() {
+			item.CreatedAt = deterministicSemanticRestoreEpoch()
+		}
+	}
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = item.CreatedAt
+	}
 	if item.Status == domainsemantic.SemanticDirtyWorkStatusRunning {
 		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
 		item.ClaimedBy = ""
 		item.ClaimedUntil = nil
-		item.UpdatedAt = time.Now().UTC()
 	}
 	return item
+}
+
+func deterministicSemanticRestoreEpoch() time.Time {
+	return time.Unix(0, 0).UTC()
 }
 
 type semanticMaintenanceCheckpointFile struct {
@@ -753,6 +857,7 @@ func resetSemanticGlobalFiles(dataDir string) error {
 		filepath.Join(dataDir, "meta", "inference", "models.json"),
 		filepath.Join(dataDir, "meta", "inference", "model_endpoint_capabilities.json"),
 		filepath.Join(dataDir, "meta", "inference", "vector_stores.json"),
+		filepath.Join(dataDir, "meta", "inference", "lifecycle_intent.json"),
 		filepath.Join(dataDir, "meta", "secrets", "secrets.json"),
 		filepath.Join(dataDir, "meta", "credentials", "credentials.json"),
 	}

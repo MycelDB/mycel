@@ -82,6 +82,94 @@ func TestAutomationRaftReplayCreateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAutomationRaftReplayOlderProcedureCreateIsNoOp(t *testing.T) {
+	ctx, mgr, domainID, current, created, cmd := procedureCreateReplayFixture(t)
+	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{Replay: true, RaftIndex: 2, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("older procedure create replay error = %v", err)
+	}
+	got, err := mgr.store.GetProcedure(ctx, domainID, created.ID)
+	if err != nil {
+		t.Fatalf("GetProcedure() error = %v", err)
+	}
+	if got.Version != current.Version || got.Prompt != current.Prompt {
+		t.Fatalf("procedure changed after older create replay: got version=%d prompt=%q, want version=%d prompt=%q", got.Version, got.Prompt, current.Version, current.Prompt)
+	}
+}
+
+func TestAutomationRaftLiveConflictingProcedureCreateStillFails(t *testing.T) {
+	ctx, mgr, _, _, _, cmd := procedureCreateReplayFixture(t)
+	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, cmd); err == nil || !strings.Contains(err.Error(), "already exists with different content") {
+		t.Fatalf("live conflicting procedure create error = %v, want strict conflict", err)
+	}
+}
+
+func TestAutomationRaftReplayOlderBindingCreateIsNoOp(t *testing.T) {
+	ctx, mgr, domainID, current, created, cmd := bindingCreateReplayFixture(t)
+	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{Replay: true, RaftIndex: 2, RaftTerm: 1}, cmd); err != nil {
+		t.Fatalf("older binding create replay error = %v", err)
+	}
+	got, err := mgr.store.GetBinding(ctx, domainID, created.ID)
+	if err != nil {
+		t.Fatalf("GetBinding() error = %v", err)
+	}
+	if got.Version != current.Version || got.ProcedureVersion != current.ProcedureVersion || got.Runtime.OwnerPrincipalID != current.Runtime.OwnerPrincipalID {
+		t.Fatalf("binding changed after older create replay: got=%+v want=%+v", got, current)
+	}
+}
+
+func TestAutomationRaftLiveConflictingBindingCreateStillFails(t *testing.T) {
+	ctx, mgr, _, _, _, cmd := bindingCreateReplayFixture(t)
+	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, cmd); err == nil || !strings.Contains(err.Error(), "already exists with different content") {
+		t.Fatalf("live conflicting binding create error = %v, want strict conflict", err)
+	}
+}
+
+func procedureCreateReplayFixture(t *testing.T) (context.Context, *AutomationManager, graph.DomainID, automation.Procedure, automation.Procedure, consensus.RaftCommand) {
+	t.Helper()
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	mgr := NewManager(storage.NewFileStore(t.TempDir()))
+	mgr.raftPartitionCount = 64
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	current := automationProcedureFixture(domainID, 2, "definition B", now.Add(time.Minute))
+	if err := mgr.store.PutProcedure(ctx, current); err != nil {
+		t.Fatalf("seed current procedure: %v", err)
+	}
+	created := automationProcedureFixture(domainID, 1, "definition A", now)
+	cmd, err := mgr.buildAutomationRaftCommand(automationMutationRecord{Kind: "procedure.create", DomainID: domainID, ID: created.ID, Payload: rawAutomation(created)})
+	if err != nil {
+		t.Fatalf("buildAutomationRaftCommand() error = %v", err)
+	}
+	return ctx, mgr, domainID, current, created, cmd
+}
+
+func bindingCreateReplayFixture(t *testing.T) (context.Context, *AutomationManager, graph.DomainID, automation.Binding, automation.Binding, consensus.RaftCommand) {
+	t.Helper()
+	ctx := context.Background()
+	domainID := graph.DomainID(uuid.New())
+	mgr := NewManager(storage.NewFileStore(t.TempDir()))
+	mgr.raftPartitionCount = 64
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	current := automation.Binding{ID: "binding", Version: 2, ProcedureID: "proc", ProcedureVersion: 2, DomainID: domainID, UpdatedAt: now.Add(time.Minute)}
+	if err := mgr.store.PutBinding(ctx, current); err != nil {
+		t.Fatalf("seed current binding: %v", err)
+	}
+	created := current
+	created.Version = 1
+	created.ProcedureVersion = 1
+	created.UpdatedAt = now
+	created.Runtime.OwnerPrincipalID = "older-owner"
+	cmd, err := mgr.buildAutomationRaftCommand(automationMutationRecord{Kind: "binding.create", DomainID: domainID, ID: created.ID, Payload: rawAutomation(created)})
+	if err != nil {
+		t.Fatalf("buildAutomationRaftCommand() error = %v", err)
+	}
+	return ctx, mgr, domainID, current, created, cmd
+}
+
+func automationProcedureFixture(domainID graph.DomainID, version int, prompt string, updatedAt time.Time) automation.Procedure {
+	return automation.Procedure{ID: "proc", Version: version, DomainID: domainID, Status: automation.StatusEnabled, Prompt: prompt, UpdatedAt: updatedAt, Input: automation.Input{Target: "changed", Fields: []string{"payload.text"}}, Inference: automation.InferenceRef{Operation: "chat", Profile: "summary"}, Output: automation.Output{Mode: automation.OutputModeText}}
+}
+
 func TestAutomationRaftReplayStaleTerminalInvocationIsNoOp(t *testing.T) {
 	ctx, mgr, domainID, existing, cmd := staleInvocationRaftFixture(t)
 	if err := (RaftStateMachine{Manager: mgr, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{Replay: true, RaftIndex: 2, RaftTerm: 1}, cmd); err != nil {

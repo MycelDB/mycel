@@ -42,11 +42,23 @@ type InferenceInvoker interface {
 	Invoke(ctx context.Context, req inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error)
 }
 
+type inferenceAuthorizer interface {
+	Resolve(ctx context.Context, req inferenceruntime.ResolveRequest) (inferenceruntime.ResolveResult, error)
+}
+
+type inferenceAuthorizationRevisionReader interface {
+	CurrentAuthorizationRevisions(ctx context.Context, spaceID string) (globalRevision uint64, spaceRevision uint64, err error)
+	AssertGlobalAuthorizationRevision(ctx context.Context, expected uint64) error
+}
+
 // GraphRuntime is the graph capability set required by automation execution and
 // condition evaluation. Real graph managers satisfy this interface implicitly.
 type GraphRuntime interface {
 	actions.Graphs
-	CurrentRevision(ctx context.Context, spaceID string) (int64, error)
+	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+	LookupIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key string) (graphchange.CommitResult, bool, error)
+	RetainIdempotentCommitUntilAcknowledged(ctx context.Context, principalID, spaceID, domainID, key, commitID string) error
+	AcknowledgeIdempotentCommit(ctx context.Context, principalID, spaceID, domainID, key, commitID string) error
 	ScanAdjacency(ctx context.Context, tx sessionmodel.GraphTransaction, scan graphquery.AdjacencyScan) ([]graph.Edge, string, graphquery.IndexedReadStats, error)
 	CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error)
 	DiscardTransactionGraph(ctx context.Context, transactionID string) error

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/inference/connectors"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
@@ -16,6 +17,8 @@ import (
 	mycelruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ mycelruntime.Service = (*Module)(nil)
@@ -25,6 +28,9 @@ var _ Manager = (*Module)(nil)
 
 type Module struct {
 	mu                   sync.Mutex
+	budgetMu             sync.Mutex
+	budgetApplyMu        sync.Mutex
+	budgetPersistenceErr error
 	dataDir              string
 	globalBase           inferencestorage.GlobalManager
 	global               inferencestorage.GlobalManager
@@ -40,9 +46,11 @@ type Module struct {
 	connectors           map[domaininference.ConnectorType]connectors.Connector
 	secretResolver       SecretResolver
 	principals           PrincipalStatusChecker
+	authorizationSource  AuthorizationRevisionSource
 	derivedProjectionErr string
 	logger               *slog.Logger
 	gate                 *quiesce.Gate
+	raftGroups           *consensus.MultiGroup
 	startedAt            time.Time
 }
 
@@ -57,6 +65,19 @@ func (m *Module) WithPrincipalStatusChecker(checker PrincipalStatusChecker) *Mod
 	defer m.mu.Unlock()
 	m.principals = checker
 	return m
+}
+
+func (m *Module) WithAuthorizationRevisionSource(source AuthorizationRevisionSource) *Module {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authorizationSource = source
+	return m
+}
+
+func (m *Module) authorizationRevisionSource() AuthorizationRevisionSource {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.authorizationSource
 }
 
 func (m *Module) principalStatusChecker() PrincipalStatusChecker {
@@ -124,6 +145,9 @@ func (m *Module) Init(ctx context.Context, host mycelruntime.Host) mycelruntime.
 			if err := registry.Register(recordTypeInferenceUsage, wal.ApplierFunc(m.applyInferenceUsage)); err != nil {
 				return mycelruntime.Abort(ModuleName, "wal", "register inference usage WAL applier", err)
 			}
+			if err := registry.Register(recordTypeInferenceBudget, wal.ApplierFunc(m.applyInferenceBudget)); err != nil {
+				return mycelruntime.Abort(ModuleName, "wal", "register inference budget WAL applier", err)
+			}
 		}
 	}
 	if registrar, ok := host.(mycelruntime.QuiesceRegistrar); ok {
@@ -177,6 +201,20 @@ func (m *Module) RequireLocalWriteAllowed() error {
 		return nil
 	}
 	return fn()
+}
+
+func (m *Module) RequireBudgetWriteAllowed() error {
+	m.mu.Lock()
+	groups := m.raftGroups
+	m.mu.Unlock()
+	if groups != nil {
+		group, ok := groups.Group(consensus.SystemGroupID)
+		if ok && group != nil && group.Leader() != 0 {
+			return nil
+		}
+		return status.Error(codes.Unavailable, "inference budget system group is unavailable")
+	}
+	return m.RequireLocalWriteAllowed()
 }
 
 func (m *Module) requireDerivedProjectionHealthy() error {
@@ -349,6 +387,53 @@ func (m *Module) DeleteDerivedProfile(ctx context.Context, spaceID string, id do
 	return m.markDerivedProjectionError(mgr.DeleteProfile(ctx, id))
 }
 
+func (m *Module) ListCachedDerivedProfiles(ctx context.Context, spaceID string) ([]domaininference.Profile, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return nil, false, fmt.Errorf("%w: spaceID is required", inferencestorage.ErrInvalidInput)
+	}
+	m.mu.Lock()
+	mgr, ok := m.spaces[spaceID]
+	if wrapped, wrappedOK := mgr.(*walSpaceManager); wrappedOK {
+		mgr = wrapped.inner
+	}
+	m.mu.Unlock()
+	if !ok {
+		return nil, false, nil
+	}
+	profiles, err := mgr.ListProfiles(ctx)
+	return profiles, true, err
+}
+
+func (m *Module) DeleteCachedDerivedProfile(ctx context.Context, spaceID string, id domaininference.ProfileID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if spaceID == "" {
+		return fmt.Errorf("%w: spaceID is required", inferencestorage.ErrInvalidInput)
+	}
+	m.mu.Lock()
+	mgr, ok := m.spaces[spaceID]
+	if wrapped, wrappedOK := mgr.(*walSpaceManager); wrappedOK {
+		mgr = wrapped.inner
+	}
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("cached inference space not found")
+	}
+	deleter, ok := mgr.(interface {
+		DeleteCachedProfile(context.Context, domaininference.ProfileID) error
+	})
+	if !ok {
+		return fmt.Errorf("cached inference profile deletion is unsupported")
+	}
+	return deleter.DeleteCachedProfile(ctx, id)
+}
+
 func (m *Module) UpsertDerivedCredentialGrant(ctx context.Context, spaceID string, grant domaininference.CredentialGrant) (domaininference.CredentialGrant, error) {
 	mgr, err := m.baseSpaceManager(ctx, spaceID)
 	if err != nil {
@@ -463,7 +548,6 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.globalBase = global
 	m.usageBase = usage
 	if m.useMutationWrappers {
@@ -474,6 +558,10 @@ func (m *Module) ReloadAfterSnapshot(ctx context.Context) error {
 		m.usage = usage
 	}
 	m.spaces = map[string]inferencestorage.SpaceManager{}
+	m.mu.Unlock()
+	m.budgetMu.Lock()
+	m.budgetPersistenceErr = nil
+	m.budgetMu.Unlock()
 	return nil
 }
 

@@ -210,6 +210,15 @@ func Run(ctx context.Context) int {
 	return 0
 }
 
+func automationGraphConsumerSpec() graphnotification.ConsumerSpec {
+	return graphnotification.ConsumerSpec{
+		ConsumerName: "automation",
+		Filter:       graphchange.Filter{EventTypes: []graphchange.ChangeType{graphchange.ChangeTypeNodeCreated, graphchange.ChangeTypeNodeUpdated}},
+		Projection:   graphchange.Projection{IncludeRevision: true, IncludeOrigin: true, IncludeNewNodeSnapshot: true, IncludeOldNodeSnapshot: true},
+		Lossless:     true,
+	}
+}
+
 func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime, error) {
 	cfg = cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
@@ -249,7 +258,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 
 	rt := daemonruntime.New(cfg, logger, logPath, configuredLogger.Close)
 	rt.Encryption = enc
-	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: raftRuntimeConfigured(cfg), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
+	clusterManager, err := clustering.NewManager(ctx, clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: cfg.Cluster.RaftRuntimeConfigured(), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, logger)
 	if err != nil {
 		_ = rt.Close()
 		return nil, fmt.Errorf("initialize clustering: %w", err)
@@ -335,6 +344,8 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			},
 		},
 	})
+	semanticService.WithAuthorizationRevisionSink(automationService)
+	inferenceService.WithAuthorizationRevisionSource(semanticService)
 	backupService := backupservice.NewModule(backupservice.Config{
 		Enabled:                cfg.Backup.Enabled,
 		BackupDir:              cfg.Backup.BackupDir,
@@ -361,15 +372,15 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	graphNotificationService.WithLeaderGate(func(ctx context.Context, event graphchange.CommittedEvent) error {
 		return graphService.RequireLocalGraphWriteLeader(ctx, event.SpaceID.String())
 	})
-	if _, err := graphNotificationService.RegisterConsumer(ctx, graphnotification.ConsumerSpec{ConsumerName: "automation", Filter: graphchange.Filter{EventTypes: []graphchange.ChangeType{graphchange.ChangeTypeNodeCreated, graphchange.ChangeTypeNodeUpdated}}, Projection: graphchange.Projection{IncludeRevision: true, IncludeNewNodeSnapshot: true, IncludeOldNodeSnapshot: true}, Lossless: true}, automationService); err != nil {
+	if _, err := graphNotificationService.RegisterConsumer(ctx, automationGraphConsumerSpec(), automationService); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}
-	if raftRuntimeConfigured(cfg) {
+	if cfg.Cluster.RaftRuntimeConfigured() {
 		backupService.PrepareExperimentalRaftMode()
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
-			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}}
+			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}, inferenceservice.AuthorizationRaftStateMachine{Module: inferenceService}}
 		}, func(partitionID uint32) consensus.StateMachine {
 			partitionCount := uint32(cfg.Cluster.RaftPartitionCount)
 			return compositePartitionStateMachine{
@@ -391,6 +402,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		inferenceService.EnableExperimentalAuthorizationRaft(rt.RaftGroups)
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		automationService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		automationService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
@@ -511,7 +523,7 @@ type graphCommitSinkPolicy struct {
 
 func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
 	policy := graphCommitSinkPolicy{AsyncGraphConsumers: []string{"lexical"}}
-	if raftRuntimeConfigured(cfg) {
+	if cfg.Cluster.RaftRuntimeConfigured() {
 		policy.Clustered = true
 		policy.RaftApplySinks = []string{"graph_change_notification"}
 		policy.AsyncGraphConsumers = append(policy.AsyncGraphConsumers, "semantic")
@@ -519,13 +531,6 @@ func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
 	}
 	policy.SynchronousSinks = []string{"graph_change_notification", "semantic"}
 	return policy
-}
-
-func raftRuntimeConfigured(cfg config.Config) bool {
-	// A daemon with an explicit Raft node address map participates in clustered Raft.
-	// A single-node Raft configuration is also valid for local tests/dev. Default
-	// standalone daemons without Raft addresses remain non-clustered.
-	return len(cfg.Cluster.RaftNodeAddrs) > 0 || cfg.Cluster.RaftNodeCount == 1
 }
 
 func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {

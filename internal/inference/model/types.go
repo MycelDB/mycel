@@ -194,6 +194,8 @@ type Capability struct {
 	ProviderModelOverride string         `json:"provider_model_override,omitempty"`
 	SupportsJSONMode      bool           `json:"supports_json_mode,omitempty"`
 	SupportsToolCalls     bool           `json:"supports_tool_calls,omitempty"`
+	BatchingMode          BatchingMode   `json:"batching_mode,omitempty"`
+	MaxBatchItems         int            `json:"max_batch_items,omitempty"`
 	MaxInputTokens        int            `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens       int            `json:"max_output_tokens,omitempty"`
 	DefaultParameters     map[string]any `json:"default_parameters,omitempty"`
@@ -260,6 +262,12 @@ type Scope struct {
 	SemanticIndexID     string `json:"semantic_index_id,omitempty"` // transitional alias until Intelligence Access storage is split
 	NodeID              string `json:"node_id,omitempty"`
 	IncludeDescendants  bool   `json:"include_descendants,omitempty"`
+	ProcedureID         string `json:"procedure_id,omitempty"`
+	ProcedureVersion    int    `json:"procedure_version,omitempty"`
+	BindingID           string `json:"binding_id,omitempty"`
+	BindingVersion      int    `json:"binding_version,omitempty"`
+	InvocationID        string `json:"invocation_id,omitempty"`
+	RunID               string `json:"run_id,omitempty"`
 }
 
 type Parameters struct {
@@ -327,6 +335,9 @@ type Policy struct {
 	Scope                 Scope          `json:"scope"`
 	Operations            []Operation    `json:"operations,omitempty"`
 	ProfileRefs           []string       `json:"profile_refs,omitempty"`
+	EndpointRefs          []string       `json:"endpoint_refs,omitempty"`
+	ModelRefs             []string       `json:"model_refs,omitempty"`
+	CapabilityRefs        []string       `json:"capability_refs,omitempty"`
 	Action                PolicyAction   `json:"action"`
 	NoInference           bool           `json:"no_inference,omitempty"`
 	AllowedPrivacyClasses []PrivacyClass `json:"allowed_privacy_classes,omitempty"`
@@ -345,32 +356,43 @@ type Policy struct {
 }
 
 type PolicyDecision struct {
-	ID                    PolicyDecisionID     `json:"id"`
-	SpaceID               string               `json:"space_id"`
-	DomainID              string               `json:"domain_id,omitempty"`
-	NodeID                string               `json:"node_id,omitempty"`
-	SemanticRuleID        string               `json:"semantic_rule_id,omitempty"`
-	EmbeddingBindingKey   string               `json:"embedding_binding_key,omitempty"`
-	Operation             Operation            `json:"operation"`
-	UsageMode             UsageMode            `json:"usage_mode"`
-	ProfileID             ProfileID            `json:"profile_id,omitempty"`
-	CapabilityID          CapabilityID         `json:"capability_id,omitempty"`
-	EndpointID            EndpointID           `json:"endpoint_id,omitempty"`
-	ModelID               ModelID              `json:"model_id,omitempty"`
-	CredentialID          CredentialID         `json:"credential_id,omitempty"`
-	CredentialGrantID     CredentialGrantID    `json:"credential_grant_id,omitempty"`
-	ActorPrincipalID      string               `json:"actor_principal_id,omitempty"`
-	OnBehalfOfPrincipalID string               `json:"on_behalf_of_principal_id,omitempty"`
-	Action                PolicyDecisionAction `json:"action"`
-	MatchedPolicyIDs      []string             `json:"matched_policy_ids,omitempty"`
-	Reason                string               `json:"reason,omitempty"`
-	DecidedAt             time.Time            `json:"decided_at"`
-	Metadata              map[string]any       `json:"metadata,omitempty"`
+	ID                          PolicyDecisionID     `json:"id"`
+	SpaceID                     string               `json:"space_id"`
+	DomainID                    string               `json:"domain_id,omitempty"`
+	NodeID                      string               `json:"node_id,omitempty"`
+	SemanticRuleID              string               `json:"semantic_rule_id,omitempty"`
+	EmbeddingBindingKey         string               `json:"embedding_binding_key,omitempty"`
+	ProcedureID                 string               `json:"procedure_id,omitempty"`
+	ProcedureVersion            int                  `json:"procedure_version,omitempty"`
+	BindingID                   string               `json:"binding_id,omitempty"`
+	BindingVersion              int                  `json:"binding_version,omitempty"`
+	InvocationID                string               `json:"invocation_id,omitempty"`
+	RunID                       string               `json:"run_id,omitempty"`
+	Operation                   Operation            `json:"operation"`
+	UsageMode                   UsageMode            `json:"usage_mode"`
+	ProfileID                   ProfileID            `json:"profile_id,omitempty"`
+	CapabilityID                CapabilityID         `json:"capability_id,omitempty"`
+	EndpointID                  EndpointID           `json:"endpoint_id,omitempty"`
+	ModelID                     ModelID              `json:"model_id,omitempty"`
+	CredentialID                CredentialID         `json:"credential_id,omitempty"`
+	CredentialGrantID           CredentialGrantID    `json:"credential_grant_id,omitempty"`
+	ActorPrincipalID            string               `json:"actor_principal_id,omitempty"`
+	OnBehalfOfPrincipalID       string               `json:"on_behalf_of_principal_id,omitempty"`
+	Action                      PolicyDecisionAction `json:"action"`
+	MatchedPolicyIDs            []string             `json:"matched_policy_ids,omitempty"`
+	Reason                      string               `json:"reason,omitempty"`
+	DecidedAt                   time.Time            `json:"decided_at"`
+	AuthorizationRevision       uint64               `json:"authorization_revision,omitempty"`
+	GlobalAuthorizationRevision uint64               `json:"global_authorization_revision,omitempty"`
+	SpaceAuthorizationRevision  uint64               `json:"space_authorization_revision,omitempty"`
+	Metadata                    map[string]any       `json:"metadata,omitempty"`
 }
 
 type UsageEvent struct {
 	ID                    UsageEventID      `json:"id"`
 	RequestID             string            `json:"request_id,omitempty"`
+	BudgetScopeID         BudgetScopeID     `json:"budget_scope_id,omitempty"`
+	BudgetAttemptID       BudgetAttemptID   `json:"budget_attempt_id,omitempty"`
 	Operation             Operation         `json:"operation"`
 	UsageMode             UsageMode         `json:"usage_mode"`
 	Status                UsageStatus       `json:"status"`
@@ -382,6 +404,12 @@ type UsageEvent struct {
 	SemanticRuleID        string            `json:"semantic_rule_id,omitempty"`
 	EmbeddingBindingKey   string            `json:"embedding_binding_key,omitempty"`
 	SemanticIndexID       string            `json:"semantic_index_id,omitempty"`
+	ProcedureID           string            `json:"procedure_id,omitempty"`
+	ProcedureVersion      int               `json:"procedure_version,omitempty"`
+	BindingID             string            `json:"binding_id,omitempty"`
+	BindingVersion        int               `json:"binding_version,omitempty"`
+	InvocationID          string            `json:"invocation_id,omitempty"`
+	RunID                 string            `json:"run_id,omitempty"`
 	ActorPrincipalID      string            `json:"actor_principal_id,omitempty"`
 	OnBehalfOfPrincipalID string            `json:"on_behalf_of_principal_id,omitempty"`
 	ProfileID             ProfileID         `json:"profile_id,omitempty"`

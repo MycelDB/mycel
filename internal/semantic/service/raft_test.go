@@ -3,8 +3,15 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,10 +21,16 @@ import (
 	clustermodel "github.com/myceldb/mycel/internal/clustering/model"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
+	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
+	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
+	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
 	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
+	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc"
@@ -81,6 +94,571 @@ func TestSemanticRaftStateMachineAppliesGlobalAndMaintenanceMutations(t *testing
 	}
 }
 
+func TestDeterministicCredentialRejectionRemainsRejectedAcrossRaftRestartReplay(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	newModule := func() *Module {
+		module := NewModule()
+		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module
+	}
+	source := newModule()
+	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(95, 0).UTC()
+	credentialAID := domainsemantic.InferenceCredentialID(uuid.New())
+	secretAID := domainsemantic.SecretID(uuid.New())
+	secretA := domainsemantic.Secret{ID: secretAID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "a"}, SecretSuffix: "a", CreatedAt: now, UpdatedAt: now}
+	credentialA := domainsemantic.InferenceCredential{ID: credentialAID, Key: "duplicate-key", Name: "a", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretAID, SecretSuffix: "a", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	credentialBID := domainsemantic.InferenceCredentialID(uuid.New())
+	secretBID := domainsemantic.SecretID(uuid.New())
+	secretB := domainsemantic.Secret{ID: secretBID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "b"}, SecretSuffix: "b", CreatedAt: now, UpdatedAt: now}
+	credentialB := domainsemantic.InferenceCredential{ID: credentialBID, Key: credentialA.Key, Name: "b", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretBID, SecretSuffix: "b", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+
+	buildCommand := func(kind string, mutation any, commandID string) consensus.RaftCommand {
+		t.Helper()
+		record := semanticMutationRecord{Kind: kind, Payload: raw(mutation)}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := source.buildSemanticGlobalRaftCommand(record, payload, commandID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return command
+	}
+	createACommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialA, Secret: &secretA}, "semantic-global-credential-create-a")
+	createBCommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialB, Secret: &secretB}, "semantic-global-credential-create-b-rejected")
+	deleteACommand := buildCommand("credential.delete_lifecycle", credentialDeleteMutation{CredentialID: credentialAID, ExpectedSecretRef: secretAID, DeleteSecret: true}, "semantic-global-credential-delete-a")
+
+	sm := RaftStateMachine{Module: source, System: true, PartitionCount: 64}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, createACommand); err != nil {
+		t.Fatalf("create credential A: %v", err)
+	}
+
+	// Make completion-marker persistence fail after the deterministic conflict.
+	// The domain rejection must become fatal until its marker can be persisted.
+	markerPath := source.raftAppliedCommandsLogPath()
+	markerBackup := markerPath + ".backup"
+	if err := os.Rename(markerPath, markerBackup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(markerPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, createBCommand); !consensus.IsFatalApplyError(err) {
+		t.Fatalf("rejected command marker failure=%v, want fatal apply error", err)
+	}
+	if source.raftCommandApplied(createBCommand.CommandID) {
+		t.Fatal("rejected command recorded despite marker persistence failure")
+	}
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(markerBackup, markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 2, Replay: true}, createBCommand); !errors.Is(err, storesemantic.ErrConflict) || consensus.IsFatalApplyError(err) {
+		t.Fatalf("replayed deterministic rejection=%v, want nonfatal conflict", err)
+	}
+	if !source.raftCommandApplied(createBCommand.CommandID) {
+		t.Fatal("deterministic rejection command ID was not recorded")
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 2}, deleteACommand); err != nil {
+		t.Fatalf("delete credential A: %v", err)
+	}
+
+	restarted := newModule()
+	replay := RaftStateMachine{Module: restarted, System: true, PartitionCount: 64}
+	for index, command := range []consensus.RaftCommand{createACommand, createBCommand, deleteACommand} {
+		if err := replay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: uint64(index + 1), RaftTerm: 2, Replay: true}, command); err != nil {
+			t.Fatalf("restart replay command %d: %v", index+1, err)
+		}
+	}
+	credentials, err := restarted.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("restart replay resurrected rejected credential: credentials=%+v err=%v", credentials, err)
+	}
+	secrets, err := restarted.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("restart replay resurrected rejected secret: secrets=%+v err=%v", secrets, err)
+	}
+}
+
+func TestTornRejectedCredentialMarkerRepairsAcrossTwoRestarts(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	newModule := func() *Module {
+		module := NewModule()
+		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module
+	}
+	source := newModule()
+	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api-torn", Name: "api-torn", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(96, 0).UTC()
+	credentialAID := domainsemantic.InferenceCredentialID(uuid.New())
+	secretAID := domainsemantic.SecretID(uuid.New())
+	secretA := domainsemantic.Secret{ID: secretAID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "a"}, SecretSuffix: "a", CreatedAt: now, UpdatedAt: now}
+	credentialA := domainsemantic.InferenceCredential{ID: credentialAID, Key: "torn-duplicate-key", Name: "a", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-a", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretAID, SecretSuffix: "a", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	secretBID := domainsemantic.SecretID(uuid.New())
+	secretB := domainsemantic.Secret{ID: secretBID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "b"}, SecretSuffix: "b", CreatedAt: now, UpdatedAt: now}
+	credentialB := domainsemantic.InferenceCredential{ID: domainsemantic.InferenceCredentialID(uuid.New()), Key: credentialA.Key, Name: "b", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner-b", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretBID, SecretSuffix: "b", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	buildCommand := func(kind string, mutation any, commandID string) consensus.RaftCommand {
+		t.Helper()
+		record := semanticMutationRecord{Kind: kind, Payload: raw(mutation)}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := source.buildSemanticGlobalRaftCommand(record, payload, commandID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return command
+	}
+	createACommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialA, Secret: &secretA}, "semantic-global-torn-create-a")
+	createBCommand := buildCommand("credential.create", credentialCreateMutation{Credential: credentialB, Secret: &secretB}, "semantic-global-torn-create-b-rejected")
+	deleteACommand := buildCommand("credential.delete_lifecycle", credentialDeleteMutation{CredentialID: credentialAID, ExpectedSecretRef: secretAID, DeleteSecret: true}, "semantic-global-torn-delete-a")
+	if err := (RaftStateMachine{Module: source, System: true, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, createACommand); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a crash after only a prefix of B's rejection marker reached disk.
+	journal, err := os.OpenFile(source.raftAppliedCommandsLogPath(), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.WriteString(`{"command_id":"` + createBCommand.CommandID); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	firstRestart := newModule()
+	firstReplay := RaftStateMachine{Module: firstRestart, System: true, PartitionCount: 64}
+	if err := firstReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 2, Replay: true}, createACommand); err != nil {
+		t.Fatalf("first restart create A replay: %v", err)
+	}
+	if err := firstReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 2, Replay: true}, createBCommand); !errors.Is(err, storesemantic.ErrConflict) || consensus.IsFatalApplyError(err) {
+		t.Fatalf("first restart rejected B replay=%v, want nonfatal conflict", err)
+	}
+	if err := firstReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 2}, deleteACommand); err != nil {
+		t.Fatalf("first restart delete A: %v", err)
+	}
+
+	secondRestart := newModule()
+	secondReplay := RaftStateMachine{Module: secondRestart, System: true, PartitionCount: 64}
+	for index, command := range []consensus.RaftCommand{createACommand, createBCommand, deleteACommand} {
+		if err := secondReplay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: uint64(index + 1), RaftTerm: 3, Replay: true}, command); err != nil {
+			t.Fatalf("second restart replay command %d: %v", index+1, err)
+		}
+	}
+	credentials, err := secondRestart.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("torn marker replay resurrected credential B: credentials=%+v err=%v", credentials, err)
+	}
+	secrets, err := secondRestart.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("torn marker replay resurrected secret B: secrets=%+v err=%v", secrets, err)
+	}
+}
+
+func TestCredentialIntentRecoveryErrorIsFatalRaftApply(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	module := NewModule()
+	if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	intentPath := filepath.Join(dataDir, "meta", "inference", "lifecycle_intent.json")
+	if err := os.WriteFile(intentPath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := semanticVectorStore("recovery-error-must-be-fatal")
+	record := semanticMutationRecord{Kind: "vector_store.upsert", Payload: raw(store)}
+	payload, _ := json.Marshal(record)
+	command, err := module.buildSemanticGlobalRaftCommand(record, payload, "semantic-global-recovery-error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = (RaftStateMachine{Module: module, System: true, PartitionCount: 64}).ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, command)
+	if !consensus.IsFatalApplyError(err) || !errors.Is(err, storesemantic.ErrInvalidInput) {
+		t.Fatalf("recovery apply error=%v, want fatal invalid persisted intent", err)
+	}
+	if module.raftCommandApplied(command.CommandID) {
+		t.Fatal("command was recorded despite failing during pre-apply recovery")
+	}
+}
+
+type credentialProjectionOrderRecorder struct {
+	InferenceProjection
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *credentialProjectionOrderRecorder) DeleteDerivedCredential(ctx context.Context, id domaininference.CredentialID) error {
+	r.mu.Lock()
+	r.events = append(r.events, "credential:"+id.String())
+	r.mu.Unlock()
+	return r.InferenceProjection.DeleteDerivedCredential(ctx, id)
+}
+
+func (r *credentialProjectionOrderRecorder) DeleteDerivedSecret(ctx context.Context, id domaininference.SecretID) error {
+	credentials, err := r.InferenceProjection.ListDerivedCredentials(ctx)
+	if err != nil {
+		return err
+	}
+	for _, credential := range credentials {
+		if credential.SecretID == id {
+			return fmt.Errorf("derived secret %s deleted before credential %s", id, credential.ID)
+		}
+	}
+	r.mu.Lock()
+	r.events = append(r.events, "secret:"+id.String())
+	r.mu.Unlock()
+	return r.InferenceProjection.DeleteDerivedSecret(ctx, id)
+}
+
+func (r *credentialProjectionOrderRecorder) snapshotEvents() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+func TestCredentialLifecycleRaftReplayAndSnapshotPreserveStatusAndSecretIdentity(t *testing.T) {
+	ctx := context.Background()
+	newModule := func(dataDir string) (*Module, *inferenceservice.Module, *credentialProjectionOrderRecorder) {
+		host := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}
+		inference := inferenceservice.NewModule()
+		if result := inference.Init(ctx, host); !result.OK {
+			t.Fatalf("init inference module: %v", result.Error)
+		}
+		recorder := &credentialProjectionOrderRecorder{InferenceProjection: inference}
+		module := NewModule(Config{InferenceProjection: recorder})
+		if result := module.Init(ctx, host); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module, inference, recorder
+	}
+	sourceDataDir := t.TempDir()
+	source, inference, projectionRecorder := newModule(sourceDataDir)
+	endpoint, err := source.globalBase.UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0).UTC()
+	secretID := domainsemantic.SecretID(uuid.New())
+	credentialID := domainsemantic.InferenceCredentialID(uuid.New())
+	secret := domainsemantic.Secret{ID: secretID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "old"}, SecretSuffix: "old", CreatedAt: now, UpdatedAt: now}
+	credential := domainsemantic.InferenceCredential{ID: credentialID, Key: "api", Name: "api", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", AuthType: domainsemantic.AuthModeAPIKey, SecretRef: secretID, SecretSuffix: "old", Status: domainsemantic.CredentialStatusActive, CreatedAt: now, UpdatedAt: now}
+	if _, _, err := source.globalBase.(storesemantic.CredentialLifecycleManager).CreateCredentialLifecycle(ctx, credential, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.rebuildInferenceGlobalProjection(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	statusMutation := credentialStatusMutation{CredentialID: credentialID, Status: domainsemantic.CredentialStatusRevoked, UpdatedAt: now.Add(time.Second)}
+	statusRecord := semanticMutationRecord{Kind: "credential.set_status", Payload: raw(statusMutation)}
+	statusPayload, _ := json.Marshal(statusRecord)
+	statusCommand, err := source.buildSemanticGlobalRaftCommand(statusRecord, statusPayload, "credential-status-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedSecret := secret
+	rotatedSecret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "new"}
+	rotatedSecret.SecretSuffix = "new"
+	rotatedSecret.UpdatedAt = now.Add(2 * time.Second)
+	rotateMutation := credentialRotateMutation{CredentialID: credentialID, ExpectedSecretRef: secretID, Secret: rotatedSecret}
+	rotateRecord := semanticMutationRecord{Kind: "credential.rotate", Payload: raw(rotateMutation)}
+	rotatePayload, _ := json.Marshal(rotateRecord)
+	rotateCommand, err := source.buildSemanticGlobalRaftCommand(rotateRecord, rotatePayload, "credential-rotate-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := RaftStateMachine{Module: source, System: true, PartitionCount: 64}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, statusCommand); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1}, rotateCommand); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 3, RaftTerm: 2}, rotateCommand); err != nil {
+		t.Fatalf("duplicate replay: %v", err)
+	}
+	assertCredentialLifecycle := func(module *Module, suffix, ciphertext string) {
+		credentials, err := module.globalBase.ListCredentials(ctx)
+		if err != nil || len(credentials) != 1 {
+			t.Fatalf("credentials=%+v err=%v", credentials, err)
+		}
+		if credentials[0].Status != domainsemantic.CredentialStatusRevoked || credentials[0].SecretRef != secretID || credentials[0].SecretSuffix != suffix {
+			t.Fatalf("credential lifecycle state=%+v", credentials[0])
+		}
+		secrets, err := module.globalBase.ListSecrets(ctx)
+		if err != nil || len(secrets) != 1 || secrets[0].ID != secretID || secrets[0].Ciphertext.CipherB64 != ciphertext {
+			t.Fatalf("secrets=%+v err=%v", secrets, err)
+		}
+	}
+	assertCredentialLifecycle(source, "new", "new")
+
+	persistenceInjector, ok := source.globalBase.(storesemantic.CredentialLifecyclePersistenceFaultInjector)
+	if !ok {
+		t.Fatal("semantic global manager does not expose persistence failure injection")
+	}
+	failIntent := true
+	persistenceInjector.SetCredentialLifecyclePersistenceFaultInjector(func(_ string, path string) error {
+		if failIntent && filepath.Base(path) == "lifecycle_intent.json" {
+			failIntent = false
+			return errors.New("injected raft lifecycle intent failure")
+		}
+		return nil
+	})
+	replayedSecret := rotatedSecret
+	replayedSecret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "replayed"}
+	replayedSecret.SecretSuffix = "replayed"
+	replayMutation := credentialRotateMutation{CredentialID: credentialID, ExpectedSecretRef: secretID, Secret: replayedSecret}
+	replayRecord := semanticMutationRecord{Kind: "credential.rotate", Payload: raw(replayMutation)}
+	replayPayload, _ := json.Marshal(replayRecord)
+	replayCommand, err := source.buildSemanticGlobalRaftCommand(replayRecord, replayPayload, "credential-rotate-intent-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 4, RaftTerm: 2}, replayCommand); !consensus.IsFatalApplyError(err) {
+		t.Fatalf("intent-write apply error=%v, want fatal replay error", err)
+	}
+	persistenceInjector.SetCredentialLifecyclePersistenceFaultInjector(nil)
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 4, RaftTerm: 3, Replay: true}, replayCommand); err != nil {
+		t.Fatalf("replayed intent-write command: %v", err)
+	}
+	credentialsAfterReplay, err := source.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentialsAfterReplay) != 1 || credentialsAfterReplay[0].SecretSuffix != "replayed" || credentialsAfterReplay[0].Status != domainsemantic.CredentialStatusRevoked {
+		t.Fatalf("credentials after replay=%+v err=%v", credentialsAfterReplay, err)
+	}
+
+	deleteMutation := credentialDeleteMutation{CredentialID: credentialID, ExpectedSecretRef: secretID, DeleteSecret: true}
+	deleteRecord := semanticMutationRecord{Kind: "credential.delete_lifecycle", Payload: raw(deleteMutation)}
+	deletePayload, _ := json.Marshal(deleteRecord)
+	deleteCommand, err := source.buildSemanticGlobalRaftCommand(deleteRecord, deletePayload, "credential-delete-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialsDir := filepath.Join(sourceDataDir, "meta", "credentials")
+	credentialsBackup := credentialsDir + ".backup"
+	if err := os.Rename(credentialsDir, credentialsBackup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialsDir, []byte("block credential persistence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 5, RaftTerm: 3}, deleteCommand); !consensus.IsFatalApplyError(err) {
+		t.Fatalf("delete apply error=%v, want fatal persistence failure", err)
+	}
+	assertCredentialLifecycle(source, "replayed", "replayed")
+	if _, err := sm.Snapshot(); err == nil {
+		t.Fatal("snapshot error=nil while credential lifecycle intent cannot recover")
+	}
+	if err := os.Remove(credentialsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(credentialsBackup, credentialsDir); err != nil {
+		t.Fatal(err)
+	}
+	vectorStore := semanticVectorStore("credential-recovery-probe")
+	probeRecord := semanticMutationRecord{Kind: "vector_store.upsert", Payload: raw(vectorStore)}
+	probePayload, _ := json.Marshal(probeRecord)
+	probeCommand, err := source.buildSemanticGlobalRaftCommand(probeRecord, probePayload, "credential-recovery-probe-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: 6, RaftTerm: 4}, probeCommand); err != nil {
+		t.Fatalf("later command did not recover pending lifecycle intent: %v", err)
+	}
+	credentials, err := source.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 0 {
+		t.Fatalf("recovered delete credentials=%+v err=%v", credentials, err)
+	}
+	secrets, err := source.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 0 {
+		t.Fatalf("recovered delete secrets=%+v err=%v", secrets, err)
+	}
+	derivedCredentials, err := inference.GlobalManager().ListCredentials(ctx)
+	if err != nil || len(derivedCredentials) != 0 {
+		t.Fatalf("recovered derived credentials=%+v err=%v", derivedCredentials, err)
+	}
+	derivedSecrets, err := inference.GlobalManager().ListSecrets(ctx)
+	if err != nil || len(derivedSecrets) != 0 {
+		t.Fatalf("recovered derived secrets=%+v err=%v", derivedSecrets, err)
+	}
+	projectionEvents := projectionRecorder.snapshotEvents()
+	credentialDelete := "credential:" + credentialID.String()
+	secretDelete := "secret:" + secretID.String()
+	credentialDeleteIndex, secretDeleteIndex := -1, -1
+	for index, event := range projectionEvents {
+		if event == credentialDelete {
+			credentialDeleteIndex = index
+		}
+		if event == secretDelete {
+			secretDeleteIndex = index
+		}
+	}
+	if credentialDeleteIndex < 0 || secretDeleteIndex < 0 || credentialDeleteIndex >= secretDeleteIndex {
+		t.Fatalf("derived deletion order=%v, want credential before secret", projectionEvents)
+	}
+
+	snapshot, err := sm.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, _, _ := newModule(t.TempDir())
+	if err := (RaftStateMachine{Module: restored, System: true, PartitionCount: 64}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	restoredCredentials, err := restored.globalBase.ListCredentials(ctx)
+	if err != nil || len(restoredCredentials) != 0 {
+		t.Fatalf("restored credentials=%+v err=%v", restoredCredentials, err)
+	}
+	restoredSecrets, err := restored.globalBase.ListSecrets(ctx)
+	if err != nil || len(restoredSecrets) != 0 {
+		t.Fatalf("restored secrets=%+v err=%v", restoredSecrets, err)
+	}
+}
+
+func TestCredentialLifecycleWALFailureRecoversBeforeLaterProgress(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	wm, err := wal.Open(ctx, wal.Options{Dir: t.TempDir(), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wm.Close()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: wal.NewRegistry(), WALWaiter: wal.NewApplyWaiter()}
+	inference := inferenceservice.NewModule()
+	if result := inference.Init(ctx, host); !result.OK {
+		t.Fatalf("init inference module: %v", result.Error)
+	}
+	module := NewModule(Config{InferenceProjection: inference})
+	if result := module.Init(ctx, host); !result.OK {
+		t.Fatalf("init semantic module: %v", result.Error)
+	}
+	endpoint, err := module.GlobalManager().UpsertModelEndpoint(ctx, domainsemantic.ModelEndpoint{Key: "api", Name: "api", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "https://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, AuthModes: []domainsemantic.AuthMode{domainsemantic.AuthModeAPIKey}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := module.CreateInferenceCredential(ctx, CredentialCreateInput{Credential: domainsemantic.InferenceCredential{Key: "api", Name: "api", ModelEndpointID: endpoint.ID, OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", AuthType: domainsemantic.AuthModeAPIKey, Status: domainsemantic.CredentialStatusActive}, Secret: &domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerUser, OwnerID: "owner", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "old"}, SecretSuffix: "old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.SetInferenceCredentialStatus(ctx, CredentialStatusInput{CredentialID: created.Credential.ID, Status: domainsemantic.CredentialStatusRevoked}); err != nil {
+		t.Fatal(err)
+	}
+	persistenceInjector, ok := module.globalBase.(storesemantic.CredentialLifecyclePersistenceFaultInjector)
+	if !ok {
+		t.Fatal("semantic global manager does not expose persistence failure injection")
+	}
+	failIntent := true
+	persistenceInjector.SetCredentialLifecyclePersistenceFaultInjector(func(_ string, path string) error {
+		if failIntent && filepath.Base(path) == "lifecycle_intent.json" {
+			failIntent = false
+			return errors.New("injected lifecycle intent persistence failure")
+		}
+		return nil
+	})
+	rotatedSecret := *created.Secret
+	rotatedSecret.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: "new"}
+	rotatedSecret.SecretSuffix = "new"
+	_, rotateErr := module.RotateInferenceCredential(ctx, CredentialRotateInput{CredentialID: created.Credential.ID, ExpectedSecretRef: created.Credential.SecretRef, Secret: rotatedSecret})
+	if rotateErr == nil {
+		t.Fatal("RotateInferenceCredential() error=nil, want injected WAL apply failure")
+	}
+	if module.semanticWALFailure == nil || module.semanticWALFailure.Record.Type != recordTypeSemanticGlobal {
+		t.Fatalf("failed lifecycle record was not retained: %+v", module.semanticWALFailure)
+	}
+	persistenceInjector.SetCredentialLifecyclePersistenceFaultInjector(nil)
+	if _, err := module.GlobalManager().UpsertVectorStore(ctx, semanticVectorStore("wal-recovery-probe")); err != nil {
+		t.Fatalf("later WAL mutation did not recover lifecycle intent: %v", err)
+	}
+	credentials, err := module.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 1 {
+		t.Fatalf("credentials=%+v err=%v", credentials, err)
+	}
+	if credentials[0].Status != domainsemantic.CredentialStatusRevoked || credentials[0].SecretRef != created.Credential.SecretRef || credentials[0].SecretSuffix != "new" {
+		t.Fatalf("recovered credential=%+v", credentials[0])
+	}
+	secrets, err := module.globalBase.ListSecrets(ctx)
+	if err != nil || len(secrets) != 1 || secrets[0].Ciphertext.CipherB64 != "new" {
+		t.Fatalf("recovered secrets=%+v err=%v", secrets, err)
+	}
+	derivedCredentials, err := inference.GlobalManager().ListCredentials(ctx)
+	if err != nil || len(derivedCredentials) != 1 || string(derivedCredentials[0].Status) != string(domainsemantic.CredentialStatusRevoked) || derivedCredentials[0].SecretSuffix != "new" {
+		t.Fatalf("recovered derived credentials=%+v err=%v", derivedCredentials, err)
+	}
+
+	failRotationAtIntent := func(suffix string) {
+		t.Helper()
+		failIntent := true
+		persistenceInjector.SetCredentialLifecyclePersistenceFaultInjector(func(_ string, path string) error {
+			if failIntent && filepath.Base(path) == "lifecycle_intent.json" {
+				failIntent = false
+				return errors.New("injected lifecycle intent persistence failure")
+			}
+			return nil
+		})
+		candidate := rotatedSecret
+		candidate.Ciphertext = &domainsemantic.EncryptedSecretPayload{Algorithm: "test", CipherB64: suffix}
+		candidate.SecretSuffix = suffix
+		if _, err := module.RotateInferenceCredential(ctx, CredentialRotateInput{CredentialID: created.Credential.ID, ExpectedSecretRef: created.Credential.SecretRef, Secret: candidate}); err == nil {
+			t.Fatalf("rotation %q error=nil, want injected intent failure", suffix)
+		}
+		persistenceInjector.SetCredentialLifecyclePersistenceFaultInjector(nil)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	failRotationAtIntent("space")
+	spaceManager, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spaceManager.UpsertSemanticIndex(ctx, semanticIndex(spaceID)); err != nil {
+		t.Fatalf("space WAL mutation did not retry failed global record: %v", err)
+	}
+	failRotationAtIntent("maintenance")
+	maintenanceManager, err := module.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenanceManager.SaveCheckpoint(ctx, storesemantic.MaintenanceCheckpoint{Consumer: "wal-recovery", SpaceID: spaceID, LastGraphRevision: 1}); err != nil {
+		t.Fatalf("maintenance WAL mutation did not retry failed global record: %v", err)
+	}
+	failRotationAtIntent("timed")
+	timedAppender, ok := maintenanceManager.(storesemantic.TimedGraphDirtyEventAppender)
+	if !ok {
+		t.Fatal("maintenance manager does not expose timed append")
+	}
+	if _, _, err := timedAppender.AppendGraphDirtyEventWithTiming(ctx, semanticDirtyEvent(spaceID)); err != nil {
+		t.Fatalf("timed maintenance WAL mutation did not retry failed global record: %v", err)
+	}
+	credentials, err = module.globalBase.ListCredentials(ctx)
+	if err != nil || len(credentials) != 1 || credentials[0].SecretSuffix != "timed" || credentials[0].Status != domainsemantic.CredentialStatusRevoked {
+		t.Fatalf("final recovered credential=%+v err=%v", credentials, err)
+	}
+}
+
 func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -124,6 +702,22 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	if !hasVectorStoreKey(stores, vectorStore.Key) {
 		t.Fatalf("vector stores=%#v want key %q", stores, vectorStore.Key)
 	}
+	conflicting := semanticVectorStore(" GLOBAL-SYSTEM-RAFT ")
+	conflicting.ID = uuid.New()
+	conflicting.Name = "Different display name"
+	_, err = m.GlobalManager().UpsertVectorStore(ctx, conflicting)
+	var conflict *storesemantic.VectorStoreConflictError
+	if !errors.As(err, &conflict) || conflict.Field != storesemantic.VectorStoreConflictKey {
+		t.Fatalf("system-Raft collision error=%v, want key conflict", err)
+	}
+	storedVectorStore.Name = "Renamed system Raft store"
+	renamed, err := m.GlobalManager().UpsertVectorStore(ctx, storedVectorStore)
+	if err != nil {
+		t.Fatalf("system-Raft rename error=%v", err)
+	}
+	if renamed.ID != storedVectorStore.ID || renamed.Name != "Renamed system Raft store" {
+		t.Fatalf("system-Raft rename changed identity: %+v", renamed)
+	}
 	secret, err := m.GlobalManager().UpsertSecret(ctx, domainsemantic.Secret{OwnerType: domainsemantic.CredentialOwnerSystem, OwnerID: "system", Kind: domainsemantic.SecretKindInlineEncrypted, Ciphertext: &domainsemantic.EncryptedSecretPayload{Algorithm: "MYCEL-ENVELOPE-V1", CipherB64: "cipher"}, SecretSuffix: "test"})
 	if err != nil {
 		t.Fatalf("UpsertSecret() error = %v", err)
@@ -137,6 +731,221 @@ func TestSemanticGlobalUsesSystemRaftWhenEnabled(t *testing.T) {
 	}
 	if credential.ID == uuid.Nil || credential.SecretRef != secret.ID || credential.Status != domainsemantic.CredentialStatusActive || credential.CreatedAt.IsZero() || credential.UpdatedAt.IsZero() {
 		t.Fatalf("UpsertCredential() returned non-canonical value: %+v", credential)
+	}
+}
+
+func storedSemanticRule(t *testing.T, m *Module, ctx context.Context, spaceID domainspace.SpaceID) domainsemantic.SemanticGenerationRule {
+	t.Helper()
+	manager, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 {
+		t.Fatalf("stored semantic rules=%+v err=%v", rules, err)
+	}
+	return rules[0]
+}
+
+func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	walDir := t.TempDir()
+	progressPath := filepath.Join(t.TempDir(), "semantic-progress.json")
+	wm, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := wal.NewRegistry()
+	progress := wal.NewFileProgressStore(progressPath)
+	m := NewModule()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: registry, WALProgress: progress, WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, host); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created = storedSemanticRule(t, m, ctx, spaceID)
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	staleRule := created
+	staleRule.Enabled = true
+	staleRule.UpdatedAt = updatedAt.Add(time.Second)
+	expected := created
+	expected.UpdatedAt = expected.UpdatedAt.UTC()
+	payload, err := json.Marshal(semanticMutationRecord{
+		Kind: "semantic_rule.upsert", SpaceID: spaceID, Payload: raw(staleRule),
+		ExpectedSemanticRule: &expected,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectedLSN, err := wm.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticSpaceConditional, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.Sync(ctx, rejectedLSN); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedWAL, err := wal.Open(ctx, wal.Options{Dir: walDir, SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedWAL.Close()
+	reopenedRegistry := wal.NewRegistry()
+	reopenedProgress := wal.NewFileProgressStore(progressPath)
+	restarted := NewModule()
+	restartedHost := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default(), WAL: reopenedWAL, WALRegistry: reopenedRegistry, WALProgress: reopenedProgress, WALWaiter: wal.NewApplyWaiter()}
+	if result := restarted.Init(ctx, restartedHost); !result.OK {
+		t.Fatalf("restart init failed: %v", result.Error)
+	}
+	applied, err := wal.NewRecovery(reopenedWAL, reopenedRegistry, reopenedProgress).Recover(ctx)
+	if err != nil {
+		t.Fatalf("recovery rejected deterministic outcome: %v", err)
+	}
+	if applied != rejectedLSN {
+		t.Fatalf("recovered LSN=%d, want %d", applied, rejectedLSN)
+	}
+	persisted, err := restarted.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := persisted.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("rules after rejected recovery=%+v err=%v", rules, err)
+	}
+	finalAt := updatedAt.Add(2 * time.Second)
+	if err := restarted.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: rules[0], ExpectedUpdatedAt: updatedAt, Enabled: true, UpdatedAt: finalAt}); err != nil {
+		t.Fatalf("mutation after rejected recovery failed: %v", err)
+	}
+}
+
+func TestSemanticRuleEnabledWALRejectionDoesNotBlockLaterMutation(t *testing.T) {
+	ctx := context.Background()
+	wm, err := wal.Open(ctx, wal.Options{Dir: t.TempDir(), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wm.Close()
+	m := NewModule()
+	host := &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default(), WAL: wm, WALRegistry: wal.NewRegistry(), WALWaiter: wal.NewApplyWaiter()}
+	if result := m.Init(ctx, host); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created = storedSemanticRule(t, m, ctx, spaceID)
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); !isSemanticCommandRejection(err) {
+		t.Fatalf("stale mutation error=%v, want deterministic rejection", err)
+	}
+	if m.semanticWALFailure != nil {
+		t.Fatalf("deterministic rejection retained as WAL failure: %+v", m.semanticWALFailure)
+	}
+	created.Enabled = false
+	created.UpdatedAt = updatedAt
+	finalAt := updatedAt.Add(2 * time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: updatedAt, Enabled: true, UpdatedAt: finalAt}); err != nil {
+		t.Fatalf("later mutation after rejection failed: %v", err)
+	}
+	persisted, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := persisted.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || !rules[0].Enabled || !rules[0].UpdatedAt.Equal(finalAt) {
+		t.Fatalf("persisted rules=%+v err=%v", rules, err)
+	}
+}
+
+func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	router := consensus.NewLocalMessageRouter()
+	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(consensus.NodeID) (consensus.MessageSender, bool) { return router, true })}
+	groups, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: 1, PeerNodeIDs: []consensus.NodeID{1}, PartitionCount: 4, Transport: transport, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(uint32) consensus.StateMachine { return RaftStateMachine{Module: m, PartitionCount: 4} }}, ElectionTick: 5, HeartbeatTick: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer groups.Stop()
+	for _, group := range groups.Groups() {
+		router.Register(group)
+	}
+	m.EnableExperimentalRaft(groups, 4)
+	spaceID := domainspace.SpaceID(uuid.New())
+	probe, err := m.buildSemanticSpaceRaftCommand(semanticMutationRecord{Kind: "semantic_rule.upsert", SpaceID: spaceID}, []byte(`{}`), "semantic-rule-enabled-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, ok := groups.Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatal("semantic rule partition group not found")
+	}
+	if err := consensus.TickUntil(ctx, 10*time.Millisecond, groups.Tick, func() bool { return group.Leader() == 1 }); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created = storedSemanticRule(t, m, ctx, spaceID)
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
+	}
+	persisted, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := persisted.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].Enabled || !rules[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("persisted rules=%+v err=%v", rules, err)
+	}
+	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); !errors.Is(err, storesemantic.ErrConflict) {
+		t.Fatalf("stale SetSemanticRuleEnabled() error=%v, want ErrConflict", err)
 	}
 }
 
@@ -415,6 +1224,11 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	peers := []consensus.NodeID{1, 2, 3}
 	partitionCount := uint32(4)
 	modules := map[consensus.NodeID]*Module{}
+	defer func() {
+		for _, module := range modules {
+			module.conditionalRuleSupportProbe = nil
+		}
+	}()
 	routers := map[consensus.NodeID]*consensus.LocalMessageRouter{1: consensus.NewLocalMessageRouter(), 2: consensus.NewLocalMessageRouter(), 3: consensus.NewLocalMessageRouter()}
 	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { r, ok := routers[nodeID]; return r, ok })}
 	groupsByNode := map[consensus.NodeID]*consensus.MultiGroup{}
@@ -484,7 +1298,23 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("leader not elected: %v", err)
 	}
-	mgr, err := modules[1].SpaceManager(ctx, spaceID)
+	currentLeader := func() (consensus.NodeID, bool) {
+		for _, nodeID := range peers {
+			if group, ok := groupsByNode[nodeID].Group(consensus.PartitionGroupID(probe.PartitionID)); ok && group.Leader() == nodeID {
+				return nodeID, true
+			}
+		}
+		return 0, false
+	}
+	var leaderNode consensus.NodeID
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		var ok bool
+		leaderNode, ok = currentLeader()
+		return ok
+	}); err != nil {
+		t.Fatalf("local partition leader unavailable: %v", err)
+	}
+	mgr, err := modules[leaderNode].SpaceManager(ctx, spaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,9 +1334,111 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 			t.Fatalf("node %d did not apply semantic index: %v", nodeID, err)
 		}
 	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		var ok bool
+		leaderNode, ok = currentLeader()
+		return ok
+	}); err != nil {
+		t.Fatalf("local partition leader unavailable before rule create: %v", err)
+	}
+	mgr, err = modules[leaderNode].SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
+		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "clustered-rule", Enabled: true,
+		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("UpsertSemanticRule() error = %v", err)
+	}
+	currentRules, err := modules[leaderNode].baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRules, err := currentRules.ListSemanticRules(ctx)
+	if err != nil || len(storedRules) != 1 {
+		t.Fatalf("stored semantic rules=%+v err=%v", storedRules, err)
+	}
+	created = storedRules[0]
+	updatedAt := created.UpdatedAt.Add(time.Second)
+	unsupportedNode := consensus.NodeID(1)
+	if unsupportedNode == leaderNode {
+		unsupportedNode = 2
+	}
+	probeHadDeadline := false
+	modules[leaderNode].conditionalRuleSupportProbe = func(probeCtx context.Context, nodeID consensus.NodeID, _ domainspace.SpaceID) error {
+		if _, ok := probeCtx.Deadline(); ok {
+			probeHadDeadline = true
+		}
+		if nodeID == unsupportedNode {
+			return errors.New("conditional mutation capability unsupported")
+		}
+		return nil
+	}
+	leaderGroup, ok := groupsByNode[leaderNode].Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatal("leader partition group not found")
+	}
+	_, commitBeforeBlockedMutation, _ := leaderGroup.Progress()
+	if err := modules[leaderNode].SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); !errors.Is(err, storesemantic.ErrConflict) {
+		t.Fatalf("mixed-version SetSemanticRuleEnabled() error=%v, want fail-closed ErrConflict", err)
+	}
+	if !probeHadDeadline {
+		t.Fatal("conditional mutation capability probe did not receive a bounded context")
+	}
+	_, commitAfterBlockedMutation, _ := leaderGroup.Progress()
+	if commitAfterBlockedMutation != commitBeforeBlockedMutation {
+		t.Fatalf("blocked mixed-version mutation advanced commit index from %d to %d", commitBeforeBlockedMutation, commitAfterBlockedMutation)
+	}
+	for _, module := range modules {
+		module.conditionalRuleSupportProbe = func(context.Context, consensus.NodeID, domainspace.SpaceID) error { return nil }
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		var ok bool
+		leaderNode, ok = currentLeader()
+		return ok
+	}); err != nil {
+		t.Fatalf("local partition leader unavailable before rule update: %v", err)
+	}
+	if err := modules[leaderNode].SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: false, UpdatedAt: updatedAt}); err != nil {
+		t.Fatalf("SetSemanticRuleEnabled() error = %v", err)
+	}
+	for nodeID, m := range modules {
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			persisted, err := m.baseSpaceManager(ctx, spaceID)
+			if err != nil {
+				return false
+			}
+			rules, err := persisted.ListSemanticRules(ctx)
+			return err == nil && len(rules) == 1 && rules[0].ID == created.ID && !rules[0].Enabled && rules[0].UpdatedAt.Equal(updatedAt)
+		}); err != nil {
+			t.Fatalf("node %d did not apply exact semantic rule enabled state: %v", nodeID, err)
+		}
+	}
 }
 
-func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
+func TestSemanticRaftCapabilityAdvertisesConditionalRuleMutationV2(t *testing.T) {
+	spaceID := domainspace.SpaceID(uuid.New())
+	payload, err := json.Marshal(raftSemanticReadRequest{Op: "conditional_rule_mutation_v2", SpaceID: spaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := NewModule().ExecuteLocalRaftSemanticRead(context.Background(), spaceID.String(), payload)
+	if err != nil {
+		t.Fatalf("ExecuteLocalRaftSemanticRead() error = %v", err)
+	}
+	var capability raftSemanticCapabilityResponse
+	if err := json.Unmarshal(raw, &capability); err != nil {
+		t.Fatal(err)
+	}
+	if !capability.ConditionalRuleMutationV2 {
+		t.Fatal("conditional semantic rule mutation v2 capability was not advertised")
+	}
+}
+
+func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	peers := []consensus.NodeID{1, 2, 3}
@@ -516,7 +1448,7 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 	transport := consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { r, ok := routers[nodeID]; return r, ok })}
 	groupsByNode := map[consensus.NodeID]*consensus.MultiGroup{}
 	for _, nodeID := range peers {
-		m := NewModule()
+		m := NewModule(Config{GraphReader: &recordingGraphReader{}, GraphRevisionReader: fixedGraphRevisionReader{revision: 5}})
 		if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
 			t.Fatalf("init node %d failed: %v", nodeID, result.Error)
 		}
@@ -541,6 +1473,7 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		}
 	}()
 	servers := map[consensus.NodeID]*grpc.Server{}
+	readers := map[consensus.NodeID]*recordingRaftSemanticReader{}
 	addrs := make([]string, len(peers))
 	for _, nodeID := range peers {
 		lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -549,7 +1482,9 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		}
 		srv := grpc.NewServer()
 		backend := clusterbackend.NewService(clustermodel.NodeIdentity{}, clustermodel.NodeStateClustered, nil)
-		backend.SemanticReader = modules[nodeID]
+		reader := &recordingRaftSemanticReader{delegate: modules[nodeID], responses: map[string][]byte{}}
+		readers[nodeID] = reader
+		backend.SemanticReader = reader
 		clusterpb.RegisterClusterBackendServiceServer(srv, backend)
 		servers[nodeID] = srv
 		addrs[int(nodeID)-1] = lis.Addr().String()
@@ -561,11 +1496,12 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		}
 	}()
 	for _, nodeID := range peers {
-		modules[nodeID].EnableExperimentalRaftNetworking(nodeID, addrs, "")
+		modules[nodeID].EnableExperimentalRaftNetworking(nodeID, addrs, "test-cluster-token")
 	}
 	stopTick := make(chan struct{})
-	defer close(stopTick)
+	tickDone := make(chan struct{})
 	go func() {
+		defer close(tickDone)
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -606,6 +1542,8 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 		t.Fatalf("leader not elected: %v", err)
 	}
 	leaderID := leaderForPartition()
+	close(stopTick)
+	<-tickDone
 	followerID := consensus.NodeID(1)
 	if followerID == leaderID {
 		followerID = 2
@@ -635,6 +1573,246 @@ func TestSemanticRaftVectorRecordsForwardToPartitionLeader(t *testing.T) {
 	}
 	if len(forwarded) != 1 || forwarded[0].ID != rec.ID {
 		t.Fatalf("forwarded records=%#v want %s from leader %d via follower %d", forwarded, rec.ID, leaderID, followerID)
+	}
+
+	directFollowerPayload, err := json.Marshal(raftSemanticReadRequest{Op: "backfill", SpaceID: spaceID, Backfill: &semanticbackfill.Input{SpaceID: spaceID, Force: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modules[followerID].ExecuteLocalRaftSemanticRead(ctx, spaceID.String(), directFollowerPayload); err == nil || !strings.Contains(err.Error(), "leader changed") {
+		t.Fatalf("direct follower semantic operation error=%v, want leader-changed rejection", err)
+	}
+	directLeaderPayload, err := json.Marshal(raftSemanticReadRequest{Op: "backfill", SpaceID: spaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modules[leaderID].ExecuteLocalRaftSemanticRead(ctx, spaceID.String(), directLeaderPayload); err == nil || !strings.Contains(err.Error(), "semantic backfill input is required") {
+		t.Fatalf("direct leader semantic operation error=%v, want input validation", err)
+	}
+
+	backfillResponse := newRaftSemanticBackfillResponse(semanticbackfill.Result{SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", SelectedCount: 3, GeneratedCount: 3})
+	processResponse := raftSemanticProcessResponse{Result: semanticmaintenance.WorkerResult{Processed: 2, Completed: 2}}
+	rebuildResponse := raftSemanticRebuildResponse{Reliability: ReliabilityStatus{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", FreshThroughGraphRevision: 3}, Backfill: backfillResponse}
+	readers[leaderID].setResponse(t, "backfill", backfillResponse)
+	readers[leaderID].setResponse(t, "process_dirty_work", processResponse)
+
+	lease, err := modules[leaderID].gate.Quiesce(ctx, quiesce.Request{Reason: "routed rebuild test", Source: "test"})
+	if err != nil {
+		t.Fatalf("quiesce semantic leader: %v", err)
+	}
+	if _, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", BackfillLimit: 16}); err == nil {
+		t.Fatal("routed rebuild unexpectedly entered a quiesced semantic leader")
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("release semantic leader quiesce: %v", err)
+	}
+	readers[leaderID].setResponse(t, "rebuild", rebuildResponse)
+
+	backfill, err := modules[followerID].BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", Force: true, Limit: 16})
+	if err != nil {
+		t.Fatalf("follower forwarded semantic backfill: %v", err)
+	}
+	if backfill.SelectedCount != 3 || backfill.GeneratedCount != 3 {
+		t.Fatalf("forwarded backfill=%+v", backfill)
+	}
+	processed, err := modules[followerID].ProcessDirtyWork(ctx, ProcessInput{SpaceID: spaceID, Limit: 16})
+	if err != nil {
+		t.Fatalf("follower forwarded semantic processing: %v", err)
+	}
+	if processed.Processed != 2 || processed.Completed != 2 {
+		t.Fatalf("forwarded process result=%+v", processed)
+	}
+	rebuilt, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: domainsemantic.SemanticRuleID(idx.ID), EmbeddingBindingKey: "search", BackfillLimit: 16})
+	if err != nil {
+		t.Fatalf("follower forwarded semantic rebuild: %v", err)
+	}
+	if rebuilt.Reliability.FreshThroughGraphRevision != 3 || rebuilt.Backfill.GeneratedCount != 3 {
+		t.Fatalf("forwarded rebuild=%+v", rebuilt)
+	}
+	for _, op := range []string{"backfill", "process_dirty_work", "rebuild"} {
+		request, ok := readers[leaderID].lastRequest(op)
+		if !ok || request.SpaceID != spaceID {
+			t.Fatalf("leader did not receive %q for space %s: %+v", op, spaceID, request)
+		}
+		switch op {
+		case "backfill":
+			if request.Backfill == nil || !request.Backfill.Force || request.Backfill.Limit != 16 {
+				t.Fatalf("leader backfill request=%+v", request.Backfill)
+			}
+		case "process_dirty_work":
+			if request.Process == nil || request.Process.Limit != 16 {
+				t.Fatalf("leader process request=%+v", request.Process)
+			}
+		case "rebuild":
+			if request.Rebuild == nil || request.Rebuild.BackfillLimit != 16 {
+				t.Fatalf("leader rebuild request=%+v", request.Rebuild)
+			}
+		}
+	}
+
+	for nodeID, module := range modules {
+		if _, err := module.globalBase.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: idx.VectorStoreID, Key: "failover-mycel-file", Name: "failover-mycel-file", Type: domainsemantic.VectorStoreMycelFile, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+			t.Fatalf("upsert failover vector store on node %d: %v", nodeID, err)
+		}
+	}
+	ruleID := domainsemantic.SemanticRuleID(idx.ID)
+	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: idx.DomainID, Key: "failover-rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: idx.VectorStoreID, Enabled: true}}}
+	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
+		t.Fatalf("upsert failover rule: %v", err)
+	}
+	oldLeaderGroup, ok := groupsByNode[leaderID].Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatalf("old leader partition group %d unavailable", probe.PartitionID)
+	}
+	oldTerm, _, _ := oldLeaderGroup.Progress()
+	if _, err := mgr.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 1, RebuildEpoch: "old-running", RebuildState: "running", RebuildOwnerNode: uint64(leaderID), RebuildOwnerTerm: oldTerm}}}); err != nil {
+		t.Fatalf("upsert failover rule state: %v", err)
+	}
+	staleNodeID := graphmodel.NodeID(uuid.New())
+	staleRecord, err := modules[leaderID].localVectorBackend().Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: idx.ID, NodeID: staleNodeID, TargetNodeID: staleNodeID, SourceHash: "sha256:stale-former-leader", SourceMode: "self", SourceGraphRevision: 1, SemanticGeneration: 1, RebuildEpoch: "old-running", SemanticConfigurationHash: "stale-config", ModelEndpointID: idx.ModelEndpointID, ModelID: idx.ModelID, VectorStoreID: idx.VectorStoreID, VectorSpaceKey: "test/3", Dimensions: 3, Vector: []float64{1, 0, 0}, CreatedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("upsert stale former-leader record: %v", err)
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		for _, module := range modules {
+			base, err := module.baseSpaceManager(ctx, spaceID)
+			if err != nil {
+				return false
+			}
+			rules, err := base.ListSemanticRules(ctx)
+			if err != nil || len(rules) == 0 {
+				return false
+			}
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("failover rule did not replicate: %v", err)
+	}
+	leaderCtx, err := modules[leaderID].bindSemanticOperationLeadership(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("bind old leader projection: %v", err)
+	}
+	if err := modules[leaderID].saveProjectionLease(leaderCtx, spaceID, ruleID, "search", 1, "old-running", 1); err != nil {
+		t.Fatalf("save old leader projection: %v", err)
+	}
+	followerGroup, ok := groupsByNode[followerID].Group(consensus.PartitionGroupID(probe.PartitionID))
+	if !ok {
+		t.Fatalf("follower partition group %d unavailable", probe.PartitionID)
+	}
+	if err := followerGroup.Campaign(ctx); err != nil {
+		t.Fatalf("campaign promoted semantic leader: %v", err)
+	}
+	if err := consensus.TickUntil(ctx, 20*time.Millisecond, func() {
+		for _, mg := range groupsByNode {
+			mg.Tick()
+		}
+	}, func() bool { return leaderForPartition() == followerID }); err != nil {
+		t.Fatalf("semantic leader did not transfer to node %d: %v", followerID, err)
+	}
+	readers[followerID].setResponse(t, "search", raftSemanticSearchResponse{})
+	for nodeID, module := range modules {
+		if nodeID == followerID {
+			continue
+		}
+		query := fmt.Sprintf("query-from-node-%d", nodeID)
+		searchCtx, searchCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, searchErr := module.Search(searchCtx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: query, Limit: 1})
+		searchCancel()
+		if searchErr != nil {
+			t.Fatalf("node %d did not route bounded search to recovered leader %d: %v", nodeID, followerID, searchErr)
+		}
+		request, ok := readers[followerID].lastRequest("search")
+		if !ok || request.Search.Text != query || request.SpaceID != spaceID {
+			t.Fatalf("recovered leader %d did not receive search from node %d: %+v", followerID, nodeID, request)
+		}
+	}
+	if _, err := modules[followerID].Search(ctx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search", Text: "query", Limit: 1}); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("promoted empty leader search error=%v, want projection readiness rejection", err)
+	}
+	if _, err := modules[followerID].RebuildSemanticRule(ctx, RebuildInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", BackfillLimit: 1, MaintenanceBatchLimit: 1, MaxCatchupIterations: 1}); err != nil && strings.Contains(err.Error(), "already running") {
+		t.Fatalf("new leader rebuild did not take over stale running state: %v", err)
+	}
+	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		base, err := modules[followerID].baseSpaceManager(ctx, spaceID)
+		if err != nil {
+			return false
+		}
+		states, err := base.ListSemanticRuleStates(ctx)
+		if err != nil {
+			return false
+		}
+		for _, state := range states {
+			if state.SemanticRuleID == ruleID {
+				return state.ReliabilityByBinding["search"].RebuildState != "running"
+			}
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("stale running rebuild was not invalidated after failover: %v", err)
+	}
+	if err := oldLeaderGroup.Campaign(ctx); err != nil {
+		t.Fatalf("campaign stale former leader: %v", err)
+	}
+	if err := consensus.TickUntil(ctx, 20*time.Millisecond, func() {
+		for _, mg := range groupsByNode {
+			mg.Tick()
+		}
+	}, func() bool { return leaderForPartition() == leaderID }); err != nil {
+		t.Fatalf("stale former leader was not promoted: %v", err)
+	}
+	if _, err := modules[leaderID].BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", Force: true, Reconcile: true, Limit: 100}); err != nil {
+		t.Fatalf("reconcile promoted stale leader: %v", err)
+	}
+	latest, found, err := modules[leaderID].localVectorBackend().LatestRecord(ctx, vectorstore.LatestRecordInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: idx.ID, NodeID: staleNodeID, SourceMode: "self", VectorStoreID: idx.VectorStoreID})
+	if err != nil || !found || !latest.Tombstone || latest.DeleteTargetRecordID != staleRecord.ID {
+		t.Fatalf("promoted stale leader record was not reconciled: found=%t record=%+v err=%v", found, latest, err)
+	}
+	if err := modules[leaderID].validateLocalProjectionForSearch(ctx, SearchInput{SpaceID: spaceID, DomainID: idx.DomainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{ruleID}, EmbeddingBindingKey: "search"}); err != nil {
+		t.Fatalf("reconciled former leader projection not ready: %v", err)
+	}
+}
+
+func TestExecuteLocalRaftSemanticReadRejectsUnauthenticatedDerivedOperations(t *testing.T) {
+	module := NewModule()
+	spaceID := domainspace.SpaceID(uuid.New())
+	for _, op := range []string{"backfill", "process_dirty_work", "rebuild"} {
+		t.Run(op, func(t *testing.T) {
+			payload, err := json.Marshal(raftSemanticReadRequest{Op: op, SpaceID: spaceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := module.ExecuteLocalRaftSemanticRead(context.Background(), spaceID.String(), payload); err == nil || !strings.Contains(err.Error(), "authenticated clustered semantic maintenance routing is required") {
+				t.Fatalf("ExecuteLocalRaftSemanticRead() error=%v, want authenticated-route rejection", err)
+			}
+		})
+	}
+}
+
+func TestSemanticOperationLeadershipRejectsChangedTermAtPublicationBoundary(t *testing.T) {
+	spaceID := domainspace.SpaceID(uuid.New())
+	var term atomic.Uint64
+	term.Store(7)
+	module := NewModule()
+	module.raftLocalNode = 1
+	module.semanticLeadershipProbe = func(got domainspace.SpaceID) (consensus.NodeID, uint64, bool, error) {
+		if got != spaceID {
+			t.Fatalf("leadership probe space=%s, want %s", got, spaceID)
+		}
+		return 1, term.Load(), true, nil
+	}
+	ctx, err := module.bindSemanticOperationLeadership(context.Background(), spaceID)
+	if err != nil {
+		t.Fatalf("bind leadership: %v", err)
+	}
+	if err := module.validateSemanticOperationLeadership(ctx, spaceID); err != nil {
+		t.Fatalf("validate stable leadership: %v", err)
+	}
+	term.Store(8)
+	if err := module.validateSemanticOperationLeadership(ctx, spaceID); err == nil || !strings.Contains(err.Error(), "leadership changed") {
+		t.Fatalf("changed-term validation error=%v", err)
+	}
+	if err := module.authorizeSemanticPublication(ctx, semanticbackfill.Publication{Input: semanticbackfill.Input{SpaceID: spaceID}}); err == nil || !strings.Contains(err.Error(), "leadership changed") {
+		t.Fatalf("changed-term publication error=%v", err)
 	}
 }
 
@@ -673,9 +1851,15 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 		}
 	}()
 	active := map[consensus.NodeID]bool{1: true, 2: true, 3: true}
+	var activeMu sync.RWMutex
+	isActive := func(id consensus.NodeID) bool {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		return active[id]
+	}
 	tickActive := func() {
 		for id, mg := range groupsByNode {
-			if active[id] {
+			if isActive(id) {
 				mg.Tick()
 			}
 		}
@@ -702,7 +1886,7 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 	leaderForPartition := func() consensus.NodeID {
 		counts := map[consensus.NodeID]int{}
 		for id, mg := range groupsByNode {
-			if !active[id] {
+			if !isActive(id) {
 				continue
 			}
 			if g, ok := mg.Group(consensus.PartitionGroupID(probe.PartitionID)); ok && g.Leader() != 0 {
@@ -710,7 +1894,7 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 			}
 		}
 		for leader, count := range counts {
-			if active[leader] && count >= 2 {
+			if isActive(leader) && count >= 2 {
 				return leader
 			}
 		}
@@ -720,7 +1904,9 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 		t.Fatalf("initial leader not elected: %v", err)
 	}
 	oldLeader := leaderForPartition()
+	activeMu.Lock()
 	active[oldLeader] = false
+	activeMu.Unlock()
 	groupsByNode[oldLeader].Stop()
 	for _, router := range routers {
 		router.UnregisterNode(oldLeader)
@@ -741,7 +1927,7 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 		t.Fatalf("UpsertSemanticIndex() after failover error = %v", err)
 	}
 	for nodeID, m := range modules {
-		if !active[nodeID] {
+		if !isActive(nodeID) {
 			continue
 		}
 		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
@@ -757,6 +1943,41 @@ func TestSemanticRaftSpaceMutationSurvivesLeaderFailover(t *testing.T) {
 	}
 }
 
+type recordingAuthorizationRevisionSink struct {
+	spaces    []string
+	revisions []uint64
+}
+
+func (s *recordingAuthorizationRevisionSink) ApplySpaceAuthorizationRevision(_ context.Context, spaceID string, revision uint64) error {
+	s.spaces = append(s.spaces, spaceID)
+	s.revisions = append(s.revisions, revision)
+	return nil
+}
+
+func TestRebuildInferenceProjectionBackfillsSpaceAuthorizationRevision(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	manager, err := m.baseSpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: uuid.New(), SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &recordingAuthorizationRevisionSink{}
+	m.WithAuthorizationRevisionSink(sink)
+	if err := m.rebuildInferenceProjection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.spaces) != 1 || sink.spaces[0] != spaceID.String() || sink.revisions[0] == 0 {
+		t.Fatalf("backfilled authorization revisions spaces=%v revisions=%v", sink.spaces, sink.revisions)
+	}
+}
+
 func TestSemanticRaftStateMachineAppliesSpaceMutation(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
@@ -764,6 +1985,8 @@ func TestSemanticRaftStateMachineAppliesSpaceMutation(t *testing.T) {
 		t.Fatalf("init failed: %v", result.Error)
 	}
 	spaceID := domainspace.SpaceID(uuid.New())
+	sink := &recordingAuthorizationRevisionSink{}
+	m.WithAuthorizationRevisionSink(sink)
 	idx := semanticIndex(spaceID)
 	rec := semanticMutationRecord{Kind: "semantic_index.upsert", SpaceID: spaceID, Payload: raw(idx)}
 	payload, err := json.Marshal(rec)
@@ -788,6 +2011,9 @@ func TestSemanticRaftStateMachineAppliesSpaceMutation(t *testing.T) {
 	}
 	if len(indexes) != 1 || indexes[0].ID != idx.ID {
 		t.Fatalf("indexes=%#v want %s", indexes, idx.ID)
+	}
+	if len(sink.spaces) != 1 || sink.spaces[0] != spaceID.String() {
+		t.Fatalf("authorization revision sink spaces=%v", sink.spaces)
 	}
 }
 
@@ -839,6 +2065,68 @@ func TestSemanticSpaceManagerUsesRaftWhenEnabled(t *testing.T) {
 	if len(indexes) != 1 || indexes[0].ID != storedIndex.ID {
 		t.Fatalf("indexes=%#v want %s", indexes, storedIndex.ID)
 	}
+}
+
+func TestRaftSemanticBackfillResponseOmitsRecordPayloads(t *testing.T) {
+	response := newRaftSemanticBackfillResponse(semanticbackfill.Result{
+		SelectedCount: 1, GeneratedCount: 1,
+		Records: []domainsemantic.AdvancedEmbeddingRecord{{SourceHash: "must-not-cross-backend", Vector: []float64{0.25, 0.75}}},
+	})
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "must-not-cross-backend") || strings.Contains(string(encoded), "0.25") {
+		t.Fatalf("forwarded backfill response contains record payload: %s", encoded)
+	}
+	result := response.result()
+	if result.GeneratedCount != 1 || len(result.Records) != 0 {
+		t.Fatalf("reconstructed compact result=%+v", result)
+	}
+}
+
+type recordingRaftSemanticReader struct {
+	delegate  *Module
+	mu        sync.Mutex
+	requests  []raftSemanticReadRequest
+	responses map[string][]byte
+}
+
+func (r *recordingRaftSemanticReader) ExecuteLocalRaftSemanticRead(ctx context.Context, spaceID string, payload []byte) ([]byte, error) {
+	var request raftSemanticReadRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	r.requests = append(r.requests, request)
+	response := append([]byte(nil), r.responses[request.Op]...)
+	r.mu.Unlock()
+	if response != nil {
+		return response, nil
+	}
+	return r.delegate.ExecuteLocalRaftSemanticRead(ctx, spaceID, payload)
+}
+
+func (r *recordingRaftSemanticReader) setResponse(t *testing.T, op string, value any) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal %s response: %v", op, err)
+	}
+	r.mu.Lock()
+	r.responses[op] = encoded
+	r.mu.Unlock()
+}
+
+func (r *recordingRaftSemanticReader) lastRequest(op string) (raftSemanticReadRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := len(r.requests) - 1; index >= 0; index-- {
+		if r.requests[index].Op == op {
+			return r.requests[index], true
+		}
+	}
+	return raftSemanticReadRequest{}, false
 }
 
 func semanticIndex(spaceID domainspace.SpaceID) domainsemantic.SemanticIndex {

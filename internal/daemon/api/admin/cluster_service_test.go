@@ -109,6 +109,30 @@ func newBootstrapClusterManager(t *testing.T) *clustering.Manager {
 	return mgr
 }
 
+func loadDefaultStandaloneConfig(t *testing.T) daemonconfig.Config {
+	t.Helper()
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_MODE", "standalone")
+	t.Setenv("MYCELD_NODE_NAME", "node-a")
+	for _, name := range []string{
+		"MYCELD_CLUSTER_NAME",
+		"MYCELD_CLUSTER_BACKEND_ADVERTISE_ADDR",
+		"MYCELD_CLUSTER_BACKEND_AUTH_TOKEN",
+		"MYCELD_CLUSTER_RAFT_NODE_COUNT",
+		"MYCELD_CLUSTER_RAFT_PARTITION_COUNT",
+		"MYCELD_CLUSTER_RAFT_REPLICA_FACTOR",
+		"MYCELD_CLUSTER_RAFT_LOCAL_NODE_ID",
+		"MYCELD_CLUSTER_RAFT_NODE_ADDRS",
+	} {
+		t.Setenv(name, "")
+	}
+	cfg, err := daemonconfig.LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() default standalone error = %v", err)
+	}
+	return cfg
+}
+
 func TestAdminClusterServiceGetStatusRequiresAuth(t *testing.T) {
 	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true})
 	_, err := svc.GetClusterStatus(context.Background(), &adminv1.GetClusterStatusRequest{})
@@ -137,33 +161,52 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	}
 }
 
-func TestAdminClusterServiceHealthStandaloneReadyIsHealthy(t *testing.T) {
-	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a"}, nil)
+func TestAdminClusterServiceDefaultStandaloneReadyAndHealthy(t *testing.T) {
+	cfg := loadDefaultStandaloneConfig(t)
+	if cfg.Cluster.RaftNodeCount != daemonconfig.DefaultClusterRaftNodeCount || cfg.Cluster.RaftPartitionCount != daemonconfig.DefaultClusterRaftPartitionCount || cfg.Cluster.RaftLocalNodeID != daemonconfig.DefaultClusterRaftLocalNodeID || len(cfg.Cluster.RaftNodeAddrs) != 0 {
+		t.Fatalf("test must exercise real default standalone cluster settings, got %+v", cfg.Cluster)
+	}
+	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: cfg.DataDir, NodeName: cfg.NodeName, ClusterName: cfg.Cluster.Name, BackendAdvertiseAddr: cfg.Cluster.BackendAdvertiseAddr, BackendAuthToken: cfg.Cluster.BackendAuthToken, RaftMode: cfg.Cluster.RaftRuntimeConfigured(), RaftLocalNodeID: uint64(cfg.Cluster.RaftLocalNodeID), RaftNodeCount: cfg.Cluster.RaftNodeCount}, nil)
 	if err != nil {
 		t.Fatalf("new standalone manager: %v", err)
 	}
-	if mgr.State() != clustering.NodeStateStandalone || mgr.IsAdmitted() {
-		t.Fatalf("unexpected standalone state/admission: state=%s admitted=%t", mgr.State(), mgr.IsAdmitted())
+	if mgr.State() != clustering.NodeStateStandalone || mgr.IsAdmitted() || mgr.RaftRuntimeConfigured() {
+		t.Fatalf("unexpected standalone runtime: state=%s admitted=%t raft=%t", mgr.State(), mgr.IsAdmitted(), mgr.RaftRuntimeConfigured())
 	}
-	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true}).WithClusterRuntime(daemonconfig.ClusterConfig{}, nil)
-	res, err := svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
+	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true}).WithClusterRuntime(cfg.Cluster, nil)
+	statusRes, err := svc.GetClusterStatus(authenticatedClusterContext(), &adminv1.GetClusterStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterStatus() error = %v", err)
+	}
+	readiness := statusRes.GetReadiness()
+	if !readiness.GetClientReady() || !readiness.GetReadReady() || !readiness.GetWriteReady() || !readiness.GetRaftReady() || readiness.GetExpectedMemberCount() != 1 {
+		t.Fatalf("expected default standalone client/read/write readiness, got %#v", readiness)
+	}
+	if containsString(readiness.GetReadinessBlockers(), "raft groups are not configured") {
+		t.Fatalf("default standalone readiness must not require raft groups: %#v", readiness.GetReadinessBlockers())
+	}
+	healthRes, err := svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
 	if err != nil {
 		t.Fatalf("GetClusterHealth() error = %v", err)
 	}
-	if res.GetStatus() != "healthy" || !res.GetReadiness().GetClientReady() {
-		t.Fatalf("expected standalone ready daemon to be healthy, got %#v", res)
+	if healthRes.GetStatus() != "healthy" {
+		t.Fatalf("expected standalone ready daemon to be healthy, got %#v", healthRes)
 	}
-	if containsString(res.GetWarnings(), "local node is not admitted") {
-		t.Fatalf("standalone health should not warn about cluster admission: %#v", res.GetWarnings())
+	if containsString(healthRes.GetWarnings(), "raft groups are not configured") || containsString(healthRes.GetWarnings(), "local node is not admitted") {
+		t.Fatalf("standalone health contains cluster-only warning: %#v", healthRes.GetWarnings())
 	}
 }
 
-func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
-	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 3}, nil)
+func TestAdminClusterServiceMultiNodeRaftFailsClosedWithoutGroups(t *testing.T) {
+	raftCfg := daemonconfig.ClusterConfig{Name: "dev", RaftNodeCount: 3, RaftPartitionCount: 16, RaftReplicaFactor: 3, RaftLocalNodeID: 1, RaftNodeAddrs: []string{"127.0.0.1:9093", "127.0.0.1:9094", "127.0.0.1:9095"}}
+	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: raftCfg.Name, BackendAdvertiseAddr: raftCfg.RaftNodeAddrs[0], RaftMode: raftCfg.RaftRuntimeConfigured(), RaftLocalNodeID: 1, RaftNodeCount: raftCfg.RaftNodeCount}, nil)
 	if err != nil {
 		t.Fatalf("new raft manager: %v", err)
 	}
-	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true})
+	if !mgr.RaftRuntimeConfigured() {
+		t.Fatal("expected multi-node raft runtime signal")
+	}
+	svc := NewAdminClusterService(mgr, clusterAuthz{allow: true}).WithClusterRuntime(raftCfg, nil)
 	res, err := svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
 	if err != nil {
 		t.Fatalf("GetClusterHealth() error = %v", err)
@@ -185,11 +228,14 @@ func TestAdminClusterServiceHealthUsesMetadataReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetClusterHealth() after apply error = %v", err)
 	}
-	if res.GetStatus() != "healthy" {
-		t.Fatalf("expected healthy after metadata apply and partition groups started, got %#v", res)
+	if res.GetStatus() != "unhealthy" {
+		t.Fatalf("expected multi-node raft to remain unhealthy without groups, got %#v", res)
 	}
-	if !res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() {
-		t.Fatalf("expected healthy readiness payload, got %#v", res.GetReadiness())
+	if res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() {
+		t.Fatalf("expected metadata-ready multi-node raft to wait for groups, got %#v", res.GetReadiness())
+	}
+	if !containsString(res.GetReadiness().GetReadinessBlockers(), "raft groups are not configured") || !containsString(res.GetWarnings(), "raft groups are not configured") {
+		t.Fatalf("expected missing raft group blocker, got %#v", res)
 	}
 	if res.GetReadiness().GetAuthoritativeClusterId() != "cluster_authoritative" || res.GetReadiness().GetLocalClusterId() != "cluster_authoritative" || res.GetReadiness().GetExpectedMemberCount() != 3 {
 		t.Fatalf("unexpected readiness identity/count fields: %#v", res.GetReadiness())
@@ -200,6 +246,9 @@ func TestAdminClusterServiceReadinessRequiresRaftLeaders(t *testing.T) {
 	mgr, err := clustering.NewManager(context.Background(), clustering.Options{DataDir: t.TempDir(), NodeName: "node-a", ClusterName: "dev", BackendAdvertiseAddr: "127.0.0.1:9093", RaftMode: true, RaftLocalNodeID: 1, RaftNodeCount: 1}, nil)
 	if err != nil {
 		t.Fatalf("new raft manager: %v", err)
+	}
+	if !mgr.RaftRuntimeConfigured() {
+		t.Fatal("expected explicit single-node raft runtime signal")
 	}
 	meta := consensus.SystemMetadata{ClusterID: "cluster_authoritative", ClusterName: "dev", NodeCount: 1, PartitionCount: 1, ReplicaFactor: 1, Nodes: map[string]consensus.SystemNode{"node_1": {NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a", BackendAdvertiseAddr: "127.0.0.1:9093"}}, Placement: map[uint32]consensus.PartitionPlacement{}}
 	if err := mgr.ApplySystemMetadata(context.Background(), meta, 1); err != nil {

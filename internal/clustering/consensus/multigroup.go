@@ -287,6 +287,15 @@ func (m *MultiGroup) NodeID() NodeID {
 	return m.nodeID
 }
 
+func (m *MultiGroup) PeerNodeIDs() []NodeID {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]NodeID(nil), m.peerNodeIDs...)
+}
+
 func (m *MultiGroup) Group(id GroupID) (*Group, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

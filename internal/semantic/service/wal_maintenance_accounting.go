@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +39,11 @@ func (m *Module) commitMaintenanceMutation(ctx context.Context, rec maintenanceM
 		}
 		return m.proposeSemanticRaftCommand(ctx, cmd)
 	}
+	m.globalMutationMu.Lock()
+	defer m.globalMutationMu.Unlock()
+	if err := m.retrySemanticWALFailureLocked(ctx); err != nil {
+		return err
+	}
 	lsn, err := m.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
 	if err != nil {
 		return err
@@ -45,10 +51,7 @@ func (m *Module) commitMaintenanceMutation(ctx context.Context, rec maintenanceM
 	if err := m.wal.Sync(ctx, lsn); err != nil {
 		return err
 	}
-	if err := m.applySemanticMaintenance(ctx, wal.Record{Payload: p}); err != nil {
-		return err
-	}
-	return m.markSemanticWALApplied(ctx, lsn)
+	return m.applyAndMarkSemanticWALLocked(ctx, lsn, wal.Record{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: p})
 }
 func (m *Module) markSemanticWALApplied(ctx context.Context, lsn wal.LSN) error {
 	if m.walProgress != nil {
@@ -71,7 +74,7 @@ func (m *Module) applySemanticMaintenance(ctx context.Context, rec wal.Record) e
 	if err != nil {
 		return err
 	}
-	return applyMaintenanceMutation(ctx, mgr, r)
+	return classifySemanticMutationError(applyMaintenanceMutation(ctx, mgr, r))
 }
 
 func applyMaintenanceMutation(ctx context.Context, mgr storesemantic.MaintenanceManager, r maintenanceMutationRecord) error {
@@ -105,6 +108,17 @@ func applyMaintenanceMutation(ctx context.Context, mgr storesemantic.Maintenance
 			}
 		}
 		return nil
+	case "history.compact":
+		var v storesemantic.CompactHistoryInput
+		_ = json.Unmarshal(r.Payload, &v)
+		return mgr.CompactHistory(ctx, v)
+	case "work.claim":
+		var v storesemantic.ClaimReadyWorkInput
+		if err := json.Unmarshal(r.Payload, &v); err != nil {
+			return err
+		}
+		_, err := mgr.ClaimReadyWork(ctx, v)
+		return err
 	case "work.complete":
 
 		var v struct {
@@ -163,6 +177,14 @@ func (w *walMaintenanceManager) ListDirtyWorkItems(ctx context.Context) ([]domai
 	}
 	return w.inner.ListDirtyWorkItems(ctx)
 }
+func (w *walMaintenanceManager) CompactHistory(ctx context.Context, in storesemantic.CompactHistoryInput) error {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "history.compact", SpaceID: w.spaceID, Payload: payload})
+}
+
 func (w *walMaintenanceManager) ClaimReadyWork(ctx context.Context, in storesemantic.ClaimReadyWorkInput) ([]domainsemantic.SemanticDirtyWorkItem, error) {
 	leader, forward, err := w.module.shouldForwardRaftSemanticRead(w.spaceID)
 	if err != nil {
@@ -171,7 +193,37 @@ func (w *walMaintenanceManager) ClaimReadyWork(ctx context.Context, in storesema
 	if w.module.raftGroups != nil && (leader == 0 || forward) {
 		return []domainsemantic.SemanticDirtyWorkItem{}, nil
 	}
-	return w.inner.ClaimReadyWork(ctx, in)
+	if in.Now.IsZero() {
+		in.Now = time.Now().UTC()
+	}
+	if in.Limit <= 0 {
+		in.Limit = 1
+	}
+	if in.LeaseDuration <= 0 {
+		in.LeaseDuration = time.Minute
+	}
+	in.ClaimedBy = strings.TrimSpace(in.ClaimedBy)
+	if in.ClaimedBy == "" {
+		in.ClaimedBy = "semantic-worker"
+	}
+	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.claim", SpaceID: w.spaceID, Payload: raw(in)}); err != nil {
+		return nil, err
+	}
+	items, err := w.inner.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return nil, err
+	}
+	claimedUntil := in.Now.Add(in.LeaseDuration)
+	claimed := make([]domainsemantic.SemanticDirtyWorkItem, 0, in.Limit)
+	for _, item := range items {
+		if item.Status == domainsemantic.SemanticDirtyWorkStatusRunning && item.ClaimedBy == in.ClaimedBy && item.ClaimedUntil != nil && item.ClaimedUntil.Equal(claimedUntil) && item.UpdatedAt.Equal(in.Now) {
+			claimed = append(claimed, item)
+			if len(claimed) == in.Limit {
+				break
+			}
+		}
+	}
+	return claimed, nil
 }
 func (w *walMaintenanceManager) AppendGraphDirtyEvent(ctx context.Context, e domainsemantic.GraphDirtyEvent) (domainsemantic.GraphDirtyEvent, error) {
 	out, _, err := w.AppendGraphDirtyEventWithTiming(ctx, e)
@@ -230,6 +282,12 @@ func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Cont
 		}
 		return e, timing, nil
 	}
+	w.module.globalMutationMu.Lock()
+	defer w.module.globalMutationMu.Unlock()
+	if err := w.module.retrySemanticWALFailureLocked(ctx); err != nil {
+		timing.Total = time.Since(traceStart)
+		return domainsemantic.GraphDirtyEvent{}, timing, err
+	}
 	stepStart = time.Now()
 	lsn, err := w.module.wal.Append(ctx, wal.PendingRecord{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: mutationPayload})
 	if err != nil {
@@ -245,8 +303,10 @@ func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Cont
 		return domainsemantic.GraphDirtyEvent{}, timing, err
 	}
 	timing.WALSync = time.Since(stepStart)
+	record := wal.Record{Type: recordTypeSemanticMaintenance, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: mutationPayload}
 	stepStart = time.Now()
-	if err := w.module.applySemanticMaintenance(ctx, wal.Record{Payload: mutationPayload}); err != nil {
+	if err := w.module.applySemanticMaintenance(ctx, record); err != nil {
+		w.module.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
 		timing.WALApply = time.Since(stepStart)
 		timing.Total = time.Since(traceStart)
 		return domainsemantic.GraphDirtyEvent{}, timing, err
@@ -254,6 +314,7 @@ func (w *walMaintenanceManager) AppendGraphDirtyEventWithTiming(ctx context.Cont
 	timing.WALApply = time.Since(stepStart)
 	stepStart = time.Now()
 	if err := w.module.markSemanticWALApplied(ctx, lsn); err != nil {
+		w.module.semanticWALFailure = &semanticWALApplyFailure{LSN: lsn, Record: record}
 		timing.WALMark = time.Since(stepStart)
 		timing.Total = time.Since(traceStart)
 		return domainsemantic.GraphDirtyEvent{}, timing, err
@@ -268,30 +329,98 @@ func (w *walMaintenanceManager) SaveCheckpoint(ctx context.Context, c storeseman
 	}
 	return w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "checkpoint.save", SpaceID: w.spaceID, Payload: raw(c)})
 }
-func (w *walMaintenanceManager) UpsertDirtyWorkItem(ctx context.Context, i domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
-	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.upsert", SpaceID: w.spaceID, Payload: raw(i)}); err != nil {
+func (w *walMaintenanceManager) UpsertDirtyWorkItem(ctx context.Context, item domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
+	item = prepareWorkItemMutation(item, time.Now().UTC())
+	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.upsert", SpaceID: w.spaceID, Payload: raw(item)}); err != nil {
 		return domainsemantic.SemanticDirtyWorkItem{}, err
 	}
-	return i, nil
+	return w.findWorkItem(ctx, item)
 }
 func (w *walMaintenanceManager) UpsertDirtyWorkItems(ctx context.Context, items []domainsemantic.SemanticDirtyWorkItem) ([]domainsemantic.SemanticDirtyWorkItem, error) {
 	if len(items) == 0 {
 		return []domainsemantic.SemanticDirtyWorkItem{}, nil
 	}
-	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.upsert_batch", SpaceID: w.spaceID, Payload: raw(items)}); err != nil {
+	now := time.Now().UTC()
+	prepared := make([]domainsemantic.SemanticDirtyWorkItem, len(items))
+	for i, item := range items {
+		prepared[i] = prepareWorkItemMutation(item, now)
+	}
+	if err := w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.upsert_batch", SpaceID: w.spaceID, Payload: raw(prepared)}); err != nil {
 		return nil, err
 	}
-	return append([]domainsemantic.SemanticDirtyWorkItem(nil), items...), nil
+	out := make([]domainsemantic.SemanticDirtyWorkItem, 0, len(prepared))
+	for _, item := range prepared {
+		stored, err := w.findWorkItem(ctx, item)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, stored)
+	}
+	return out, nil
 }
-func (w *walMaintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, r storesemantic.WorkResult) error {
+func (w *walMaintenanceManager) CompleteWork(ctx context.Context, id uuid.UUID, result storesemantic.WorkResult) error {
+	if result.CompletedAt.IsZero() {
+		result.CompletedAt = time.Now().UTC()
+	}
 	return w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.complete", SpaceID: w.spaceID, Payload: raw(struct {
 		ID     uuid.UUID                `json:"id"`
 		Result storesemantic.WorkResult `json:"result"`
-	}{id, r})})
+	}{id, result})})
 }
-func (w *walMaintenanceManager) FailWork(ctx context.Context, id uuid.UUID, f storesemantic.WorkFailure) error {
+func (w *walMaintenanceManager) FailWork(ctx context.Context, id uuid.UUID, failure storesemantic.WorkFailure) error {
+	if failure.FailedAt.IsZero() {
+		failure.FailedAt = time.Now().UTC()
+	}
 	return w.module.commitMaintenanceMutation(ctx, maintenanceMutationRecord{Kind: "work.fail", SpaceID: w.spaceID, Payload: raw(struct {
 		ID      uuid.UUID                 `json:"id"`
 		Failure storesemantic.WorkFailure `json:"failure"`
-	}{id, f})})
+	}{id, failure})})
+}
+
+func prepareWorkItemMutation(item domainsemantic.SemanticDirtyWorkItem, now time.Time) domainsemantic.SemanticDirtyWorkItem {
+	item.EmbeddingBindingKey = strings.TrimSpace(item.EmbeddingBindingKey)
+	if item.SemanticRuleID == uuid.Nil && item.SemanticIndexID != uuid.Nil {
+		item.SemanticRuleID = domainsemantic.SemanticRuleID(item.SemanticIndexID)
+	}
+	if item.SemanticIndexID == uuid.Nil && item.SemanticRuleID != uuid.Nil {
+		item.SemanticIndexID = domainsemantic.SemanticIndexID(item.SemanticRuleID)
+	}
+	if item.ID == uuid.Nil {
+		item.ID = uuid.New()
+	}
+	if item.Status == "" {
+		item.Status = domainsemantic.SemanticDirtyWorkStatusPending
+	}
+	if item.Action == "" {
+		item.Action = domainsemantic.SemanticDirtyWorkActionRefresh
+	}
+	if item.Generation <= 0 {
+		item.Generation = 1
+	}
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	if item.Status == domainsemantic.SemanticDirtyWorkStatusPending {
+		item.ClaimedBy = ""
+		item.ClaimedUntil = nil
+		item.CompletedAt = nil
+		item.FailedAt = nil
+	}
+	return item
+}
+
+func (w *walMaintenanceManager) findWorkItem(ctx context.Context, wanted domainsemantic.SemanticDirtyWorkItem) (domainsemantic.SemanticDirtyWorkItem, error) {
+	items, err := w.inner.ListDirtyWorkItems(ctx)
+	if err != nil {
+		return domainsemantic.SemanticDirtyWorkItem{}, err
+	}
+	key := wanted.RuleBindingTargetKey()
+	for _, item := range items {
+		candidate := item.RuleBindingTargetKey()
+		if candidate.SemanticRuleID == key.SemanticRuleID && candidate.EmbeddingBindingKey == key.EmbeddingBindingKey && candidate.TargetNodeID == key.TargetNodeID {
+			return item, nil
+		}
+	}
+	return domainsemantic.SemanticDirtyWorkItem{}, storesemantic.ErrNotFound
 }

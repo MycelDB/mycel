@@ -38,6 +38,14 @@ embedding binding summaries, maintenance status, and physical search-index statu
 where available. Validation returns diagnostics suitable for CLI and Console
 presentation before a rule is persisted.
 
+A rule UUID is its authoritative identity. A non-empty `display_name` is an
+operator-facing label and must be unique within the rule's `space_id` and
+`domain_id` after trimming surrounding whitespace and case-folding for
+comparison. The authored casing is preserved. The same display name may be used
+in another domain or space, and blank display names remain available for callers
+that use the rule key as their visible fallback. Display names are never used as
+durable foreign keys.
+
 `DeleteSemanticRule` is explicit and reference-safe. `purge_vectors` removes
 rule vector records and derived physical search-index state for the deleted rule.
 Credential/secret management, profile discovery, grants, policies, and usage
@@ -84,10 +92,24 @@ storage:
   physical_index: exact
 ```
 
+The Admin gRPC API uses the enum-only `trigger.events` field. Omitting the set
+defaults to `CHANGED`; explicit `UNSPECIFIED` and unknown numeric values are
+rejected. Legacy string events and the transitional `trigger.event_types` field
+are not accepted or projected. Persisted daemon state and CLI rule files remain
+transport-neutral and use canonical event names rather than generated protobuf
+values. Persisted catalogs,
+Raft snapshots, and restored backups containing duplicate normalized non-empty
+rule display names in one space/domain are rejected rather than repaired or
+silently renamed.
+
 Embedding bindings reference Intelligence Access profiles and vector stores by
-stable key or ID. User-authored rules do not directly own provider endpoint,
-model, capability, or credential IDs; those are resolved and attributed at
-execution time.
+ID whenever available. A vector-store UUID is the authoritative durable
+reference; its unique display name is only an operator-facing label and may be
+renamed without changing rules. Legacy key-only references remain readable, but
+ambiguous key resolution fails closed and new operator tooling should select from
+the catalog and persist `vector_store_id`. User-authored rules do not directly
+own provider endpoint, model, capability, or credential IDs; those are resolved
+and attributed at execution time.
 
 ## CLI
 

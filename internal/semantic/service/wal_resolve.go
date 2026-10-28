@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 )
 
 func (w *walGlobalManager) resolvePackage(ctx context.Context, v domainsemantic.InferencePackage) (domainsemantic.InferencePackage, error) {
@@ -69,11 +70,30 @@ func (w *walGlobalManager) resolveVectorStore(ctx context.Context, v domainseman
 	if err != nil {
 		return domainsemantic.VectorStoreBackend{}, err
 	}
+	if v.ID != uuid.Nil {
+		for _, item := range items {
+			if item.ID == v.ID {
+				return item, nil
+			}
+		}
+		return v, nil
+	}
 	key := semanticKey(v.Key)
+	matches := make([]domainsemantic.VectorStoreBackend, 0, 1)
 	for _, item := range items {
 		if semanticKey(item.Key) == key {
-			return item, nil
+			matches = append(matches, item)
 		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		ids := make([]uuid.UUID, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, match.ID)
+		}
+		return domainsemantic.VectorStoreBackend{}, storesemantic.NewVectorStoreConflict(storesemantic.VectorStoreConflictKey, key, ids, true)
 	}
 	return v, nil
 }

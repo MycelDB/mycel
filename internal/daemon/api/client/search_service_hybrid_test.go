@@ -14,6 +14,8 @@ import (
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestHybridOptionsFromProtoDefaultsAndNormalizes(t *testing.T) {
@@ -65,6 +67,37 @@ func TestSearchFiltersFromProtoRejectsUnsupportedOperator(t *testing.T) {
 	}
 }
 
+func TestEffectiveSearchQueriesUseOnlyChannelQueries(t *testing.T) {
+	empty := &clientv1.SearchRequest{}
+	if got := effectiveLexicalSearchQuery(empty); got != "" {
+		t.Fatalf("effective lexical query = %q, want empty", got)
+	}
+	if got := effectiveSemanticSearchQuery(empty); got != "" {
+		t.Fatalf("effective semantic query = %q, want empty", got)
+	}
+
+	legacy := &clientv1.SearchRequest{}
+	unknown := protowire.AppendTag(nil, 4, protowire.BytesType)
+	legacy.ProtoReflect().SetUnknown(protowire.AppendString(unknown, "legacy shared query"))
+	if got := effectiveLexicalSearchQuery(legacy); got != "" {
+		t.Fatalf("effective lexical query accepted reserved field 4: %q", got)
+	}
+	if got := effectiveSemanticSearchQuery(legacy); got != "" {
+		t.Fatalf("effective semantic query accepted reserved field 4: %q", got)
+	}
+
+	request := &clientv1.SearchRequest{
+		Lexical:  &clientv1.LexicalSearchOptions{Query: proto.String(`"team" OR "recovery"`)},
+		Semantic: &clientv1.SemanticSearchOptions{Query: proto.String("how can a team recover calmly")},
+	}
+	if got := effectiveLexicalSearchQuery(request); got != `"team" OR "recovery"` {
+		t.Fatalf("effective lexical query = %q", got)
+	}
+	if got := effectiveSemanticSearchQuery(request); got != "how can a team recover calmly" {
+		t.Fatalf("effective semantic query = %q", got)
+	}
+}
+
 func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -90,6 +123,9 @@ func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 	}
 	if semantic.lastInput.MinScore != minScore {
 		t.Fatalf("semantic SearchInput MinScore = %v, want %v", semantic.lastInput.MinScore, minScore)
+	}
+	if semantic.lastInput.Text != "team recovery" {
+		t.Fatalf("semantic SearchInput Text = %q, want channel query", semantic.lastInput.Text)
 	}
 	if len(candidates) != 1 || candidates[0].NodeID != highNodeID.String() {
 		t.Fatalf("candidates = %#v, want only high-scoring semantic candidate %s", candidates, highNodeID)

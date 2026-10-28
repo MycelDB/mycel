@@ -2,11 +2,14 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	model "github.com/myceldb/mycel/internal/inference/model"
+	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 )
 
 func inferenceNewID() uuid.UUID {
@@ -198,7 +201,16 @@ func (w *walSpaceManager) UpsertPolicyDecision(ctx context.Context, v model.Poli
 	if err := w.module.commitInferenceMutation(ctx, recordTypeInferenceSpace, inferenceMutationRecord{Kind: "policy_decision.upsert", SpaceID: w.spaceID, Payload: rawInference(v)}); err != nil {
 		return model.PolicyDecision{}, err
 	}
-	return v, nil
+	decisions, err := w.inner.ListPolicyDecisions(ctx)
+	if err != nil {
+		return model.PolicyDecision{}, err
+	}
+	for _, committed := range decisions {
+		if committed.ID == v.ID {
+			return committed, nil
+		}
+	}
+	return model.PolicyDecision{}, fmt.Errorf("committed policy decision %s is unavailable", v.ID)
 }
 func (w *walSpaceManager) DeletePolicyDecision(ctx context.Context, id model.PolicyDecisionID) error {
 	return w.module.commitInferenceMutation(ctx, recordTypeInferenceSpace, inferenceMutationRecord{Kind: "policy_decision.delete", SpaceID: w.spaceID, Payload: rawInference(id)})
@@ -209,6 +221,9 @@ func (w *walUsageLedger) Init(ctx context.Context, location string) error {
 }
 func (w *walUsageLedger) ListUsageEvents(ctx context.Context) ([]model.UsageEvent, error) {
 	return w.inner.ListUsageEvents(ctx)
+}
+func (w *walUsageLedger) ReplaceUsageEvents(ctx context.Context, events []model.UsageEvent) error {
+	return w.inner.ReplaceUsageEvents(ctx, events)
 }
 func (w *walUsageLedger) AppendUsageEvent(ctx context.Context, v model.UsageEvent) (model.UsageEvent, error) {
 	if v.ID == uuid.Nil {
@@ -221,4 +236,54 @@ func (w *walUsageLedger) AppendUsageEvent(ctx context.Context, v model.UsageEven
 		return model.UsageEvent{}, err
 	}
 	return v, nil
+}
+func (w *walUsageLedger) UpsertBudgetScope(ctx context.Context, v model.BudgetScope) (model.BudgetScope, error) {
+	previous, previousErr := w.inner.GetBudgetScope(ctx, v.ID)
+	if previousErr != nil && !errors.Is(previousErr, inferencestorage.ErrBudgetScopeNotFound) {
+		return model.BudgetScope{}, previousErr
+	}
+	previousDigest := ""
+	if previousErr == nil {
+		previousDigest = budgetScopeDigest(previous)
+	}
+	record := inferenceMutationRecord{Kind: "budget_scope.upsert", Payload: rawInference(v), BudgetScopeCAS: true, PreviousBudgetScopeDigest: previousDigest, BudgetScopeDigest: budgetScopeDigest(v)}
+	if previousErr == nil && previous.State != model.BudgetScopeActive && v.State == model.BudgetScopeActive && v.SpaceID != "" && v.SemanticRuleID != "" && v.EmbeddingBindingKey != "" {
+		record.EnforceActiveSemanticBinding = true
+	}
+	if v.ScopeSequence == 0 && previousDigest == "" {
+		record.BudgetScopeCAS = false
+		record.AllocateBudgetScopeSequence = true
+		record.EnforceActiveSemanticBinding = v.SpaceID != "" && v.SemanticRuleID != "" && v.EmbeddingBindingKey != ""
+	}
+	if err := w.module.commitInferenceMutation(ctx, recordTypeInferenceBudget, record); err != nil {
+		return model.BudgetScope{}, err
+	}
+	persisted, err := w.inner.GetBudgetScope(ctx, v.ID)
+	if err != nil {
+		return model.BudgetScope{}, err
+	}
+	return persisted, nil
+}
+func (w *walUsageLedger) GetBudgetScope(ctx context.Context, id model.BudgetScopeID) (model.BudgetScope, error) {
+	return w.inner.GetBudgetScope(ctx, id)
+}
+func (w *walUsageLedger) ListBudgetScopes(ctx context.Context) ([]model.BudgetScope, error) {
+	return w.inner.ListBudgetScopes(ctx)
+}
+func (w *walUsageLedger) BudgetScopeHighWater(ctx context.Context) (uint64, error) {
+	return w.inner.BudgetScopeHighWater(ctx)
+}
+func (w *walUsageLedger) DeleteBudgetScope(ctx context.Context, id model.BudgetScopeID) error {
+	previousDigest, err := currentBudgetScopeDigest(ctx, w.inner, id)
+	if err != nil {
+		return err
+	}
+	return w.module.commitInferenceMutation(ctx, recordTypeInferenceBudget, inferenceMutationRecord{Kind: "budget_scope.delete", Payload: rawInference(id), BudgetScopeCAS: true, PreviousBudgetScopeDigest: previousDigest})
+}
+func (w *walUsageLedger) ReplaceBudgetScopes(ctx context.Context, scopes []model.BudgetScope, highWater uint64) error {
+	return w.inner.ReplaceBudgetScopes(ctx, scopes, highWater)
+}
+
+func (w *walUsageLedger) ReplaceInferenceSnapshot(ctx context.Context, scopes []model.BudgetScope, highWater uint64, events []model.UsageEvent) error {
+	return w.inner.ReplaceInferenceSnapshot(ctx, scopes, highWater, events)
 }

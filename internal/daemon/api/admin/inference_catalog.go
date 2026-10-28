@@ -5,8 +5,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	storesemantic "github.com/myceldb/mycel/internal/semantic/storage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -27,6 +29,10 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 	}
 	defer release()
 	mgr := s.semantic.GlobalManager()
+	storeDefinitions, err := s.validateInferencePackageVectorStores(ctx, req.GetVectorStores())
+	if err != nil {
+		return nil, err
+	}
 	endpoints := make([]domainsemantic.ModelEndpoint, 0, len(req.GetModelEndpoints()))
 	for _, protoEndpoint := range req.GetModelEndpoints() {
 		endpoint, err := modelEndpointFromProto(protoEndpoint)
@@ -57,12 +63,8 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		}
 		models = append(models, stored)
 	}
-	stores := make([]domainsemantic.VectorStoreBackend, 0, len(req.GetVectorStores()))
-	for _, protoStore := range req.GetVectorStores() {
-		store, err := vectorStoreFromProto(protoStore)
-		if err != nil {
-			return nil, err
-		}
+	stores := make([]domainsemantic.VectorStoreBackend, 0, len(storeDefinitions))
+	for _, store := range storeDefinitions {
 		stored, err := mgr.UpsertVectorStore(ctx, store)
 		if err != nil {
 			return nil, mapAdminInferenceError(err, "upsert vector store")
@@ -104,6 +106,87 @@ func (s *AdminInferenceService) ApplyInferencePackage(ctx context.Context, req *
 		return nil, mapAdminInferenceError(err, "sync inference package")
 	}
 	return &adminv1.AdminInferenceCatalogServiceApplyInferencePackageResponse{Package: mapInferencePackage(pkg), ModelEndpoints: mapModelEndpoints(endpoints), Models: mapInferenceModels(models), VectorStores: mapVectorStores(stores), ModelEndpointCapabilities: mapModelEndpointCapabilities(capabilities)}, nil
+}
+
+func (s *AdminInferenceService) validateInferencePackageVectorStores(ctx context.Context, definitions []*adminv1.VectorStore) ([]domainsemantic.VectorStoreBackend, error) {
+	incoming := make([]domainsemantic.VectorStoreBackend, 0, len(definitions))
+	for _, definition := range definitions {
+		store, err := vectorStoreFromProto(definition)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(store.Key) == "" {
+			return nil, status.Error(codes.InvalidArgument, "vector store key is required")
+		}
+		if strings.TrimSpace(store.Name) == "" {
+			return nil, status.Error(codes.InvalidArgument, "vector store name is required")
+		}
+		store.Key = strings.ToLower(strings.TrimSpace(store.Key))
+		store.Name = strings.TrimSpace(store.Name)
+		incoming = append(incoming, store)
+	}
+	catalog, err := s.semantic.GlobalManager().ListVectorStores(ctx)
+	if err != nil {
+		return nil, mapAdminInferenceError(err, "list vector stores")
+	}
+	for i := range incoming {
+		candidate := &incoming[i]
+		key := strings.ToLower(strings.TrimSpace(candidate.Key))
+		name := strings.ToLower(strings.TrimSpace(candidate.Name))
+		targetID := candidate.ID
+		if targetID == uuid.Nil {
+			matches := vectorStoreIDsMatching(catalog, func(item domainsemantic.VectorStoreBackend) bool {
+				return strings.ToLower(strings.TrimSpace(item.Key)) == key
+			})
+			if len(matches) > 1 {
+				return nil, mapAdminInferenceError(storesemantic.NewVectorStoreConflict(storesemantic.VectorStoreConflictKey, key, matches, true), "validate vector store package")
+			}
+			if len(matches) == 1 {
+				targetID = matches[0]
+				candidate.ID = targetID
+			} else {
+				targetID = uuid.New()
+				candidate.ID = targetID
+			}
+		}
+		keyConflicts := vectorStoreIDsMatching(catalog, func(item domainsemantic.VectorStoreBackend) bool {
+			return item.ID != targetID && strings.ToLower(strings.TrimSpace(item.Key)) == key
+		})
+		if len(keyConflicts) > 0 {
+			return nil, mapAdminInferenceError(storesemantic.NewVectorStoreConflict(storesemantic.VectorStoreConflictKey, key, keyConflicts, len(keyConflicts) > 1), "validate vector store package")
+		}
+		nameConflicts := vectorStoreIDsMatching(catalog, func(item domainsemantic.VectorStoreBackend) bool {
+			return item.ID != targetID && strings.ToLower(strings.TrimSpace(item.Name)) == name
+		})
+		if len(nameConflicts) > 0 {
+			return nil, mapAdminInferenceError(storesemantic.NewVectorStoreConflict(storesemantic.VectorStoreConflictName, name, nameConflicts, len(nameConflicts) > 1), "validate vector store package")
+		}
+		replaced := false
+		for index := range catalog {
+			if catalog[index].ID == targetID {
+				catalog[index] = *candidate
+				catalog[index].ID = targetID
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			staged := *candidate
+			staged.ID = targetID
+			catalog = append(catalog, staged)
+		}
+	}
+	return incoming, nil
+}
+
+func vectorStoreIDsMatching(catalog []domainsemantic.VectorStoreBackend, matches func(domainsemantic.VectorStoreBackend) bool) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, 1)
+	for _, item := range catalog {
+		if matches(item) {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
 }
 
 func (s *AdminInferenceService) ListInferencePackages(ctx context.Context, req *adminv1.AdminInferenceCatalogServiceListInferencePackagesRequest) (*adminv1.AdminInferenceCatalogServiceListInferencePackagesResponse, error) {

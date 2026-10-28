@@ -3,7 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +15,9 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/graph/model"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
+	inferenceruntime "github.com/myceldb/mycel/internal/inference/runtime"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	daemonconfig "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -26,6 +31,244 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type recoveryBudgetInvoker struct {
+	completed   []domaininference.BudgetScopeID
+	current     map[string]domaininference.BudgetScope
+	completeErr map[domaininference.BudgetScopeID]error
+	reactivated []domaininference.BudgetScopeID
+}
+
+func (f *recoveryBudgetInvoker) Invoke(context.Context, inferenceruntime.InvokeRequest) (inferenceruntime.InvokeResponse, error) {
+	return inferenceruntime.InvokeResponse{}, nil
+}
+func (f *recoveryBudgetInvoker) ValidateSemanticBudgetScope(context.Context, inferenceruntime.SemanticBudgetScopeRequest) error {
+	return nil
+}
+
+func (f *recoveryBudgetInvoker) EnsureSemanticBudgetScope(context.Context, inferenceruntime.SemanticBudgetScopeRequest) (domaininference.BudgetScope, error) {
+	return domaininference.BudgetScope{}, nil
+}
+func (f *recoveryBudgetInvoker) CurrentSemanticBudgetScope(_ context.Context, _, _, binding string) (domaininference.BudgetScope, error) {
+	if scope, ok := f.current[binding]; ok {
+		return scope, nil
+	}
+	return domaininference.BudgetScope{}, inferencestorage.ErrBudgetScopeNotFound
+}
+func (f *recoveryBudgetInvoker) GetBudgetScope(_ context.Context, id domaininference.BudgetScopeID) (domaininference.BudgetScope, error) {
+	for _, scope := range f.current {
+		if scope.ID == id {
+			return scope, nil
+		}
+	}
+	return domaininference.BudgetScope{}, inferencestorage.ErrBudgetScopeNotFound
+}
+func (f *recoveryBudgetInvoker) CompleteBudgetScope(_ context.Context, id domaininference.BudgetScopeID, _ time.Time) (domaininference.BudgetScope, error) {
+	f.completed = append(f.completed, id)
+	if err := f.completeErr[id]; err != nil {
+		return domaininference.BudgetScope{}, err
+	}
+	for binding, scope := range f.current {
+		if scope.ID == id {
+			scope.State = domaininference.BudgetScopeCompleted
+			f.current[binding] = scope
+			return scope, nil
+		}
+	}
+	return domaininference.BudgetScope{ID: id}, nil
+}
+func (f *recoveryBudgetInvoker) ReactivateBudgetScope(_ context.Context, id domaininference.BudgetScopeID, _ time.Time) (domaininference.BudgetScope, error) {
+	f.reactivated = append(f.reactivated, id)
+	for binding, scope := range f.current {
+		if scope.ID == id {
+			scope.State = domaininference.BudgetScopeActive
+			f.current[binding] = scope
+			return scope, nil
+		}
+	}
+	return domaininference.BudgetScope{ID: id}, nil
+}
+
+func TestModuleInitRejectsDuplicatePersistedSemanticRuleDisplayNames(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	rules := map[string]any{"rules": []domainsemantic.SemanticGenerationRule{
+		{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "first", DisplayName: "Duplicate"},
+		{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "second", DisplayName: " duplicate "},
+	}}
+	data, err := json.Marshal(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	semanticDir := filepath.Join(dataDir, "graphs", spaceID.String(), "semantic")
+	if err := os.MkdirAll(semanticDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(semanticDir, "rules.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	module := NewModule()
+	result := module.Init(ctx, &daemonruntime.Runtime{Config: daemonconfig.Config{DataDir: dataDir}, LoggerValue: slog.Default()})
+	if result.OK || !errors.Is(result.Error, storesemantic.ErrConflict) {
+		t.Fatalf("Init() result=%+v, want semantic catalog conflict", result)
+	}
+}
+
+func TestCompleteSemanticProviderBudgetsPreflightsAllBindingsAndCompensates(t *testing.T) {
+	ctx := context.Background()
+	budget := &domainsemantic.SemanticProviderBudgetPolicy{}
+	rule := domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: domainspace.SpaceID(uuid.New()), Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "a", ProviderBudget: budget}, {Key: "b", ProviderBudget: budget}}}
+	firstID, secondID := domaininference.BudgetScopeID("scope-a"), domaininference.BudgetScopeID("scope-b")
+	invoker := &recoveryBudgetInvoker{current: map[string]domaininference.BudgetScope{"a": {ID: firstID, State: domaininference.BudgetScopeActive}, "b": {ID: secondID, State: domaininference.BudgetScopeActive, Usage: domaininference.BudgetUsage{AmbiguousAttempts: 1}}}}
+	module := NewModule(Config{InferenceInvoker: invoker})
+	if err := module.CompleteSemanticProviderBudgets(ctx, rule, true); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("quiescent completion error=%v code=%v", err, status.Code(err))
+	}
+	if len(invoker.completed) != 0 {
+		t.Fatalf("preflight partially completed scopes=%v", invoker.completed)
+	}
+	invoker.current["b"] = domaininference.BudgetScope{ID: secondID, State: domaininference.BudgetScopeActive}
+	invoker.completeErr = map[domaininference.BudgetScopeID]error{secondID: errors.New("persist failed")}
+	if err := module.CompleteSemanticProviderBudgets(ctx, rule, true); err == nil {
+		t.Fatal("completion unexpectedly succeeded")
+	}
+	if len(invoker.completed) != 2 || len(invoker.reactivated) != 1 || invoker.reactivated[0] != firstID {
+		t.Fatalf("completed=%v reactivated=%v", invoker.completed, invoker.reactivated)
+	}
+}
+
+func TestReconcileProviderBudgetPrepareToleratesPrunedOldScope(t *testing.T) {
+	ctx := context.Background()
+	budgets := &recoveryBudgetInvoker{completeErr: map[domaininference.BudgetScopeID]error{"pre-crash-ambiguous-scope": inferencestorage.ErrBudgetScopeNotFound}}
+	module := NewModule(Config{InferenceInvoker: budgets})
+	if result := module.Init(ctx, daemonruntime.New(t.TempDir(), slog.Default())); !result.OK {
+		t.Fatalf("Init()=%+v", result)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	manager, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeID := domaininference.BudgetScopeID("pre-crash-ambiguous-scope")
+	rule, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-prepare", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionPrepare, ProviderBudgetTransitionScopeIDs: []string{string(scopeID)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.reconcileProviderBudgetTransitions(ctx); err != nil {
+		t.Fatalf("reconcileProviderBudgetTransitions() error=%v", err)
+	}
+	if len(budgets.completed) != 1 || budgets.completed[0] != scopeID {
+		t.Fatalf("completed scopes=%v", budgets.completed)
+	}
+	manager, err = module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].ID != rule.ID || rules[0].ProviderBudgetTransition != "" {
+		t.Fatalf("reconciled rules=%+v error=%v", rules, err)
+	}
+}
+
+func TestReconcileProviderBudgetDeleteRollsForwardDurablePurgeIntent(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, daemonruntime.New(t.TempDir(), slog.Default())); !result.OK {
+		t.Fatalf("Init()=%+v", result)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	manager, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-delete", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionDelete, ProviderBudgetTransitionID: "delete-a", ProviderBudgetTransitionPurgeVectors: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := module.reconcileProviderBudgetTransitions(ctx); err != nil {
+		t.Fatalf("reconcileProviderBudgetTransitions() error=%v", err)
+	}
+	manager, err = module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 0 {
+		t.Fatalf("delete journal was not rolled forward: rules=%+v error=%v", rules, err)
+	}
+}
+
+func TestReconcileProviderBudgetTransitionRollsForwardDurableJournal(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, daemonruntime.New(t.TempDir(), slog.Default())); !result.OK {
+		t.Fatalf("Init()=%+v", result)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	manager, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "pending-budget-transition", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionComplete})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.reconcileProviderBudgetTransitions(ctx); err != nil {
+		t.Fatalf("reconcileProviderBudgetTransitions() error=%v", err)
+	}
+	manager, err = module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].ID != rule.ID || rules[0].ProviderBudgetTransition != "" {
+		t.Fatalf("reconciled rules=%+v error=%v", rules, err)
+	}
+}
+
+func TestReconcileReliabilityTransitionIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, daemonruntime.New(t.TempDir(), slog.Default())); !result.OK {
+		t.Fatalf("Init()=%+v", result)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	manager, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	if _, err := manager.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 4}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-reliability-transition", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionReliability, ProviderBudgetTransitionID: "transition-reliability-a", ProviderBudgetTransitionRequiresRebuild: true}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(pending) != 1 || pending[0].ProviderBudgetTransition != domainsemantic.SemanticProviderBudgetTransitionReliability || pending[0].ProviderBudgetTransitionID != "transition-reliability-a" || !pending[0].ProviderBudgetTransitionRequiresRebuild {
+		t.Fatalf("pending reliability transition=%+v error=%v", pending, err)
+	}
+	if err := module.reconcileProviderBudgetTransitions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := module.reconcileProviderBudgetTransitions(ctx); err != nil {
+		t.Fatalf("second reconciliation: %v", err)
+	}
+	manager, err = module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states, err := manager.ListSemanticRuleStates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := states[0].ReliabilityByBinding["search"]
+	if got.SemanticGeneration != 5 || got.LastConfigurationTransitionID != "transition-reliability-a" {
+		t.Fatalf("reconciled reliability=%+v", got)
+	}
+}
 
 func TestInitRebuildsInferenceProjectionFromSemanticProfiles(t *testing.T) {
 	ctx := context.Background()
@@ -169,6 +412,10 @@ func TestSemanticQuiesceRejectsManualMaintenance(t *testing.T) {
 	_, err = m.AnalyzeDirtyWork(ctx, AnalyzeInput{SpaceID: domainspace.SpaceID(uuid.New())})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("AnalyzeDirtyWork() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+	_, err = m.RebuildSemanticRule(ctx, RebuildInput{SpaceID: domainspace.SpaceID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("RebuildSemanticRule() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
 }
 
@@ -355,6 +602,31 @@ func TestApplyMaintenanceMutationUpsertBatch(t *testing.T) {
 	}
 }
 
+func TestListRulesIncludesDisabledRulesForClientPreconditionMapping(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	if result := module.Init(ctx, testRuntime(t, daemonconfig.SemanticMaintenanceConfig{Enabled: false})); !result.OK {
+		t.Fatal(result.Error)
+	}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	ruleID := domainsemantic.SemanticRuleID(uuid.New())
+	mgr, err := module.SpaceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "disabled-rule", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := module.ListRules(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].ID != ruleID || rules[0].Enabled {
+		t.Fatalf("ListRules()=%+v, want disabled rule", rules)
+	}
+}
+
 func TestBackfillIndexRejectsSemanticDisabledDomain(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
@@ -492,7 +764,7 @@ func TestSyncSemanticDirtyCountsRefreshesRuleAndIndexState(t *testing.T) {
 	if _, err := maintenanceMgr.UpsertDirtyWorkItem(ctx, domainsemantic.SemanticDirtyWorkItem{SemanticRuleID: ruleID, EmbeddingBindingKey: "search", SemanticIndexID: indexID, SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), TargetNodeID: graph.NodeID(uuid.New()), Action: domainsemantic.SemanticDirtyWorkActionRefresh, Status: domainsemantic.SemanticDirtyWorkStatusComplete}); err != nil {
 		t.Fatalf("seed completed work: %v", err)
 	}
-	if err := syncSemanticDirtyCounts(ctx, mgr, maintenanceMgr); err != nil {
+	if err := NewModule().syncSemanticDirtyCounts(ctx, spaceID, mgr, maintenanceMgr); err != nil {
 		t.Fatalf("syncSemanticDirtyCounts() error = %v", err)
 	}
 	ruleStates, err := mgr.ListSemanticRuleStates(ctx)

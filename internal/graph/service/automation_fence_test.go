@@ -44,11 +44,16 @@ func newAutomationFenceTestHarness(t *testing.T, validatorErr error) automationF
 
 func (h automationFenceTestHarness) applyRecord(t *testing.T, record graphCommitRecord, reason string) error {
 	t.Helper()
+	return h.applyRecordWithContext(t, record, reason, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1})
+}
+
+func (h automationFenceTestHarness) applyRecordWithContext(t *testing.T, record graphCommitRecord, reason string, apply consensus.ApplyContext) error {
+	t.Helper()
 	cmd, err := h.module.buildGraphCommitRaftCommand(record, 64, reason)
 	if err != nil {
 		t.Fatalf("buildGraphCommitRaftCommand() error = %v", err)
 	}
-	return (RaftStateMachine{Module: h.module, PartitionCount: 64}).ApplyCommand(h.ctx, consensus.ApplyContext{RaftIndex: 1, RaftTerm: 1}, cmd)
+	return (RaftStateMachine{Module: h.module, PartitionCount: 64}).ApplyCommand(h.ctx, apply, cmd)
 }
 
 func TestGraphRaftApplyValidatesAutomationOutputFence(t *testing.T) {
@@ -56,7 +61,7 @@ func TestGraphRaftApplyValidatesAutomationOutputFence(t *testing.T) {
 	spaceID := uuid.NewString()
 	domainID := uuid.New()
 	nodeID := uuid.New()
-	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "stale output", Meta: map[string]any{"automation": map[string]any{"automation_id": "page-summary", "binding_id": "binding-a", "run_id": "run-a", "invocation_id": "inv-a", "claim_owner_node_id": uint64(2), "claim_version": uint64(7), "claim_token": "old-token", "output_idempotency_key": "output-key"}}}}, AutomationFenceNodeIDs: []domaingraph.NodeID{nodeID}, OperationCount: 1}
+	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 0, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "stale output", Meta: map[string]any{"automation": map[string]any{"automation_id": "page-summary", "binding_id": "binding-a", "run_id": "run-a", "invocation_id": "inv-a", "claim_owner_node_id": "2", "claim_version": "7", "claim_token": "old-token", "output_idempotency_key": "output-key", "procedure_id": "proc", "authorization_revision": "7803206355751821409", "global_authorization_revision": "8853358141603235760", "space_authorization_revision": "4778902782362294898"}}}}, AutomationFenceNodeIDs: []domaingraph.NodeID{nodeID}, OperationCount: 1}
 	if err := h.applyRecord(t, record, "automation-output-stale"); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ApplyCommand() error = %v, code=%v; want FailedPrecondition", err, status.Code(err))
 	}
@@ -64,11 +69,64 @@ func TestGraphRaftApplyValidatesAutomationOutputFence(t *testing.T) {
 		t.Fatalf("validator calls=%d want 1", len(h.validator.calls))
 	}
 	call := h.validator.calls[0]
-	if call.SpaceID != spaceID || call.DomainID != domainID || call.EntityKind != "node" || call.EntityID != nodeID.String() || call.InvocationID != "inv-a" || call.ClaimOwnerNodeID != 2 || call.ClaimVersion != 7 || call.ClaimToken != "old-token" || call.OutputIdempotencyKey != "output-key" {
+	if call.SpaceID != spaceID || call.DomainID != domainID || call.EntityKind != "node" || call.EntityID != nodeID.String() || call.InvocationID != "inv-a" || call.ClaimOwnerNodeID != 2 || call.ClaimVersion != 7 || call.ClaimToken != "old-token" || call.OutputIdempotencyKey != "output-key" || call.AuthorizationRevision != 7803206355751821409 || call.GlobalAuthorizationRevision != 8853358141603235760 || call.SpaceAuthorizationRevision != 4778902782362294898 {
 		t.Fatalf("unexpected validation call: %#v", call)
 	}
 	if rev, err := h.module.CurrentRevision(h.ctx, spaceID); err != nil || rev != 0 {
 		t.Fatalf("CurrentRevision() = %d, %v; want 0, nil", rev, err)
+	}
+}
+
+func TestGraphRaftReplayConvergesTerminalAutomationOutputAsNoOp(t *testing.T) {
+	h := newAutomationFenceTestHarness(t, status.Error(codes.FailedPrecondition, `automation output fence rejected for invocation inv-a: status "failed" is not running`))
+	spaceID := uuid.NewString()
+	domainID := uuid.New()
+	nodeID := uuid.New()
+	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 99, PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "stale output", Meta: map[string]any{"automation": map[string]any{"automation_id": "page-summary", "binding_id": "binding-a", "run_id": "run-a", "invocation_id": "inv-a", "claim_owner_node_id": uint64(2), "claim_version": uint64(7), "claim_token": "old-token", "output_idempotency_key": "output-key", "procedure_id": "proc", "authorization_revision": uint64(11)}}}}, AutomationFenceNodeIDs: []domaingraph.NodeID{nodeID}, OperationCount: 1}
+	apply := consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1, Replay: true}
+	if err := h.applyRecordWithContext(t, record, "terminal-automation-output-replay", apply); err != nil {
+		t.Fatalf("ApplyCommand(replay) error = %v, want convergent no-op", err)
+	}
+	if len(h.validator.calls) != 1 {
+		t.Fatalf("validator calls=%d want 1", len(h.validator.calls))
+	}
+	if rev, err := h.module.CurrentRevision(h.ctx, spaceID); err != nil || rev != 0 {
+		t.Fatalf("CurrentRevision() = %d, %v; want stale output not applied", rev, err)
+	}
+	if err := h.applyRecordWithContext(t, record, "terminal-automation-output-replay", apply); err != nil {
+		t.Fatalf("ApplyCommand(repeated replay) error = %v", err)
+	}
+	if len(h.validator.calls) != 1 {
+		t.Fatalf("validator calls after durable no-op=%d want 1", len(h.validator.calls))
+	}
+}
+
+func TestGraphCommitValidatesAutomationOutputFenceBeforePersistence(t *testing.T) {
+	h := newAutomationFenceTestHarness(t, status.Error(codes.FailedPrecondition, "automation output fence rejected for invocation inv-a: stale claim"))
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	tx := graphTx(spaceID, domainID, 0)
+	nodeID := uuid.NewString()
+	_, err := h.module.CreateNode(h.ctx, tx, domaingraph.NodeInput{
+		NodeID:  nodeID,
+		Content: "stale output",
+		Meta: map[string]any{"automation": map[string]any{
+			"automation_id": "page-summary", "binding_id": "binding-a", "run_id": "run-a", "invocation_id": "inv-a",
+			"claim_owner_node_id": uint64(2), "claim_version": uint64(7), "claim_token": "old-token", "output_idempotency_key": "output-key", "procedure_id": "proc", "authorization_revision": uint64(11),
+		}},
+		AutomationOutputFence: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := h.module.CommitTransactionGraph(h.ctx, tx); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CommitTransactionGraph() error = %v, code=%v; want FailedPrecondition", err, status.Code(err))
+	}
+	if len(h.validator.calls) != 1 {
+		t.Fatalf("validator calls=%d want 1", len(h.validator.calls))
+	}
+	if rev, err := h.module.CurrentRevision(h.ctx, spaceID); err != nil || rev != 0 {
+		t.Fatalf("CurrentRevision() = %d, %v; want rejected output not persisted", rev, err)
 	}
 }
 
@@ -105,6 +163,9 @@ func TestGraphRaftApplyFailsClosedForIncompleteAutomationOutputFence(t *testing.
 	record := graphCommitRecord{SpaceID: spaceID, BaseRevision: 0, PutEdges: []domaingraph.Edge{{ID: edgeID, DomainID: domainID, FromID: uuid.New(), ToID: uuid.New(), Meta: map[string]any{"automation": map[string]any{"invocation_id": "inv-a", "output_idempotency_key": "output-key"}}}}, AutomationFenceEdgeIDs: []domaingraph.EdgeID{edgeID}, OperationCount: 1}
 	if err := h.applyRecord(t, record, "automation-output-incomplete"); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("ApplyCommand() error = %v, code=%v; want FailedPrecondition", err, status.Code(err))
+	}
+	if err := h.applyRecordWithContext(t, record, "automation-output-incomplete-replay", consensus.ApplyContext{RaftIndex: 2, RaftTerm: 1, Replay: true}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ApplyCommand(replay) error = %v, code=%v; want incomplete metadata rejected", err, status.Code(err))
 	}
 	if rev, err := h.module.CurrentRevision(h.ctx, spaceID); err != nil || rev != 0 {
 		t.Fatalf("CurrentRevision() = %d, %v; want 0, nil", rev, err)

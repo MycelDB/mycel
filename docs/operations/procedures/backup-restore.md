@@ -43,6 +43,15 @@ subsystems that write under `MYCELD_DATA_DIR`, their quiesce coverage, and the
 restore expectations for authoritative versus derived state, see
 [Backup-critical durable writer inventory](backup-durable-writer-inventory.md).
 
+A full daemon/system archive includes the authoritative automation directory,
+including procedure-inference attempts, immutable retained changes, high-water
+and earliest-retained sequences, committed authorization revisions, and
+procedure-control fences/barriers. After restore, do not reuse a collector cursor
+until the restored high-water and earliest-retained state/history sequences have
+been compared with the collector checkpoint. A cursor ahead of restored
+high-water or behind an earliest-retained watermark requires an explicit
+reconciliation decision; a fresh snapshot alone cannot prove missed history.
+
 The destructive K3s validation gate is:
 
 ```sh
@@ -59,7 +68,10 @@ graph/blob payloads through every pod.
 Use principal-scoped backup for trusted-source recovery into a fresh cluster or a
 selected target principal. The command group is still named `user-backup` for
 archive-format compatibility. The operation does not automatically repair
-divergent PVCs or choose an authoritative source.
+divergent PVCs or choose an authoritative source. Principal-scoped exports do
+not export the daemon-owned procedure-inference audit ledger, attempt-change
+watermarks, authorization revisions, or procedure-control barriers. Use a full
+system backup when those authoritative records must be preserved.
 
 Export from the operator-selected source endpoint:
 

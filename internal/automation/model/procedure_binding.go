@@ -36,6 +36,9 @@ type Procedure struct {
 	UpdatedByPrincipalID string         `json:"updated_by_principal_id,omitempty"`
 	CreatedAt            time.Time      `json:"created_at,omitempty"`
 	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
+	ControlEpoch         uint64         `json:"control_epoch,omitempty"`
+	ControlledBy         string         `json:"controlled_by,omitempty"`
+	ControlledAt         time.Time      `json:"controlled_at,omitempty"`
 }
 
 // Binding connects a graph procedure to trigger/schedule/manual runtime
@@ -270,6 +273,9 @@ func ValidateBinding(binding Binding, procedure *Procedure) error {
 		p := procedure.Normalize()
 		if binding.ProcedureID != p.ID {
 			return fmt.Errorf("graph automation binding procedure_id does not match procedure")
+		}
+		if binding.ProcedureVersion != 0 && binding.ProcedureVersion != p.Version {
+			return fmt.Errorf("graph automation binding procedure_version does not match procedure version")
 		}
 		if binding.Status == StatusEnabled && p.Status != StatusEnabled {
 			return fmt.Errorf("graph automation binding cannot be enabled for a disabled procedure")

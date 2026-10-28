@@ -15,8 +15,11 @@ import (
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
 	automationservice "github.com/myceldb/mycel/internal/automation/service"
+	automationstorage "github.com/myceldb/mycel/internal/automation/storage"
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	inference "github.com/myceldb/mycel/internal/inference/model"
+	inferencestorage "github.com/myceldb/mycel/internal/inference/storage"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -81,7 +84,8 @@ func TestBackupRestoreValidatesSchemaAutomationAndDerivedState(t *testing.T) {
 		t.Fatalf("init restored services: %v", err)
 	}
 
-	validateRestoredSchemaAndAutomation(t, ctx, restoredSchema, restoredAutomation, domainID)
+	validateRestoredSchemaAndAutomation(t, ctx, restoreDataDir, restoredSchema, restoredAutomation, spaceID, domainID)
+	validateRestoredInferenceBudgetState(t, ctx, restoreDataDir, spaceID)
 	validateRestoredLexicalDerivedState(t, ctx, restoredLexical, spaceID, domainID, nodeID)
 	validateRestoredSemanticDerivedState(t, ctx, restoredSemantic, spaceID, domainID, nodeID)
 }
@@ -111,6 +115,14 @@ func seedBackupRestoreFixture(t *testing.T, ctx context.Context, dataDir string,
 	if _, err := automationMod.CreateBindingAs(ctx, domainID, mustJSON(t, binding), "operator"); err != nil {
 		t.Fatalf("seed automation binding: %v", err)
 	}
+	attempt := automation.ProcedureInferenceAttempt{ID: "backup-attempt", RecordVersion: 1, SpaceID: spaceID.String(), DomainID: domainID, ProcedureID: procedure.ID, ProcedureVersion: 1, BindingID: binding.ID, BindingVersion: 1, InvocationID: "backup-invocation", RunID: "backup-run", RunAttemptNumber: 1, ProviderAttemptNumber: 1, State: automation.InferenceAttemptStateRequested, RequestedAt: time.Unix(1_700_000_000, 0).UTC()}
+	change := automation.ProcedureInferenceAttemptChange{EventID: "backup-change", SchemaVersion: automation.InferenceAttemptChangeSchemaV1, SpaceID: spaceID.String(), Sequence: 7, ChangeKind: attempt.State, AttemptID: attempt.ID, RecordVersion: attempt.RecordVersion, Attempt: attempt, OccurredAt: attempt.RequestedAt, CommittedAt: attempt.RequestedAt}
+	ledger := automation.ProcedureInferenceLedger{SpaceID: spaceID.String(), HighWaterSequence: 7, EarliestRetainedSequence: 7, EarliestRetainedStateSequence: 7, Attempts: []automation.ProcedureInferenceAttempt{attempt}, Changes: []automation.ProcedureInferenceAttemptChange{change}}
+	if err := automationstorage.NewFileStore(filepath.Join(dataDir, "automation")).PutProcedureInferenceLedger(ctx, ledger); err != nil {
+		t.Fatalf("seed procedure inference ledger: %v", err)
+	}
+
+	seedInferenceBudgetLedger(t, ctx, dataDir, spaceID)
 
 	if err := lexicalMod.Rebuild(ctx, spaceID.String(), domainID.String(), []lexicalindex.IndexedDocument{{Document: lexicalanalyzer.Document{NodeID: nodeID.String(), DomainID: domainID.String(), Fields: []lexicalanalyzer.Field{{Path: "properties.title", Text: "restore validation unique phrase"}}}, GraphRevision: 7}}, 7); err != nil {
 		t.Fatalf("seed lexical index: %v", err)
@@ -140,7 +152,7 @@ func seedBackupRestoreFixture(t *testing.T, ctx context.Context, dataDir string,
 	}
 }
 
-func validateRestoredSchemaAndAutomation(t *testing.T, ctx context.Context, schemaMod *schemaservice.Module, automationMod *automationservice.Module, domainID graph.DomainID) {
+func validateRestoredSchemaAndAutomation(t *testing.T, ctx context.Context, dataDir string, schemaMod *schemaservice.Module, automationMod *automationservice.Module, spaceID domainspace.SpaceID, domainID graph.DomainID) {
 	t.Helper()
 	restoredSchema, err := schemaMod.GetDomainSchema(ctx, domainID)
 	if err != nil {
@@ -162,6 +174,46 @@ func validateRestoredSchemaAndAutomation(t *testing.T, ctx context.Context, sche
 	}
 	if len(bindings) != 1 || bindings[0].ID != "backup-restore-binding" || bindings[0].Trigger.Schedule == nil {
 		t.Fatalf("unexpected restored bindings: %+v", bindings)
+	}
+	ledger, err := automationstorage.NewFileStore(filepath.Join(dataDir, "automation")).GetProcedureInferenceLedger(ctx, spaceID.String())
+	if err != nil {
+		t.Fatalf("restored procedure inference ledger missing: %v", err)
+	}
+	if ledger.HighWaterSequence != 7 || ledger.EarliestRetainedSequence != 7 || ledger.EarliestRetainedStateSequence != 7 || len(ledger.Attempts) != 1 || len(ledger.Changes) != 1 || ledger.Attempts[0].ID != "backup-attempt" {
+		t.Fatalf("unexpected restored procedure inference ledger: %+v", ledger)
+	}
+}
+
+func seedInferenceBudgetLedger(t *testing.T, ctx context.Context, dataDir string, spaceID domainspace.SpaceID) {
+	t.Helper()
+	ledger := inferencestorage.NewUsageLedger()
+	if err := ledger.Init(ctx, filepath.Join(dataDir, "meta", "inference_runtime", "accounting")); err != nil {
+		t.Fatalf("init inference budget ledger: %v", err)
+	}
+	now := time.Unix(1_700_000_100, 0).UTC()
+	attempt := inference.BudgetAttempt{ID: "backup-budget-attempt", RequestID: "backup-budget-request", State: inference.BudgetAttemptSucceeded, BatchItems: 1, ReservedInputTokens: 8, ChargedInputTokens: 5, ReservedProviderMillis: 1_000, ChargedProviderMillis: 250, ReservedCostMicros: 8, ChargedCostMicros: 5, UsageKnown: true, OutcomeKnown: true, ProviderDurationKnown: true, ReservedAt: now, ReservedUntil: now.Add(time.Minute), CompletedAt: now.Add(250 * time.Millisecond), Outcome: "succeeded"}
+	scope := inference.BudgetScope{ID: "backup-budget-scope", ScopeSequence: 9, SpaceID: spaceID.String(), SemanticRuleID: "backup-semantic-rule", EmbeddingBindingKey: "backup-embedding-binding", CorrelationID: "backup-budget-correlation", State: inference.BudgetScopeCompleted, Route: inference.BudgetRoute{EndpointID: inference.EndpointID(uuid.New()), ModelID: inference.ModelID(uuid.New()), CapabilityID: inference.CapabilityID(uuid.New()), Operation: inference.OperationEmbeddings}, Limits: inference.BudgetLimits{MaxRequests: 2, MaxAttempts: 3, MaxRetryAttempts: 1, MaxRetriesPerRequest: 1, MaxConcurrentProviderCalls: 1, BatchingMode: inference.BatchingModeSingle, MaxBatchItems: 1, MaxInputTokensPerRequest: 8, MaxInputTokens: 16, MaxProviderMillisPerRequest: 1_000, MaxProviderMillis: 2_000, Deadline: now.Add(time.Hour), Currency: "USD", PriceDefinitionVersion: "backup-price-v1", InputMicrosPerMillionTokens: 1_000_000, MaxEstimatedCostMicros: 16}, Usage: inference.BudgetUsage{Requests: 1, Attempts: 1, BatchItems: 1, InputTokens: 5, ProviderMillis: 250, EstimatedCostMicros: 5}, Attempts: []inference.BudgetAttempt{attempt}, AttemptEvents: []inference.BudgetAttemptEvent{{Sequence: 11, AttemptVersion: 1, Attempt: inference.BudgetAttempt{ID: attempt.ID, RequestID: attempt.RequestID, State: inference.BudgetAttemptReserved, BatchItems: 1, ReservedInputTokens: 8, ReservedProviderMillis: 1_000, ReservedCostMicros: 8, ReservedAt: now, ReservedUntil: now.Add(time.Minute)}, RecordedAt: now}, {Sequence: 12, AttemptVersion: 2, Attempt: attempt, RecordedAt: attempt.CompletedAt}}, CreatedAt: now, UpdatedAt: attempt.CompletedAt, ExpiresAt: now.Add(time.Hour), RetentionUntil: now.Add(2 * time.Hour)}
+	if _, err := ledger.UpsertBudgetScope(ctx, scope); err != nil {
+		t.Fatalf("seed inference budget scope: %v", err)
+	}
+}
+
+func validateRestoredInferenceBudgetState(t *testing.T, ctx context.Context, dataDir string, spaceID domainspace.SpaceID) {
+	t.Helper()
+	ledger := inferencestorage.NewUsageLedger()
+	if err := ledger.Init(ctx, filepath.Join(dataDir, "meta", "inference_runtime", "accounting")); err != nil {
+		t.Fatalf("init restored inference budget ledger: %v", err)
+	}
+	scope, err := ledger.GetBudgetScope(ctx, "backup-budget-scope")
+	if err != nil {
+		t.Fatalf("restored inference budget scope missing: %v", err)
+	}
+	highWater, err := ledger.BudgetScopeHighWater(ctx)
+	if err != nil {
+		t.Fatalf("restored inference budget high water: %v", err)
+	}
+	if scope.ScopeSequence != 9 || highWater != 9 || scope.SpaceID != spaceID.String() || scope.State != inference.BudgetScopeCompleted || scope.Usage.Attempts != 1 || len(scope.Attempts) != 1 || len(scope.AttemptEvents) != 2 || scope.AttemptEvents[0].Sequence != 11 || scope.AttemptEvents[1].Sequence != 12 || scope.AttemptEvents[1].AttemptVersion != 2 {
+		t.Fatalf("unexpected restored inference budget scope/high-water: scope=%+v highWater=%d", scope, highWater)
 	}
 }
 
