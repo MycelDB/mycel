@@ -6,6 +6,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.21.0] - 2026-10-27
+
 ### Added
 
 - Added daemon-authoritative, WAL-replay-safe inference budget scopes for procedure and semantic embedding work, with route-pinned rule-owned scopes, atomic pre-provider attempt reservation, retry/concurrency/batch/token/deadline/duration/versioned-cost enforcement, bounded retention, conservative ambiguous-outcome accounting, authenticated capability discovery, fixed-snapshot immutable attempt pages, and sanitized reconciliation evidence (#239).
