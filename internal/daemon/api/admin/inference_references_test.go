@@ -21,6 +21,25 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func requireReferenceDetails(t *testing.T, st *status.Status) (*errdetails.ErrorInfo, *errdetails.PreconditionFailure) {
+	t.Helper()
+
+	var info *errdetails.ErrorInfo
+	var precondition *errdetails.PreconditionFailure
+	for _, detail := range st.Details() {
+		switch typed := detail.(type) {
+		case *errdetails.ErrorInfo:
+			info = typed
+		case *errdetails.PreconditionFailure:
+			precondition = typed
+		}
+	}
+	if info == nil || precondition == nil {
+		t.Fatalf("structured details missing: %#v", st.Details())
+	}
+	return info, precondition
+}
+
 func TestReferencedPreconditionDeduplicatesBeforeBound(t *testing.T) {
 	refs := []string{
 		"capability:11111111-1111-4111-8111-111111111111",
@@ -63,19 +82,7 @@ func TestReferencedPreconditionIncludesCompleteStructuredEvidenceAboveMessageBou
 	}
 
 	st := status.Convert(referencedPrecondition("profile", refs))
-	var info *errdetails.ErrorInfo
-	var precondition *errdetails.PreconditionFailure
-	for _, detail := range st.Details() {
-		switch typed := detail.(type) {
-		case *errdetails.ErrorInfo:
-			info = typed
-		case *errdetails.PreconditionFailure:
-			precondition = typed
-		}
-	}
-	if info == nil || precondition == nil {
-		t.Fatalf("structured details missing: %#v", st.Details())
-	}
+	info, precondition := requireReferenceDetails(t, st)
 	if info.GetReason() != referenceDetailReason || info.GetDomain() != referenceDetailDomain || info.GetMetadata()["details_complete"] != "true" || info.GetMetadata()["total_reference_count"] != "33" || info.GetMetadata()["detail_reference_count"] != "33" {
 		t.Fatalf("error info=%+v", info)
 	}
@@ -101,19 +108,7 @@ func TestReferencedPreconditionPreservesLegacyCategoryAndAggregatesStructuredEvi
 	if got, want := st.Message(), "credential is referenced by "+legacyRefs[0]; got != want {
 		t.Fatalf("legacy message=%q want %q", got, want)
 	}
-	var info *errdetails.ErrorInfo
-	var precondition *errdetails.PreconditionFailure
-	for _, detail := range st.Details() {
-		switch typed := detail.(type) {
-		case *errdetails.ErrorInfo:
-			info = typed
-		case *errdetails.PreconditionFailure:
-			precondition = typed
-		}
-	}
-	if info == nil || precondition == nil {
-		t.Fatalf("structured details missing: %#v", st.Details())
-	}
+	info, precondition := requireReferenceDetails(t, st)
 	if got := info.GetMetadata()["total_reference_count"]; got != "3" {
 		t.Fatalf("total_reference_count=%q want 3", got)
 	}
@@ -178,17 +173,8 @@ func TestDeleteCredentialAggregatesEveryBlockingReferenceCategory(t *testing.T) 
 	if !strings.Contains(st.Message(), "credential_grant:"+grantID.String()) || strings.Contains(st.Message(), "policy_decision:") {
 		t.Fatalf("legacy message changed category or exposed later category: %q", st.Message())
 	}
-	var info *errdetails.ErrorInfo
-	var precondition *errdetails.PreconditionFailure
-	for _, detail := range st.Details() {
-		switch typed := detail.(type) {
-		case *errdetails.ErrorInfo:
-			info = typed
-		case *errdetails.PreconditionFailure:
-			precondition = typed
-		}
-	}
-	if info == nil || precondition == nil || info.GetMetadata()["total_reference_count"] != "2" || info.GetMetadata()["details_complete"] != "true" {
+	info, precondition := requireReferenceDetails(t, st)
+	if info.GetMetadata()["total_reference_count"] != "2" || info.GetMetadata()["details_complete"] != "true" {
 		t.Fatalf("structured details are incomplete: info=%+v precondition=%+v", info, precondition)
 	}
 	got := map[string]bool{}
@@ -209,17 +195,8 @@ func TestDeleteCredentialAggregatesEveryBlockingReferenceCategory(t *testing.T) 
 	if !strings.Contains(st.Message(), "policy_decision:"+decisionID.String()) || strings.Contains(st.Message(), "credential_grant:") {
 		t.Fatalf("cascade legacy message included a non-blocking grant: %q", st.Message())
 	}
-	info = nil
-	precondition = nil
-	for _, detail := range st.Details() {
-		switch typed := detail.(type) {
-		case *errdetails.ErrorInfo:
-			info = typed
-		case *errdetails.PreconditionFailure:
-			precondition = typed
-		}
-	}
-	if info == nil || precondition == nil || info.GetMetadata()["total_reference_count"] != "1" || len(precondition.GetViolations()) != 1 || precondition.GetViolations()[0].GetSubject() != "policy_decision:"+decisionID.String() {
+	info, precondition = requireReferenceDetails(t, st)
+	if info.GetMetadata()["total_reference_count"] != "1" || len(precondition.GetViolations()) != 1 || precondition.GetViolations()[0].GetSubject() != "policy_decision:"+decisionID.String() {
 		t.Fatalf("cascade structured details included non-blockers: info=%+v precondition=%+v", info, precondition)
 	}
 }
@@ -231,19 +208,7 @@ func TestReferencedPreconditionBoundsIncompleteStructuredEvidence(t *testing.T) 
 	}
 
 	st := status.Convert(referencedPrecondition("endpoint", refs))
-	var info *errdetails.ErrorInfo
-	var precondition *errdetails.PreconditionFailure
-	for _, detail := range st.Details() {
-		switch typed := detail.(type) {
-		case *errdetails.ErrorInfo:
-			info = typed
-		case *errdetails.PreconditionFailure:
-			precondition = typed
-		}
-	}
-	if info == nil || precondition == nil {
-		t.Fatalf("structured details missing: %#v", st.Details())
-	}
+	info, precondition := requireReferenceDetails(t, st)
 	if info.GetMetadata()["details_complete"] != "false" || info.GetMetadata()["total_reference_count"] != "257" || info.GetMetadata()["detail_reference_count"] != "256" {
 		t.Fatalf("error info=%+v", info)
 	}
