@@ -1,6 +1,6 @@
 services:
   minio:
-    image: ${MINIO_IMAGE:-quay.io/minio/minio:latest}
+    image: ${MINIO_IMAGE:-docker.io/myceldb/mycel-minio-test-helper@sha256:f33b406adb70891f722e0465ec085056b036f8f5494e4eff33317a9612cf24ff}
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mycelminio}
@@ -9,7 +9,7 @@ services:
       - minio-data:/data
 
   minio-bucket:
-    image: ${MINIO_MC_IMAGE:-quay.io/minio/mc:latest}
+    image: ${MINIO_MC_IMAGE:-docker.io/myceldb/mycel-mc-test-helper@sha256:9646d8b5d019fd20e8f4e1d782b29a56581d51c5a367e7c43156c0faac1a69f0}
     depends_on:
       minio:
         condition: service_started
