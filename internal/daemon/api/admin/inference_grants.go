@@ -167,15 +167,20 @@ func (s *AdminInferenceService) DeleteCredentialGrant(ctx context.Context, req *
 	if err != nil {
 		return nil, err
 	}
-	if refs, err := s.credentialGrantVectorReferences(ctx, grantID); err != nil {
+	vectorRefs, err := s.credentialGrantVectorReferences(ctx, grantID)
+	if err != nil {
 		return nil, err
-	} else if len(refs) > 0 {
-		return nil, referencedPrecondition("credential grant", refs)
 	}
-	if refs, err := s.standaloneDecisionReferences(ctx, spaceID.String(), func(decision domaininference.PolicyDecision) bool { return decision.CredentialGrantID == grantID }); err != nil {
+	decisionRefs, err := s.standaloneDecisionReferences(ctx, spaceID.String(), func(decision domaininference.PolicyDecision) bool { return decision.CredentialGrantID == grantID })
+	if err != nil {
 		return nil, mapAdminInferenceError(err, "list standalone access policy decisions")
-	} else if len(refs) > 0 {
-		return nil, referencedPrecondition("credential grant", refs)
+	}
+	allRefs := append(append([]string{}, vectorRefs...), decisionRefs...)
+	if len(vectorRefs) > 0 {
+		return nil, referencedPreconditionWithDetails("credential grant", vectorRefs, allRefs)
+	}
+	if len(decisionRefs) > 0 {
+		return nil, referencedPreconditionWithDetails("credential grant", decisionRefs, allRefs)
 	}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {

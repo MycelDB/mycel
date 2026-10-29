@@ -491,14 +491,18 @@ const (
 )
 
 func referencedPrecondition(resource string, refs []string) error {
-	refs = uniqueInferenceReferences(refs)
-	messageRefs := refs
+	return referencedPreconditionWithDetails(resource, refs, refs)
+}
+
+func referencedPreconditionWithDetails(resource string, messageRefs, allRefs []string) error {
+	messageRefs = uniqueInferenceReferences(messageRefs)
+	allRefs = uniqueInferenceReferences(allRefs)
 	if len(messageRefs) > maxReferenceMessageEvidence {
 		messageRefs = append(append([]string{}, messageRefs[:maxReferenceMessageEvidence]...), fmt.Sprintf("...%d more", len(messageRefs)-maxReferenceMessageEvidence))
 	}
 	st := status.New(codes.FailedPrecondition, fmt.Sprintf("%s is referenced by %s", resource, strings.Join(messageRefs, ", ")))
 
-	detailRefs := refs
+	detailRefs := allRefs
 	complete := true
 	if len(detailRefs) > maxReferenceDetailEvidence {
 		detailRefs = detailRefs[:maxReferenceDetailEvidence]
@@ -514,7 +518,7 @@ func referencedPrecondition(resource string, refs []string) error {
 		Metadata: map[string]string{
 			"resource":               resource,
 			"schema_version":         "1",
-			"total_reference_count":  strconv.Itoa(len(refs)),
+			"total_reference_count":  strconv.Itoa(len(allRefs)),
 			"detail_reference_count": strconv.Itoa(len(detailRefs)),
 			"details_complete":       strconv.FormatBool(complete),
 		},

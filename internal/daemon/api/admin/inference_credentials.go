@@ -250,12 +250,6 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 	if err != nil {
 		return nil, err
 	}
-	if len(vectorRefs) > 0 {
-		return nil, referencedPrecondition("credential", vectorRefs)
-	}
-	if len(grantRefs) > 0 && !req.GetDeleteGrants() {
-		return nil, referencedPrecondition("credential", grantRefs)
-	}
 	spaces, err := s.semantic.ListSpaceManagers(ctx)
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "list semantic spaces")
@@ -268,8 +262,14 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 		}
 		standaloneDecisionRefs = append(standaloneDecisionRefs, refs...)
 	}
-	if len(standaloneDecisionRefs) > 0 {
-		return nil, referencedPrecondition("credential", standaloneDecisionRefs)
+	allRefs := append(append(append([]string{}, vectorRefs...), grantRefs...), standaloneDecisionRefs...)
+	switch {
+	case len(vectorRefs) > 0:
+		return nil, referencedPreconditionWithDetails("credential", vectorRefs, allRefs)
+	case len(grantRefs) > 0 && !req.GetDeleteGrants():
+		return nil, referencedPreconditionWithDetails("credential", grantRefs, allRefs)
+	case len(standaloneDecisionRefs) > 0:
+		return nil, referencedPreconditionWithDetails("credential", standaloneDecisionRefs, allRefs)
 	}
 	ctx, release, err := s.beginSemanticMutation(ctx)
 	if err != nil {
