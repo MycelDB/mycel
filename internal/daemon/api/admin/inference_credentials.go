@@ -262,7 +262,11 @@ func (s *AdminInferenceService) DeleteCredential(ctx context.Context, req *admin
 		}
 		standaloneDecisionRefs = append(standaloneDecisionRefs, refs...)
 	}
-	allRefs := append(append(append([]string{}, vectorRefs...), grantRefs...), standaloneDecisionRefs...)
+	allRefs := append([]string{}, vectorRefs...)
+	if !req.GetDeleteGrants() {
+		allRefs = append(allRefs, grantRefs...)
+	}
+	allRefs = append(allRefs, standaloneDecisionRefs...)
 	switch {
 	case len(vectorRefs) > 0:
 		return nil, referencedPreconditionWithDetails("credential", vectorRefs, allRefs)

@@ -200,6 +200,28 @@ func TestDeleteCredentialAggregatesEveryBlockingReferenceCategory(t *testing.T) 
 			t.Fatalf("structured details missing %q: %+v", want, precondition.GetViolations())
 		}
 	}
+
+	_, err = svc.DeleteCredential(authenticatedContext(), &adminv1.AdminIntelligenceAccessCredentialServiceDeleteCredentialRequest{CredentialId: credentialID.String(), DeleteGrants: true})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DeleteCredential(delete grants) code=%s want FailedPrecondition: %v", status.Code(err), err)
+	}
+	st = status.Convert(err)
+	if !strings.Contains(st.Message(), "policy_decision:"+decisionID.String()) || strings.Contains(st.Message(), "credential_grant:") {
+		t.Fatalf("cascade legacy message included a non-blocking grant: %q", st.Message())
+	}
+	info = nil
+	precondition = nil
+	for _, detail := range st.Details() {
+		switch typed := detail.(type) {
+		case *errdetails.ErrorInfo:
+			info = typed
+		case *errdetails.PreconditionFailure:
+			precondition = typed
+		}
+	}
+	if info == nil || precondition == nil || info.GetMetadata()["total_reference_count"] != "1" || len(precondition.GetViolations()) != 1 || precondition.GetViolations()[0].GetSubject() != "policy_decision:"+decisionID.String() {
+		t.Fatalf("cascade structured details included non-blockers: info=%+v precondition=%+v", info, precondition)
+	}
 }
 
 func TestReferencedPreconditionBoundsIncompleteStructuredEvidence(t *testing.T) {
