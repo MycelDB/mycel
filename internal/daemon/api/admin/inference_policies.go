@@ -165,9 +165,6 @@ func (s *AdminInferenceService) DeleteAccessPolicy(ctx context.Context, req *adm
 			}
 		}
 	}
-	if len(refs) > 0 {
-		return nil, referencedPrecondition("access policy", refs)
-	}
 	standaloneRefs, err := s.standaloneDecisionReferences(ctx, spaceID.String(), func(decision domaininference.PolicyDecision) bool {
 		for _, matched := range decision.MatchedPolicyIDs {
 			if matched == policyID.String() {
@@ -179,8 +176,12 @@ func (s *AdminInferenceService) DeleteAccessPolicy(ctx context.Context, req *adm
 	if err != nil {
 		return nil, mapAdminInferenceError(err, "list standalone access policy decisions")
 	}
+	allRefs := append(append([]string{}, refs...), standaloneRefs...)
+	if len(refs) > 0 {
+		return nil, referencedPreconditionWithDetails("access policy", refs, allRefs)
+	}
 	if len(standaloneRefs) > 0 {
-		return nil, referencedPrecondition("access policy", standaloneRefs)
+		return nil, referencedPreconditionWithDetails("access policy", standaloneRefs, allRefs)
 	}
 	if err := spaceMgr.DeleteInferencePolicy(ctx, policyID); err != nil {
 		return nil, mapAdminInferenceError(err, "delete access policy")
