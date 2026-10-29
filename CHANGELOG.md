@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
+- Compose cluster tests now use immutable, anonymously pullable multiarch MinIO and mc helper images rebuilt from the exact previously validated upstream releases, replacing unavailable mutable Quay tags.
 - Semantic inference authorization denials now survive the planner's all-bindings-skipped fallback and return `PermissionDenied` for both local and Raft-forwarded searches. Partial search remains available when another binding succeeds, and the internal semantic-read boundary preserves categorized gRPC status codes instead of relabeling a leader's denial as `Internal`.
 
 ## [v0.21.0] - 2026-10-27
