@@ -3,11 +3,13 @@ package admin
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 	domaininference "github.com/myceldb/mycel/internal/inference/model"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -480,13 +482,48 @@ func (s *AdminInferenceService) credentialByID(ctx context.Context, id domainsem
 	return domainsemantic.InferenceCredential{}, status.Error(codes.NotFound, "credential not found")
 }
 
+const (
+	maxReferenceMessageEvidence = 32
+	maxReferenceDetailEvidence  = 256
+	referenceDetailReason       = "INFERENCE_RESOURCE_REFERENCED"
+	referenceDetailDomain       = "mycel.io"
+	referenceDetailType         = "mycel.io/inference-reference"
+)
+
 func referencedPrecondition(resource string, refs []string) error {
 	refs = uniqueInferenceReferences(refs)
-	const maxReferenceEvidence = 32
-	if len(refs) > maxReferenceEvidence {
-		refs = append(append([]string{}, refs[:maxReferenceEvidence]...), fmt.Sprintf("...%d more", len(refs)-maxReferenceEvidence))
+	messageRefs := refs
+	if len(messageRefs) > maxReferenceMessageEvidence {
+		messageRefs = append(append([]string{}, messageRefs[:maxReferenceMessageEvidence]...), fmt.Sprintf("...%d more", len(messageRefs)-maxReferenceMessageEvidence))
 	}
-	return status.Errorf(codes.FailedPrecondition, "%s is referenced by %s", resource, strings.Join(refs, ", "))
+	st := status.New(codes.FailedPrecondition, fmt.Sprintf("%s is referenced by %s", resource, strings.Join(messageRefs, ", ")))
+
+	detailRefs := refs
+	complete := true
+	if len(detailRefs) > maxReferenceDetailEvidence {
+		detailRefs = detailRefs[:maxReferenceDetailEvidence]
+		complete = false
+	}
+	violations := make([]*errdetails.PreconditionFailure_Violation, 0, len(detailRefs))
+	for _, ref := range detailRefs {
+		violations = append(violations, &errdetails.PreconditionFailure_Violation{Type: referenceDetailType, Subject: ref})
+	}
+	info := &errdetails.ErrorInfo{
+		Reason: referenceDetailReason,
+		Domain: referenceDetailDomain,
+		Metadata: map[string]string{
+			"resource":               resource,
+			"schema_version":         "1",
+			"total_reference_count":  strconv.Itoa(len(refs)),
+			"detail_reference_count": strconv.Itoa(len(detailRefs)),
+			"details_complete":       strconv.FormatBool(complete),
+		},
+	}
+	withDetails, err := st.WithDetails(info, &errdetails.PreconditionFailure{Violations: violations})
+	if err != nil {
+		return st.Err()
+	}
+	return withDetails.Err()
 }
 
 func uniqueInferenceReferences(refs []string) []string {

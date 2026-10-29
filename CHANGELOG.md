@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
+- Inference deletion conflicts now include bounded, versioned structured reference details in addition to the compatibility error message, allowing cleanup clients to prove complete immutable-audit closure when the legacy 32-reference message is truncated while still failing closed above the structured bound.
 - Compose cluster tests now use immutable, anonymously pullable multiarch MinIO and mc helper images rebuilt from the exact previously validated upstream releases, replacing unavailable mutable Quay tags.
 - Semantic inference authorization denials now survive the planner's all-bindings-skipped fallback and return `PermissionDenied` for both local and Raft-forwarded searches. Partial search remains available when another binding succeeds, and the internal semantic-read boundary preserves categorized gRPC status codes instead of relabeling a leader's denial as `Internal`.
 
