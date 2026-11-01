@@ -61,6 +61,84 @@ func TestDecodeIndexedCursorRejectsChecksummedIncompatibleModeState(t *testing.T
 	}
 }
 
+func TestDecodeIndexedCursorAcceptsReadOnlySnapshotCursorAcrossTransactions(t *testing.T) {
+	query, source, sourceTx := cursorSnapshotSourcePrepared(sessionmodel.TransactionModeReadOnly)
+	token := encodeIndexedCursor(source, indexedCursor{Mode: cursorModeSource, PageCursor: "opaque-index-key", RowsReturned: 1})
+	resumeTx := cursorSnapshotTx("tx-page-2", "domain-1", sessionmodel.TransactionModeReadOnly, 9)
+	resume := cursorPreparedWithToken(query, token, resumeTx)
+
+	cursor, err := decodeIndexedCursor(resume)
+	if err != nil {
+		t.Fatalf("decodeIndexedCursor() error = %v", err)
+	}
+	adjusted := indexedCursorSnapshotTransaction(resumeTx, cursor)
+	if adjusted.ID != sourceTx.ID || adjusted.BaseRevision != sourceTx.BaseRevision {
+		t.Fatalf("adjusted transaction = %#v, want id=%q base=%d", adjusted, sourceTx.ID, sourceTx.BaseRevision)
+	}
+}
+
+func TestDecodeIndexedCursorRejectsStatelessResumeAcrossScope(t *testing.T) {
+	query, source, _ := cursorSnapshotSourcePrepared(sessionmodel.TransactionModeReadOnly)
+	token := encodeIndexedCursor(source, indexedCursor{Mode: cursorModeSource, PageCursor: "opaque-index-key", RowsReturned: 1})
+	resume := cursorPreparedWithToken(query, token, cursorSnapshotTx("tx-page-2", "other-domain", sessionmodel.TransactionModeReadOnly, 9))
+	_, err := decodeIndexedCursor(resume)
+	expectStaleCursor(t, err)
+}
+
+func TestDecodeIndexedCursorRejectsReadWriteStatelessResume(t *testing.T) {
+	query, source, _ := cursorSnapshotSourcePrepared(sessionmodel.TransactionModeReadWrite)
+	token := encodeIndexedCursor(source, indexedCursor{Mode: cursorModeSource, PageCursor: "opaque-index-key", RowsReturned: 1})
+	resume := cursorPreparedWithToken(query, token, cursorSnapshotTx("tx-page-2", "domain-1", sessionmodel.TransactionModeReadOnly, 9))
+	_, err := decodeIndexedCursor(resume)
+	expectStaleCursor(t, err)
+}
+
+func TestDecodeIndexedCursorRejectsLegacyV1StatelessResume(t *testing.T) {
+	query, prepared, _ := cursorSnapshotSourcePrepared(sessionmodel.TransactionModeReadOnly)
+	cursor := indexedCursor{Version: 1, Mode: cursorModeSource, PageCursor: "opaque-index-key", RowsReturned: 1, PlanHash: indexedPlanHash(prepared), TransactionID: "tx-page-1", BaseRevision: 7, SchemaVersion: "schema-1", ReadViewIdentity: "0"}
+	cursor.Checksum = indexedCursorChecksum(cursor)
+	payload, err := json.Marshal(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared = cursorPreparedWithToken(query, indexedCursorPrefix+base64.RawURLEncoding.EncodeToString(payload), cursorSnapshotTx("tx-page-2", "domain-1", sessionmodel.TransactionModeReadOnly, 9))
+	_, err = decodeIndexedCursor(prepared)
+	expectStaleCursor(t, err)
+}
+
+func cursorSnapshotSourcePrepared(mode sessionmodel.TransactionMode) (querylogical.Query, PreparedQuery, sessionmodel.GraphTransaction) {
+	query := querylogical.Query{Start: querylogical.NodePattern{Alias: "n", Labels: []string{"Document"}}, Page: querylogical.PageSpec{Size: 1}}
+	tx := cursorSnapshotTx("tx-page-1", "domain-1", mode, 7)
+	return query, PreparedQuery{
+		Statement:        querylogical.ReadStatement(query),
+		Physical:         queryphysical.Plan{Family: queryphysical.FamilyLabelIndex, SchemaVersion: "schema-1"},
+		Planning:         PlanningContext{Transaction: tx},
+		readViewIdentity: "0",
+	}, tx
+}
+
+func cursorPreparedWithToken(query querylogical.Query, token string, tx sessionmodel.GraphTransaction) PreparedQuery {
+	query.Page.Cursor = token
+	return PreparedQuery{
+		Statement:        querylogical.ReadStatement(query),
+		Physical:         queryphysical.Plan{Family: queryphysical.FamilyLabelIndex, SchemaVersion: "schema-1"},
+		Planning:         PlanningContext{Transaction: tx},
+		readViewIdentity: "0",
+	}
+}
+
+func cursorSnapshotTx(id, domainID string, mode sessionmodel.TransactionMode, baseRevision int64) sessionmodel.GraphTransaction {
+	return sessionmodel.GraphTransaction{ID: id, PrincipalID: "principal-1", SpaceID: "space-1", DomainID: domainID, Mode: mode, BaseRevision: baseRevision}
+}
+
+func expectStaleCursor(t *testing.T, err error) {
+	t.Helper()
+	var queryErr *querylogical.QueryError
+	if !errors.As(err, &queryErr) || queryErr.Code != querylogical.ErrorStaleCursor {
+		t.Fatalf("error = %#v, want stale cursor", err)
+	}
+}
+
 func TestDecodeIndexedCursorRejectsLegacySourceCursorForBlockingShape(t *testing.T) {
 	for _, token := range []string{
 		"shapeidx:eyJpbmRleF9jdXJzb3IiOiJvcGFxdWUiLCJyb3dzX3JldHVybmVkIjoxfQ",

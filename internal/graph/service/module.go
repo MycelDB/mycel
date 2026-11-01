@@ -444,8 +444,9 @@ func (m *Module) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction
 }
 
 // ReadViewIdentity identifies the mutable transaction overlay observed by query
-// execution. BaseRevision and transaction identity are already bound by query
-// cursors; the operation count changes for every staged node or edge mutation.
+// execution. Read-only query cursors bind the snapshot revision and graph scope;
+// read-write cursors also bind the transaction overlay identity because the
+// operation count changes for every staged node or edge mutation.
 func (m *Module) ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error) {
 	if err := ensureReadable(tx); err != nil {
 		return "", err

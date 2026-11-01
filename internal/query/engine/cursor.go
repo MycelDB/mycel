@@ -12,12 +12,14 @@ import (
 
 	querylogical "github.com/myceldb/mycel/internal/query/logical"
 	queryphysical "github.com/myceldb/mycel/internal/query/physical"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 )
 
 const (
 	indexedCursorPrefix      = "qrx7:"
 	legacyShapedCursorPrefix = "shapeidx:"
-	indexedCursorVersion     = 1
+	indexedCursorMinVersion  = 1
+	indexedCursorVersion     = 2
 	cursorModeSource         = "source"
 	cursorModeOutput         = "output"
 )
@@ -27,6 +29,10 @@ type indexedCursor struct {
 	PlanHash         string `json:"plan_hash"`
 	TransactionID    string `json:"transaction_id"`
 	BaseRevision     int64  `json:"base_revision"`
+	TransactionMode  string `json:"transaction_mode,omitempty"`
+	PrincipalID      string `json:"principal_id,omitempty"`
+	SpaceID          string `json:"space_id,omitempty"`
+	DomainID         string `json:"domain_id,omitempty"`
 	SchemaVersion    string `json:"schema_version,omitempty"`
 	ReadViewIdentity string `json:"read_view_identity,omitempty"`
 	Mode             string `json:"mode"`
@@ -119,7 +125,7 @@ func legacyIndexSourceFamily(family queryphysical.Family) bool {
 }
 
 func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
-	if cursor.Version != indexedCursorVersion {
+	if cursor.Version < indexedCursorMinVersion || cursor.Version > indexedCursorVersion {
 		return staleCursor("cursor version is unsupported", nil)
 	}
 	wantChecksum := indexedCursorChecksum(cursor)
@@ -150,13 +156,8 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	if prepared.Physical.Family != queryphysical.FamilySemantic && cursor.SemanticIdentity != "" {
 		return staleCursor("cursor contains incompatible semantic continuation state", nil)
 	}
-	if cursor.TransactionID != prepared.Planning.Transaction.ID || cursor.BaseRevision != prepared.Planning.Transaction.BaseRevision {
-		return staleCursor("cursor transaction snapshot does not match the prepared query", nil)
-	}
-	// Version-1 cursors issued before read-view binding omitted this field. They
-	// remain compatible only with an unchanged/empty overlay.
-	if cursor.ReadViewIdentity != prepared.readViewIdentity && !(cursor.ReadViewIdentity == "" && prepared.readViewIdentity == "0") {
-		return staleCursor("cursor transaction overlay does not match the current read view", nil)
+	if err := validateIndexedCursorSnapshot(prepared, cursor); err != nil {
+		return err
 	}
 	if cursor.SchemaVersion != prepared.Physical.SchemaVersion {
 		return staleCursor("cursor schema version does not match the prepared query", nil)
@@ -167,11 +168,63 @@ func validateIndexedCursor(prepared PreparedQuery, cursor indexedCursor) error {
 	return nil
 }
 
+func validateIndexedCursorSnapshot(prepared PreparedQuery, cursor indexedCursor) error {
+	tx := prepared.Planning.Transaction
+	if cursor.Version >= 2 && !indexedCursorScopeMatches(tx, cursor) {
+		return staleCursor("cursor graph scope does not match the prepared query", nil)
+	}
+	if cursor.TransactionID == tx.ID && cursor.BaseRevision == tx.BaseRevision {
+		// Version-1 cursors issued before read-view binding omitted this field. They
+		// remain compatible only with an unchanged/empty read-only view.
+		if cursor.ReadViewIdentity != prepared.readViewIdentity && !(cursor.Version == 1 && cursor.ReadViewIdentity == "" && prepared.readViewIdentity == "0") {
+			return staleCursor("cursor transaction overlay does not match the current read view", nil)
+		}
+		return nil
+	}
+	if !indexedCursorCanResumeReadOnlySnapshot(prepared, cursor) {
+		return staleCursor("cursor transaction snapshot does not match the prepared query", nil)
+	}
+	return nil
+}
+
+func indexedCursorScopeMatches(tx sessionmodel.GraphTransaction, cursor indexedCursor) bool {
+	return cursor.PrincipalID == tx.PrincipalID && cursor.SpaceID == tx.SpaceID && cursor.DomainID == tx.DomainID
+}
+
+func indexedCursorCanResumeReadOnlySnapshot(prepared PreparedQuery, cursor indexedCursor) bool {
+	if cursor.Version < 2 {
+		return false
+	}
+	tx := prepared.Planning.Transaction
+	if tx.Mode != sessionmodel.TransactionModeReadOnly || cursor.TransactionMode != string(sessionmodel.TransactionModeReadOnly) {
+		return false
+	}
+	if prepared.readViewIdentity != "0" || cursor.ReadViewIdentity != "0" {
+		return false
+	}
+	if cursor.BaseRevision < 0 || tx.BaseRevision < cursor.BaseRevision {
+		return false
+	}
+	return indexedCursorScopeMatches(tx, cursor)
+}
+
+func indexedCursorSnapshotTransaction(tx sessionmodel.GraphTransaction, cursor indexedCursor) sessionmodel.GraphTransaction {
+	if cursor.Version >= 2 && cursor.TransactionID != "" && cursor.TransactionID != tx.ID && tx.Mode == sessionmodel.TransactionModeReadOnly && cursor.TransactionMode == string(sessionmodel.TransactionModeReadOnly) && cursor.ReadViewIdentity == "0" {
+		tx.ID = cursor.TransactionID
+		tx.BaseRevision = cursor.BaseRevision
+	}
+	return tx
+}
+
 func encodeIndexedCursor(prepared PreparedQuery, cursor indexedCursor) string {
 	cursor.Version = indexedCursorVersion
 	cursor.PlanHash = indexedPlanHash(prepared)
 	cursor.TransactionID = prepared.Planning.Transaction.ID
 	cursor.BaseRevision = prepared.Planning.Transaction.BaseRevision
+	cursor.TransactionMode = string(prepared.Planning.Transaction.Mode)
+	cursor.PrincipalID = prepared.Planning.Transaction.PrincipalID
+	cursor.SpaceID = prepared.Planning.Transaction.SpaceID
+	cursor.DomainID = prepared.Planning.Transaction.DomainID
 	cursor.SchemaVersion = prepared.Physical.SchemaVersion
 	cursor.ReadViewIdentity = prepared.readViewIdentity
 	cursor.Checksum = indexedCursorChecksum(cursor)

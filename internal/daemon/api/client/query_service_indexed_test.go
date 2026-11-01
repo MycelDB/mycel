@@ -218,7 +218,15 @@ func TestQueryServiceExecuteQueryIndexedPagination(t *testing.T) {
 	if err != nil || page1.GetNextPageToken() == "" || !reflect.DeepEqual(journalTitles(page1.GetRows()), []string{"a"}) {
 		t.Fatalf("page1 rows=%+v next=%q err=%v", journalTitles(page1.GetRows()), page1.GetNextPageToken(), err)
 	}
-	page2, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1, PageToken: page1.GetNextPageToken()})
+	writeTx = fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_WRITE)
+	if _, err := graphSvc.CreateNode(fixture.ctx, &clientv1.CreateNodeRequest{TransactionId: writeTx, Node: &clientv1.NodeCreate{Labels: []string{"JournalEntry"}, Properties: mustStruct(t, map[string]any{"title": "inserted", "date": "2026-07-18T12:00:00"})}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := txSvc.CommitTransaction(fixture.ctx, &clientv1.CommitTransactionRequest{TransactionId: writeTx}); err != nil {
+		t.Fatal(err)
+	}
+	statelessReadTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
+	page2, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: statelessReadTx, Query: journalOrderedQuery(clientv1.SortDirection_SORT_DIRECTION_ASC), PageSize: 1, PageToken: page1.GetNextPageToken()})
 	if err != nil || page2.GetNextPageToken() != "" || !reflect.DeepEqual(journalTitles(page2.GetRows()), []string{"b"}) {
 		t.Fatalf("page2 rows=%+v next=%q err=%v", journalTitles(page2.GetRows()), page2.GetNextPageToken(), err)
 	}

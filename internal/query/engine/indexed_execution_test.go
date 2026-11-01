@@ -320,7 +320,7 @@ func TestEngineLabelAndTagScansUseNativeSources(t *testing.T) {
 	}
 }
 
-func TestEngineRejectsIndexedCursorForChangedSnapshotOrRequest(t *testing.T) {
+func TestEngineValidatesIndexedCursorSnapshotAndRequest(t *testing.T) {
 	nodes := indexedNodes("a", "b", "c")
 	access := newIndexedTestAccess(nodes)
 	engine := queryengine.New(queryengine.Ports{Entities: access, Indexes: access})
@@ -357,9 +357,19 @@ func TestEngineRejectsIndexedCursorForChangedSnapshotOrRequest(t *testing.T) {
 
 	query.Returns[0].OutputName = "name"
 	changedTx := tx
+	changedTx.ID = "tx-indexed-next-request"
 	changedTx.BaseRevision++
 	changed = prepareIndexed(t, engine, changedTx, query)
-	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: changedTx}, changed)
+	second, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: changedTx}, changed)
+	if err != nil || !reflect.DeepEqual(resultNames(second), []string{"b"}) {
+		t.Fatalf("stateless resume with later read tx = %#v err=%v", second, err)
+	}
+
+	tooOldTx := tx
+	tooOldTx.ID = "tx-indexed-too-old"
+	tooOldTx.BaseRevision--
+	changed = prepareIndexed(t, engine, tooOldTx, query)
+	_, err = engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tooOldTx}, changed)
 	assertEngineQueryCode(t, err, querylogical.ErrorStaleCursor)
 
 	schema := indexedSchema()
