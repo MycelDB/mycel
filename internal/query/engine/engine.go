@@ -173,7 +173,7 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 	if err != nil {
 		return querylogical.Result{}, err
 	}
-	pageRows := indexedPageRows(query, cursor, prepared.Physical.Family)
+	pageRows := indexedPageRows(query, cursor)
 	continuation := &executionContinuation{}
 	var source queryexecution.Operator
 	if pageRows == 0 {
@@ -187,6 +187,7 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 			source = queryexecution.NewNodePatternFilter(source, query.Start, prepared.Planning.Parameters, execution.Now, tracker)
 		}
 	}
+	originalQuery := query
 	query = executionQuery(query, prepared.Physical, cursor)
 
 	result, err := queryexecution.Shape(ctx, source, query, tracker, queryexecution.ShapeOptions{
@@ -213,6 +214,9 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 		return querylogical.Result{}, staleCursor("transaction overlay changed during query execution", nil)
 	}
 	result.NextCursor = wrapIndexedNextCursor(prepared, result.NextCursor, continuation.semanticIdentity)
+	if indexedQueryLimitExhausted(originalQuery, cursor, len(result.Rows)) {
+		result.NextCursor = ""
+	}
 	result.Diagnostics = mergeRuntimeDiagnostics(queryphysical.Explain(prepared.Physical), result.Diagnostics)
 	if prepared.Physical.Family == queryphysical.FamilyIndexedSubtree {
 		result.Diagnostics.RootCount = result.Diagnostics.RowsReturned
@@ -232,7 +236,22 @@ func physicalBudget(plan queryphysical.Plan) queryexecution.Budget {
 	}
 }
 
-func indexedPageRows(query querylogical.Query, cursor indexedCursor, families ...queryphysical.Family) int {
+func indexedQueryLimitExhausted(query querylogical.Query, cursor indexedCursor, returnedRows int) bool {
+	if query.Page.Limit <= 0 {
+		return false
+	}
+	return int64(returnedRows) >= indexedQueryLimitRemaining(query, cursor)
+}
+
+func indexedQueryLimitRemaining(query querylogical.Query, cursor indexedCursor) int64 {
+	priorRows := cursor.RowsReturned
+	if cursor.Mode == cursorModeOutput {
+		priorRows = int64(cursor.OutputOffset)
+	}
+	return query.Page.Limit - priorRows
+}
+
+func indexedPageRows(query querylogical.Query, cursor indexedCursor) int {
 	pageSize := int(query.Page.Size)
 	if pageSize <= 0 || pageSize > 500 {
 		pageSize = 500
@@ -240,16 +259,7 @@ func indexedPageRows(query querylogical.Query, cursor indexedCursor, families ..
 	if query.Page.Limit <= 0 {
 		return pageSize
 	}
-	if len(families) > 0 && families[0] == queryphysical.FamilyIndexedSubtree {
-		if query.Page.Limit < int64(pageSize) {
-			return int(query.Page.Limit)
-		}
-		return pageSize
-	}
-	remaining := query.Page.Limit - cursor.RowsReturned
-	if cursor.Mode == cursorModeOutput {
-		remaining = query.Page.Limit - int64(cursor.OutputOffset)
-	}
+	remaining := indexedQueryLimitRemaining(query, cursor)
 	if remaining <= 0 {
 		return 0
 	}
@@ -266,8 +276,13 @@ func executionQuery(query querylogical.Query, plan queryphysical.Plan, cursor in
 		if pageSize <= 0 || pageSize > 500 {
 			pageSize = 500
 		}
-		if query.Page.Limit > 0 && query.Page.Limit < int64(pageSize) {
-			pageSize = int32(query.Page.Limit)
+		if query.Page.Limit > 0 {
+			remaining := indexedQueryLimitRemaining(query, cursor)
+			if remaining <= 0 {
+				pageSize = 0
+			} else if remaining < int64(pageSize) {
+				pageSize = int32(remaining)
+			}
 		}
 		query.Page.Size = pageSize
 		query.Page.Limit = 0

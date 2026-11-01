@@ -307,7 +307,7 @@ Scalar values use `google.protobuf.Value` so string, number, boolean, and null-l
 
 ## Pagination
 
-`ExecuteQueryRequest` includes `page_size` and `page_token`.
+`ExecuteQueryRequest` includes `page_size` and `page_token`. Query `limit` / `FETCH` is a total result cap; `page_size` is only the response fetch size. Implementations emit a continuation token only when more rows remain within the query cap.
 
 Implementations may cap page size. Query plans use checksum-protected opaque cursor envelopes bound to the statement, parameters, access plan, transaction/read view, snapshot revision, schema, and mutable overlay identity. Semantic continuations also bind a deterministic identity for the ranked candidate IDs and fail stale if ranking changes between pages. Resumable scans store finite source checkpoints; blocking, traversal, and set plans use output-offset replay when a source checkpoint cannot safely reproduce the next row. Mutation statements execute exactly once and do not issue or accept continuation tokens: if returned mutation rows exceed one response page, the statement scope rolls back and returns an actionable resource error. Compatible historical indexed cursor forms remain accepted only for compatible source-safe families and unchanged views; they are never reinterpreted for another plan.
 

@@ -770,7 +770,7 @@ func TestQueryServiceExecuteQueryIndexedRootSubtreePagination(t *testing.T) {
 	}
 	querySvc := newQRX8QueryService(fixture, manager)
 	readTx := fixture.beginTransaction(t, clientv1.TransactionMode_TRANSACTION_MODE_READ_ONLY)
-	query := pkmJournalSubtreeQuery(20260701, 20260714, 7, 0, 0)
+	query := pkmJournalSubtreeQuery(20260701, 20260714, 0, 0, 0)
 	page1, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: query, PageSize: 7})
 	if err != nil || page1.GetNextPageToken() == "" {
 		t.Fatalf("page1 next=%q err=%v", page1.GetNextPageToken(), err)
@@ -783,6 +783,35 @@ func TestQueryServiceExecuteQueryIndexedRootSubtreePagination(t *testing.T) {
 	want := []int{20260714, 20260713, 20260712, 20260711, 20260710, 20260709, 20260708, 20260707, 20260706, 20260705, 20260704, 20260703, 20260702, 20260701}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("paged root days = %+v, want %+v", got, want)
+	}
+
+	capped := pkmJournalSubtreeQuery(20260701, 20260714, 10, 0, 0)
+	cappedPage1, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: capped, PageSize: 7})
+	if err != nil || cappedPage1.GetNextPageToken() == "" {
+		t.Fatalf("capped page1 next=%q err=%v", cappedPage1.GetNextPageToken(), err)
+	}
+	cappedPage2, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: capped, PageSize: 7, PageToken: cappedPage1.GetNextPageToken()})
+	if err != nil {
+		t.Fatalf("capped page2 error = %v", err)
+	}
+	cappedGot := append(journalDaysFromRows(cappedPage1.GetRows()), journalDaysFromRows(cappedPage2.GetRows())...)
+	if !reflect.DeepEqual(cappedGot, want[:10]) {
+		t.Fatalf("capped root days = %+v, want %+v", cappedGot, want[:10])
+	}
+	if cappedPage2.GetNextPageToken() != "" {
+		t.Fatalf("LIMIT-exhausted capped query emitted unusable cursor %q", cappedPage2.GetNextPageToken())
+	}
+
+	limited := pkmJournalSubtreeQuery(20260701, 20260714, 7, 0, 0)
+	limitedPage, err := querySvc.ExecuteQuery(fixture.ctx, &clientv1.ExecuteQueryRequest{TransactionId: readTx, Query: limited, PageSize: 7})
+	if err != nil {
+		t.Fatalf("limited page error = %v", err)
+	}
+	if got := journalDaysFromRows(limitedPage.GetRows()); !reflect.DeepEqual(got, want[:7]) {
+		t.Fatalf("limited root days = %+v, want %+v", got, want[:7])
+	}
+	if limitedPage.GetNextPageToken() != "" {
+		t.Fatalf("LIMIT-exhausted query emitted unusable cursor %q", limitedPage.GetNextPageToken())
 	}
 }
 
