@@ -31,8 +31,14 @@ func (e *Engine) indexedSource(ctx context.Context, execution ExecutionContext, 
 		batchSize = requested
 	}
 	if prepared.Physical.Family == queryphysical.FamilyIndexedSubtree && prepared.Statement.Read.Page.Limit > 0 {
-		if requested := int(prepared.Statement.Read.Page.Limit) + 1; requested < batchSize {
-			batchSize = requested
+		remaining := prepared.Statement.Read.Page.Limit - cursor.RowsReturned
+		if cursor.Mode == cursorModeOutput {
+			remaining = prepared.Statement.Read.Page.Limit - int64(cursor.OutputOffset)
+		}
+		if remaining > 0 {
+			if requested := int(remaining) + 1; requested < batchSize {
+				batchSize = requested
+			}
 		}
 	} else if prepared.Statement.Read.Page.Limit > 0 {
 		remaining := prepared.Statement.Read.Page.Limit - int64(cursor.OutputOffset)

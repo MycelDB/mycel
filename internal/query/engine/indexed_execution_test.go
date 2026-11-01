@@ -954,6 +954,16 @@ func TestEngineExecutesOrderedSubtreesWithTreeAndGraphProjection(t *testing.T) {
 			t.Fatalf("unbounded subtree adjacency scan: %#v", scan)
 		}
 	}
+
+	limitedQuery := query
+	limitedQuery.Page = querylogical.PageSpec{Size: 1, Limit: 1}
+	limited, err := engine.Execute(context.Background(), queryengine.ExecutionContext{Transaction: tx, Budget: queryengine.WorkBudget{BatchSize: 2}}, prepareIndexed(t, engine, tx, limitedQuery))
+	if err != nil || fmt.Sprint(resultNames(limited)) != "[root-a]" {
+		t.Fatalf("limited subtree=%#v err=%v", limited, err)
+	}
+	if limited.NextCursor != "" {
+		t.Fatalf("limited subtree emitted unusable cursor %q", limited.NextCursor)
+	}
 }
 
 func indexedEdge(index int, from graph.Node, to graph.Node, label string) graph.Edge {
