@@ -173,6 +173,8 @@ func (e *Engine) Execute(ctx context.Context, execution ExecutionContext, prepar
 	if err != nil {
 		return querylogical.Result{}, err
 	}
+	execution.Transaction = indexedCursorSnapshotTransaction(execution.Transaction, cursor)
+	prepared.Planning.Transaction = execution.Transaction
 	pageRows := indexedPageRows(query, cursor)
 	continuation := &executionContinuation{}
 	var source queryexecution.Operator
