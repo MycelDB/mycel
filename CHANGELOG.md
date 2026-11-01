@@ -6,6 +6,16 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.21.2] - 2026-11-01
+
+### Fixed
+
+- Indexed query continuation tokens can now be resumed by stateless clients that open a later read-only transaction in the same principal/space/domain scope. Resumed execution uses the cursor's captured snapshot revision instead of the later transaction's current revision, while read-write overlay cursors remain transaction/read-view-bound (#287, #293).
+
+### Compatibility
+
+- Patch release for the daemon only. Public protobuf/API bindings remain compatible with the existing v0.21 API ref pinned in `.release/mycel-api-ref`; no SDK, Console, or Lab release is required for the stateless indexed query cursor fix.
+
 ## [v0.21.1] - 2026-11-01
 
 ### Fixed
