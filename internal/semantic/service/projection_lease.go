@@ -161,7 +161,7 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 	}
 	observations := map[semanticProjectionBindingKey]semanticProjectionObservation{}
 	if leader == 0 || leader != m.raftLocalNode {
-		return nil, fmt.Errorf("semantic projection is unavailable without local partition leadership")
+		return nil, &ProjectionReadinessError{LocalNode: uint64(m.raftLocalNode), Expected: ProjectionReadinessTuple{LeaderNode: uint64(leader), LeaderTerm: term}, Reasons: []string{ProjectionReadinessNoLocalLeadership}}
 	}
 	m.projectionLeasesMu.Lock()
 	state, err := m.loadProjectionLeasesLocked(in.SpaceID)
@@ -234,14 +234,14 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 				}
 			}
 			if !ready {
-				recovered, recoverErr := m.recoverProjectionLeaseForCurrentLeadership(ctx, in.SpaceID, rule, binding, leader, term, status)
+				recovery, recoverErr := m.recoverProjectionLeaseForCurrentLeadership(ctx, in.SpaceID, rule, binding, leader, term, status)
 				if recoverErr != nil {
 					return nil, recoverErr
 				}
-				ready = recovered
-			}
-			if !ready {
-				return nil, fmt.Errorf("semantic projection for rule %s binding %q is not ready for leader %d term %d", rule.ID, binding.Key, leader, term)
+				if !recovery.ready {
+					expected := ProjectionReadinessTuple{LeaderNode: uint64(leader), LeaderTerm: term, SemanticGeneration: status.SemanticGeneration, RebuildEpoch: status.Rebuild.RebuildEpoch, FreshThrough: status.FreshThroughGraphRevision}
+					return nil, newProjectionReadinessError(state.Entries, rule.ID, binding.Key, uint64(m.raftLocalNode), expected, status.Rebuild.RebuildState, recovery.blockedReason)
+				}
 			}
 			observations[key] = current
 			if _, searched := searchedBindings[key]; searched {
@@ -262,26 +262,31 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 // proves that this node completed the projection for the same generation,
 // rebuild epoch, and freshness frontier, while the local search-index state
 // proves that the projection files survived restart and remain searchable.
-func (m *Module) recoverProjectionLeaseForCurrentLeadership(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, leader consensus.NodeID, term uint64, status ReliabilityStatus) (bool, error) {
+func (m *Module) recoverProjectionLeaseForCurrentLeadership(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, leader consensus.NodeID, term uint64, status ReliabilityStatus) (projectionRecoveryResult, error) {
 	leadership, ok := semanticOperationLeadershipFromContext(ctx, spaceID)
 	if !ok || leadership.NodeID != leader || leadership.Term != term || leader == 0 || leader != m.raftLocalNode {
-		return false, nil
+		return projectionRecoveryResult{blockedReason: ProjectionReadinessLeadershipChanged}, nil
 	}
 	rebuildState := strings.ToLower(strings.TrimSpace(status.Rebuild.RebuildState))
-	if rebuildState == "required" || rebuildState == "running" || rebuildState == "failed" {
-		return false, nil
+	switch rebuildState {
+	case "required":
+		return projectionRecoveryResult{blockedReason: ProjectionReadinessRebuildRequired}, nil
+	case "running":
+		return projectionRecoveryResult{blockedReason: ProjectionReadinessRebuildRunning}, nil
+	case "failed":
+		return projectionRecoveryResult{blockedReason: ProjectionReadinessRebuildFailed}, nil
 	}
 	reader := m.localVectorBackend()
 	indexState, err := reader.ReadSearchIndexState(ctx, vectorstore.SearchIndexKey{SpaceID: spaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: binding.VectorStoreID})
 	if err != nil {
-		return false, fmt.Errorf("read local semantic search index state for projection recovery: %w", err)
+		return projectionRecoveryResult{}, fmt.Errorf("read local semantic search index state for projection recovery: %w", err)
 	}
 	indexReady := strings.ToLower(strings.TrimSpace(indexState.State)) == "ready"
 	if !indexReady && status.FreshThroughGraphRevision > 0 {
 		key := vectorstore.SearchIndexKey{SpaceID: spaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: binding.VectorStoreID}
 		rebuilt, rebuildErr := reader.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{MaxRecords: 100000, MaxBytes: 256 << 20, SemanticGeneration: status.SemanticGeneration, RebuildEpoch: status.Rebuild.RebuildEpoch})
 		if rebuildErr != nil {
-			return false, fmt.Errorf("rebuild local semantic search index for projection recovery: %w", rebuildErr)
+			return projectionRecoveryResult{}, fmt.Errorf("rebuild local semantic search index for projection recovery: %w", rebuildErr)
 		}
 		indexReady = strings.ToLower(strings.TrimSpace(rebuilt.State)) == "ready"
 	}
@@ -289,7 +294,7 @@ func (m *Module) recoverProjectionLeaseForCurrentLeadership(ctx context.Context,
 	state, err := m.loadProjectionLeasesLocked(spaceID)
 	m.projectionLeasesMu.Unlock()
 	if err != nil {
-		return false, err
+		return projectionRecoveryResult{}, err
 	}
 	localEvidence := false
 	for _, entry := range state.Entries {
@@ -301,23 +306,23 @@ func (m *Module) recoverProjectionLeaseForCurrentLeadership(ctx context.Context,
 	if !localEvidence && indexReady {
 		localEvidence, err = m.localProjectionHasCurrentRecordEvidence(ctx, spaceID, rule, binding, status)
 		if err != nil {
-			return false, err
+			return projectionRecoveryResult{}, err
 		}
 	}
 	if !localEvidence && status.FreshThroughGraphRevision > 0 {
 		result, backfillErr := m.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, Force: true, Reconcile: true, Limit: 4096, SourceGraphRevision: status.FreshThroughGraphRevision, PinSourceGraphRevision: true, SemanticGeneration: status.SemanticGeneration, RebuildEpoch: status.Rebuild.RebuildEpoch})
 		if backfillErr != nil {
-			return false, fmt.Errorf("recover local semantic projection from graph truth: %w", backfillErr)
+			return projectionRecoveryResult{}, fmt.Errorf("recover local semantic projection from graph truth: %w", backfillErr)
 		}
 		localEvidence = result.FailedCount == 0 && result.NextOffset == 0 && result.GeneratedCount > 0
 	}
 	if !localEvidence {
-		return false, nil
+		return projectionRecoveryResult{blockedReason: ProjectionReadinessMissingBaseline}, nil
 	}
 	if err := m.saveProjectionLease(ctx, spaceID, rule.ID, binding.Key, status.SemanticGeneration, status.Rebuild.RebuildEpoch, status.FreshThroughGraphRevision); err != nil {
-		return false, err
+		return projectionRecoveryResult{}, err
 	}
-	return true, nil
+	return projectionRecoveryResult{ready: true}, nil
 }
 
 func (m *Module) localProjectionHasCurrentRecordEvidence(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, status ReliabilityStatus) (bool, error) {
