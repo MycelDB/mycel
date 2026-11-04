@@ -65,6 +65,22 @@ raw vectors, provider credentials, provider responses, or filesystem paths.
 Hybrid readiness failures are not silently converted to lexical-only success,
 even when the caller did not set `require_both`.
 
+## Stateless ingress routing
+
+Public lexical/hybrid `Search` and `GetLexicalIndexStatus` requests are scoped by
+space/domain and the authenticated principal, not by a graph session or
+transaction. A follower forwards these exact RPC methods to the graph partition
+leader. The backend permits those two methods without graph route IDs while
+retaining cluster-token authentication, admission/cluster matching, target-node
+validation, forwarding-depth limits, and authorization by the target API handler.
+Other graph/session/transaction operations retain their existing route-ID checks.
+
+`InvalidArgument: session_id or transaction_id is required` on this search/status
+path identifies the older forwarding guard, not a projection-readiness mismatch.
+Do not work around it by inventing a graph session ID or disabling backend
+authentication. Use a candidate containing the stateless search forwarding fix;
+retain the exact source/image identity when reporting validation.
+
 ## Read-only triage
 
 Do not delete PVCs, reset data directories, edit lease JSON, change domain privacy
