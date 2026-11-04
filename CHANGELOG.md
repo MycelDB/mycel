@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
+- Clustered lexical indexing now schedules durable graph-change replay when a node acquires a partition leadership term, including scopes created while that node was a follower. New domains become searchable after retained-state leadership changes without another graph write or an operator rebuild when complete notification history is available; ownership, freshness, and replay-gap checks remain fail-closed (#297).
 - Stateless lexical/hybrid search and lexical-status requests can now be forwarded from a follower to the graph partition leader without inventing graph session or transaction IDs. The exception is limited to the exact search/status RPC methods; backend authentication, cluster admission, target/principal authorization, and route-loop guards remain enforced (#299 validation follow-up).
 - Semantic projection readiness failures now identify missing leases/baselines and leader, term, generation, rebuild-epoch, or freshness mismatches. Direct and hybrid search preserve structured readiness details across cluster forwarding and use `Unavailable` for transient readiness or `FailedPrecondition` for required/failed rebuilds, without weakening projection fences (#299).
 

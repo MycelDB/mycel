@@ -9,17 +9,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
 const (
 	asyncLexicalConsumerName       = "lexical-indexing"
 	asyncLexicalRuntimeServiceName = "async_lexical_indexing"
+	asyncLexicalLeadershipPoll     = 250 * time.Millisecond
 )
+
+var errAsyncLexicalNotLocalOwner = errors.New("async lexical scope is not locally owned")
 
 type asyncLexicalConsumer struct {
 	lexical *lexicalservice.Module
@@ -65,7 +71,7 @@ type asyncLexicalCoordinator struct {
 	wg      sync.WaitGroup
 }
 
-func startAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module, revisions asyncLexicalDomainRevisionReader) (*asyncLexicalRuntimeService, error) {
+func startAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module, revisions asyncLexicalDomainRevisionReader, groups *consensus.MultiGroup, partitionCount uint32) (*asyncLexicalRuntimeService, error) {
 	registration, coordinator, err := registerAsyncLexicalConsumer(ctx, logger, notifications, lexical, revisions)
 	if err != nil || coordinator == nil {
 		return nil, err
@@ -73,6 +79,10 @@ func startAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notific
 	coordinator.wg.Add(1)
 	go func() {
 		defer coordinator.wg.Done()
+		if groups != nil {
+			replayAsyncLexicalLeadershipScopes(coordinator.ctx, logger, notifications, coordinator, groups, partitionCount)
+			return
+		}
 		replayAsyncLexicalStoredScopes(coordinator.ctx, logger, notifications, coordinator)
 	}()
 	return &asyncLexicalRuntimeService{registration: registration, coordinator: coordinator}, nil
@@ -229,7 +239,7 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 			c.mu.Unlock()
 			return
 		}
-		if errors.Is(err, graphnotification.ErrOutOfRange) {
+		if errors.Is(err, graphnotification.ErrOutOfRange) || errors.Is(err, errAsyncLexicalNotLocalOwner) {
 			c.mu.Lock()
 			if worker.pending {
 				c.mu.Unlock()
@@ -240,7 +250,7 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 				delete(c.workers, key)
 			}
 			c.mu.Unlock()
-			if c.logger != nil {
+			if c.logger != nil && errors.Is(err, graphnotification.ErrOutOfRange) {
 				c.logger.Error("async lexical durable replay requires operator rebuild", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
 			}
 			return
@@ -264,6 +274,70 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 			}
 		}
 	}
+}
+
+// Live notifications are leader-gated, so a follower can persist a new scope
+// without ever starting its lexical worker. Observe local partition terms even
+// while idle, and replay owned scopes once per term. The observer only schedules
+// existing ordered replay; it never resets a cursor or bypasses a history gap.
+func replayAsyncLexicalLeadershipScopes(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, coordinator *asyncLexicalCoordinator, groups *consensus.MultiGroup, partitionCount uint32) {
+	ticker := time.NewTicker(asyncLexicalLeadershipPoll)
+	defer ticker.Stop()
+	seen := map[uint32]uint64{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		next, err := scheduleAsyncLexicalLeadershipScopes(ctx, notifications, coordinator.schedule, groups.Status(), partitionCount, seen)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("enumerate lexical scopes after leadership change failed; will retry", "error", err)
+			}
+		} else {
+			seen = next
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func scheduleAsyncLexicalLeadershipScopes(ctx context.Context, notifications *graphnotification.Module, schedule func(graphchange.Scope), statuses []consensus.GroupStatus, partitionCount uint32, seen map[uint32]uint64) (map[uint32]uint64, error) {
+	owned := map[uint32]uint64{}
+	pending := map[uint32]bool{}
+	for _, status := range statuses {
+		if status.PartitionID == nil || status.NodeID == 0 || status.Leader != status.NodeID || status.Term == 0 {
+			continue
+		}
+		partitionID := *status.PartitionID
+		owned[partitionID] = status.Term
+		if seen[partitionID] != status.Term {
+			pending[partitionID] = true
+		}
+	}
+	if len(pending) == 0 {
+		return owned, nil
+	}
+	scopes, err := notifications.StoredScopes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, scope := range scopes {
+		spaceID, err := uuid.Parse(scope.SpaceID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid graph-change scope space ID: %w", err)
+		}
+		partitionID, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), partitionCount)
+		if err != nil {
+			return nil, err
+		}
+		if pending[uint32(partitionID)] {
+			schedule(scope)
+		}
+	}
+	return owned, nil
 }
 
 func replayAsyncLexicalStoredScopes(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, coordinator *asyncLexicalCoordinator) {
@@ -312,6 +386,9 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	if scope.SpaceID == "" || scope.DomainID == "" {
 		return nil
 	}
+	if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
+		return err
+	}
 	notificationRevision, latestRevision, err := asyncLexicalRevisions(ctx, notifications, revisions, scope)
 	if err != nil {
 		return err
@@ -350,6 +427,9 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	if err := validateAsyncLexicalReplay(collector.events, afterRevision, latestRevision); err != nil {
 		return err
 	}
+	if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
+		return err
+	}
 	initializeEmpty := status.State == lexicalservice.StateUnavailable && latestRevision == 0
 	if reset || initializeEmpty {
 		if reset && logger != nil {
@@ -360,6 +440,9 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		}
 	}
 	for _, event := range collector.events {
+		if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
+			return err
+		}
 		if err := consumer.HandleGraphChange(ctx, event); err != nil {
 			return fmt.Errorf("apply replayed graph change at revision %d: %w", eventRevision(event), err)
 		}
@@ -367,6 +450,17 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	finalStatus := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	if finalStatus.IndexedGraphRevision != latestRevision || finalStatus.State != lexicalservice.StateFresh {
 		return fmt.Errorf("lexical replay ended at revision %d with state %s; want fresh revision %d", finalStatus.IndexedGraphRevision, finalStatus.State, latestRevision)
+	}
+	return nil
+}
+
+func requireAsyncLexicalLocalOwner(ctx context.Context, revisions asyncLexicalDomainRevisionReader, spaceID string) error {
+	if owner, ok := revisions.(interface {
+		RequireLocalGraphWriteLeader(context.Context, string) error
+	}); ok {
+		if err := owner.RequireLocalGraphWriteLeader(ctx, spaceID); err != nil {
+			return fmt.Errorf("%w: %v", errAsyncLexicalNotLocalOwner, err)
+		}
 	}
 	return nil
 }
