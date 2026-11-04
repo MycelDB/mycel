@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Fixed
 
+- Stateless lexical/hybrid search and lexical-status requests can now be forwarded from a follower to the graph partition leader without inventing graph session or transaction IDs. The exception is limited to the exact search/status RPC methods; backend authentication, cluster admission, target/principal authorization, and route-loop guards remain enforced (#299 validation follow-up).
 - Semantic projection readiness failures now identify missing leases/baselines and leader, term, generation, rebuild-epoch, or freshness mismatches. Direct and hybrid search preserve structured readiness details across cluster forwarding and use `Unavailable` for transient readiness or `FailedPrecondition` for required/failed rebuilds, without weakening projection fences (#299).
 
 ## [v0.21.3] - 2026-11-04

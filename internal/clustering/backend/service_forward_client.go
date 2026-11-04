@@ -8,6 +8,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/routing"
+	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	clusterpb "github.com/myceldb/mycel/internal/gen/mycel/cluster/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -66,6 +67,18 @@ func (s *Service) WithClientRequestForwarder(handler ForwardedClientRequestHandl
 	return s
 }
 
+// Stateless search requests are space/domain scoped and are authorized again by
+// the target API handler. Only these exact methods may omit graph route IDs;
+// other client operations retain their session/transaction requirement.
+func statelessSearchForwardOperation(operation string) bool {
+	switch operation {
+	case clientv1.SearchService_Search_FullMethodName, clientv1.SearchService_GetLexicalIndexStatus_FullMethodName:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) ForwardClientRequest(ctx context.Context, req *clusterpb.ForwardClientRequestRequest) (*clusterpb.ForwardClientRequestResponse, error) {
 	s.recordForwardClientReceived(req)
 	if err := validateProtocol(req.GetProtocolVersion()); err != nil {
@@ -99,7 +112,7 @@ func (s *Service) ForwardClientRequest(ctx context.Context, req *clusterpb.Forwa
 		s.recordForwardClientFailure(req, err)
 		return nil, err
 	}
-	if req.GetSessionId() == "" && req.GetTransactionId() == "" && !strings.HasSuffix(req.GetOperation(), "/OpenSession") {
+	if req.GetSessionId() == "" && req.GetTransactionId() == "" && !strings.HasSuffix(req.GetOperation(), "/OpenSession") && !statelessSearchForwardOperation(req.GetOperation()) {
 		err := status.Error(codes.InvalidArgument, "session_id or transaction_id is required")
 		s.recordForwardClientFailure(req, err)
 		return nil, err
