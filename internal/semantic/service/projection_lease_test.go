@@ -64,8 +64,8 @@ func TestSemanticProjectionLeaseFailsClosedAcrossLeadershipTerms(t *testing.T) {
 	if err := maintenance.SaveCheckpoint(ctx, storesemantic.MaintenanceCheckpoint{Consumer: reliabilityAnalyzerConsumer(ruleID, "search"), SpaceID: spaceID, LastGraphRevision: 6}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := module.Search(ctx, search); err == nil || !strings.Contains(err.Error(), "not ready") {
-		t.Fatalf("stale-frontier search error=%v, want fail-closed readiness error", err)
+	if err := module.validateLocalProjectionForSearch(ctx, search); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("stale-frontier projection validation error=%v, want fail-closed readiness error", err)
 	}
 	if _, err := module.ProcessDirtyWork(ctx, ProcessInput{SpaceID: spaceID, Limit: 1}); err != nil {
 		t.Fatalf("advance projection after maintenance progression: %v", err)
@@ -85,8 +85,8 @@ func TestSemanticProjectionLeaseFailsClosedAcrossLeadershipTerms(t *testing.T) {
 		t.Fatalf("unchanged advanced projection failed post-search validation: %v", err)
 	}
 	term.Store(8)
-	if _, err := module.Search(ctx, search); err == nil || !strings.Contains(err.Error(), "not ready") {
-		t.Fatalf("stale-term search error=%v, want fail-closed readiness error", err)
+	if err := module.validateLocalProjectionForSearch(ctx, search); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("stale-term projection validation error=%v, want fail-closed readiness error", err)
 	}
 }
 

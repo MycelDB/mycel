@@ -418,12 +418,41 @@ func (r Runner) processRuleRoot(ctx context.Context, rule domainsemantic.Semanti
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
-	rec, err := r.VectorBackend.Upsert(ctx, domainsemantic.AdvancedEmbeddingRecord{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, NodeID: root.ID, SourceHash: source.Hash, SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, SemanticConfigurationHash: configurationHash, RebuildEpoch: in.RebuildEpoch, SourceMode: string(mode), IntelligenceProfileID: binding.IntelligenceProfileID, ModelEndpointID: resp.EndpointID, ModelID: resp.ModelID, ModelEndpointCapabilityID: resp.CapabilityID, CredentialID: resp.CredentialID, CredentialGrantID: resp.CredentialGrantID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: vectorStoreID, VectorSpaceKey: vectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()})
+	record := domainsemantic.AdvancedEmbeddingRecord{SpaceID: rule.SpaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, SemanticIndexID: domainsemantic.SemanticIndexID(rule.ID), TargetNodeID: root.ID, NodeID: root.ID, SourceHash: source.Hash, SourceGraphRevision: in.SourceGraphRevision, SemanticGeneration: in.SemanticGeneration, SemanticConfigurationHash: configurationHash, RebuildEpoch: in.RebuildEpoch, SourceMode: string(mode), IntelligenceProfileID: binding.IntelligenceProfileID, ModelEndpointID: resp.EndpointID, ModelID: resp.ModelID, ModelEndpointCapabilityID: resp.CapabilityID, CredentialID: resp.CredentialID, CredentialGrantID: resp.CredentialGrantID, PolicyDecisionID: resp.PolicyDecisionID, VectorStoreID: vectorStoreID, VectorSpaceKey: vectorSpaceKey, Dimensions: len(resp.Vector), Vector: resp.Vector, CreatedAt: time.Now().UTC()}
+	record.ID = deterministicSemanticRecordID(record)
+	rec, err := r.VectorBackend.Upsert(ctx, record)
 	release()
 	if err != nil {
 		return domainsemantic.AdvancedEmbeddingRecord{}, nil, &Failure{NodeID: root.ID, Error: err.Error()}
 	}
 	return rec, nil, nil
+}
+
+func deterministicSemanticRecordID(record domainsemantic.AdvancedEmbeddingRecord) domainsemantic.AdvancedEmbeddingRecordID {
+	parts := []string{
+		"myceldb.semantic-record.v1",
+		record.SpaceID.String(),
+		record.DomainID.String(),
+		record.EffectiveSemanticRuleID().String(),
+		strings.TrimSpace(record.EmbeddingBindingKey),
+		record.SemanticIndexID.String(),
+		record.TargetNodeID.String(),
+		record.NodeID.String(),
+		strings.TrimSpace(record.SourceMode),
+		strings.TrimSpace(record.SourceHash),
+		fmt.Sprint(record.SourceGraphRevision),
+		fmt.Sprint(record.SemanticGeneration),
+		strings.TrimSpace(record.RebuildEpoch),
+		strings.TrimSpace(record.SemanticConfigurationHash),
+		record.IntelligenceProfileID.String(),
+		record.ModelEndpointID.String(),
+		record.ModelID.String(),
+		record.ModelEndpointCapabilityID.String(),
+		record.VectorStoreID.String(),
+		strings.TrimSpace(record.VectorSpaceKey),
+		fmt.Sprint(record.Dimensions),
+	}
+	return domainsemantic.AdvancedEmbeddingRecordID(uuid.NewSHA1(uuid.NameSpaceURL, []byte(strings.Join(parts, "\x00"))))
 }
 
 func semanticRuleActorPrincipal(rule domainsemantic.SemanticGenerationRule) identity.PrincipalID {

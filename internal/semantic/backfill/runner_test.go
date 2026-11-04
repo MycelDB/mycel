@@ -26,6 +26,18 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func TestDeterministicSemanticRecordIDStableAndScoped(t *testing.T) {
+	record := domainsemantic.AdvancedEmbeddingRecord{SpaceID: domainspace.SpaceID(uuid.New()), DomainID: graph.DomainID(uuid.New()), SemanticRuleID: domainsemantic.SemanticRuleID(uuid.New()), EmbeddingBindingKey: "search", SemanticIndexID: domainsemantic.SemanticIndexID(uuid.New()), TargetNodeID: graph.NodeID(uuid.New()), NodeID: graph.NodeID(uuid.New()), SourceMode: "self", SourceHash: "sha256:source", SourceGraphRevision: 7, SemanticGeneration: 2, RebuildEpoch: "epoch", SemanticConfigurationHash: "sha256:config", IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), ModelEndpointID: domainsemantic.ModelEndpointID(uuid.New()), ModelID: domainsemantic.InferenceModelID(uuid.New()), ModelEndpointCapabilityID: domainsemantic.ModelEndpointCapabilityID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), VectorSpaceKey: "test/8", Dimensions: 8}
+	first := deterministicSemanticRecordID(record)
+	if second := deterministicSemanticRecordID(record); second != first {
+		t.Fatalf("deterministicSemanticRecordID()=%s then %s, want stable", first, second)
+	}
+	record.SourceGraphRevision++
+	if changed := deterministicSemanticRecordID(record); changed == first {
+		t.Fatalf("deterministicSemanticRecordID() did not change across source revision")
+	}
+}
+
 func TestFailureForErrorPreservesSafeRetryMetadata(t *testing.T) {
 	nodeID := graph.NodeID(uuid.New())
 	failure := failureForError(nodeID, connectors.EmbeddingFailure{Category: "rate_limited", Retryable: true, RetryAfter: 250 * time.Millisecond})
