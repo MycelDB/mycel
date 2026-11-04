@@ -484,7 +484,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		}
 		return err
 	})
-	asyncLexicalService, err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService, graphService)
+	asyncLexicalService, err := startAsyncLexicalConsumer(ctx, logger, graphNotificationService, lexicalService, graphService, rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 	if err != nil {
 		_ = rt.Close()
 		return nil, err
