@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/filestore"
+	semanticbackfill "github.com/myceldb/mycel/internal/semantic/backfill"
 	domainsemantic "github.com/myceldb/mycel/internal/semantic/model"
+	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
@@ -231,6 +234,13 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 				}
 			}
 			if !ready {
+				recovered, recoverErr := m.recoverProjectionLeaseForCurrentLeadership(ctx, in.SpaceID, rule, binding, leader, term, status)
+				if recoverErr != nil {
+					return nil, recoverErr
+				}
+				ready = recovered
+			}
+			if !ready {
 				return nil, fmt.Errorf("semantic projection for rule %s binding %q is not ready for leader %d term %d", rule.ID, binding.Key, leader, term)
 			}
 			observations[key] = current
@@ -245,4 +255,90 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 		}
 	}
 	return observations, nil
+}
+
+// recoverProjectionLeaseForCurrentLeadership re-certifies a persisted local
+// projection for the current leader term. A previous same-node lease still
+// proves that this node completed the projection for the same generation,
+// rebuild epoch, and freshness frontier, while the local search-index state
+// proves that the projection files survived restart and remain searchable.
+func (m *Module) recoverProjectionLeaseForCurrentLeadership(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, leader consensus.NodeID, term uint64, status ReliabilityStatus) (bool, error) {
+	leadership, ok := semanticOperationLeadershipFromContext(ctx, spaceID)
+	if !ok || leadership.NodeID != leader || leadership.Term != term || leader == 0 || leader != m.raftLocalNode {
+		return false, nil
+	}
+	rebuildState := strings.ToLower(strings.TrimSpace(status.Rebuild.RebuildState))
+	if rebuildState == "required" || rebuildState == "running" || rebuildState == "failed" {
+		return false, nil
+	}
+	reader := m.localVectorBackend()
+	indexState, err := reader.ReadSearchIndexState(ctx, vectorstore.SearchIndexKey{SpaceID: spaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: binding.VectorStoreID})
+	if err != nil {
+		return false, fmt.Errorf("read local semantic search index state for projection recovery: %w", err)
+	}
+	indexReady := strings.ToLower(strings.TrimSpace(indexState.State)) == "ready"
+	if !indexReady && status.FreshThroughGraphRevision > 0 {
+		key := vectorstore.SearchIndexKey{SpaceID: spaceID, DomainID: rule.DomainID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, VectorStoreID: binding.VectorStoreID}
+		rebuilt, rebuildErr := reader.RebuildSearchIndex(ctx, key, vectorstore.RebuildLimit{MaxRecords: 100000, MaxBytes: 256 << 20, SemanticGeneration: status.SemanticGeneration, RebuildEpoch: status.Rebuild.RebuildEpoch})
+		if rebuildErr != nil {
+			return false, fmt.Errorf("rebuild local semantic search index for projection recovery: %w", rebuildErr)
+		}
+		indexReady = strings.ToLower(strings.TrimSpace(rebuilt.State)) == "ready"
+	}
+	m.projectionLeasesMu.Lock()
+	state, err := m.loadProjectionLeasesLocked(spaceID)
+	m.projectionLeasesMu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	localEvidence := false
+	for _, entry := range state.Entries {
+		if entry.SemanticRuleID == rule.ID && entry.EmbeddingBindingKey == binding.Key && entry.LeaderNode == uint64(leader) && entry.SemanticGeneration == status.SemanticGeneration && entry.RebuildEpoch == status.Rebuild.RebuildEpoch && entry.FreshThrough >= status.FreshThroughGraphRevision {
+			localEvidence = true
+			break
+		}
+	}
+	if !localEvidence && indexReady {
+		localEvidence, err = m.localProjectionHasCurrentRecordEvidence(ctx, spaceID, rule, binding, status)
+		if err != nil {
+			return false, err
+		}
+	}
+	if !localEvidence && status.FreshThroughGraphRevision > 0 {
+		result, backfillErr := m.BackfillIndex(ctx, semanticbackfill.Input{SpaceID: spaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key, Force: true, Reconcile: true, Limit: 4096, SourceGraphRevision: status.FreshThroughGraphRevision, PinSourceGraphRevision: true, SemanticGeneration: status.SemanticGeneration, RebuildEpoch: status.Rebuild.RebuildEpoch})
+		if backfillErr != nil {
+			return false, fmt.Errorf("recover local semantic projection from graph truth: %w", backfillErr)
+		}
+		localEvidence = result.FailedCount == 0 && result.NextOffset == 0 && result.GeneratedCount > 0
+	}
+	if !localEvidence {
+		return false, nil
+	}
+	if err := m.saveProjectionLease(ctx, spaceID, rule.ID, binding.Key, status.SemanticGeneration, status.Rebuild.RebuildEpoch, status.FreshThroughGraphRevision); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *Module) localProjectionHasCurrentRecordEvidence(ctx context.Context, spaceID domainspace.SpaceID, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, status ReliabilityStatus) (bool, error) {
+	records, err := m.localVectorBackend().ListRecords(ctx, spaceID, domainsemantic.SemanticIndexID(rule.ID))
+	if err != nil {
+		return false, fmt.Errorf("read local semantic projection records for recovery: %w", err)
+	}
+	bindingKey := strings.TrimSpace(binding.Key)
+	for _, record := range records {
+		if record.Tombstone || record.SpaceID != spaceID || record.DomainID != rule.DomainID || record.EffectiveSemanticRuleID() != rule.ID || strings.TrimSpace(record.EmbeddingBindingKey) != bindingKey {
+			continue
+		}
+		if binding.VectorStoreID != uuid.Nil && record.VectorStoreID != binding.VectorStoreID {
+			continue
+		}
+		if record.SemanticGeneration != status.SemanticGeneration || record.RebuildEpoch != status.Rebuild.RebuildEpoch {
+			continue
+		}
+		if record.SourceGraphRevision >= status.FreshThroughGraphRevision {
+			return true, nil
+		}
+	}
+	return false, nil
 }
