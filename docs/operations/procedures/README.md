@@ -10,6 +10,7 @@ This directory contains operator runbooks and validation procedures.
 | [Backup-critical durable writer inventory](backup-durable-writer-inventory.md) | Data-directory durable writers, quiesce coverage, restore expectations, and validation checklist. |
 | [Object-store blob payload storage](s3-blob-storage.md) | Configure S3-compatible object-store storage for immutable blob payload bytes, including AWS S3 and MinIO. |
 | [Lexical search operations](lexical-search.md) | Search syntax, freshness, status, rebuild, and troubleshooting for lexical indexes. |
+| [Semantic projection readiness](semantic-projection-readiness.md) | Leader/term lease diagnostics, read-only triage, and retained-state direct/hybrid validation. |
 | [Cluster system backup and restore](cluster-system-backup-restore.md) | End-to-end target procedure for coordinated full-cluster backup sets and offline restore. |
 | [Split-brain recovery](split-brain-recovery.md) | Trusted-source recovery from an operator-selected authoritative pod. |
 | [Raft cluster operations](raft-cluster-operations.md) | Cluster health, readiness, routing, restart, and recovery checks. |

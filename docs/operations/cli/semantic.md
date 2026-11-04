@@ -89,4 +89,5 @@ only when regenerating current embeddings is intended.
 
 - [CLI index](README.md)
 - [Operations](../README.md)
+- [Projection readiness and recovery diagnostics](../procedures/semantic-projection-readiness.md)
 - [Design](../../design/README.md)
