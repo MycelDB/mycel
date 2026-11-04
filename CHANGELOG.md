@@ -6,6 +6,17 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.21.3] - 2026-11-04
+
+### Fixed
+
+- Clustered semantic search now recovers safely after restart or leader-term changes when reliability state is already complete and fresh, by re-certifying current-leader projection leases from persisted local evidence or bounded graph-truth re-materialization while preserving fail-closed readiness semantics (#300, #301).
+- Semantic backfill now assigns deterministic record IDs from stable semantic provenance so unchanged re-materialized records preserve identity across projection recovery (#300, #301).
+
+### Compatibility
+
+- Patch release for the daemon only. Public protobuf/API bindings remain compatible with the existing v0.21 API ref pinned in `.release/mycel-api-ref`; no SDK, Console, or Lab release is required for the semantic projection recovery fix.
+
 ## [v0.21.2] - 2026-11-01
 
 ### Fixed
