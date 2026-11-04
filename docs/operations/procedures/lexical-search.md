@@ -97,6 +97,10 @@ Hybrid lexical + semantic search is exposed through `mycel search hybrid` and th
 
 The authoritative owner for the space/domain builds the lexical index and advances progress. Followers forward Search API requests to that owner. If a safe route cannot be determined, requests return unavailable/routing errors rather than serving from a stale follower-owned index.
 
+Normal graph commits initialize a new domain's lexical index through asynchronous, ordered graph-change replay; an operator rebuild is not required for the first committed documents. A lifecycle-managed observer checks local Raft partition leadership every 250 ms and schedules persisted scopes when the local node becomes leader or its leadership term changes. This also recovers a promoted follower that persisted notifications but never received a leader-only live indexing wake-up. Unchanged leadership does not repeatedly enumerate scopes or replay indexes.
+
+Replay rechecks local ownership and validates contiguous history through the current domain revision before advancing the index. Until catch-up completes, unavailable/stale search remains fenced under the existing freshness policy. Missing retained history still requires an explicit authorized rebuild; leadership recovery does not skip gaps, discard PVCs, reset diagnostics, or weaken authorization or domain policy.
+
 ## Troubleshooting
 
 | Symptom | Action |
