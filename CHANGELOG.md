@@ -6,6 +6,16 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.21.5] - 2026-11-07
+
+### Fixed
+
+- Blob Raft snapshot restore now degrades entries whose payload is unavailable instead of blocking daemon restart. The metadata records a bounded missing-payload state, reads fail with `ErrPayloadUnavailable`, invalid entries remain deletable, and a successful re-upload or repair clears the degraded marker (#312).
+
+### Compatibility
+
+- Daemon behavior remains compatible with the pinned v0.21 API contract; no protobuf or wire change requires an API, SDK, or Console migration.
+
 ## [v0.21.4] - 2026-11-04
 
 ### Fixed
