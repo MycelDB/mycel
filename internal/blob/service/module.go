@@ -156,6 +156,9 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (blobmodel.B
 			}
 		}
 		// Keep original create time and size/digest, but refresh client-declared metadata.
+		// Replacing the descriptor also clears a stale invalid-payload marker after a
+		// successful re-upload or repair of the content-addressed payload.
+		existing.Payload = &payload
 		existing.MimeType = firstNonEmpty(existing.MimeType, mimeType)
 		existing.DomainID = firstNonEmpty(existing.DomainID, domainID)
 		if strings.TrimSpace(input.DeclaredMimeType) != "" {
@@ -210,7 +213,11 @@ func (m *Module) getBlob(ctx context.Context, spaceID string, domainID string, b
 	if err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
-	exists, err := m.payloadExists(ctx, descriptorFromMeta(meta))
+	desc := descriptorFromMeta(meta)
+	if desc.State == blobmodel.PayloadStateInvalid {
+		return blobmodel.BlobMeta{}, fmt.Errorf("%w: %s", ErrPayloadUnavailable, payloadInvalidReason(meta))
+	}
+	exists, err := m.payloadExists(ctx, desc)
 	if err != nil {
 		return blobmodel.BlobMeta{}, mapStorageError(err)
 	}
@@ -254,9 +261,24 @@ func (m *Module) deleteBlob(ctx context.Context, spaceID string, domainID string
 		return "", err
 	}
 	defer release()
-	meta, err := m.getBlob(ctx, strings.TrimSpace(spaceID), strings.TrimSpace(domainID), strings.TrimSpace(blobID))
+	spaceID = strings.TrimSpace(spaceID)
+	domainID = strings.TrimSpace(domainID)
+	blobID = strings.TrimSpace(blobID)
+	var meta blobmodel.BlobMeta
+	if domainID != "" {
+		meta, err = m.metaInDomain(spaceID, domainID, blobID)
+	} else {
+		meta, err = m.meta(spaceID, blobID)
+	}
 	if err != nil {
 		return "", err
+	}
+	// Deleting an explicitly invalid payload must remain possible so that a
+	// stale snapshot entry can be removed by a normal metadata command.
+	if descriptorFromMeta(meta).State != blobmodel.PayloadStateInvalid {
+		if _, err := m.getBlob(ctx, spaceID, domainID, blobID); err != nil {
+			return "", err
+		}
 	}
 	if m.refCounter != nil {
 		count, err := m.refCounter.BlobRefCount(ctx, meta.SpaceID, meta.BlobID)

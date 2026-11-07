@@ -11,9 +11,10 @@ import (
 const ModuleName = "blob"
 
 var (
-	ErrInvalidInput = errors.New("invalid blob input")
-	ErrNotFound     = blobmodel.ErrNotFound
-	ErrReferenced   = errors.New("blob is referenced")
+	ErrInvalidInput       = errors.New("invalid blob input")
+	ErrNotFound           = blobmodel.ErrNotFound
+	ErrReferenced         = errors.New("blob is referenced")
+	ErrPayloadUnavailable = errors.New("blob payload unavailable")
 )
 
 type RefCounter interface {
