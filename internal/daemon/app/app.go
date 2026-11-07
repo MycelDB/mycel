@@ -549,6 +549,10 @@ func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath str
 		"tls_enabled", cfg.TLSCertFile != "",
 		"mtls_required", cfg.TLSRequireClientCert,
 		"access_token_ttl", cfg.AccessTokenTTL,
+		"graph_transaction_max_operations", cfg.GraphTransaction.MaxOperations,
+		"graph_transaction_max_command_bytes", cfg.GraphTransaction.MaxCommandBytes,
+		"graph_transaction_max_staged_bytes", cfg.GraphTransaction.MaxStagedBytes,
+		"graph_transaction_max_age", cfg.GraphTransaction.MaxAge,
 	)
 }
 
