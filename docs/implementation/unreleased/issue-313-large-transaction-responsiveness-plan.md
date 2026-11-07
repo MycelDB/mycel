@@ -69,6 +69,8 @@ The largest transaction showed roughly 22–34 ms state-machine storage apply ti
 
 These measurements are local in-process evidence only: they do not represent production limits, external Compose networking, HTTP/gRPC decoding, authentication, or the reported v0.21.2 environment. Immutable-image Compose runs against v0.21.2 and the current investigation candidate both completed the deterministic workload without reproducing the reported 503/504 sequence; the workload therefore classifies the failure as not reproduced rather than identifying a production bottleneck.
 
+The external comparison used `docker.io/myceldb/mycel@sha256:98bf37f2bcfe5ad4fc5e48bbdd8b64caeb3ae63a914fc6cd3b19f877eefc84bb` for v0.21.2 and `local/mycel@sha256:af3a35be956d7071faf160cdb5aa4cfea0e7ff59fe719fc75444023b6e76483c` for revision `c306993`. Each run acknowledged 5/5 deterministic 1024-node transactions; v0.21.2 recorded 167/167 successful concurrent reads and the current candidate recorded 170/170. Both runs passed all phases, redaction scans, and cleanup absence checks. The transaction acknowledgements remained near the configured 10-second cadence throughout the 35-second stress phase, so the reported 25-second stall was not reproduced by this workload.
+
 ## Target behavior
 
 For every graph transaction:
