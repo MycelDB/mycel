@@ -22,6 +22,7 @@ var (
 	ErrConflict            = graphchange.ErrConflict
 	ErrIdempotencyConflict = errors.New("graph idempotency key is already bound to a different mutation")
 	ErrIdempotencyCapacity = errors.New("graph idempotency retention capacity exhausted")
+	ErrTransactionLimit    = errors.New("graph transaction limit exceeded")
 )
 
 type Manager interface {

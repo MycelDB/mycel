@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed investigation and implementation plan for [MycelDB/mycel#313](https://github.com/MycelDB/mycel/issues/313).
+Investigation and implementation plan for [MycelDB/mycel#313](https://github.com/MycelDB/mycel/issues/313).
 
 Working branch: `investigate/313-large-transaction-responsiveness`
+
+Phase 0 measurement and immutable Compose comparison are complete. Phase 1 admission limits are now implemented in the investigation branch; queue fairness, cancellation-boundary coverage, and readiness semantics remain follow-up work.
 
 This plan starts with measurement. The reported failure does not yet establish whether the dominant cause is Raft proposal pressure, state-machine apply time, storage locking/fsync, derived-work execution, or a combination of these.
 
@@ -65,7 +67,7 @@ One local run measured approximately:
 
 The largest transaction showed roughly 22–34 ms state-machine storage apply time per replica and roughly 58 ms leader-side proposal time. A concurrent local graph read completed in roughly 0.01 ms in this run. This did **not** reproduce the reported 503/504 behavior.
 
-These measurements are local in-process evidence only: they do not represent production limits, external Compose networking, HTTP/gRPC decoding, authentication, or the reported v0.21.2 environment. The immutable-image Compose reproduction remains required before classifying the production failure.
+These measurements are local in-process evidence only: they do not represent production limits, external Compose networking, HTTP/gRPC decoding, authentication, or the reported v0.21.2 environment. Immutable-image Compose runs against v0.21.2 and the current investigation candidate both completed the deterministic workload without reproducing the reported 503/504 sequence; the workload therefore classifies the failure as not reproduced rather than identifying a production bottleneck.
 
 ## Target behavior
 
@@ -113,6 +115,18 @@ For every graph transaction:
 6. Document the limits and explain that client-side chunking is required for workloads that do not require one atomic commit.
 
 **Exit condition:** oversized or saturated work fails fast without entering the expensive Raft/storage path, and no partial graph state is visible.
+
+### Phase 1 implementation status
+
+Implemented in the investigation branch:
+
+- `GraphTransactionLimits` bounds operation count, staged mutation bytes, encoded command bytes, and transaction age.
+- Limits are checked incrementally before overlay mutation and again before Raft/WAL proposal.
+- Rejections use `ResourceExhausted` with stable `ErrorInfo` reasons such as `GRAPH_TRANSACTION_COMMAND_BYTES`.
+- Rejected statements restore their mutation scope; rejected commits restore the transaction overlay through the existing commit rollback path.
+- Atomicity is preserved; no transaction is split.
+
+The remaining Phase 1 work is pending: distinct node/edge and payload counters, queue-pressure admission, cancellation-boundary tests, and external validation of rejection behavior.
 
 ### Phase 2: Bound commit execution and preserve fairness
 

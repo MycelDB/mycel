@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
@@ -16,6 +18,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/writetrace"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -790,6 +793,19 @@ func mapGraphError(err error, action string) error {
 	}
 	if errors.Is(err, daegraph.ErrIdempotencyCapacity) {
 		return status.Error(codes.ResourceExhausted, "graph idempotency retention capacity is exhausted")
+	}
+	var limitErr *daegraph.TransactionLimitError
+	if errors.As(err, &limitErr) {
+		reason := "GRAPH_TRANSACTION_" + strings.ToUpper(limitErr.Reason)
+		st := status.New(codes.ResourceExhausted, "graph transaction rejected: "+limitErr.Error())
+		withDetails, detailErr := st.WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: "mycel.graph", Metadata: map[string]string{
+			"limit":  fmt.Sprint(limitErr.Limit),
+			"actual": fmt.Sprint(limitErr.Actual),
+		}})
+		if detailErr == nil {
+			return withDetails.Err()
+		}
+		return st.Err()
 	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
 }

@@ -20,6 +20,7 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -361,6 +362,17 @@ func TestTransactionServiceMapsIdempotencyErrors(t *testing.T) {
 	}
 	if got := status.Code(mapGraphError(daegraph.ErrIdempotencyCapacity, "commit")); got != codes.ResourceExhausted {
 		t.Fatalf("capacity code = %v, want ResourceExhausted", got)
+	}
+}
+
+func TestTransactionServiceMapsTransactionLimitWithStableReason(t *testing.T) {
+	err := mapGraphError(&daegraph.TransactionLimitError{Reason: "command_bytes", Limit: 100, Actual: 101}, "commit")
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("limit code=%v, want ResourceExhausted", status.Code(err))
+	}
+	info, ok := status.Convert(err).Details()[0].(*errdetails.ErrorInfo)
+	if !ok || info.GetReason() != "GRAPH_TRANSACTION_COMMAND_BYTES" || info.GetMetadata()["limit"] != "100" {
+		t.Fatalf("limit details=%v, want stable command-bytes reason", status.Convert(err).Details())
 	}
 }
 
