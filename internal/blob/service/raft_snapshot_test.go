@@ -3,18 +3,19 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-func TestBlobRaftStateMachineSnapshotRestoreRequiresPayload(t *testing.T) {
+func TestBlobRaftStateMachineSnapshotRestoreMarksMissingPayloadInvalid(t *testing.T) {
 	ctx := context.Background()
 	spaceID := uuid.NewString()
 	source := NewModule(nil)
@@ -40,11 +41,34 @@ func TestBlobRaftStateMachineSnapshotRestoreRequiresPayload(t *testing.T) {
 		t.Fatalf("missing init failed: %v", result.Error)
 	}
 	missingSM := RaftStateMachine{Module: missing, PartitionID: pid.Uint32(), PartitionCount: 4}
-	if err := missingSM.RestoreSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "payload unavailable") {
-		t.Fatalf("RestoreSnapshot() missing payload error = %v, want payload unavailable", err)
+	if err := missingSM.RestoreSnapshot(snapshot); err != nil {
+		t.Fatalf("RestoreSnapshot() missing payload error = %v, want degraded restore", err)
 	}
-	if _, err := missing.GetBlob(ctx, spaceID, meta.BlobID); err == nil {
-		t.Fatal("missing payload restore should not publish healthy metadata")
+	stored, err := missing.meta(spaceID, meta.BlobID)
+	if err != nil {
+		t.Fatalf("meta() after degraded restore error = %v", err)
+	}
+	if stored.Payload == nil || stored.Payload.State != blobmodel.PayloadStateInvalid || stored.Payload.InvalidReason != blobmodel.PayloadInvalidReasonMissing {
+		t.Fatalf("degraded metadata = %+v, want invalid missing payload", stored)
+	}
+	if _, err := missing.GetBlob(ctx, spaceID, meta.BlobID); !errors.Is(err, ErrPayloadUnavailable) {
+		t.Fatalf("GetBlob() missing payload error = %v, want ErrPayloadUnavailable", err)
+	}
+
+	missing.raftPartitionCount = 4
+	deletePayload, err := jsonMarshal(blobMetaDeleteRecord{SpaceID: spaceID, BlobID: meta.BlobID})
+	if err != nil {
+		t.Fatalf("jsonMarshal(delete) error = %v", err)
+	}
+	deleteCommand, err := missing.buildBlobRaftCommand(spaceID, recordTypeBlobMetaDelete, deletePayload, "blob-meta-delete-after-snapshot")
+	if err != nil {
+		t.Fatalf("buildBlobRaftCommand(delete) error = %v", err)
+	}
+	if err := missing.applyBlobRaftCommand(ctx, deleteCommand, 4); err != nil {
+		t.Fatalf("applyBlobRaftCommand(delete) error = %v", err)
+	}
+	if _, err := missing.meta(spaceID, meta.BlobID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("meta() after delete error = %v, want ErrNotFound", err)
 	}
 
 	restored := NewModule(nil)

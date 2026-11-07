@@ -25,6 +25,28 @@ func descriptorFromMeta(meta blobmodel.BlobMeta) blobmodel.PayloadDescriptor {
 	return blobmodel.PayloadDescriptor{Backend: "local", SpaceID: meta.SpaceID, DomainID: meta.DomainID, BlobID: meta.BlobID, SizeBytes: meta.SizeBytes, ChecksumAlgorithm: "sha256", ChecksumHex: strings.TrimPrefix(meta.Digest, "sha256:")}
 }
 
+func markPayloadInvalid(meta *blobmodel.BlobMeta, reason blobmodel.PayloadInvalidReason) {
+	desc := descriptorFromMeta(*meta)
+	desc.State = blobmodel.PayloadStateInvalid
+	desc.InvalidReason = reason
+	meta.Payload = &desc
+}
+
+func clearPayloadInvalid(meta *blobmodel.BlobMeta) {
+	if meta.Payload == nil {
+		return
+	}
+	meta.Payload.State = ""
+	meta.Payload.InvalidReason = ""
+}
+
+func payloadInvalidReason(meta blobmodel.BlobMeta) string {
+	if meta.Payload != nil && strings.TrimSpace(string(meta.Payload.InvalidReason)) != "" {
+		return string(meta.Payload.InvalidReason)
+	}
+	return "payload is marked invalid"
+}
+
 func (m *Module) ensurePayloadFromReader(ctx context.Context, desc blobmodel.PayloadDescriptor, r io.Reader) error {
 	if ok, err := m.payloadExists(ctx, desc); err != nil || ok {
 		return err

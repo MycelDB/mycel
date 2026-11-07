@@ -168,6 +168,9 @@ func mapBlobError(err error, action string) error {
 	if errors.Is(err, daemonblob.ErrNotFound) {
 		return status.Error(codes.NotFound, "blob not found")
 	}
+	if errors.Is(err, daemonblob.ErrPayloadUnavailable) {
+		return status.Error(codes.DataLoss, "blob payload unavailable")
+	}
 	if errors.Is(err, daemonblob.ErrReferenced) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
