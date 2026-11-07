@@ -45,6 +45,28 @@ The initial code review identifies these paths for measurement and likely harden
 
 These are investigation targets, not yet confirmed root causes.
 
+## Phase 0 initial result
+
+An opt-in three-node in-process baseline and bounded JSON timing capture are now implemented in `internal/daemon/app/issue313_baseline_test.go`. Run it with:
+
+```sh
+MYCELD_RUN_ISSUE313_BASELINE=1 go test -run '^TestIssue313LargeTransactionBaseline$' -v ./internal/daemon/app
+```
+
+One local run measured approximately:
+
+| Nodes in one transaction | Encoded Raft command | Commit wall time |
+| ---: | ---: | ---: |
+| 16 | 17 KiB | 36 ms |
+| 64 | 68 KiB | 42 ms |
+| 256 | 272 KiB | 54 ms |
+| 512 | 543 KiB | 57 ms |
+| 1024 | 1.06 MiB | 65 ms |
+
+The largest transaction showed roughly 22–34 ms state-machine storage apply time per replica and roughly 58 ms leader-side proposal time. A concurrent local graph read completed in roughly 0.01 ms in this run. This did **not** reproduce the reported 503/504 behavior.
+
+These measurements are local in-process evidence only: they do not represent production limits, external Compose networking, HTTP/gRPC decoding, authentication, or the reported v0.21.2 environment. The immutable-image Compose reproduction remains required before classifying the production failure.
+
 ## Target behavior
 
 For every graph transaction:

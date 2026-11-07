@@ -1712,6 +1712,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			return graphchange.CommitResult{}, err
 		}
 		timing.RaftBuild = time.Since(stepStart)
+		timing.RaftCommandBytes = len(cmd.Payload)
 		stepStart = time.Now()
 		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
 		if err != nil {
