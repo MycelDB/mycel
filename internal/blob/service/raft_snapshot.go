@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,12 +82,28 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 	if snap.PartitionID != partitionID || snap.PartitionCount != partitionCount {
 		return fmt.Errorf("blob raft snapshot partition mismatch: snapshot=%d/%d local=%d/%d", snap.PartitionID, snap.PartitionCount, partitionID, partitionCount)
 	}
-	for _, meta := range snap.Metas {
+	for idx := range snap.Metas {
+		meta := snap.Metas[idx]
 		if err := validateBlobSnapshotMeta(meta, partitionID, partitionCount); err != nil {
 			return err
 		}
 		if err := m.ensureRaftPayloadAvailable(ctx, descriptorFromMeta(meta)); err != nil {
-			return fmt.Errorf("blob snapshot payload unavailable for %s/%s: %w", meta.SpaceID, meta.BlobID, err)
+			if !errors.Is(err, ErrPayloadUnavailable) {
+				return fmt.Errorf("blob snapshot payload unavailable for %s/%s: %w", meta.SpaceID, meta.BlobID, err)
+			}
+			markPayloadInvalid(&meta, blobmodel.PayloadInvalidReasonMissing)
+			if m.logger != nil {
+				m.logger.Warn("blob snapshot restored with unavailable payload", "space_id", meta.SpaceID, "blob_id", meta.BlobID, "reason", blobmodel.PayloadInvalidReasonMissing)
+			}
+			snap.Metas[idx] = meta
+			continue
+		}
+		// A previously degraded node can clear the local invalid marker once the
+		// object has been restored. The metadata remains authoritative in Raft;
+		// this is only a snapshot-install availability annotation.
+		if descriptorFromMeta(meta).State == blobmodel.PayloadStateInvalid {
+			clearPayloadInvalid(&meta)
+			snap.Metas[idx] = meta
 		}
 	}
 	if err := m.deletePartitionBlobMetadata(ctx, partitionID, partitionCount); err != nil {

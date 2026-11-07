@@ -141,10 +141,10 @@ func (m *Module) ensureRaftPayloadAvailable(ctx context.Context, desc blobmodel.
 		return err
 	}
 	if isObjectStoreBackend(payloadBackend(desc)) {
-		return fmt.Errorf("object store blob payload %s is not available", desc.BlobID)
+		return fmt.Errorf("%w: object store blob payload %s is not available", ErrPayloadUnavailable, desc.BlobID)
 	}
 	if len(m.raftNodeAddrs) == 0 {
-		return fmt.Errorf("blob payload %s is not locally available", desc.BlobID)
+		return fmt.Errorf("%w: blob payload %s is not locally available", ErrPayloadUnavailable, desc.BlobID)
 	}
 	return m.fetchRaftPayloadFromPeers(ctx, desc)
 }

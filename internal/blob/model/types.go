@@ -2,19 +2,36 @@ package model
 
 import "time"
 
+// PayloadState describes whether the referenced blob payload is usable.
+type PayloadState string
+
+const (
+	PayloadStateAvailable PayloadState = "available"
+	PayloadStateInvalid   PayloadState = "invalid"
+)
+
+// PayloadInvalidReason describes why a payload was marked invalid.
+type PayloadInvalidReason string
+
+const (
+	PayloadInvalidReasonMissing PayloadInvalidReason = "missing"
+)
+
 // PayloadDescriptor describes the durable location and integrity metadata for a blob payload.
 type PayloadDescriptor struct {
-	Backend           string `json:"backend,omitempty"`
-	SpaceID           string `json:"space_id"`
-	DomainID          string `json:"domain_id,omitempty"`
-	BlobID            string `json:"blob_id"`
-	SizeBytes         int64  `json:"size_bytes"`
-	ChecksumAlgorithm string `json:"checksum_algorithm"`
-	ChecksumHex       string `json:"checksum_hex"`
-	S3Bucket          string `json:"s3_bucket,omitempty"`
-	S3Key             string `json:"s3_key,omitempty"`
-	S3Region          string `json:"s3_region,omitempty"`
-	S3ETag            string `json:"s3_etag,omitempty"`
+	Backend           string               `json:"backend,omitempty"`
+	SpaceID           string               `json:"space_id"`
+	DomainID          string               `json:"domain_id,omitempty"`
+	BlobID            string               `json:"blob_id"`
+	SizeBytes         int64                `json:"size_bytes"`
+	ChecksumAlgorithm string               `json:"checksum_algorithm"`
+	ChecksumHex       string               `json:"checksum_hex"`
+	S3Bucket          string               `json:"s3_bucket,omitempty"`
+	S3Key             string               `json:"s3_key,omitempty"`
+	S3Region          string               `json:"s3_region,omitempty"`
+	S3ETag            string               `json:"s3_etag,omitempty"`
+	State             PayloadState         `json:"state,omitempty"`
+	InvalidReason     PayloadInvalidReason `json:"invalid_reason,omitempty"`
 }
 
 // BlobMeta is the shared metadata representation for a stored blob.
