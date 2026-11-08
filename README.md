@@ -155,6 +155,19 @@ When enabled, `myceld` checks opened local domain stores on `MYCELD_GRAPH_CHECKP
 
 See [`docs/operations/cli/cluster.md`](docs/operations/cli/cluster.md).
 
+## Graph transaction admission limits
+
+Graph transactions remain atomic: the daemon rejects an oversized transaction rather than silently splitting it. The defaults are intentionally bounded and can be adjusted through existing daemon environment configuration:
+
+```text
+MYCELD_GRAPH_TRANSACTION_MAX_OPERATIONS=4096
+MYCELD_GRAPH_TRANSACTION_MAX_COMMAND_BYTES=8388608
+MYCELD_GRAPH_TRANSACTION_MAX_STAGED_BYTES=16777216
+MYCELD_GRAPH_TRANSACTION_MAX_AGE=10m
+```
+
+Limits are checked while mutations are staged and again before Raft/WAL proposal. Rejections use gRPC `ResourceExhausted` with an `ErrorInfo` reason such as `GRAPH_TRANSACTION_COMMAND_BYTES`; rejected mutations do not enter the commit path. Clients that do not require one atomic commit should chunk work explicitly and commit each chunk separately.
+
 ## Search tuning
 
 Hybrid search uses daemon-side weighted reciprocal-rank fusion. The RRF rank constant defaults to `60` and can be tuned system-wide:

@@ -87,6 +87,7 @@ type Module struct {
 	checkpointStates               map[domainStoreKey]checkpointRuntimeState
 	checkpointWorkerCancel         context.CancelFunc
 	checkpointWorkerDone           chan struct{}
+	transactionLimits              GraphTransactionLimits
 	raftGroups                     *consensus.MultiGroup
 	raftPartitionCount             uint32
 	raftLocalNode                  consensus.NodeID
@@ -115,6 +116,7 @@ type overlay struct {
 	automationFenceNodes map[domaingraph.NodeID]struct{}
 	automationFenceEdges map[domaingraph.EdgeID]struct{}
 	opCount              int32
+	stagedBytes          int64
 }
 
 func NewModule() *Module {
@@ -127,6 +129,11 @@ func NewModule() *Module {
 
 func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
 	m.checkpointPolicy = normalizeCheckpointPolicyConfig(cfg)
+	return m
+}
+
+func (m *Module) WithTransactionLimits(limits GraphTransactionLimits) *Module {
+	m.transactionLimits = normalizeGraphTransactionLimits(limits)
 	return m
 }
 
@@ -512,13 +519,14 @@ type edgeMutationUndo struct {
 }
 
 type mutationScope struct {
-	module         *Module
-	transactionID  string
-	release        func()
-	overlayExisted bool
-	initialOpCount int32
-	nodes          map[domaingraph.NodeID]nodeMutationUndo
-	edges          map[domaingraph.EdgeID]edgeMutationUndo
+	module             *Module
+	transactionID      string
+	release            func()
+	overlayExisted     bool
+	initialOpCount     int32
+	initialStagedBytes int64
+	nodes              map[domaingraph.NodeID]nodeMutationUndo
+	edges              map[domaingraph.EdgeID]edgeMutationUndo
 }
 
 func (m *Module) lockTransactionMutation(ctx context.Context, transactionID string) (context.Context, func(), error) {
@@ -561,6 +569,10 @@ func (m *Module) lockActiveTransactionMutation(ctx context.Context, tx sessionmo
 		return ctx, nil, err
 	}
 	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	if err := m.checkTransactionAge(tx); err != nil {
 		release()
 		return ctx, nil, err
 	}
@@ -640,6 +652,7 @@ func (m *Module) BeginMutationStatement(ctx context.Context, tx sessionmodel.Gra
 	if current := m.overlays[tx.ID]; current != nil {
 		scope.overlayExisted = true
 		scope.initialOpCount = current.opCount
+		scope.initialStagedBytes = current.stagedBytes
 	}
 	m.activeMutationScopes[tx.ID] = scope
 	m.mu.Unlock()
@@ -712,6 +725,7 @@ func (m *Module) restoreMutationScopeLocked(scope *mutationScope) {
 		}
 	}
 	o.opCount = scope.initialOpCount
+	o.stagedBytes = scope.initialStagedBytes
 }
 
 func (m *Module) recordNodeMutationLocked(transactionID string, o *overlay, id domaingraph.NodeID) {
@@ -1577,6 +1591,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	if err := m.validateTransactionActive(ctx, tx); err != nil {
 		return graphchange.CommitResult{}, err
 	}
+	if err := m.checkTransactionAge(tx); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	if tx.Mode == sessionmodel.TransactionModeReadOnly {
 		m.mu.Lock()
 		err := m.finalizeTransactionLocked(tx.ID, transactionFinalization{kind: transactionCommitted})
@@ -1679,6 +1696,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			return commitResult, nil
 		}
 	}
+	if err := m.checkGraphCommitRecordBytes(record); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	stepStart = time.Now()
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
@@ -1712,6 +1732,10 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			return graphchange.CommitResult{}, err
 		}
 		timing.RaftBuild = time.Since(stepStart)
+		timing.RaftCommandBytes = len(cmd.Payload)
+		if err := m.checkGraphCommandBytes(timing.RaftCommandBytes); err != nil {
+			return graphchange.CommitResult{}, err
+		}
 		stepStart = time.Now()
 		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
 		if err != nil {
@@ -1798,6 +1822,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		stepStart = time.Now()
 		payload, err := json.Marshal(record)
 		if err != nil {
+			return graphchange.CommitResult{}, err
+		}
+		if err := m.checkGraphCommandBytes(len(payload)); err != nil {
 			return graphchange.CommitResult{}, err
 		}
 		timing.WALMarshal = time.Since(stepStart)
@@ -2779,12 +2806,20 @@ func (m *Module) stageNodeWithFence(ctx context.Context, tx sessionmodel.GraphTr
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
+	nodeBytes, err := estimateNodeMutationBytes(node)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, nodeBytes); err != nil {
+		return err
+	}
 	m.recordNodeMutationLocked(tx.ID, o, node.ID)
 	delete(o.deleteNodes, node.ID)
 	o.putNodes[node.ID] = cloneNode(node)
+	o.stagedBytes += nodeBytes
 	if automationOutputFence {
 		o.automationFenceNodes[node.ID] = struct{}{}
 	}
@@ -2799,10 +2834,14 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx sessionmodel.GraphTrans
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, estimateNodeDeleteBytes(id)); err != nil {
+		return err
+	}
 	m.recordNodeMutationLocked(tx.ID, o, id)
 	delete(o.putNodes, id)
 	delete(o.automationFenceNodes, id)
 	o.deleteNodes[id] = struct{}{}
+	o.stagedBytes += estimateNodeDeleteBytes(id)
 	o.opCount++
 	return nil
 }
@@ -2818,12 +2857,20 @@ func (m *Module) stageEdgeWithFence(ctx context.Context, tx sessionmodel.GraphTr
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
+	edgeBytes, err := estimateEdgeMutationBytes(edge)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, edgeBytes); err != nil {
+		return err
+	}
 	m.recordEdgeMutationLocked(tx.ID, o, edge.ID)
 	delete(o.deleteEdges, edge.ID)
 	o.putEdges[edge.ID] = cloneEdge(edge)
+	o.stagedBytes += edgeBytes
 	if automationOutputFence {
 		o.automationFenceEdges[edge.ID] = struct{}{}
 	}
@@ -2838,10 +2885,14 @@ func (m *Module) stageEdgeDelete(ctx context.Context, tx sessionmodel.GraphTrans
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, estimateEdgeDeleteBytes(id)); err != nil {
+		return err
+	}
 	m.recordEdgeMutationLocked(tx.ID, o, id)
 	delete(o.putEdges, id)
 	delete(o.automationFenceEdges, id)
 	o.deleteEdges[id] = struct{}{}
+	o.stagedBytes += estimateEdgeDeleteBytes(id)
 	o.opCount++
 	return nil
 }
@@ -2940,6 +2991,7 @@ func boundedOverlayLimits(requestedLimit int, requestedExamine int) (int, int) {
 func (o *overlay) clone() *overlay {
 	out := newOverlay()
 	out.opCount = o.opCount
+	out.stagedBytes = o.stagedBytes
 	for id, node := range o.putNodes {
 		out.putNodes[id] = cloneNode(node)
 	}

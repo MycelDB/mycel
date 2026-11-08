@@ -297,7 +297,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	spaceService := spaceservice.NewModule().WithPrincipalAuthorizer(principalService)
 	sessionService := sessionservice.NewModule()
 	schemaService := schemaservice.NewModule("")
-	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout})
+	graphService := graphservice.NewModule().WithCheckpointPolicy(graphservice.CheckpointPolicyConfig{Enabled: cfg.GraphCheckpoint.AutoEnabled, Interval: cfg.GraphCheckpoint.AutoInterval, RevisionThreshold: uint64(cfg.GraphCheckpoint.AutoRevisions), Timeout: cfg.GraphCheckpoint.AutoTimeout}).WithTransactionLimits(graphservice.GraphTransactionLimits{
+		MaxOperations:   int32(cfg.GraphTransaction.MaxOperations),
+		MaxCommandBytes: cfg.GraphTransaction.MaxCommandBytes,
+		MaxStagedBytes:  int64(cfg.GraphTransaction.MaxStagedBytes),
+		MaxAge:          cfg.GraphTransaction.MaxAge,
+	})
 	graphService.SetTransactionValidator(sessionService)
 	graphService.SetSchemaValidator(schemaService)
 	graphNotificationService := graphnotification.NewModule()
@@ -544,6 +549,10 @@ func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath str
 		"tls_enabled", cfg.TLSCertFile != "",
 		"mtls_required", cfg.TLSRequireClientCert,
 		"access_token_ttl", cfg.AccessTokenTTL,
+		"graph_transaction_max_operations", cfg.GraphTransaction.MaxOperations,
+		"graph_transaction_max_command_bytes", cfg.GraphTransaction.MaxCommandBytes,
+		"graph_transaction_max_staged_bytes", cfg.GraphTransaction.MaxStagedBytes,
+		"graph_transaction_max_age", cfg.GraphTransaction.MaxAge,
 	)
 }
 

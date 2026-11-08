@@ -51,6 +51,7 @@ type graphCommitTiming struct {
 	WALApply              time.Duration
 	WALMarkApplied        time.Duration
 	RaftBuild             time.Duration
+	RaftCommandBytes      int
 	RaftPropose           time.Duration
 	RaftProposal          consensus.ProposalTiming
 	DirectStorage         time.Duration
@@ -130,6 +131,7 @@ func (m *Module) logGraphCommitTiming(tx sessionmodel.GraphTransaction, counts m
 		"wal_apply_ms", writetrace.MS(timing.WALApply),
 		"wal_mark_applied_ms", writetrace.MS(timing.WALMarkApplied),
 		"raft_build_ms", writetrace.MS(timing.RaftBuild),
+		"raft_command_bytes", timing.RaftCommandBytes,
 		"raft_propose_ms", writetrace.MS(timing.RaftPropose),
 		"raft_validate_ms", writetrace.MS(timing.RaftProposal.Validate),
 		"raft_encode_ms", writetrace.MS(timing.RaftProposal.Encode),
