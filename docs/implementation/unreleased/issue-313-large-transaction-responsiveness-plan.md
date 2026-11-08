@@ -6,7 +6,7 @@ Investigation and implementation plan for [MycelDB/mycel#313](https://github.com
 
 Working branch: `investigate/313-large-transaction-responsiveness`
 
-Phase 0 measurement and immutable Compose comparison are complete. Phase 1 admission limits are now implemented in the investigation branch; queue fairness, cancellation-boundary coverage, and readiness semantics remain follow-up work.
+Phase 0 measurement and immutable Compose comparison are complete. Phase 1 admission limits are now implemented in the investigation branch; queue fairness, cancellation-boundary coverage, and readiness semantics remain follow-up work. An import-only Mycel Lab reproduction now models the Commonfolio journal-entry/page-link workload through the real `ApplyGraphOperations` API path.
 
 This plan starts with measurement. The reported failure does not yet establish whether the dominant cause is Raft proposal pressure, state-machine apply time, storage locking/fsync, derived-work execution, or a combination of these.
 
@@ -70,6 +70,8 @@ The largest transaction showed roughly 22–34 ms state-machine storage apply ti
 These measurements are local in-process evidence only: they do not represent production limits, external Compose networking, HTTP/gRPC decoding, authentication, or the reported v0.21.2 environment. Immutable-image Compose runs against v0.21.2 and the current investigation candidate both completed the deterministic workload without reproducing the reported 503/504 sequence; the workload therefore classifies the failure as not reproduced rather than identifying a production bottleneck.
 
 The external comparison used `docker.io/myceldb/mycel@sha256:98bf37f2bcfe5ad4fc5e48bbdd8b64caeb3ae63a914fc6cd3b19f877eefc84bb` for v0.21.2 and `local/mycel@sha256:af3a35be956d7071faf160cdb5aa4cfea0e7ff59fe719fc75444023b6e76483c` for revision `c306993`. Each run acknowledged 5/5 deterministic 1024-node transactions; v0.21.2 recorded 167/167 successful concurrent reads and the current candidate recorded 170/170. Both runs passed all phases, redaction scans, and cleanup absence checks. The transaction acknowledgements remained near the configured 10-second cadence throughout the 35-second stress phase, so the reported 25-second stall was not reproduced by this workload.
+
+The next reproduction is `compose-issue313-journal-import`. It has one importer actor and no concurrent reader/writer actors. It performs the importer’s snapshot reads, opens one read-write transaction, sends bounded `ApplyGraphOperations` chunks within that transaction, and commits once. The deterministic fixture creates existing `pkm.page` nodes, then imports `pkm.journal` and `pkm.journal_entry` nodes, `contains` edges, and deduplicated `references` edges to pages. Payload size, link fan-out, reused/unique page targets, same-transaction pages, and indexed properties are profile-controlled. The actor records bounded operation counts, request protobuf size, latency, and zero-partial-commit accounting while daemon traces provide apply/storage/sink timing.
 
 ## Target behavior
 
