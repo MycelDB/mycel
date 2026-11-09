@@ -283,7 +283,11 @@ func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, oper
 	if err != nil {
 		return nil, "", err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: discoveryPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
+	baseRevision, err := m.graphs.CurrentDomainRevision(ctx, operation.SpaceID, operation.DomainID.String())
+	if err != nil {
+		return nil, "", err
+	}
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: discoveryPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly, BaseRevision: &baseRevision})
 	if err != nil {
 		return nil, "", err
 	}
