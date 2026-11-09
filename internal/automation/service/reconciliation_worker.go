@@ -316,6 +316,25 @@ func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, oper
 		if err != nil {
 			return nil, "", err
 		}
+		if len(result.Rows) == 0 {
+			// Some native scan plans can return an empty projected page for a
+			// label-only discovery even though the graph reader has visible nodes.
+			// Reuse the same transaction and bounded cursor for that simple shape;
+			// richer predicates must remain on the query-engine path.
+			if label, labelErr := reconciliationTargetLabel(queryText, binding.Reconciliation.Target); labelErr == nil && label != "" {
+				listed, next, listErr := m.graphs.ListNodes(ctx, tx, pageSize, operation.Cursor)
+				if listErr != nil {
+					return nil, "", listErr
+				}
+				filtered := make([]graph.Node, 0, len(listed))
+				for _, node := range listed {
+					if graph.HasLabels(node, []string{label}) {
+						filtered = append(filtered, graph.Node{ID: node.ID})
+					}
+				}
+				return filtered, next, nil
+			}
+		}
 		nodes := make([]graph.Node, 0, len(result.Rows))
 		for _, row := range result.Rows {
 			cell, ok := row.Fields[binding.Reconciliation.Target]
