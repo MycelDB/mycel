@@ -283,11 +283,11 @@ func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, oper
 	if err != nil {
 		return nil, "", err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: discoveryPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _, _ = m.sessions.RollbackTransaction(context.Background(), discoveryPrincipal, tx.ID) }()
+	defer func() { _, _ = m.sessions.RollbackTransaction(context.Background(), automationActor, tx.ID) }()
 	queryText := binding.Reconciliation.Discovery.GQL
 	if m.queryEngine != nil {
 		plan, err := gql.Compile(queryText)
@@ -326,11 +326,11 @@ func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, oper
 			if err != nil {
 				return nil, "", err
 			}
-			node, err := m.graphs.GetNode(ctx, tx, nodeID.String())
-			if err != nil {
-				return nil, "", err
-			}
-			nodes = append(nodes, node)
+			// The projected node identity is sufficient for reconciliation scheduling.
+			// Do not re-read the node through the discovery transaction: that would
+			// apply a second authorization lookup and can reject an otherwise valid
+			// row when the binding's owner and the daemon execution principal differ.
+			nodes = append(nodes, graph.Node{ID: nodeID})
 		}
 		return nodes, result.NextCursor, nil
 	}
