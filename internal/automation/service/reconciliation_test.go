@@ -35,6 +35,9 @@ func TestStartReconciliationIsIdempotent(t *testing.T) {
 	if first.ID != second.ID || second.Status != automation.ReconciliationStatusQueued {
 		t.Fatalf("idempotency result = %+v then %+v", first, second)
 	}
+	if first.RequestedByPrincipalID != "principal" {
+		t.Fatalf("requested-by principal = %q, want persisted caller", first.RequestedByPrincipalID)
+	}
 }
 
 func TestCancelReconciliationWaitsForActiveInvocations(t *testing.T) {

@@ -58,7 +58,7 @@ A concrete attempt to execute an invocation. Runs record rendered input hashes, 
 
 ### Graph reconciliation operation
 
-A durable, idempotent request to discover targets for a binding and enqueue stale or missing targets through the normal invocation path. The operation stores only sanitized progress: an opaque discovery cursor, counts, binding/procedure versions, cancellation state, and terminal status. It never persists discovery payloads or provider input.
+A durable, idempotent request to discover targets for a binding and enqueue stale or missing targets through the normal invocation path. The operation stores only sanitized progress and the original caller principal needed to resume discovery under the same read authority: an opaque discovery cursor, counts, binding/procedure versions, cancellation state, and terminal status. It never persists discovery payloads or provider input.
 
 Discovery is bounded and read-only. Each discovered target receives a deterministic invocation identity, so a crash between scheduling and checkpoint persistence is replay-safe. The worker advances checkpoints only after durable invocation scheduling, fences new discovery after cancellation, and lets already-running invocations finish under the normal automation authorization, retry, and publication controls. A target whose daemon-owned `$system.input_hash` matches the current generation fingerprint is completed as a fresh skip without provider access.
 
