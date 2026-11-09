@@ -59,24 +59,24 @@ func (m *AutomationManager) StartReconciliation(ctx context.Context, principalID
 	}
 	now := m.now()
 	operation := automation.ReconciliationOperation{
-		ID:               uuid.NewString(),
-		SpaceID:          spaceID,
-		DomainID:         domainID,
-		BindingID:        binding.ID,
-		BindingVersion:   binding.Version,
-		ProcedureID:      procedure.ID,
-		ProcedureVersion: procedure.Version,
-		IdempotencyKey:   idempotencyKey,
-		Status:           automation.ReconciliationStatusQueued,
-		BatchSize:        batchSize,
-		MaxConcurrency:   maxConcurrency,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                     uuid.NewString(),
+		SpaceID:                spaceID,
+		DomainID:               domainID,
+		BindingID:              binding.ID,
+		BindingVersion:         binding.Version,
+		ProcedureID:            procedure.ID,
+		ProcedureVersion:       procedure.Version,
+		IdempotencyKey:         idempotencyKey,
+		RequestedByPrincipalID: strings.TrimSpace(principalID),
+		Status:                 automation.ReconciliationStatusQueued,
+		BatchSize:              batchSize,
+		MaxConcurrency:         maxConcurrency,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 	if err := m.putReconciliationOperationRuntime(ctx, operation); err != nil {
 		return automation.ReconciliationOperation{}, err
 	}
-	_ = principalID
 	return operation, nil
 }
 

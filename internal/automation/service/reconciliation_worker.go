@@ -278,16 +278,16 @@ func reconciliationInvocationID(operationID, nodeID string) string {
 }
 
 func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, operation automation.ReconciliationOperation, binding automation.Binding, pageSize int) ([]graph.Node, string, error) {
-	discoveryPrincipal := firstNonEmptyString(binding.Runtime.OnBehalfOfPrincipalID, binding.Runtime.OwnerPrincipalID, automationActor)
+	discoveryPrincipal := firstNonEmptyString(operation.RequestedByPrincipalID, binding.Runtime.OnBehalfOfPrincipalID, binding.Runtime.OwnerPrincipalID, automationActor)
 	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: discoveryPrincipal, SpaceID: operation.SpaceID, DomainID: operation.DomainID.String()})
 	if err != nil {
 		return nil, "", err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: discoveryPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _, _ = m.sessions.RollbackTransaction(context.Background(), automationActor, tx.ID) }()
+	defer func() { _, _ = m.sessions.RollbackTransaction(context.Background(), discoveryPrincipal, tx.ID) }()
 	queryText := binding.Reconciliation.Discovery.GQL
 	if m.queryEngine != nil {
 		plan, err := gql.Compile(queryText)
