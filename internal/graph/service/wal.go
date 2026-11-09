@@ -22,6 +22,7 @@ type graphCommitRecord struct {
 	DomainID                  string                           `json:"domain_id,omitempty"`
 	Origin                    graphchange.OriginMetadata       `json:"origin,omitempty"`
 	BaseRevision              int64                            `json:"base_revision"`
+	RevisionFences            []graphstorage.RevisionFence     `json:"revision_fences,omitempty"`
 	PutNodes                  []domaingraph.Node               `json:"put_nodes,omitempty"`
 	DeleteNodeIDs             []domaingraph.NodeID             `json:"delete_node_ids,omitempty"`
 	PutEdges                  []domaingraph.Edge               `json:"put_edges,omitempty"`
@@ -34,8 +35,8 @@ type graphCommitRecord struct {
 	IdempotencyRetention      *graphIdempotencyRetention       `json:"idempotency_retention,omitempty"`
 }
 
-func graphCommitRecordFromSnapshot(tx sessionmodel.GraphTransaction, snapshot *overlay) graphCommitRecord {
-	return graphCommitRecord{SpaceID: tx.SpaceID, DomainID: tx.DomainID, Origin: tx.Origin, BaseRevision: tx.BaseRevision, PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), AutomationFenceNodeIDs: sortedNodeIDs(snapshot.automationFenceNodes), AutomationFenceEdgeIDs: sortedEdgeIDs(snapshot.automationFenceEdges), OperationCount: snapshot.opCount}
+func graphCommitRecordFromSnapshot(tx sessionmodel.GraphTransaction, snapshot *overlay, fences []graphstorage.RevisionFence) graphCommitRecord {
+	return graphCommitRecord{SpaceID: tx.SpaceID, DomainID: tx.DomainID, Origin: tx.Origin, BaseRevision: tx.BaseRevision, RevisionFences: append([]graphstorage.RevisionFence(nil), fences...), PutNodes: sortedNodes(snapshot.putNodes), DeleteNodeIDs: sortedNodeIDs(snapshot.deleteNodes), PutEdges: sortedEdges(snapshot.putEdges), DeleteEdgeIDs: sortedEdgeIDs(snapshot.deleteEdges), AutomationFenceNodeIDs: sortedNodeIDs(snapshot.automationFenceNodes), AutomationFenceEdgeIDs: sortedEdgeIDs(snapshot.automationFenceEdges), OperationCount: snapshot.opCount}
 }
 
 func (m *Module) applyGraphCommit(ctx context.Context, rec wal.Record) error {
@@ -93,6 +94,9 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 	timing.StorageBegin = time.Since(stepStart)
 	stepStart = time.Now()
 	storageTx.ExpectRevision(uint64(payload.BaseRevision))
+	for _, fence := range payload.RevisionFences {
+		storageTx.ExpectRevisionFence(fence)
+	}
 	timing.ExpectRevision = time.Since(stepStart)
 	stepStart = time.Now()
 	for _, node := range payload.PutNodes {

@@ -123,6 +123,13 @@ type EffectiveAccess struct {
 	Capabilities []string
 }
 
+// AuthorizationRevisionProvider exposes a deterministic opaque revision of
+// the principal authorization state relevant to a principal. It is used by
+// read-set fencing and never exposes policy contents to clients.
+type AuthorizationRevisionProvider interface {
+	AuthorizationRevision(ctx context.Context, principalID string) (uint64, error)
+}
+
 type Manager interface {
 	ListPrincipals(ctx context.Context) ([]PrincipalSummary, error)
 	GetPrincipal(ctx context.Context, principalID string) (PrincipalSummary, error)

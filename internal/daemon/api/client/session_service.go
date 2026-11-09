@@ -316,7 +316,11 @@ func (s *TransactionService) CommitTransaction(ctx context.Context, req *clientv
 	}
 	var graphCommit graphchange.CommitResult
 	if s.graphs != nil {
-		graphCommit, err = s.graphs.CommitTransactionGraph(ctx, tx)
+		if fenced, ok := s.graphs.(daemongraph.RevisionFencedCommitter); ok {
+			graphCommit, err = fenced.CommitTransactionGraphWithRevisionFences(ctx, tx, req.GetRevisionWitnesses())
+		} else {
+			graphCommit, err = s.graphs.CommitTransactionGraph(ctx, tx)
+		}
 		if err != nil {
 			return nil, mapGraphError(err, "commit graph transaction")
 		}

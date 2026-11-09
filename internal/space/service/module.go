@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -383,6 +386,49 @@ func (m *Module) DomainEffectiveAccess(ctx context.Context, principalID string, 
 		return EffectiveAccess{}, err
 	}
 	return m.EffectiveAccess(ctx, principalID, sp)
+}
+
+func (m *Module) ReadVisibilityRevisions(ctx context.Context, principalID string, spaceID string, domainID string) (uint64, uint64, error) {
+	sp, err := m.GetSpace(ctx, spaceID)
+	if err != nil {
+		return 0, 0, err
+	}
+	domain, err := m.GetDomain(ctx, domainID)
+	if err != nil {
+		return 0, 0, err
+	}
+	var authorizationRevision uint64
+	if provider, ok := m.authorizer.(principalservice.AuthorizationRevisionProvider); ok {
+		authorizationRevision, err = provider.AuthorizationRevision(ctx, principalID)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	access, err := m.EffectiveAccess(ctx, principalID, sp)
+	if err != nil {
+		return 0, 0, err
+	}
+	sort.Strings(access.Roles)
+	sort.Strings(access.Capabilities)
+	canonical := struct {
+		PrincipalID           string            `json:"principal_id"`
+		SpaceID               string            `json:"space_id"`
+		DomainID              string            `json:"domain_id"`
+		Space                 domainspace.Space `json:"space"`
+		Domain                graph.Domain      `json:"domain"`
+		Access                EffectiveAccess   `json:"access"`
+		AuthorizationRevision uint64            `json:"authorization_revision"`
+	}{PrincipalID: principalID, SpaceID: spaceID, DomainID: domainID, Space: sp, Domain: domain, Access: access, AuthorizationRevision: authorizationRevision}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return 0, 0, err
+	}
+	sum := sha256.Sum256(raw)
+	visibilityRevision := binary.BigEndian.Uint64(sum[:8])
+	if visibilityRevision == 0 {
+		visibilityRevision = 1
+	}
+	return authorizationRevision, visibilityRevision, nil
 }
 
 func (m *Module) ListDomains(ctx context.Context, spaceID string, includeSystem bool) ([]graph.Domain, error) {

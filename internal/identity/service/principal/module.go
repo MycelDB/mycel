@@ -2,12 +2,16 @@ package principal
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -538,6 +542,61 @@ func (m *Module) Authorize(ctx context.Context, principalID string, capability s
 
 func (m *Module) HasCapability(ctx context.Context, principalID string, capability string) (bool, error) {
 	return m.hasCapabilityInScope(ctx, principalID, capability, AccessScope{Type: "system"})
+}
+
+func (m *Module) AuthorizationRevision(ctx context.Context, principalID string) (uint64, error) {
+	principal, err := m.store.GetPrincipal(ctx, principalID)
+	if err != nil {
+		return 0, err
+	}
+	roles, err := m.store.ListRoleBindings(ctx, principalID)
+	if err != nil {
+		return 0, err
+	}
+	capabilities, err := m.store.ListCapabilityGrants(ctx, principalID)
+	if err != nil {
+		return 0, err
+	}
+	type revisionRole struct {
+		ID    string      `json:"id"`
+		Role  string      `json:"role"`
+		Scope AccessScope `json:"scope"`
+		State string      `json:"state"`
+	}
+	type revisionCapability struct {
+		ID         string      `json:"id"`
+		Capability string      `json:"capability"`
+		Scope      AccessScope `json:"scope"`
+		State      string      `json:"state"`
+	}
+	sort.Slice(roles, func(i, j int) bool { return roles[i].ID < roles[j].ID })
+	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i].ID < capabilities[j].ID })
+	roleState := make([]revisionRole, 0, len(roles))
+	for _, role := range roles {
+		roleState = append(roleState, revisionRole{ID: role.ID, Role: canonicalRole(role.Role), Scope: normalizeScope(role.Scope), State: role.State})
+	}
+	capabilityState := make([]revisionCapability, 0, len(capabilities))
+	for _, grant := range capabilities {
+		capabilityState = append(capabilityState, revisionCapability{ID: grant.ID, Capability: grant.Capability, Scope: normalizeScope(grant.Scope), State: grant.State})
+	}
+	canonical := struct {
+		ID           string               `json:"id"`
+		Kind         string               `json:"kind"`
+		State        string               `json:"state"`
+		LoginEnabled bool                 `json:"login_enabled"`
+		Roles        []revisionRole       `json:"roles"`
+		Capabilities []revisionCapability `json:"capabilities"`
+	}{ID: principal.ID, Kind: principal.Kind, State: principal.State, LoginEnabled: principal.LoginEnabled, Roles: roleState, Capabilities: capabilityState}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return 0, err
+	}
+	sum := sha256.Sum256(raw)
+	revision := binary.BigEndian.Uint64(sum[:8])
+	if revision == 0 {
+		revision = 1
+	}
+	return revision, nil
 }
 
 func (m *Module) EffectiveAccess(ctx context.Context, principalID string, scope AccessScope) (EffectiveAccess, error) {
