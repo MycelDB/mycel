@@ -6,13 +6,20 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.0] - 2026-11-09
+
 ### Added
 
 - Added durable, bounded graph automation reconciliation over validated binding discovery, with idempotent start/get/cancel RPCs, restart-safe progress, fresh-input skipping, deterministic invocation scheduling, and a CLI reconciliation command set (#311).
+- Added trusted automation generation provenance for successful inference writebacks, with fail-closed replay and provenance validation (#319).
+- Added authenticated revision-fenced graph writes that reject stale opaque witnesses at the authoritative commit boundary (#54).
+- Added bounded atomic graph transaction admission that rejects oversized transactions rather than splitting them, preserving one-transaction atomicity (#313).
 
 ### Compatibility
 
-- Graph automation reconciliation is additive and requires the matching mycel-api and Go SDK contract updates. Existing event-driven bindings remain unchanged.
+- Graph automation reconciliation requires the matching mycel-api and Go SDK v0.22 contract. Existing event-driven bindings remain unchanged.
+- Revision-fence witnesses are opaque and must not be decoded, logged, or blindly retried.
+- Oversized atomic transactions now fail with a structured resource-exhaustion error; clients that do not require one atomic commit must chunk work explicitly.
 
 ## [v0.21.4] - 2026-11-04
 
