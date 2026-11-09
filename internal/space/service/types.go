@@ -76,3 +76,9 @@ type EffectiveAccess struct {
 	Roles        []string
 	Capabilities []string
 }
+
+// ReadRevisionProvider supplies opaque authorization and visibility revisions
+// for a principal's graph read scope.
+type ReadRevisionProvider interface {
+	ReadVisibilityRevisions(ctx context.Context, principalID string, spaceID string, domainID string) (authorizationRevision uint64, visibilityRevision uint64, err error)
+}

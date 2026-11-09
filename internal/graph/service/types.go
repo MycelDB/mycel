@@ -14,16 +14,35 @@ import (
 const ModuleName = "graph"
 
 var (
-	ErrInvalidInput        = errors.New("invalid graph input")
-	ErrNotFound            = errors.New("graph entity not found")
-	ErrUnauthorized        = errors.New("graph unauthorized")
-	ErrReadOnly            = errors.New("graph transaction is read-only")
-	ErrInvalidState        = errors.New("invalid graph transaction state")
-	ErrConflict            = graphchange.ErrConflict
-	ErrIdempotencyConflict = errors.New("graph idempotency key is already bound to a different mutation")
-	ErrIdempotencyCapacity = errors.New("graph idempotency retention capacity exhausted")
-	ErrTransactionLimit    = errors.New("graph transaction limit exceeded")
+	ErrInvalidInput          = errors.New("invalid graph input")
+	ErrNotFound              = errors.New("graph entity not found")
+	ErrUnauthorized          = errors.New("graph unauthorized")
+	ErrReadOnly              = errors.New("graph transaction is read-only")
+	ErrInvalidState          = errors.New("invalid graph transaction state")
+	ErrConflict              = graphchange.ErrConflict
+	ErrRevisionFenceConflict = errors.New("graph revision fence conflict")
+	ErrIdempotencyConflict   = errors.New("graph idempotency key is already bound to a different mutation")
+	ErrIdempotencyCapacity   = errors.New("graph idempotency retention capacity exhausted")
+	ErrTransactionLimit      = errors.New("graph transaction limit exceeded")
 )
+
+// RevisionFencedCommitter is an additive extension used by the public commit
+// RPC. Implementations validate all witnesses at the storage commit boundary.
+type RevisionFencedCommitter interface {
+	CommitTransactionGraphWithRevisionFences(ctx context.Context, tx sessionmodel.GraphTransaction, witnesses [][]byte) (graphchange.CommitResult, error)
+}
+
+// RevisionFenceKeyProvider supplies the daemon/cluster-stable witness MAC key
+// to API adapters without exposing the key itself to clients.
+type RevisionFenceKeyProvider interface {
+	RevisionFenceMACKey() []byte
+}
+
+// RevisionFenceDependencyValidator validates non-graph read dependencies at
+// the authoritative commit boundary.
+type RevisionFenceDependencyValidator interface {
+	ValidateRevisionFenceDependency(ctx context.Context, tx sessionmodel.GraphTransaction, dependency RevisionDependency) error
+}
 
 type Manager interface {
 	ReadViewIdentity(ctx context.Context, tx sessionmodel.GraphTransaction) (string, error)

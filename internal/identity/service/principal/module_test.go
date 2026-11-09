@@ -22,6 +22,39 @@ func newTestModule(t *testing.T) (*Module, context.Context) {
 	return m, ctx
 }
 
+func TestAuthorizationRevisionChangesWhenGrantStateChanges(t *testing.T) {
+	m, ctx := newTestModule(t)
+	admin, err := m.FindPrincipal(ctx, "admin", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.AuthorizationRevision(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, _, err := m.GrantRole(ctx, admin.ID, RoleSpaceViewer, AccessScope{Type: "space", SpaceID: "00000000-0000-0000-0000-000000000001"}, "revision test", admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.AuthorizationRevision(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatalf("authorization revision did not change: %d", before)
+	}
+	if _, err := m.RevokeRole(ctx, admin.ID, grant.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	final, err := m.AuthorizationRevision(ctx, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final == after {
+		t.Fatalf("authorization revision did not reflect revocation: %d", final)
+	}
+}
+
 func TestStandaloneBootstrapCreatesSystemAdminPrincipal(t *testing.T) {
 	m, ctx := newTestModule(t)
 	principals, err := m.ListPrincipals(ctx)

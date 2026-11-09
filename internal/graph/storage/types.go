@@ -12,14 +12,15 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("graph storage: not found")
-	ErrClosed              = errors.New("graph storage: closed")
-	ErrInvalidRecord       = errors.New("graph storage: invalid record")
-	ErrUnsupported         = errors.New("graph storage: unsupported value")
-	ErrTxnClosed           = errors.New("graph storage: transaction closed")
-	ErrConflict            = errors.New("graph storage: revision conflict")
-	ErrIdempotencyConflict = errors.New("graph storage: idempotency key conflict")
-	ErrIdempotencyCapacity = errors.New("graph storage: idempotency capacity exhausted")
+	ErrNotFound              = errors.New("graph storage: not found")
+	ErrClosed                = errors.New("graph storage: closed")
+	ErrInvalidRecord         = errors.New("graph storage: invalid record")
+	ErrUnsupported           = errors.New("graph storage: unsupported value")
+	ErrTxnClosed             = errors.New("graph storage: transaction closed")
+	ErrConflict              = errors.New("graph storage: revision conflict")
+	ErrRevisionFenceConflict = errors.New("graph storage: revision fence conflict")
+	ErrIdempotencyConflict   = errors.New("graph storage: idempotency key conflict")
+	ErrIdempotencyCapacity   = errors.New("graph storage: idempotency capacity exhausted")
 )
 
 type StoreState string
@@ -140,6 +141,15 @@ type IdempotencyRecord struct {
 	PublicationAcknowledged bool            `json:"publication_acknowledged,omitempty"`
 }
 
+// RevisionFence identifies one durable graph or query revision that must remain
+// unchanged until the transaction commits. Kind is "node", "edge", or
+// "domain". A domain fence protects the domain's committed graph revision.
+type RevisionFence struct {
+	Kind     string    `json:"kind"`
+	ID       uuid.UUID `json:"id"`
+	Revision uint64    `json:"revision"`
+}
+
 type CommitInfo struct {
 	TxnID            uuid.UUID
 	NextRevision     uint64
@@ -175,6 +185,7 @@ type CommitHook func(CommitInfo) error
 
 type Txn interface {
 	ExpectRevision(revision uint64)
+	ExpectRevisionFence(fence RevisionFence)
 	SetCommitHook(hook CommitHook)
 	SetIdempotency(record IdempotencyRecord)
 	PutNode(node graph.Node) error

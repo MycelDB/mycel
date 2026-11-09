@@ -356,6 +356,17 @@ func TestTransactionServiceIdempotencyLookupSurvivesMissingSession(t *testing.T)
 	}
 }
 
+func TestTransactionServiceMapsRevisionFenceConflict(t *testing.T) {
+	err := mapGraphError(daegraph.ErrRevisionFenceConflict, "commit")
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("revision fence code = %v, want Aborted", status.Code(err))
+	}
+	info, ok := status.Convert(err).Details()[0].(*errdetails.ErrorInfo)
+	if !ok || info.GetReason() != "GRAPH_REVISION_FENCE_CONFLICT" {
+		t.Fatalf("revision fence details = %v", status.Convert(err).Details())
+	}
+}
+
 func TestTransactionServiceMapsIdempotencyErrors(t *testing.T) {
 	if got := status.Code(mapGraphError(daegraph.ErrIdempotencyConflict, "commit")); got != codes.AlreadyExists {
 		t.Fatalf("conflict code = %v, want AlreadyExists", got)
