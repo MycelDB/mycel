@@ -278,7 +278,8 @@ func reconciliationInvocationID(operationID, nodeID string) string {
 }
 
 func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, operation automation.ReconciliationOperation, binding automation.Binding, pageSize int) ([]graph.Node, string, error) {
-	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: automationActor, SpaceID: operation.SpaceID, DomainID: operation.DomainID.String()})
+	discoveryPrincipal := firstNonEmptyString(binding.Runtime.OnBehalfOfPrincipalID, binding.Runtime.OwnerPrincipalID, automationActor)
+	sess, err := m.sessions.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: discoveryPrincipal, SpaceID: operation.SpaceID, DomainID: operation.DomainID.String()})
 	if err != nil {
 		return nil, "", err
 	}
