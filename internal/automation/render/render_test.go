@@ -57,6 +57,32 @@ func TestRenderGQLTemplateUsesAliasesAndCollections(t *testing.T) {
 	}
 }
 
+func TestRenderContextMembershipOrderingAndContentChangeFingerprint(t *testing.T) {
+	input := automation.Input{Mode: automation.InputModeGQLTemplate, Template: "{{#each entries}}{{entry.payload.text}}\\n{{/each}}"}
+	render := func(rows []map[string]any) Result {
+		result, err := Render(input, Context{Collections: map[string][]map[string]any{"entries": rows}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	base := render([]map[string]any{{"entry": graph.Node{Payload: map[string]any{"text": "one"}}}, {"entry": graph.Node{Payload: map[string]any{"text": "two"}}}})
+	if base.Hash == render([]map[string]any{{"entry": graph.Node{Payload: map[string]any{"text": "one"}}}}).Hash {
+		t.Fatal("context membership did not change fingerprint")
+	}
+	if base.Hash == render([]map[string]any{{"entry": graph.Node{Payload: map[string]any{"text": "two"}}}, {"entry": graph.Node{Payload: map[string]any{"text": "one"}}}}).Hash {
+		t.Fatal("context ordering did not change fingerprint")
+	}
+	if base.Hash == render([]map[string]any{{"entry": graph.Node{Payload: map[string]any{"text": "one-modified"}}}, {"entry": graph.Node{Payload: map[string]any{"text": "two"}}}}).Hash {
+		t.Fatal("context source content did not change fingerprint")
+	}
+	// A policy-filtered or truncated result is represented by the bounded rows
+	// supplied to rendering and therefore changes the same fingerprint.
+	if base.Hash == render([]map[string]any{{"entry": graph.Node{Payload: map[string]any{"text": "two"}}}}).Hash {
+		t.Fatal("policy exclusion/truncation did not change fingerprint")
+	}
+}
+
 func TestRenderFieldsUsesInputTargetAlias(t *testing.T) {
 	res, err := Render(automation.Input{Target: "journal", Mode: automation.InputModeFields, Fields: []string{"properties.date"}}, Context{Changed: graph.Node{Properties: map[string]any{"date": "wrong"}}, Aliases: map[string]any{"journal": graph.Node{Properties: map[string]any{"date": "right"}}}})
 	if err != nil {
