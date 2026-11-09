@@ -283,11 +283,11 @@ func (m *AutomationManager) discoverReconciliationPage(ctx context.Context, oper
 	if err != nil {
 		return nil, "", err
 	}
-	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: automationActor, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
+	tx, err := m.sessions.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: discoveryPrincipal, SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
 	if err != nil {
 		return nil, "", err
 	}
-	defer func() { _, _ = m.sessions.RollbackTransaction(context.Background(), automationActor, tx.ID) }()
+	defer func() { _, _ = m.sessions.RollbackTransaction(context.Background(), discoveryPrincipal, tx.ID) }()
 	queryText := binding.Reconciliation.Discovery.GQL
 	if m.queryEngine != nil {
 		plan, err := gql.Compile(queryText)
