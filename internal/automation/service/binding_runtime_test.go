@@ -100,7 +100,7 @@ func TestProcedureBindingGraphContextUpdatesSelectedTarget(t *testing.T) {
 	graphs := &automationE2EGraph{nodes: map[string]graph.Node{page.ID.String(): page, entry.ID.String(): entry}, edges: []graph.Edge{{ID: graph.EdgeID(uuid.New()), DomainID: ids.domainID, FromID: page.ID, ToID: entry.ID, Labels: []string{"HAS_ENTRY"}, Properties: map[string]any{"position": 1}}}}
 	sessions := automationE2ESessions{spaceID: ids.spaceID, domainID: ids.domainID.String()}
 	mgr := NewManager(store).WithGraphRuntime(sessions, graphs).WithInferenceInvoker(inference)
-	procedure := automation.Procedure{ID: "page-summary-procedure", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "page", Mode: automation.InputModeGQLTemplate, Template: "{{page.properties.title}}\n{{#each entries}}{{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (page)-[r:HAS_ENTRY]->(entry:Entry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize page", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "page", Set: map[string]string{"payload.summary": "$result.text"}}}}}}
+	procedure := automation.Procedure{ID: "page-summary-procedure", Version: 1, DomainID: ids.domainID, Status: automation.StatusEnabled, Input: automation.Input{Target: "page", Mode: automation.InputModeGQLTemplate, Template: "{{page.properties.title}}\n{{#each entries}}{{entry.payload.text}}\n{{/each}}", Context: map[string]automation.ContextQuery{"entries": {GQL: "MATCH (page)-[r:HAS_ENTRY]->(entry:Entry) RETURN entry ORDER BY r.properties.position FETCH FIRST 20 ROWS ONLY", Limit: 20}}}, Inference: automation.InferenceRef{Operation: "chat", ProfileID: ids.profileID.String()}, Prompt: "Summarize page", Output: automation.Output{Mode: automation.OutputModeText, Actions: []automation.Action{{UpdateNode: &automation.UpdateNodeAction{Target: "page", Set: map[string]string{"payload.summary": "$result.text", "payload.summary_source_hash": "$system.input_hash", "payload.summary_generated_at": "$system.generated_at"}}}}}}
 	binding := automation.Binding{ID: "entry-trigger-binding", Version: 1, DomainID: ids.domainID, ProcedureID: procedure.ID, ProcedureVersion: procedure.Version, Status: automation.StatusEnabled, Scope: automation.BindingScope{SpaceID: ids.spaceID, DomainID: ids.domainID}, Trigger: automation.BindingTrigger{Type: automation.TriggerTypeGraphEvent, Events: []string{automation.EventNodeUpdated}, Labels: []string{"Entry"}, Condition: automation.Condition{GQL: "MATCH (page:Page)-[r:HAS_ENTRY]->(changed:Entry) RETURN changed, page"}}, Runtime: automation.RuntimeContext{ActorPrincipalID: automationActor, OwnerPrincipalID: "principal-a", OnBehalfOfPrincipalID: "principal-a"}}
 	putProcedureAndBinding(t, ctx, store, procedure, binding)
 
@@ -112,6 +112,12 @@ func TestProcedureBindingGraphContextUpdatesSelectedTarget(t *testing.T) {
 	if got := updatedPage.Payload["summary"]; got != "result text" {
 		t.Fatalf("page summary payload = %#v", got)
 	}
+	if got := updatedPage.Payload["summary_source_hash"]; got == nil || got == "" {
+		t.Fatalf("page summary source hash = %#v", got)
+	}
+	if got := updatedPage.Payload["summary_generated_at"]; got == nil || got == "" {
+		t.Fatalf("page summary generated at = %#v", got)
+	}
 	if _, ok := graphs.nodes[entry.ID.String()].Payload["summary"]; ok {
 		t.Fatal("entry trigger should not be the updated output target")
 	}
@@ -120,7 +126,7 @@ func TestProcedureBindingGraphContextUpdatesSelectedTarget(t *testing.T) {
 		t.Fatalf("succeeded invocations: %+v err=%v", invs, err)
 	}
 	run, err := store.GetRun(ctx, ids.domainID, invs[0].ID)
-	if err != nil || run.BindingID != binding.ID || run.ProcedureID != procedure.ID || run.TargetAlias != "page" || run.TargetNodeID != page.ID.String() || len(run.Context) == 0 {
+	if err != nil || run.BindingID != binding.ID || run.ProcedureID != procedure.ID || run.TargetAlias != "page" || run.TargetNodeID != page.ID.String() || len(run.Context) == 0 || run.InputHash == "" || run.GenerationCompletedAt.IsZero() {
 		t.Fatalf("unexpected run diagnostics: %+v err=%v", run, err)
 	}
 }

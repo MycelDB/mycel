@@ -38,6 +38,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 			return run, err
 		}
 		run.RenderedInputHash = result.Hash
+		run.InputHash = generationInputFingerprint(def, inv, result.Hash, "")
 		output, err := m.generateWithInference(ctx, def, inv, result.Text, &run)
 		if err != nil {
 			return run, err
@@ -153,6 +154,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		return run, err
 	}
 	imageInputHash := automationImageInputsHash(imageInputs)
+	run.InputHash = generationInputFingerprint(def, inv, run.RenderedInputHash, imageInputHash)
 	// Input collection is complete. Release the graph transaction before any
 	// credential resolution or provider access; publication opens a fresh
 	// transaction and revalidates the complete provider input, condition,
@@ -180,6 +182,7 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 		return run, errors.Join(err, m.recordRunPublicationDispositionWithDiagnostics(publicationCtx, run, "rejected_invalid_output"))
 	}
 	m.logPublicationStage(run, "output_parse", "completed", "none")
+	parsed.System = generationSystemMetadata(def, inv, run)
 	run.ActionFingerprint = actionFingerprint(def, parsed)
 	m.logPublicationStage(run, "transaction_reopen", "started", "none")
 	publicationTx, publicationNode, publicationAliases, err := m.reopenAutomationOutputTransaction(publicationCtx, executionPrincipal, sess, def, inv, &run, rendered.Hash, imageInputHash)
@@ -369,7 +372,7 @@ func (m *AutomationManager) commitAutomationOutputWithConflictRetry(ctx context.
 			m.logPublicationStage(*run, "conflict_transaction_reopen", "completed", "none")
 		}
 		m.logPublicationStage(*run, "action_apply", "started", "none")
-		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, ProcedureID: inv.ProcedureID, AuthorizationRevision: run.AuthorizationRevision, GlobalAuthorizationRevision: run.GlobalAuthorizationRevision, SpaceAuthorizationRevision: run.SpaceAuthorizationRevision, Changed: node, Aliases: aliases, Result: parsed})
+		summary, err := engine.Apply(ctx, tx, actions.Context{Definition: def, RunID: run.ID, InvocationID: inv.ID, BindingID: inv.BindingID, TargetNodeID: run.TargetNodeID, ClaimOwnerNodeID: inv.ClaimOwnerNodeID, ClaimVersion: inv.ClaimVersion, ClaimToken: inv.ClaimToken, OutputIdempotencyKey: run.OutputIdempotencyKey, ProcedureID: firstNonEmptyString(inv.ProcedureID, def.ID), ProcedureVersion: run.ProcedureVersion, BindingVersion: run.BindingVersion, InputHash: run.InputHash, ProvenanceVersion: automation.SystemProvenanceVersion, GenerationCompletedAt: run.GenerationCompletedAt, AuthorizationRevision: run.AuthorizationRevision, GlobalAuthorizationRevision: run.GlobalAuthorizationRevision, SpaceAuthorizationRevision: run.SpaceAuthorizationRevision, Changed: node, Aliases: aliases, Result: parsed})
 		if err != nil {
 			m.logPublicationStage(*run, "action_apply", "failed", publicationFailureCategory(err))
 			m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
@@ -804,6 +807,7 @@ func (m *AutomationManager) generateWithInference(ctx context.Context, def autom
 	if m.maxOutputTokens > 0 && run.Usage.OutputTokens > m.maxOutputTokens {
 		return "", markInferenceGenerationError(fmt.Errorf("automation output token ceiling exceeded: %d > %d", run.Usage.OutputTokens, m.maxOutputTokens), true, false)
 	}
+	run.GenerationCompletedAt = m.now()
 	return resp.Text, nil
 }
 

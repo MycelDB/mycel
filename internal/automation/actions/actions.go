@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	automation "github.com/myceldb/mycel/internal/automation/model"
@@ -36,6 +37,11 @@ type Context struct {
 	ClaimToken                  string
 	OutputIdempotencyKey        string
 	ProcedureID                 string
+	ProcedureVersion            int
+	BindingVersion              int
+	InputHash                   string
+	ProvenanceVersion           int
+	GenerationCompletedAt       time.Time
 	AuthorizationRevision       uint64
 	GlobalAuthorizationRevision uint64
 	SpaceAuthorizationRevision  uint64
@@ -357,6 +363,21 @@ func automationMeta(in Context) map[string]any {
 	}
 	if in.ProcedureID != "" {
 		meta["procedure_id"] = in.ProcedureID
+	}
+	if in.ProcedureVersion != 0 {
+		meta["procedure_version"] = in.ProcedureVersion
+	}
+	if in.BindingVersion != 0 {
+		meta["binding_version"] = in.BindingVersion
+	}
+	if in.InputHash != "" {
+		meta["input_hash"] = in.InputHash
+		if in.ProvenanceVersion != 0 {
+			meta["provenance_version"] = in.ProvenanceVersion
+		}
+	}
+	if !in.GenerationCompletedAt.IsZero() {
+		meta["generated_at"] = in.GenerationCompletedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if in.AuthorizationRevision != 0 {
 		meta["authorization_revision"] = strconv.FormatUint(in.AuthorizationRevision, 10)

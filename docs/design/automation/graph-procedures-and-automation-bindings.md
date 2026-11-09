@@ -384,6 +384,8 @@ Run records should include the same runtime principals plus execution details:
   "credential_grant_id": "grant-id",
   "provider_request_id": "provider-request-id",
   "rendered_input_hash": "sha256...",
+  "input_hash": "sha256...",
+  "generation_completed_at": "2026-08-23T03:00:00.123Z",
   "output_hash": "sha256...",
   "mutation_id": "mutation-id",
   "usage": {
@@ -394,6 +396,34 @@ Run records should include the same runtime principals plus execution details:
   }
 }
 ```
+
+After a successful inference, validated graph actions may reference a daemon-owned
+`$system` namespace separately from model output:
+
+```json
+{
+  "properties.summary_provenance_version": "$system.provenance_version",
+  "properties.summary_source_hash": "$system.input_hash",
+  "properties.summary_generated_at": "$system.generated_at",
+  "properties.summary_procedure_version": "$system.procedure_version",
+  "properties.summary_binding_version": "$system.binding_version"
+}
+```
+
+`$system.input_hash` is a versioned SHA-256 fingerprint of the normalized
+procedure/binding identity and versions, the rendered inference input, the
+procedure prompt/inference contract, and any image input digest. It never
+contains prompt text, graph payloads, credentials, provider responses, or
+provider identifiers. Context rows are hashed in the deterministic order
+returned by their bounded query; policy filtering and truncation therefore
+change the hash when they change the rendered input. Definitions must use
+explicit query ordering when ordering is semantically relevant.
+
+The daemon computes these values after successful inference and before action
+application. Model output cannot populate or override `$system`; `$result` and
+`$system` are separate namespaces. The same metadata is also stamped into the
+system-owned automation graph metadata. A failed, denied, or ambiguous provider
+attempt does not expose a successful-generation timestamp or provenance hash.
 
 ## Backward compatibility
 

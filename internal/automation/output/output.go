@@ -7,9 +7,10 @@ import (
 )
 
 type Result struct {
-	Mode string
-	Text string
-	JSON any
+	Mode   string
+	Text   string
+	JSON   any
+	System map[string]any
 }
 
 func Parse(mode string, schema json.RawMessage, raw string) (Result, error) {
@@ -41,6 +42,10 @@ func Resolve(value Result, expr string, item any) (any, error) {
 		return item, nil
 	case strings.HasPrefix(expr, "$result."):
 		return path(value.JSON, strings.TrimPrefix(expr, "$result.")), nil
+	case expr == "$system":
+		return value.System, nil
+	case strings.HasPrefix(expr, "$system."):
+		return path(value.System, strings.TrimPrefix(expr, "$system.")), nil
 	default:
 		return expr, nil
 	}
