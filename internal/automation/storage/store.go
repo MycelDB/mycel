@@ -78,6 +78,12 @@ type Store interface {
 	DeleteScheduleCheckpoint(ctx context.Context, domainID graph.DomainID, automationID string) error
 	ListScheduleCheckpointDomains(ctx context.Context) ([]graph.DomainID, error)
 	ListScheduleCheckpoints(ctx context.Context, domainID graph.DomainID) ([]ScheduleCheckpoint, error)
+	PutReconciliationOperation(ctx context.Context, operation automation.ReconciliationOperation) error
+	GetReconciliationOperation(ctx context.Context, spaceID string, operationID string) (automation.ReconciliationOperation, error)
+	GetReconciliationOperationByIdempotency(ctx context.Context, spaceID string, domainID graph.DomainID, bindingID string, idempotencyKey string) (automation.ReconciliationOperation, error)
+	DeleteReconciliationOperation(ctx context.Context, operation automation.ReconciliationOperation) error
+	ListReconciliationOperationDomains(ctx context.Context) ([]graph.DomainID, error)
+	ListReconciliationOperations(ctx context.Context, domainID graph.DomainID) ([]automation.ReconciliationOperation, error)
 	PutGraphReplayCursor(ctx context.Context, cursor GraphReplayCursor) error
 	GetGraphReplayCursor(ctx context.Context, spaceID string, domainID graph.DomainID) (GraphReplayCursor, error)
 	DeleteGraphReplayCursor(ctx context.Context, spaceID string, domainID graph.DomainID) error

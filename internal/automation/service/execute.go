@@ -155,6 +155,13 @@ func (m *AutomationManager) executeInvocation(ctx context.Context, def automatio
 	}
 	imageInputHash := automationImageInputsHash(imageInputs)
 	run.InputHash = generationInputFingerprint(def, inv, run.RenderedInputHash, imageInputHash)
+	if strings.HasPrefix(inv.EventID, reconciliationEventPrefix) && reconciliationInputHash(node) == run.InputHash {
+		m.rollbackAutomationOutputTransaction(ctx, executionPrincipal, tx.ID)
+		run.Status = "skipped"
+		run.Error = reconciliationFreshReason
+		run.CompletedAt = m.now()
+		return run, nil
+	}
 	// Input collection is complete. Release the graph transaction before any
 	// credential resolution or provider access; publication opens a fresh
 	// transaction and revalidates the complete provider input, condition,

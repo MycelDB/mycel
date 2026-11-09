@@ -16,6 +16,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
 
@@ -56,6 +57,9 @@ type Manager interface {
 	GetProcedureInferenceLedger(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error)
 	RetryInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
 	CancelInvocation(ctx context.Context, domainID graph.DomainID, invocationID string) (automation.Invocation, error)
+	StartReconciliation(ctx context.Context, principalID string, spaceID string, domainID graph.DomainID, bindingID string, idempotencyKey string, batchSize int, maxConcurrency int) (automation.ReconciliationOperation, error)
+	GetReconciliation(ctx context.Context, spaceID string, operationID string) (automation.ReconciliationOperation, error)
+	CancelReconciliation(ctx context.Context, spaceID string, operationID string) (automation.ReconciliationOperation, error)
 	HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error
 	HandleGraphChangeGap(ctx context.Context, gap graphchange.Gap) error
 	ProcessPending(ctx context.Context, domainID graph.DomainID, limit int) (int, error)
@@ -66,6 +70,7 @@ type AutomationManager struct {
 	now                                                    func() time.Time
 	sessions                                               SessionRuntime
 	graphs                                                 GraphRuntime
+	queryEngine                                            queryengine.Facade
 	schemas                                                SchemaReader
 	inference                                              InferenceInvoker
 	blobs                                                  BlobReader
@@ -125,6 +130,7 @@ type AutomationManager struct {
 	definitionMutationMu                                   sync.Mutex
 	procedureControlMu                                     sync.RWMutex
 	procedureControlOperationMu                            sync.Mutex
+	reconciliationMu                                       sync.Mutex
 	procedureInferenceDiagnosticsLogMu                     sync.Mutex
 	procedureInferenceDiagnosticsLastLog                   map[string]time.Time
 	procedureInferenceDiagnosticsSuppressed                map[string]int64
@@ -158,6 +164,11 @@ func (m *AutomationManager) WithInferenceInvoker(inference InferenceInvoker) *Au
 
 func (m *AutomationManager) WithBlobReader(blobs BlobReader) *AutomationManager {
 	m.blobs = blobs
+	return m
+}
+
+func (m *AutomationManager) WithQueryEngine(engine queryengine.Facade) *AutomationManager {
+	m.queryEngine = engine
 	return m
 }
 

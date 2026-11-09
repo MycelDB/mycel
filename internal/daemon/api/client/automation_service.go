@@ -696,6 +696,73 @@ func (s *AutomationService) DisableGraphAutomationBinding(ctx context.Context, r
 	return &clientv1.DisableGraphAutomationBindingResponse{BindingJson: jsonText}, nil
 }
 
+func (s *AutomationService) StartGraphAutomationReconciliation(ctx context.Context, req *clientv1.StartGraphAutomationReconciliationRequest) (*clientv1.StartGraphAutomationReconciliationResponse, error) {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	domainID, err := parseDomainID(req.GetDomainId())
+	if err != nil {
+		return nil, err
+	}
+	spaceID := strings.TrimSpace(req.GetSpaceId())
+	if spaceID == "" {
+		return nil, status.Error(codes.InvalidArgument, "space_id is required")
+	}
+	if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, spaceID, domainID.String(), ""); err != nil {
+		return nil, status.Error(codes.NotFound, "domain not found")
+	}
+	operation, err := s.automations.StartReconciliation(ctx, principal.PrincipalID, spaceID, domainID, req.GetBindingId(), req.GetIdempotencyKey(), int(req.GetBatchSize()), int(req.GetMaxConcurrency()))
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	return &clientv1.StartGraphAutomationReconciliationResponse{Operation: reconciliationSummary(operation)}, nil
+}
+
+func (s *AutomationService) GetGraphAutomationReconciliation(ctx context.Context, req *clientv1.GetGraphAutomationReconciliationRequest) (*clientv1.GetGraphAutomationReconciliationResponse, error) {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	operation, err := s.automations.GetReconciliation(ctx, req.GetSpaceId(), req.GetOperationId())
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, operation.SpaceID, operation.DomainID.String(), ""); err != nil {
+		return nil, status.Error(codes.NotFound, "reconciliation not found")
+	}
+	return &clientv1.GetGraphAutomationReconciliationResponse{Operation: reconciliationSummary(operation)}, nil
+}
+
+func (s *AutomationService) CancelGraphAutomationReconciliation(ctx context.Context, req *clientv1.CancelGraphAutomationReconciliationRequest) (*clientv1.CancelGraphAutomationReconciliationResponse, error) {
+	principal, err := spaceUserPrincipalFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	operation, err := s.automations.GetReconciliation(ctx, req.GetSpaceId(), req.GetOperationId())
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, operation.SpaceID, operation.DomainID.String(), ""); err != nil {
+		return nil, status.Error(codes.NotFound, "reconciliation not found")
+	}
+	operation, err = s.automations.CancelReconciliation(ctx, operation.SpaceID, operation.ID)
+	if err != nil {
+		return nil, mapAutomationError(err)
+	}
+	return &clientv1.CancelGraphAutomationReconciliationResponse{Operation: reconciliationSummary(operation)}, nil
+}
+
+func reconciliationSummary(operation automationmodel.ReconciliationOperation) *clientv1.GraphAutomationReconciliation {
+	return &clientv1.GraphAutomationReconciliation{
+		OperationId: operation.ID, SpaceId: operation.SpaceID, DomainId: operation.DomainID.String(), BindingId: operation.BindingID,
+		BindingVersion: int32(operation.BindingVersion), ProcedureId: operation.ProcedureID, ProcedureVersion: int32(operation.ProcedureVersion),
+		Status: operation.Status, Cursor: operation.Cursor, ScannedCount: operation.ScannedCount, FreshSkippedCount: operation.FreshSkippedCount,
+		ScheduledCount: operation.ScheduledCount, CompletedCount: operation.CompletedCount, RetryingCount: operation.RetryingCount, FailedCount: operation.FailedCount,
+		FailureCode: operation.FailureCode, CreatedAt: formatAutomationTime(operation.CreatedAt), UpdatedAt: formatAutomationTime(operation.UpdatedAt), CompletedAt: formatAutomationTime(operation.CompletedAt),
+	}
+}
+
 func automationDefinitionJSON(def automationmodel.Definition) (string, error) {
 	return marshalAutomationJSON(def)
 }

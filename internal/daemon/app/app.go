@@ -31,6 +31,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/writetrace"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	semanticmaintenance "github.com/myceldb/mycel/internal/semantic/maintenance"
@@ -307,7 +308,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	graphService.SetSchemaValidator(schemaService)
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
-	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithSchemaReader(schemaService).WithInferenceInvoker(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
+	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithQueryEngine(queryengine.New(queryengine.Ports{Entities: graphService, Traversals: graphService, Indexes: graphService, Catalog: schemaService, Mutations: graphService})).WithSchemaReader(schemaService).WithInferenceInvoker(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
 	blobService := blobservice.NewModule(graphService, blobservice.Config{
 		Backend:             cfg.Blob.Backend,
 		ObjectStoreProvider: cfg.Blob.ObjectStoreProvider,
