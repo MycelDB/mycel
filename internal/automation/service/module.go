@@ -9,6 +9,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/automation/storage"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 )
@@ -26,17 +27,18 @@ type WorkerConfig struct {
 
 type Module struct {
 	*AutomationManager
-	dataDir   string
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	sessions  SessionRuntime
-	graphs    GraphRuntime
-	schemas   SchemaReader
-	inference InferenceInvoker
-	blobs     BlobReader
-	replayer  GraphChangeReplayer
-	worker    WorkerConfig
-	gate      *quiesce.Gate
+	dataDir     string
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	sessions    SessionRuntime
+	graphs      GraphRuntime
+	queryEngine queryengine.Facade
+	schemas     SchemaReader
+	inference   InferenceInvoker
+	blobs       BlobReader
+	replayer    GraphChangeReplayer
+	worker      WorkerConfig
+	gate        *quiesce.Gate
 }
 
 func NewModule(dataDir string) *Module {
@@ -53,6 +55,11 @@ func (m *Module) ApplySpaceAuthorizationRevision(ctx context.Context, spaceID st
 func (m *Module) WithGraphRuntime(sessions SessionRuntime, graphs GraphRuntime) *Module {
 	m.sessions = sessions
 	m.graphs = graphs
+	return m
+}
+
+func (m *Module) WithQueryEngine(engine queryengine.Facade) *Module {
+	m.queryEngine = engine
 	return m
 }
 
@@ -105,7 +112,7 @@ func (m *Module) Init(ctx context.Context, host coreruntime.Host) coreruntime.In
 			return coreruntime.Abort(ModuleName, "quiesce", "register automation quiesce participant", err)
 		}
 	}
-	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithSchemaReader(m.schemas).WithInferenceInvoker(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
+	m.AutomationManager = NewManager(storage.NewFileStore(dataDir)).WithGraphRuntime(m.sessions, m.graphs).WithQueryEngine(m.queryEngine).WithSchemaReader(m.schemas).WithInferenceInvoker(m.inference).WithBlobReader(m.blobs).WithRunCeilings(m.worker.MaxInputTokens, m.worker.MaxOutputTokens).WithQuiesceGate(m.gate)
 	if host != nil {
 		m.AutomationManager.WithLogger(host.Log())
 		m.AutomationManager.logProcedureInferenceFixedBounds()
@@ -141,12 +148,26 @@ func (m *Module) Start(ctx context.Context) error {
 				if err != nil {
 					continue
 				}
+				reconciliationDomains, reconciliationErr := m.ListReconciliationOperationDomains(workerCtx)
+				if reconciliationErr == nil {
+					seen := make(map[string]struct{}, len(domains)+len(reconciliationDomains))
+					for _, domainID := range domains {
+						seen[domainID.String()] = struct{}{}
+					}
+					for _, domainID := range reconciliationDomains {
+						if _, ok := seen[domainID.String()]; !ok {
+							domains = append(domains, domainID)
+							seen[domainID.String()] = struct{}{}
+						}
+					}
+				}
 				sem := make(chan struct{}, m.worker.Concurrency)
 				var batchWG sync.WaitGroup
 				if m.replayer != nil {
 					_ = m.RecoverGraphChanges(workerCtx, m.replayer)
 				}
 				for _, domainID := range domains {
+					_, _ = m.ProcessReconciliations(workerCtx, domainID, m.worker.BatchSize)
 					_, _ = m.ProcessScheduled(workerCtx, domainID, m.worker.BatchSize)
 					sem <- struct{}{}
 					batchWG.Add(1)

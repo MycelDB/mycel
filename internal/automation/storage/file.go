@@ -733,6 +733,97 @@ func (s *FileStore) ListScheduleCheckpoints(ctx context.Context, domainID graph.
 	return listJSONFiles[ScheduleCheckpoint](filepath.Join(s.root, "schedule-checkpoints", domainID.String()))
 }
 
+func (s *FileStore) PutReconciliationOperation(ctx context.Context, operation automation.ReconciliationOperation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(s.reconciliationOperationPath(operation.DomainID, operation.SpaceID, operation.ID), operation)
+}
+
+func (s *FileStore) GetReconciliationOperation(ctx context.Context, spaceID string, operationID string) (automation.ReconciliationOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.ReconciliationOperation{}, err
+	}
+	var out automation.ReconciliationOperation
+	domains, err := s.ListReconciliationOperationDomains(ctx)
+	if err != nil {
+		return out, err
+	}
+	for _, domainID := range domains {
+		operations, err := s.ListReconciliationOperations(ctx, domainID)
+		if err != nil {
+			return out, err
+		}
+		for _, candidate := range operations {
+			if candidate.SpaceID == spaceID && candidate.ID == operationID {
+				return candidate, nil
+			}
+		}
+	}
+	return out, ErrNotFound
+}
+
+func (s *FileStore) GetReconciliationOperationByIdempotency(ctx context.Context, spaceID string, domainID graph.DomainID, bindingID string, idempotencyKey string) (automation.ReconciliationOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return automation.ReconciliationOperation{}, err
+	}
+	operations, err := s.ListReconciliationOperations(ctx, domainID)
+	if err != nil {
+		return automation.ReconciliationOperation{}, err
+	}
+	for _, operation := range operations {
+		if operation.SpaceID == spaceID && operation.BindingID == bindingID && operation.IdempotencyKey == idempotencyKey {
+			return operation, nil
+		}
+	}
+	return automation.ReconciliationOperation{}, ErrNotFound
+}
+
+func (s *FileStore) DeleteReconciliationOperation(ctx context.Context, operation automation.ReconciliationOperation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := os.Remove(s.reconciliationOperationPath(operation.DomainID, operation.SpaceID, operation.ID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *FileStore) ListReconciliationOperationDomains(ctx context.Context) ([]graph.DomainID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.listDomains("reconciliation-operations")
+}
+
+func (s *FileStore) ListReconciliationOperations(ctx context.Context, domainID graph.DomainID) ([]automation.ReconciliationOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.root, "reconciliation-operations", domainID.String())
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]automation.ReconciliationOperation, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		items, err := listJSONFiles[automation.ReconciliationOperation](filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, items...)
+	}
+	sort.Slice(operations, func(i, j int) bool { return operations[i].ID < operations[j].ID })
+	return operations, nil
+}
+
 func (s *FileStore) PutGraphReplayCursor(ctx context.Context, cursor GraphReplayCursor) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -999,6 +1090,10 @@ func (s *FileStore) scheduleCheckpointPath(domainID graph.DomainID, automationID
 
 func (s *FileStore) graphReplayCursorPath(spaceID string, domainID graph.DomainID) string {
 	return filepath.Join(s.root, "graph-replay-cursors", safeName(spaceID), domainID.String()+".json")
+}
+
+func (s *FileStore) reconciliationOperationPath(domainID graph.DomainID, spaceID string, operationID string) string {
+	return filepath.Join(s.root, "reconciliation-operations", domainID.String(), safeName(spaceID), safeName(operationID)+".json")
 }
 
 func (s *FileStore) workflowInstancePath(domainID graph.DomainID, createdAt time.Time, id string) string {

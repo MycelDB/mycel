@@ -45,6 +45,7 @@ type automationSnapshot struct {
 	WorkflowInstances           []automation.WorkflowInstance         `json:"workflow_instances,omitempty"`
 	WorkflowStepRuns            []automation.WorkflowStepRun          `json:"workflow_step_runs,omitempty"`
 	ScheduleCheckpoints         []storage.ScheduleCheckpoint          `json:"schedule_checkpoints,omitempty"`
+	ReconciliationOperations    []automation.ReconciliationOperation  `json:"reconciliation_operations,omitempty"`
 	GraphReplayCursors          []storage.GraphReplayCursor           `json:"graph_replay_cursors,omitempty"`
 }
 
@@ -530,6 +531,15 @@ func (m *AutomationManager) applyAutomationMutationWithContext(ctx context.Conte
 			return mapStoreError(err)
 		}
 		return mapStoreError(m.store.PutSuccessfulInputIndex(ctx, index))
+	case "reconciliation.upsert":
+		var operation automation.ReconciliationOperation
+		if err := json.Unmarshal(rec.Payload, &operation); err != nil {
+			return err
+		}
+		if operation.DomainID == (graph.DomainID{}) {
+			operation.DomainID = rec.DomainID
+		}
+		return mapStoreError(m.store.PutReconciliationOperation(ctx, operation))
 	case "schedule_checkpoint.upsert":
 		var checkpoint storage.ScheduleCheckpoint
 		if err := json.Unmarshal(rec.Payload, &checkpoint); err != nil {
@@ -703,6 +713,11 @@ func (m *AutomationManager) restoreAutomationPartition(ctx context.Context, data
 	}
 	for _, checkpoint := range snap.ScheduleCheckpoints {
 		if err := m.store.PutScheduleCheckpoint(ctx, checkpoint); err != nil {
+			return mapStoreError(err)
+		}
+	}
+	for _, operation := range snap.ReconciliationOperations {
+		if err := m.store.PutReconciliationOperation(ctx, operation); err != nil {
 			return mapStoreError(err)
 		}
 	}

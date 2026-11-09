@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/query/gql"
+	"github.com/myceldb/mycel/internal/query/gql/analysis"
 )
 
 const (
@@ -44,28 +46,39 @@ type Procedure struct {
 // Binding connects a graph procedure to trigger/schedule/manual runtime
 // information, including the principal context used by invocations.
 type Binding struct {
-	ID                   string         `json:"id"`
-	Name                 string         `json:"name,omitempty"`
-	Version              int            `json:"version,omitempty"`
-	DomainID             graph.DomainID `json:"domain_id,omitempty"`
-	ProcedureID          string         `json:"procedure_id"`
-	ProcedureVersion     int            `json:"procedure_version,omitempty"`
-	Status               string         `json:"status"`
-	Scope                BindingScope   `json:"scope,omitempty"`
-	Trigger              BindingTrigger `json:"trigger"`
-	Runtime              RuntimeContext `json:"runtime,omitempty"`
-	Debounce             *Debounce      `json:"debounce,omitempty"`
-	Idempotency          Idempotency    `json:"idempotency,omitempty"`
-	CreatedByPrincipalID string         `json:"created_by_principal_id,omitempty"`
-	UpdatedByPrincipalID string         `json:"updated_by_principal_id,omitempty"`
-	CreatedAt            time.Time      `json:"created_at,omitempty"`
-	UpdatedAt            time.Time      `json:"updated_at,omitempty"`
+	ID                   string                `json:"id"`
+	Name                 string                `json:"name,omitempty"`
+	Version              int                   `json:"version,omitempty"`
+	DomainID             graph.DomainID        `json:"domain_id,omitempty"`
+	ProcedureID          string                `json:"procedure_id"`
+	ProcedureVersion     int                   `json:"procedure_version,omitempty"`
+	Status               string                `json:"status"`
+	Scope                BindingScope          `json:"scope,omitempty"`
+	Trigger              BindingTrigger        `json:"trigger"`
+	Runtime              RuntimeContext        `json:"runtime,omitempty"`
+	Debounce             *Debounce             `json:"debounce,omitempty"`
+	Idempotency          Idempotency           `json:"idempotency,omitempty"`
+	Reconciliation       *ReconciliationConfig `json:"reconciliation,omitempty"`
+	CreatedByPrincipalID string                `json:"created_by_principal_id,omitempty"`
+	UpdatedByPrincipalID string                `json:"updated_by_principal_id,omitempty"`
+	CreatedAt            time.Time             `json:"created_at,omitempty"`
+	UpdatedAt            time.Time             `json:"updated_at,omitempty"`
 }
 
 type BindingScope struct {
 	SpaceID            string         `json:"space_id,omitempty"`
 	DomainID           graph.DomainID `json:"domain_id,omitempty"`
 	IncludeDescendants bool           `json:"include_descendants,omitempty"`
+}
+
+type ReconciliationConfig struct {
+	Target    string                  `json:"target"`
+	Discovery ReconciliationDiscovery `json:"discovery"`
+}
+
+type ReconciliationDiscovery struct {
+	GQL      string `json:"gql"`
+	PageSize int    `json:"page_size,omitempty"`
 }
 
 type BindingTrigger struct {
@@ -153,6 +166,13 @@ func (b Binding) Normalize() Binding {
 	b.UpdatedByPrincipalID = strings.TrimSpace(b.UpdatedByPrincipalID)
 	b.Idempotency.Scope = strings.ToLower(strings.TrimSpace(b.Idempotency.Scope))
 	b.Idempotency.Target = strings.TrimSpace(b.Idempotency.Target)
+	if b.Reconciliation != nil {
+		b.Reconciliation.Target = strings.TrimSpace(b.Reconciliation.Target)
+		b.Reconciliation.Discovery.GQL = strings.TrimSpace(b.Reconciliation.Discovery.GQL)
+		if b.Reconciliation.Discovery.PageSize == 0 {
+			b.Reconciliation.Discovery.PageSize = ReconciliationDefaultBatchSize
+		}
+	}
 	if b.Debounce != nil {
 		b.Debounce.Duration = strings.TrimSpace(b.Debounce.Duration)
 		b.Debounce.CoalesceBy = strings.TrimSpace(b.Debounce.CoalesceBy)
@@ -269,6 +289,9 @@ func ValidateBinding(binding Binding, procedure *Procedure) error {
 			return err
 		}
 	}
+	if err := validateReconciliation(binding.Reconciliation); err != nil {
+		return err
+	}
 	if procedure != nil {
 		p := procedure.Normalize()
 		if binding.ProcedureID != p.ID {
@@ -280,9 +303,46 @@ func ValidateBinding(binding Binding, procedure *Procedure) error {
 		if binding.Status == StatusEnabled && p.Status != StatusEnabled {
 			return fmt.Errorf("graph automation binding cannot be enabled for a disabled procedure")
 		}
+		if binding.Reconciliation != nil && strings.TrimSpace(binding.Reconciliation.Target) != strings.TrimSpace(p.Input.Target) {
+			return fmt.Errorf("graph automation binding reconciliation.target must match procedure input.target")
+		}
 		if binding.Status == StatusEnabled && hasInferenceRef(p.Inference) && strings.TrimSpace(p.Inference.Profile) == "" && strings.TrimSpace(p.Inference.ProfileID) == "" && strings.TrimSpace(binding.Runtime.InferenceProfile) == "" && strings.TrimSpace(binding.Runtime.InferenceProfileID) == "" {
 			return fmt.Errorf("graph automation binding runtime inference_profile or inference_profile_id is required for inference procedure")
 		}
+	}
+	return nil
+}
+
+func validateReconciliation(config *ReconciliationConfig) error {
+	if config == nil {
+		return nil
+	}
+	if err := validateIdentifierRef("graph automation binding reconciliation.target", config.Target); err != nil {
+		return err
+	}
+	queryText := strings.TrimSpace(config.Discovery.GQL)
+	if queryText == "" {
+		return fmt.Errorf("graph automation binding reconciliation.discovery.gql is required")
+	}
+	plan, err := gql.Compile(queryText)
+	if err != nil {
+		return fmt.Errorf("graph automation binding reconciliation.discovery.gql is invalid: %w", err)
+	}
+	if plan.AccessMode == analysis.ReadWrite {
+		return fmt.Errorf("graph automation binding reconciliation discovery must be read-only")
+	}
+	limit := queryPlanLimit(plan)
+	if limit <= 0 {
+		return fmt.Errorf("graph automation binding reconciliation discovery must be bounded with FETCH FIRST")
+	}
+	if limit > ReconciliationMaxBatchSize {
+		return fmt.Errorf("graph automation binding reconciliation discovery limit must be <= %d", ReconciliationMaxBatchSize)
+	}
+	if !queryPlanReferencesAlias(plan, []string{config.Target}) {
+		return fmt.Errorf("graph automation binding reconciliation discovery must return the declared target alias")
+	}
+	if config.Discovery.PageSize < 0 || config.Discovery.PageSize > ReconciliationMaxBatchSize {
+		return fmt.Errorf("graph automation binding reconciliation discovery.page_size must be between 0 and %d", ReconciliationMaxBatchSize)
 	}
 	return nil
 }

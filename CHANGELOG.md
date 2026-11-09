@@ -6,6 +6,14 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Added durable, bounded graph automation reconciliation over validated binding discovery, with idempotent start/get/cancel RPCs, restart-safe progress, fresh-input skipping, deterministic invocation scheduling, and a CLI reconciliation command set (#311).
+
+### Compatibility
+
+- Graph automation reconciliation is additive and requires the matching mycel-api and Go SDK contract updates. Existing event-driven bindings remain unchanged.
+
 ## [v0.21.4] - 2026-11-04
 
 ### Fixed
