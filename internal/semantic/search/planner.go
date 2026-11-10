@@ -12,7 +12,10 @@ import (
 	"github.com/myceldb/mycel/internal/semantic/vectorstore"
 )
 
-const maxPerBindingLimit = 100000
+const (
+	maxPerBindingLimit       = 100000
+	defaultMycelFileStoreKey = "mycel-file"
+)
 
 type selectedBinding struct {
 	rule               domainsemantic.SemanticGenerationRule
@@ -266,8 +269,14 @@ func bindingProfile(binding domainsemantic.SemanticEmbeddingBinding) (string, uu
 
 func resolveBindingVectorStore(binding domainsemantic.SemanticEmbeddingBinding, byID map[domainsemantic.VectorStoreID]domainsemantic.VectorStoreBackend, byKey map[string]domainsemantic.VectorStoreBackend) (domainsemantic.VectorStoreBackend, bool) {
 	if binding.VectorStoreID != uuid.Nil {
-		store, ok := byID[binding.VectorStoreID]
-		return store, ok
+		if store, ok := byID[binding.VectorStoreID]; ok {
+			return store, true
+		}
+		if store, ok := byKey[defaultMycelFileStoreKey]; ok && store.Type == domainsemantic.VectorStoreMycelFile {
+			store.ID = binding.VectorStoreID
+			return store, true
+		}
+		return domainsemantic.VectorStoreBackend{}, false
 	}
 	if strings.TrimSpace(binding.VectorStore) != "" {
 		store, ok := byKey[strings.ToLower(strings.TrimSpace(binding.VectorStore))]

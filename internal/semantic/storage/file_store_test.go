@@ -42,7 +42,7 @@ func TestGlobalManagerInitCreatesFilesAndDefaultVectorStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure default vector store failed: %v", err)
 	}
-	if first.Key != defaultVectorStoreKey || first.Type != domainsemantic.VectorStoreMycelFile || first.PrivacyClass != domainsemantic.PrivacyClassLocalOnly || !first.Enabled {
+	if first.ID != defaultVectorStoreID || first.Key != defaultVectorStoreKey || first.Type != domainsemantic.VectorStoreMycelFile || first.PrivacyClass != domainsemantic.PrivacyClassLocalOnly || !first.Enabled {
 		t.Fatalf("unexpected default vector store: %+v", first)
 	}
 	second, err := mgr.EnsureDefaultVectorStore(ctx)
@@ -70,6 +70,50 @@ func TestGlobalManagerInitCreatesFilesAndDefaultVectorStore(t *testing.T) {
 	}
 	if len(reloadedStores) != 1 || reloadedStores[0].ID != first.ID {
 		t.Fatalf("unexpected reloaded stores: %+v", reloadedStores)
+	}
+}
+
+func TestGlobalManagerMigratesLegacyDefaultVectorStoreID(t *testing.T) {
+	ctx := context.Background()
+	metaDir := t.TempDir()
+	mgr := NewGlobalManager()
+	if err := mgr.Init(ctx, metaDir); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	legacyID := domainsemantic.VectorStoreID(uuid.New())
+	legacy, err := mgr.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{ID: legacyID, Key: defaultVectorStoreKey, Name: defaultVectorStoreName, Type: domainsemantic.VectorStoreMycelFile, Config: map[string]any{}, PrivacyClass: domainsemantic.PrivacyClassLocalOnly, Enabled: true})
+	if err != nil {
+		t.Fatalf("create legacy default vector store: %v", err)
+	}
+	if legacy.ID != legacyID {
+		t.Fatalf("legacy setup ID=%s, want %s", legacy.ID, legacyID)
+	}
+
+	migrated, err := mgr.EnsureDefaultVectorStore(ctx)
+	if err != nil {
+		t.Fatalf("ensure default vector store: %v", err)
+	}
+	if migrated.ID != defaultVectorStoreID || migrated.Key != defaultVectorStoreKey {
+		t.Fatalf("migrated default vector store = %+v", migrated)
+	}
+	stores, err := mgr.ListVectorStores(ctx)
+	if err != nil {
+		t.Fatalf("list vector stores: %v", err)
+	}
+	if len(stores) != 1 || stores[0].ID != defaultVectorStoreID {
+		t.Fatalf("stored vector stores after migration = %+v", stores)
+	}
+
+	reloaded := NewGlobalManager()
+	if err := reloaded.Init(ctx, metaDir); err != nil {
+		t.Fatalf("reload failed: %v", err)
+	}
+	reloadedStores, err := reloaded.ListVectorStores(ctx)
+	if err != nil {
+		t.Fatalf("list reloaded vector stores: %v", err)
+	}
+	if len(reloadedStores) != 1 || reloadedStores[0].ID != defaultVectorStoreID {
+		t.Fatalf("reloaded vector stores after migration = %+v", reloadedStores)
 	}
 }
 
