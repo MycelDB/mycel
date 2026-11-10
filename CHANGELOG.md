@@ -6,6 +6,16 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.1] - 2026-11-10
+
+### Fixed
+
+- Made the built-in `mycel-file` vector store identity deterministic across daemon nodes, migrated a compatible legacy default catalog entry, and resolved legacy rule bindings through the local backend so clustered semantic indexing and search remain stable after rollout (#326).
+
+### Compatibility
+
+- Daemon-only patch release. No protobuf/API, SDK, Console, or Lab release is required. The daemon remains pinned to the `mycel-api` v0.22.0 contract in `.release/mycel-api-ref`.
+
 ## [v0.22.0] - 2026-11-09
 
 ### Added
