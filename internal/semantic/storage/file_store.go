@@ -60,6 +60,8 @@ const (
 	defaultVectorStoreName                  = "Mycel embedded file vector store"
 )
 
+var defaultVectorStoreID = domainsemantic.VectorStoreID(uuid.MustParse("e9f64137-0c57-5cd2-9486-d20e013a616f"))
+
 type packagesState struct {
 	Packages []domainsemantic.InferencePackage `json:"packages"`
 }
@@ -258,25 +260,50 @@ func (m *globalManager) EnsureDefaultVectorStore(ctx context.Context) (domainsem
 	if err := ctx.Err(); err != nil {
 		return domainsemantic.VectorStoreBackend{}, err
 	}
-	m.mu.RLock()
-	matches := make([]domainsemantic.VectorStoreBackend, 0, 1)
-	for _, existing := range m.vectorStores.VectorStores {
+	m.mu.Lock()
+	matches := make([]int, 0, 1)
+	for i, existing := range m.vectorStores.VectorStores {
 		if normalizeKey(existing.Key) == defaultVectorStoreKey {
-			matches = append(matches, existing)
+			matches = append(matches, i)
 		}
 	}
-	m.mu.RUnlock()
 	if len(matches) == 1 {
-		return matches[0], nil
+		store := m.vectorStores.VectorStores[matches[0]]
+		if store.ID == defaultVectorStoreID {
+			m.mu.Unlock()
+			return store, nil
+		}
+		for i, existing := range m.vectorStores.VectorStores {
+			if i != matches[0] && existing.ID == defaultVectorStoreID {
+				m.mu.Unlock()
+				return domainsemantic.VectorStoreBackend{}, NewVectorStoreConflict(VectorStoreConflictKey, defaultVectorStoreKey, []uuid.UUID{uuid.UUID(store.ID), uuid.UUID(defaultVectorStoreID)}, true)
+			}
+		}
+		store.ID = defaultVectorStoreID
+		if store.UpdatedAt.IsZero() {
+			store.UpdatedAt = time.Now().UTC()
+		}
+		next := vectorStoresState{VectorStores: append([]domainsemantic.VectorStoreBackend(nil), m.vectorStores.VectorStores...)}
+		next.VectorStores[matches[0]] = store
+		if err := m.persistLocked(m.path(vectorStoresFileName), next); err != nil {
+			m.mu.Unlock()
+			return domainsemantic.VectorStoreBackend{}, err
+		}
+		m.vectorStores = next
+		m.mu.Unlock()
+		return store, nil
 	}
 	if len(matches) > 1 {
 		ids := make([]uuid.UUID, 0, len(matches))
-		for _, match := range matches {
-			ids = append(ids, match.ID)
+		for _, index := range matches {
+			ids = append(ids, m.vectorStores.VectorStores[index].ID)
 		}
+		m.mu.Unlock()
 		return domainsemantic.VectorStoreBackend{}, NewVectorStoreConflict(VectorStoreConflictKey, defaultVectorStoreKey, ids, true)
 	}
+	m.mu.Unlock()
 	return m.UpsertVectorStore(ctx, domainsemantic.VectorStoreBackend{
+		ID:           defaultVectorStoreID,
 		Key:          defaultVectorStoreKey,
 		Name:         defaultVectorStoreName,
 		Type:         domainsemantic.VectorStoreMycelFile,
