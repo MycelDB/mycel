@@ -24,7 +24,7 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	ctx := context.Background()
 	env := newSearchEnv(t)
 	allowed := env.addRule(t, "allowed", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", env.vectorStore.ID)})
-	env.addRule(t, "missing-store", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", domainsemantic.VectorStoreID(uuid.New()))})
+	env.addRule(t, "missing-store", []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfile: "semantic-profile", VectorStore: "missing-store", Enabled: true}})
 	nodeID := graph.NodeID(uuid.New())
 	grantID := domainsemantic.CredentialGrantID(uuid.New())
 	if _, err := env.vector.Upsert(ctx, env.record(allowed.ID, "search", nodeID, []float64{1, 0, 0}, grantID)); err != nil {
@@ -54,6 +54,27 @@ func TestPlannerSearchesRuleBindingsAndWarnsForSkipped(t *testing.T) {
 	warnings := strings.Join(result.Warnings, "\n")
 	if !strings.Contains(warnings, "missing-store") || !strings.Contains(warnings, "enabled vector store not found") {
 		t.Fatalf("expected warning for missing vector store, got %+v", result.Warnings)
+	}
+}
+
+func TestPlannerUsesDefaultVectorStoreAliasForLegacyDefaultID(t *testing.T) {
+	ctx := context.Background()
+	env := newSearchEnv(t)
+	legacyStoreID := domainsemantic.VectorStoreID(uuid.New())
+	rule := env.addRule(t, "legacy-default", []domainsemantic.SemanticEmbeddingBinding{env.binding("search", legacyStoreID)})
+	nodeID := graph.NodeID(uuid.New())
+	record := env.record(rule.ID, "search", nodeID, []float64{1, 0, 0}, domainsemantic.CredentialGrantID(uuid.New()))
+	record.VectorStoreID = legacyStoreID
+	if _, err := env.vector.Upsert(ctx, record); err != nil {
+		t.Fatalf("upsert legacy vector failed: %v", err)
+	}
+
+	result, err := env.planner.Search(ctx, Input{SpaceID: env.spaceID, DomainID: env.domainID, SemanticRuleIDs: []domainsemantic.SemanticRuleID{rule.ID}, Text: "focus notes", Limit: 10, ActorPrincipalID: env.userID})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0].SemanticRuleID != rule.ID || result.Results[0].VectorStoreID != legacyStoreID {
+		t.Fatalf("legacy default vector store search result = %+v", result.Results)
 	}
 }
 

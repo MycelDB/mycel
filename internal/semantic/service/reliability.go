@@ -25,9 +25,10 @@ const (
 	semanticReliabilityGapIntervalLimit    = 4096
 	semanticReliabilityRevisionSpanLimit   = 1000000
 	semanticReliabilitySerializedByteLimit = 1 << 20
+	semanticReliabilityDefaultStoreKey     = "mycel-file"
 )
 
-func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr storesemantic.SpaceManager, binding domainsemantic.SemanticEmbeddingBinding) (string, error) {
+func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr storesemantic.SpaceManager, binding domainsemantic.SemanticEmbeddingBinding) (string, string, error) {
 	binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
 	if binding.IntelligenceProfileID != uuid.Nil {
 		binding.IntelligenceProfile = ""
@@ -37,7 +38,7 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 	}
 	profiles, err := spaceMgr.ListIntelligenceProfiles(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	selectedProfiles := make([]domainsemantic.IntelligenceProfile, 0, 1)
 	for _, profile := range profiles {
@@ -59,7 +60,7 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 	global := m.GlobalManager()
 	allEndpoints, err := global.ListModelEndpoints(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	endpoints := make([]domainsemantic.ModelEndpoint, 0)
 	for _, endpoint := range allEndpoints {
@@ -70,7 +71,7 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 	}
 	allModels, err := global.ListModels(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	models := make([]domainsemantic.InferenceModel, 0)
 	for _, model := range allModels {
@@ -81,7 +82,7 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 	}
 	allCapabilities, err := global.ListModelEndpointCapabilities(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	capabilities := make([]domainsemantic.ModelEndpointCapability, 0)
 	for _, capability := range allCapabilities {
@@ -95,15 +96,9 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 	models = slicesMatchingCapabilitiesModels(models, capabilities)
 	allStores, err := global.ListVectorStores(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	stores := make([]domainsemantic.VectorStoreBackend, 0, 1)
-	for _, store := range allStores {
-		if (binding.VectorStoreID != uuid.Nil && store.ID == binding.VectorStoreID) || (binding.VectorStoreID == uuid.Nil && binding.VectorStore != "" && store.Key == binding.VectorStore) {
-			store.Name, store.CreatedAt, store.UpdatedAt = "", time.Time{}, time.Time{}
-			stores = append(stores, store)
-		}
-	}
+	stores := resolvedReliabilityVectorStores(allStores, binding)
 	sort.Slice(selectedProfiles, func(i, j int) bool { return selectedProfiles[i].ID.String() < selectedProfiles[j].ID.String() })
 	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].ID.String() < endpoints[j].ID.String() })
 	sort.Slice(models, func(i, j int) bool { return models[i].ID.String() < models[j].ID.String() })
@@ -118,10 +113,34 @@ func (m *Module) resolvedBindingConfigurationHash(ctx context.Context, spaceMgr 
 		VectorStores []domainsemantic.VectorStoreBackend      `json:"vector_stores"`
 	}{Binding: binding, Profiles: selectedProfiles, Endpoints: endpoints, Models: models, Capabilities: capabilities, VectorStores: stores})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	digest := sha256.Sum256(payload)
-	return hex.EncodeToString(digest[:]), nil
+	return hex.EncodeToString(digest[:]), string(payload), nil
+}
+
+func resolvedReliabilityVectorStores(allStores []domainsemantic.VectorStoreBackend, binding domainsemantic.SemanticEmbeddingBinding) []domainsemantic.VectorStoreBackend {
+	stores := make([]domainsemantic.VectorStoreBackend, 0, 1)
+	for _, store := range allStores {
+		if (binding.VectorStoreID != uuid.Nil && store.ID == binding.VectorStoreID) || (binding.VectorStoreID == uuid.Nil && binding.VectorStore != "" && store.Key == binding.VectorStore) {
+			stores = append(stores, canonicalReliabilityVectorStore(store))
+		}
+	}
+	if len(stores) > 0 || binding.VectorStoreID == uuid.Nil {
+		return stores
+	}
+	for _, store := range allStores {
+		if strings.EqualFold(strings.TrimSpace(store.Key), semanticReliabilityDefaultStoreKey) && store.Type == domainsemantic.VectorStoreMycelFile {
+			store.ID = binding.VectorStoreID
+			return []domainsemantic.VectorStoreBackend{canonicalReliabilityVectorStore(store)}
+		}
+	}
+	return stores
+}
+
+func canonicalReliabilityVectorStore(store domainsemantic.VectorStoreBackend) domainsemantic.VectorStoreBackend {
+	store.Name, store.CreatedAt, store.UpdatedAt = "", time.Time{}, time.Time{}
+	return store
 }
 
 func canonicalReliabilityProfile(profile domainsemantic.IntelligenceProfile) domainsemantic.IntelligenceProfile {
@@ -338,16 +357,25 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 			break
 		}
 	}
-	resolvedHash, err := m.resolvedBindingConfigurationHash(ctx, spaceMgr, binding)
+	resolvedHash, resolvedPayload, err := m.resolvedBindingConfigurationHash(ctx, spaceMgr, binding)
 	if err != nil {
 		return ReliabilityStatus{}, err
 	}
 	if reliability.ResolvedConfigurationHash == "" {
 		reliability.ResolvedConfigurationHash = resolvedHash
+		if m.logger != nil {
+			m.logger.Info("semantic reliability resolved route initialized", "space_id", in.SpaceID, "semantic_rule_id", rule.ID, "binding", binding.Key, "hash", resolvedHash, "generation", reliability.SemanticGeneration, "payload", resolvedPayload)
+		}
 		if err := m.saveReliabilityState(ctx, in.SpaceID, rule.ID, reliability); err != nil {
 			return ReliabilityStatus{}, err
 		}
 	} else if reliability.ResolvedConfigurationHash != resolvedHash {
+		previousHash := reliability.ResolvedConfigurationHash
+		previousGeneration := reliability.SemanticGeneration
+		previousRebuildState := reliability.RebuildState
+		if m.logger != nil {
+			m.logger.Warn("semantic reliability resolved route changed", "space_id", in.SpaceID, "semantic_rule_id", rule.ID, "binding", binding.Key, "previous_hash", previousHash, "current_hash", resolvedHash, "previous_generation", previousGeneration, "previous_rebuild_state", previousRebuildState, "payload", resolvedPayload)
+		}
 		if reliability.SemanticGeneration == 0 {
 			reliability.SemanticGeneration = 1
 		}
