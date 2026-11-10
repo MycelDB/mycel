@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
@@ -16,6 +18,8 @@ import (
 	"github.com/myceldb/mycel/internal/graph/writetrace"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -25,6 +29,7 @@ import (
 type GraphService struct {
 	clientv1.UnimplementedGraphServiceServer
 	sessions   daemonsession.Manager
+	spaces     daemonspace.Manager
 	graphs     daegraph.Manager
 	blobs      daemonblob.Manager
 	router     ClientRequestRouter
@@ -38,6 +43,11 @@ func NewGraphService(sessions daemonsession.Manager, graphs daegraph.Manager, bl
 		blobManager = blobs[0]
 	}
 	return &GraphService{sessions: sessions, graphs: graphs, blobs: blobManager, writeTrace: writetrace.FromEnv()}
+}
+
+func (s *GraphService) WithSpaceManager(spaces daemonspace.Manager) *GraphService {
+	s.spaces = spaces
+	return s
 }
 
 func (s *GraphService) WithLogger(logger *slog.Logger) *GraphService {
@@ -61,9 +71,13 @@ func (s *GraphService) GetNode(ctx context.Context, req *clientv1.GetNodeRequest
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	node, err := s.graphs.GetNode(readCtx, tx, req.GetNodeId())
@@ -84,9 +98,13 @@ func (s *GraphService) ListNodes(ctx context.Context, req *clientv1.ListNodesReq
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	nodes, next, err := s.graphs.ListNodes(readCtx, tx, int(req.GetPageSize()), req.GetPageToken())
@@ -319,9 +337,13 @@ func (s *GraphService) GetEdge(ctx context.Context, req *clientv1.GetEdgeRequest
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	edge, err := s.graphs.GetEdge(readCtx, tx, req.GetEdgeId())
@@ -342,9 +364,13 @@ func (s *GraphService) ListEdges(ctx context.Context, req *clientv1.ListEdgesReq
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	edges, next, err := s.graphs.ListEdges(readCtx, tx, int(req.GetPageSize()), req.GetPageToken())
@@ -430,9 +456,13 @@ func (s *GraphService) ListChildren(ctx context.Context, req *clientv1.ListChild
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	edges, err := s.graphs.ListChildren(readCtx, tx, req.GetParentNodeId())
@@ -457,9 +487,13 @@ func (s *GraphService) GetParent(ctx context.Context, req *clientv1.GetParentReq
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.transaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	edge, err := s.graphs.GetParent(readCtx, tx, req.GetChildNodeId())
@@ -782,6 +816,14 @@ func mapGraphError(err error, action string) error {
 	if errors.Is(err, daegraph.ErrReadOnly) || errors.Is(err, daegraph.ErrInvalidState) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
+	if errors.Is(err, daegraph.ErrRevisionFenceConflict) {
+		st := status.New(codes.Aborted, "graph revision fence conflict")
+		withDetails, detailErr := st.WithDetails(&errdetails.ErrorInfo{Reason: "GRAPH_REVISION_FENCE_CONFLICT", Domain: "mycel.graph"})
+		if detailErr == nil {
+			return withDetails.Err()
+		}
+		return st.Err()
+	}
 	if errors.Is(err, daegraph.ErrConflict) {
 		return status.Error(codes.Aborted, "graph transaction conflict")
 	}
@@ -790,6 +832,19 @@ func mapGraphError(err error, action string) error {
 	}
 	if errors.Is(err, daegraph.ErrIdempotencyCapacity) {
 		return status.Error(codes.ResourceExhausted, "graph idempotency retention capacity is exhausted")
+	}
+	var limitErr *daegraph.TransactionLimitError
+	if errors.As(err, &limitErr) {
+		reason := "GRAPH_TRANSACTION_" + strings.ToUpper(limitErr.Reason)
+		st := status.New(codes.ResourceExhausted, "graph transaction rejected: "+limitErr.Error())
+		withDetails, detailErr := st.WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: "mycel.graph", Metadata: map[string]string{
+			"limit":  fmt.Sprint(limitErr.Limit),
+			"actual": fmt.Sprint(limitErr.Actual),
+		}})
+		if detailErr == nil {
+			return withDetails.Err()
+		}
+		return st.Err()
 	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
 }

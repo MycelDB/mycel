@@ -46,6 +46,10 @@ const (
 	DefaultGraphCheckpointAutoInterval      = time.Minute
 	DefaultGraphCheckpointAutoRevisions     = 10000
 	DefaultGraphCheckpointAutoTimeout       = 30 * time.Second
+	DefaultGraphTransactionMaxOperations    = 4096
+	DefaultGraphTransactionMaxCommandBytes  = 8 * 1024 * 1024
+	DefaultGraphTransactionMaxStagedBytes   = 16 * 1024 * 1024
+	DefaultGraphTransactionMaxAge           = 10 * time.Minute
 	DefaultEncryptionAtRest                 = encryption.ModeDisabled
 	DefaultBlobBackend                      = "local"
 	DefaultClusterDiscoveryInterval         = 5 * time.Second
@@ -120,6 +124,13 @@ type GraphCheckpointConfig struct {
 	AutoTimeout   time.Duration
 }
 
+type GraphTransactionConfig struct {
+	MaxOperations   int
+	MaxCommandBytes int
+	MaxStagedBytes  int
+	MaxAge          time.Duration
+}
+
 type BlobConfig struct {
 	Backend             string
 	ObjectStoreProvider string
@@ -182,6 +193,7 @@ type Config struct {
 	Backup                       BackupConfig
 	WAL                          WALConfig
 	GraphCheckpoint              GraphCheckpointConfig
+	GraphTransaction             GraphTransactionConfig
 	Blob                         BlobConfig
 	Cluster                      ClusterConfig
 }
@@ -232,6 +244,12 @@ func LoadFromEnv() (Config, error) {
 			AutoInterval:  parseDurationEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_INTERVAL"), DefaultGraphCheckpointAutoInterval),
 			AutoRevisions: parseIntEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_REVISIONS"), DefaultGraphCheckpointAutoRevisions),
 			AutoTimeout:   parseDurationEnv(os.Getenv("MYCELD_GRAPH_CHECKPOINT_AUTO_TIMEOUT"), DefaultGraphCheckpointAutoTimeout),
+		},
+		GraphTransaction: GraphTransactionConfig{
+			MaxOperations:   parseIntEnv(os.Getenv("MYCELD_GRAPH_TRANSACTION_MAX_OPERATIONS"), DefaultGraphTransactionMaxOperations),
+			MaxCommandBytes: parseIntEnv(os.Getenv("MYCELD_GRAPH_TRANSACTION_MAX_COMMAND_BYTES"), DefaultGraphTransactionMaxCommandBytes),
+			MaxStagedBytes:  parseIntEnv(os.Getenv("MYCELD_GRAPH_TRANSACTION_MAX_STAGED_BYTES"), DefaultGraphTransactionMaxStagedBytes),
+			MaxAge:          parseDurationEnv(os.Getenv("MYCELD_GRAPH_TRANSACTION_MAX_AGE"), DefaultGraphTransactionMaxAge),
 		},
 		Blob: BlobConfig{
 			Backend:             valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
@@ -332,6 +350,18 @@ func (c Config) Normalize() Config {
 	if c.Search.HybridRRFK == 0 {
 		c.Search.HybridRRFK = DefaultSearchHybridRRFK
 	}
+	if c.GraphTransaction.MaxOperations == 0 {
+		c.GraphTransaction.MaxOperations = DefaultGraphTransactionMaxOperations
+	}
+	if c.GraphTransaction.MaxCommandBytes == 0 {
+		c.GraphTransaction.MaxCommandBytes = DefaultGraphTransactionMaxCommandBytes
+	}
+	if c.GraphTransaction.MaxStagedBytes == 0 {
+		c.GraphTransaction.MaxStagedBytes = DefaultGraphTransactionMaxStagedBytes
+	}
+	if c.GraphTransaction.MaxAge == 0 {
+		c.GraphTransaction.MaxAge = DefaultGraphTransactionMaxAge
+	}
 	return c
 }
 
@@ -402,6 +432,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.GraphCheckpoint.Validate(); err != nil {
+		return err
+	}
+	if err := c.GraphTransaction.Validate(); err != nil {
 		return err
 	}
 	if err := c.Encryption.Validate(); err != nil {
@@ -578,6 +611,22 @@ func (c WALConfig) Validate() error {
 	default:
 		return fmt.Errorf("MYCELD_WAL_SYNC_POLICY must be always")
 	}
+}
+
+func (c GraphTransactionConfig) Validate() error {
+	if c.MaxOperations <= 0 {
+		return fmt.Errorf("MYCELD_GRAPH_TRANSACTION_MAX_OPERATIONS must be positive")
+	}
+	if c.MaxCommandBytes <= 0 {
+		return fmt.Errorf("MYCELD_GRAPH_TRANSACTION_MAX_COMMAND_BYTES must be positive")
+	}
+	if c.MaxStagedBytes <= 0 {
+		return fmt.Errorf("MYCELD_GRAPH_TRANSACTION_MAX_STAGED_BYTES must be positive")
+	}
+	if c.MaxAge <= 0 {
+		return fmt.Errorf("MYCELD_GRAPH_TRANSACTION_MAX_AGE must be positive")
+	}
+	return nil
 }
 
 func (c GraphCheckpointConfig) Validate() error {

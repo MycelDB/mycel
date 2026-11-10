@@ -9,6 +9,8 @@ import (
 )
 
 const (
+	SystemProvenanceVersion = 1
+
 	StatusEnabled  = "enabled"
 	StatusDisabled = "disabled"
 
@@ -282,6 +284,8 @@ type Run struct {
 	ClaimToken                  string                       `json:"claim_token,omitempty"`
 	OutputIdempotencyKey        string                       `json:"output_idempotency_key,omitempty"`
 	RenderedInputHash           string                       `json:"rendered_input_hash,omitempty"`
+	InputHash                   string                       `json:"input_hash,omitempty"`
+	GenerationCompletedAt       time.Time                    `json:"generation_completed_at,omitempty"`
 	ActorPrincipalID            string                       `json:"actor_principal_id,omitempty"`
 	OnBehalfOfPrincipalID       string                       `json:"on_behalf_of_principal_id,omitempty"`
 	OwnerPrincipalID            string                       `json:"owner_principal_id,omitempty"`

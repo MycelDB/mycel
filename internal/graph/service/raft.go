@@ -203,7 +203,7 @@ func mapGraphRaftProposalError(partitionID uint32, err error) error {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, ErrConflict) || errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity) {
+		errors.Is(err, ErrConflict) || errors.Is(err, ErrRevisionFenceConflict) || errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity) {
 		return err
 	}
 	// Group.Propose returns deterministic state-machine status errors unchanged.
@@ -276,6 +276,12 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 			// Expected idempotency rejections are committed Raft no-ops. Persist
 			// the marker so replay cannot turn one into a later mutation.
 			return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+		}
+		if errors.Is(err, ErrRevisionFenceConflict) {
+			if rememberErr := m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID); rememberErr != nil {
+				return rememberErr
+			}
+			return err
 		}
 		if errors.Is(err, ErrConflict) {
 			alreadyApplied, verifyErr := m.graphCommitRecordEffectsPresent(ctx, record)

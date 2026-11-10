@@ -12,6 +12,7 @@ import (
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -21,12 +22,18 @@ const metadataCatalogMaxPageSize = 500
 type MetadataCatalogService struct {
 	clientv1.UnimplementedMetadataCatalogServiceServer
 	sessions daemonsession.Manager
+	spaces   daemonspace.Manager
 	graphs   daegraph.Manager
 	router   ClientRequestRouter
 }
 
 func NewMetadataCatalogService(sessions daemonsession.Manager, graphs daegraph.Manager) *MetadataCatalogService {
 	return &MetadataCatalogService{sessions: sessions, graphs: graphs}
+}
+
+func (s *MetadataCatalogService) WithSpaceManager(spaces daemonspace.Manager) *MetadataCatalogService {
+	s.spaces = spaces
+	return s
 }
 
 func (s *MetadataCatalogService) WithClientRequestRouter(router ClientRequestRouter) *MetadataCatalogService {
@@ -45,9 +52,12 @@ func (s *MetadataCatalogService) ListTags(ctx context.Context, req *clientv1.Lis
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.readableTransaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	nodes, err := allExportNodes(readCtx, s.graphs, tx)
@@ -99,9 +109,12 @@ func (s *MetadataCatalogService) ListPropertyNames(ctx context.Context, req *cli
 			return res, err
 		}
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
 	tx, err := s.readableTransaction(readCtx, req.GetTransactionId())
 	if err != nil {
+		return nil, err
+	}
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
 		return nil, err
 	}
 	nodes, err := allExportNodes(readCtx, s.graphs, tx)

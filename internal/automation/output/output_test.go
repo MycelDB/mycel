@@ -26,6 +26,22 @@ func TestParseJSONValidatesRequired(t *testing.T) {
 	}
 }
 
+func TestSystemMetadataIsSeparateFromModelOutput(t *testing.T) {
+	res, err := Parse("json", nil, `{"input_hash":"model-forgery"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.System = map[string]any{"input_hash": "daemon-hash", "procedure_version": 3}
+	got, err := Resolve(res, "$system.input_hash", nil)
+	if err != nil || got != "daemon-hash" {
+		t.Fatalf("system input hash = %#v, err=%v", got, err)
+	}
+	got, err = Resolve(res, "$result.input_hash", nil)
+	if err != nil || got != "model-forgery" {
+		t.Fatalf("model input hash = %#v, err=%v", got, err)
+	}
+}
+
 func TestParseJSONRejectsMissingRequired(t *testing.T) {
 	_, err := Parse("json", json.RawMessage(`{"type":"object","required":["summary"]}`), `{}`)
 	if err == nil {

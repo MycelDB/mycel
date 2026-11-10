@@ -16,6 +16,7 @@ type localTxn struct {
 	edgePuts         []graph.Edge
 	edgeDeletes      []graph.EdgeID
 	expectedRevision *uint64
+	revisionFences   []RevisionFence
 	commitHook       CommitHook
 	idempotency      *IdempotencyRecord
 	closed           bool
@@ -26,6 +27,24 @@ func (t *localTxn) ExpectRevision(revision uint64) {
 		return
 	}
 	t.expectedRevision = &revision
+}
+
+func (t *localTxn) ExpectRevisionFence(fence RevisionFence) {
+	if t.closed || (fence.Kind != "node" && fence.Kind != "edge" && fence.Kind != "domain") || fence.ID == uuid.Nil {
+		return
+	}
+	for i := range t.revisionFences {
+		existing := &t.revisionFences[i]
+		if existing.Kind == fence.Kind && existing.ID == fence.ID {
+			if existing.Revision == fence.Revision {
+				return
+			}
+			// Conflicting declarations are guaranteed to fail closed at commit.
+			existing.Revision = ^uint64(0)
+			return
+		}
+	}
+	t.revisionFences = append(t.revisionFences, fence)
 }
 
 func (t *localTxn) SetCommitHook(hook CommitHook) {
@@ -195,6 +214,9 @@ func (t *localTxn) CommitWithInfo() (CommitInfo, error) {
 	}
 	if _, ok := t.writeSetConflict(); ok {
 		return CommitInfo{}, ErrConflict
+	}
+	if _, ok := t.revisionFenceConflict(); ok {
+		return CommitInfo{}, ErrRevisionFenceConflict
 	}
 	if _, ok := t.invariantConflict(); ok {
 		return CommitInfo{}, ErrConflict
@@ -410,6 +432,26 @@ func (t *localTxn) invariantConflict() (string, bool) {
 // was modified by another committed transaction after this transaction's base
 // revision. Transactions whose write-sets are disjoint from concurrent commits
 // do not conflict; new entities (never written before) never conflict.
+func (t *localTxn) revisionFenceConflict() (RevisionFence, bool) {
+	for _, fence := range t.revisionFences {
+		var current uint64
+		switch fence.Kind {
+		case "node":
+			current = t.store.nodeModRev[fence.ID]
+		case "edge":
+			current = t.store.edgeModRev[fence.ID]
+		case "domain":
+			current = t.store.revision
+		default:
+			return fence, true
+		}
+		if current != fence.Revision {
+			return fence, true
+		}
+	}
+	return RevisionFence{}, false
+}
+
 func (t *localTxn) writeSetConflict() (string, bool) {
 	if t.expectedRevision == nil {
 		return "", false

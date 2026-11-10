@@ -56,6 +56,12 @@ A durable queued execution request created from a binding. An invocation records
 
 A concrete attempt to execute an invocation. Runs record rendered input hashes, inference decisions, usage telemetry, output hashes, mutations, errors, and attempt status.
 
+### Graph reconciliation operation
+
+A durable, idempotent request to discover targets for a binding and enqueue stale or missing targets through the normal invocation path. The operation stores only sanitized progress and the original caller principal needed to resume discovery under the same read authority: an opaque discovery cursor, counts, binding/procedure versions, cancellation state, and terminal status. It never persists discovery payloads or provider input.
+
+Discovery is bounded and read-only. Each discovered target receives a deterministic invocation identity, so a crash between scheduling and checkpoint persistence is replay-safe. The worker advances checkpoints only after durable invocation scheduling, fences new discovery after cancellation, and lets already-running invocations finish under the normal automation authorization, retry, and publication controls. A target whose daemon-owned `$system.input_hash` matches the current generation fingerprint is completed as a fresh skip without provider access.
+
 ## Conceptual model
 
 ```text
@@ -384,6 +390,8 @@ Run records should include the same runtime principals plus execution details:
   "credential_grant_id": "grant-id",
   "provider_request_id": "provider-request-id",
   "rendered_input_hash": "sha256...",
+  "input_hash": "sha256...",
+  "generation_completed_at": "2026-08-23T03:00:00.123Z",
   "output_hash": "sha256...",
   "mutation_id": "mutation-id",
   "usage": {
@@ -394,6 +402,34 @@ Run records should include the same runtime principals plus execution details:
   }
 }
 ```
+
+After a successful inference, validated graph actions may reference a daemon-owned
+`$system` namespace separately from model output:
+
+```json
+{
+  "properties.summary_provenance_version": "$system.provenance_version",
+  "properties.summary_source_hash": "$system.input_hash",
+  "properties.summary_generated_at": "$system.generated_at",
+  "properties.summary_procedure_version": "$system.procedure_version",
+  "properties.summary_binding_version": "$system.binding_version"
+}
+```
+
+`$system.input_hash` is a versioned SHA-256 fingerprint of the normalized
+procedure/binding identity and versions, the rendered inference input, the
+procedure prompt/inference contract, and any image input digest. It never
+contains prompt text, graph payloads, credentials, provider responses, or
+provider identifiers. Context rows are hashed in the deterministic order
+returned by their bounded query; policy filtering and truncation therefore
+change the hash when they change the rendered input. Definitions must use
+explicit query ordering when ordering is semantically relevant.
+
+The daemon computes these values after successful inference and before action
+application. Model output cannot populate or override `$system`; `$result` and
+`$system` are separate namespaces. The same metadata is also stamped into the
+system-owned automation graph metadata. A failed, denied, or ambiguous provider
+attempt does not expose a successful-generation timestamp or provenance hash.
 
 ## Backward compatibility
 

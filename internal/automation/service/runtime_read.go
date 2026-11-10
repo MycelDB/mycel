@@ -24,6 +24,7 @@ type raftAutomationRuntimeReadRequest struct {
 	PartitionID uint32                   `json:"partition_id"`
 	Filter      storage.InvocationFilter `json:"filter,omitempty"`
 	RunID       string                   `json:"run_id,omitempty"`
+	OperationID string                   `json:"operation_id,omitempty"`
 	SpaceID     string                   `json:"space_id,omitempty"`
 }
 
@@ -37,6 +38,10 @@ type raftAutomationRunResponse struct {
 
 type raftProcedureInferenceLedgerResponse struct {
 	Ledger automation.ProcedureInferenceLedger `json:"ledger"`
+}
+
+type raftReconciliationResponse struct {
+	Operation automation.ReconciliationOperation `json:"operation"`
 }
 
 func (m *AutomationManager) forwardedAutomationRuntimeReadsEnabled() bool {
@@ -101,6 +106,31 @@ func (m *AutomationManager) getRunRaftForwarded(ctx context.Context, domainID gr
 	return automation.Run{}, storage.ErrNotFound
 }
 
+func (m *AutomationManager) getReconciliationRaftForwarded(ctx context.Context, spaceID string, operationID string) (automation.ReconciliationOperation, error) {
+	if m.raftPartitionCount == 0 {
+		return automation.ReconciliationOperation{}, status.Error(codes.Unavailable, "reconciliation read is unavailable: raft partition count is not configured")
+	}
+	var firstErr error
+	for partitionID := uint32(0); partitionID < m.raftPartitionCount; partitionID++ {
+		var res raftReconciliationResponse
+		req := raftAutomationRuntimeReadRequest{Op: "get_reconciliation", PartitionID: partitionID, SpaceID: strings.TrimSpace(spaceID), OperationID: strings.TrimSpace(operationID)}
+		if err := m.readAutomationRuntimePartition(ctx, partitionID, req, &res); err != nil {
+			if errors.Is(err, storage.ErrNotFound) || status.Code(err) == codes.NotFound {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		return res.Operation, ctx.Err()
+	}
+	if firstErr != nil {
+		return automation.ReconciliationOperation{}, firstErr
+	}
+	return automation.ReconciliationOperation{}, storage.ErrNotFound
+}
+
 func (m *AutomationManager) getProcedureInferenceLedgerRaftForwarded(ctx context.Context, spaceID string) (automation.ProcedureInferenceLedger, error) {
 	if m.raftPartitionCount == 0 {
 		return automation.ProcedureInferenceLedger{}, status.Error(codes.Unavailable, "procedure inference read is unavailable: raft partition count is not configured")
@@ -161,6 +191,27 @@ func (m *AutomationManager) ExecuteLocalRaftAutomationRuntimeRead(ctx context.Co
 func (m *AutomationManager) executeLocalRaftAutomationRuntimeRead(ctx context.Context, req raftAutomationRuntimeReadRequest) ([]byte, error) {
 	if err := m.ensureCommittedExecutionPartitionRead(ctx, req.PartitionID, true); err != nil {
 		return nil, err
+	}
+	if req.Op == "get_reconciliation" {
+		if strings.TrimSpace(req.SpaceID) == "" || strings.TrimSpace(req.OperationID) == "" {
+			return nil, status.Error(codes.InvalidArgument, "space_id and operation_id are required")
+		}
+		domains, err := m.store.ListReconciliationOperationDomains(ctx)
+		if err != nil {
+			return nil, mapStoreError(err)
+		}
+		for _, domainID := range domains {
+			operations, err := m.store.ListReconciliationOperations(ctx, domainID)
+			if err != nil {
+				return nil, mapStoreError(err)
+			}
+			for _, operation := range operations {
+				if operation.SpaceID == req.SpaceID && operation.ID == req.OperationID && invocationInPartition(automation.Invocation{SpaceID: operation.SpaceID}, req.PartitionID, m.raftPartitionCount) {
+					return json.Marshal(raftReconciliationResponse{Operation: operation})
+				}
+			}
+		}
+		return nil, status.Error(codes.NotFound, "reconciliation operation not found")
 	}
 	if req.Op == "get_procedure_inference_ledger" {
 		if strings.TrimSpace(req.SpaceID) == "" {

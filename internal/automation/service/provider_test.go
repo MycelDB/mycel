@@ -63,6 +63,9 @@ func TestGenerateTextRecordsInferenceUsage(t *testing.T) {
 	if run.Usage.InputTokens == 0 || run.Usage.OutputTokens == 0 || run.Usage.TotalTokens == 0 {
 		t.Fatalf("unexpected usage: %+v", run.Usage)
 	}
+	if run.GenerationCompletedAt.IsZero() {
+		t.Fatalf("successful generation missing completion timestamp: %+v", run)
+	}
 	_, chatCalls := fake.Calls()
 	if chatCalls != 1 {
 		t.Fatalf("expected one fake chat call, got %d", chatCalls)
@@ -110,6 +113,9 @@ func TestGenerateTextRecordsDenialWithoutConnectorCall(t *testing.T) {
 	if run.Usage.Status != string(domaininference.UsageStatusDenied) {
 		t.Fatalf("denied run usage status = %q, want %q", run.Usage.Status, domaininference.UsageStatusDenied)
 	}
+	if !run.GenerationCompletedAt.IsZero() {
+		t.Fatalf("denied inference exposed completion timestamp: %+v", run)
+	}
 	events, err := inference.UsageLedger().ListUsageEvents(ctx)
 	if err != nil || len(events) != 1 || events[0].Status != domaininference.UsageStatusDenied || events[0].PolicyDecisionID.String() != run.PolicyDecisionID {
 		t.Fatalf("unexpected denied usage event: %#v err=%v", events, err)
@@ -146,6 +152,9 @@ func TestGenerateTextPreservesPreProviderFailureAsRetryableEvidence(t *testing.T
 	if ledgerErr != nil || len(ledger.Attempts) != 1 || ledger.Attempts[0].State != automation.InferenceAttemptStateFailed || !ledger.Attempts[0].StartedAt.IsZero() || ledger.Attempts[0].PublicationDisposition != "not_published_pre_provider_failure" {
 		t.Fatalf("unexpected pre-provider evidence: %+v err=%v", ledger, ledgerErr)
 	}
+	if !run.GenerationCompletedAt.IsZero() {
+		t.Fatalf("pre-provider failure exposed completion timestamp: %+v", run)
+	}
 }
 
 type preProviderFailureInference struct{}
@@ -178,6 +187,9 @@ func TestTerminalAttemptPersistenceFailureIsAmbiguousAndDoesNotReplayProvider(t 
 	}
 	if !strings.Contains(logs.String(), `"stage":"disposition_not_published_provider_ambiguous"`) || !strings.Contains(logs.String(), `"result":"failed"`) {
 		t.Fatalf("ambiguous persistence diagnostic missing: %s", logs.String())
+	}
+	if !run.GenerationCompletedAt.IsZero() {
+		t.Fatalf("ambiguous generation exposed completion timestamp: %+v", run)
 	}
 
 	_, secondErr := mgr.generateWithInference(ctx, def, inv, "input", &run)

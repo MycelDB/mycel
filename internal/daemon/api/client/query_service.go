@@ -38,6 +38,7 @@ type QueryService struct {
 	schemas     schemaservice.Manager
 	semantic    semanticQuerySearcher
 	queryEngine queryengine.Facade
+	graphs      daegraph.Manager
 	router      ClientRequestRouter
 }
 
@@ -57,6 +58,11 @@ func (s *QueryService) WithSemanticManager(manager semanticQuerySearcher) *Query
 
 func (s *QueryService) WithQueryEngine(engine queryengine.Facade) *QueryService {
 	s.queryEngine = engine
+	return s
+}
+
+func (s *QueryService) WithGraphManager(graphs daegraph.Manager) *QueryService {
+	s.graphs = graphs
 	return s
 }
 
@@ -105,7 +111,12 @@ func (s *QueryService) ExecuteQuery(ctx context.Context, req *clientv1.ExecuteQu
 	if err != nil {
 		return nil, mapQueryEngineError(err)
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadPredicate(readCtx)
 	result, err := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
 	if err != nil {
 		return nil, mapQueryEngineError(err)
@@ -156,7 +167,12 @@ func (s *QueryService) ExecuteGQL(ctx context.Context, req *clientv1.ExecuteGQLR
 	if err != nil {
 		return nil, mapQueryEngineError(err)
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadPredicate(readCtx)
 	result, err := s.queryEngine.Execute(readCtx, queryengine.ExecutionContext{Transaction: tx}, prepared)
 	if err != nil {
 		return nil, mapQueryEngineError(err)
@@ -261,7 +277,12 @@ func (s *QueryService) ExecuteGQLScript(ctx context.Context, req *clientv1.Execu
 	if err != nil {
 		return nil, err
 	}
-	readCtx, recorder := daegraph.WithReadMetadataRecorder(ctx)
+	readCtx, recorder := withReadMetadataRecorder(ctx, s.graphs)
+	daegraph.RecordReadScope(readCtx, tx.SpaceID, tx.DomainID)
+	if err := recordReadRevisionDependencies(readCtx, s.spaces, tx); err != nil {
+		return nil, err
+	}
+	daegraph.RecordReadPredicate(readCtx)
 	statementMetadata := make(map[int]*clientv1.ReadMetadata)
 	scriptResult, err := queryapplication.ExecuteScript(readCtx, s.queryEngine, queryapplication.ScriptRequest{
 		Script: req.GetScript(), Schema: schemaCtx, Parameters: params,

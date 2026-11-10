@@ -111,6 +111,22 @@ func (s *LocalStore) State() StoreState { s.mu.RLock(); defer s.mu.RUnlock(); re
 // conflict detection.
 func (s *LocalStore) Revision() uint64 { s.mu.RLock(); defer s.mu.RUnlock(); return s.revision }
 
+// NodeRevision returns the last committed graph revision that changed id. A
+// missing or never-written node returns zero.
+func (s *LocalStore) NodeRevision(id graph.NodeID) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.nodeModRev[id]
+}
+
+// EdgeRevision returns the last committed graph revision that changed id. A
+// missing or never-written edge returns zero.
+func (s *LocalStore) EdgeRevision(id graph.EdgeID) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.edgeModRev[id]
+}
+
 func (s *LocalStore) open(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Join(s.path, "segments"), fsperm.PrivateDir); err != nil {
 		return err

@@ -1,11 +1,44 @@
 package client
 
 import (
+	"context"
+
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	daemonspace "github.com/myceldb/mycel/internal/space/service"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func readMetadataContext(ctx context.Context, graphs daegraph.Manager) context.Context {
+	if provider, ok := graphs.(daegraph.RevisionFenceKeyProvider); ok {
+		return daegraph.WithRevisionWitnessKey(ctx, provider.RevisionFenceMACKey())
+	}
+	return ctx
+}
+
+func withReadMetadataRecorder(ctx context.Context, graphs daegraph.Manager) (context.Context, *daegraph.ReadMetadataRecorder) {
+	return daegraph.WithReadMetadataRecorder(readMetadataContext(ctx, graphs))
+}
+
+func recordReadRevisionDependencies(ctx context.Context, spaces daemonspace.Manager, tx sessionmodel.GraphTransaction) error {
+	provider, ok := spaces.(daemonspace.ReadRevisionProvider)
+	if !ok {
+		return nil
+	}
+	authorizationRevision, visibilityRevision, err := provider.ReadVisibilityRevisions(ctx, tx.PrincipalID, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		return err
+	}
+	if authorizationRevision > 0 {
+		daegraph.RecordReadDependency(ctx, daegraph.RevisionDependency{Kind: "authorization", ID: tx.PrincipalID, Revision: authorizationRevision})
+	}
+	if visibilityRevision > 0 {
+		daegraph.RecordReadDependency(ctx, daegraph.RevisionDependency{Kind: "visibility", ID: tx.DomainID, Revision: visibilityRevision})
+	}
+	return nil
+}
 
 func rejectUnsupportedStaleRead(options *clientv1.ReadOptions) error {
 	if options != nil && options.GetAllowStale() {
@@ -26,6 +59,7 @@ func protoReadMetadata(metadata *daegraph.ReadMetadata) *clientv1.ReadMetadata {
 		AppliedIndex:     metadata.AppliedIndex,
 		ObservedRevision: metadata.ObservedRevision,
 		Stale:            metadata.Stale,
+		RevisionWitness:  append([]byte(nil), metadata.RevisionWitness...),
 		StaleReason:      metadata.StaleReason,
 	}
 }

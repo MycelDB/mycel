@@ -49,6 +49,16 @@ func TestAutomationNamespaceProcedureAndBindingHelp(t *testing.T) {
 		t.Fatalf("automation binding validate help missing server validation:\n%s", out)
 	}
 
+	out, err = runCLI(t, "automation", "reconciliation", "--help")
+	if err != nil {
+		t.Fatalf("automation reconciliation help failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"start", "get", "cancel"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("automation reconciliation help missing %q:\n%s", want, out)
+		}
+	}
+
 	out, err = runCLI(t, "procedure", "--help")
 	if err != nil {
 		t.Fatalf("top-level procedure help failed: %v\n%s", err, out)

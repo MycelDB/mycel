@@ -105,6 +105,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.GraphChangeManager == nil {
 		return nil, fmt.Errorf("graph change manager is required")
 	}
+	if setter, ok := cfg.GraphManager.(interface {
+		SetRevisionFenceDependencyValidator(daegraph.RevisionFenceDependencyValidator)
+	}); ok {
+		setter.SetRevisionFenceDependencyValidator(revisionFenceDependencyValidator{spaces: cfg.SpaceManager})
+	}
 	if cfg.TokenManager == nil {
 		var err error
 		cfg.TokenManager, err = daemonauth.NewRandomTokenManager(daemonauth.DefaultAccessTokenTTL)
@@ -208,7 +213,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		sessionAPI.WithGraphWriteRouteProvider(provider)
 	}
 	transactionAPI := clientapi.NewTransactionService(cfg.SessionManager, cfg.GraphManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
-	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithLogger(cfg.Logger).WithClientRequestRouter(clientRouter)
+	graphAPI := clientapi.NewGraphService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager).WithSpaceManager(cfg.SpaceManager).WithLogger(cfg.Logger).WithClientRequestRouter(clientRouter)
 	queryEngine := queryengine.New(queryengine.Ports{
 		Entities:           cfg.GraphManager,
 		Traversals:         cfg.GraphManager,
@@ -217,7 +222,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		SemanticCandidates: clientapi.NewQuerySemanticCandidateReader(cfg.SemanticManager),
 		Mutations:          cfg.GraphManager,
 	})
-	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithQueryEngine(queryEngine).WithClientRequestRouter(clientRouter)
+	queryAPI := clientapi.NewQueryService(cfg.SessionManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSemanticManager(cfg.SemanticManager).WithQueryEngine(queryEngine).WithGraphManager(cfg.GraphManager).WithClientRequestRouter(clientRouter)
 	searchAPI := clientapi.NewSearchService(cfg.LexicalManager, cfg.SpaceManager, cfg.GraphManager).WithHybridRRFRankConstant(cfg.SearchConfig.HybridRRFK).WithSemanticManager(cfg.SemanticManager).WithClientRequestRouter(clientRouter)
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {
 		searchAPI.WithGraphWriteRouteProvider(provider)
@@ -227,7 +232,7 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		spaceExportDir = filepath.Join(cfg.DataDir, "exports", "spaces")
 	}
 	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSpaceExportDir(spaceExportDir).WithClientRequestRouter(clientRouter)
-	metadataCatalogAPI := clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager).WithClientRequestRouter(clientRouter)
+	metadataCatalogAPI := clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager).WithSpaceManager(cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	if cfg.ClusteringManager != nil {
 		cfg.ClusteringManager.SetBackendClientRequestForwarder(clientapi.ForwardedClientHandler{LocalNode: localNode, Sessions: sessionAPI, Transactions: transactionAPI, Graphs: graphAPI, Queries: queryAPI, Search: searchAPI, Metadata: metadataCatalogAPI})
 	}

@@ -211,6 +211,24 @@ func (m *AutomationManager) putScheduleCheckpointRuntime(ctx context.Context, sp
 	return mapStoreError(m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "schedule_checkpoint.upsert", DomainID: checkpoint.DomainID, SpaceID: spaceID, ID: checkpoint.AutomationID, Payload: rawAutomation(checkpoint)}))
 }
 
+func (m *AutomationManager) putReconciliationOperationRuntime(ctx context.Context, operation automation.ReconciliationOperation) error {
+	if m.raftGroups == nil {
+		release, err := m.enterMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		if err := m.requireWriteAllowed(); err != nil {
+			return err
+		}
+		return mapStoreError(m.store.PutReconciliationOperation(ctx, operation))
+	}
+	if err := m.requireLocalExecutionLeader(ctx, operation.SpaceID); err != nil {
+		return err
+	}
+	return mapStoreError(m.commitAutomationMutation(ctx, automationMutationRecord{Kind: "reconciliation.upsert", DomainID: operation.DomainID, SpaceID: operation.SpaceID, ID: operation.ID, Payload: rawAutomation(operation)}))
+}
+
 func (m *AutomationManager) claimInvocation(ctx context.Context, inv automation.Invocation) (automation.Invocation, bool, error) {
 	if m.raftGroups == nil {
 		m.localExecutionMu.Lock()
@@ -531,6 +549,21 @@ func (m *AutomationManager) appendExecutionSnapshot(ctx context.Context, snap *a
 			}
 		}
 	}
+	operationDomains, err := m.store.ListReconciliationOperationDomains(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, domainID := range operationDomains {
+		operations, err := m.store.ListReconciliationOperations(ctx, domainID)
+		if err != nil {
+			return mapStoreError(err)
+		}
+		for _, operation := range operations {
+			if invocationInPartition(automation.Invocation{SpaceID: operation.SpaceID}, partitionID, partitionCount) {
+				snap.ReconciliationOperations = append(snap.ReconciliationOperations, operation)
+			}
+		}
+	}
 	cursors, err := m.store.ListGraphReplayCursors(ctx)
 	if err != nil {
 		return mapStoreError(err)
@@ -555,6 +588,11 @@ func validateExecutionSnapshotPartition(snap automationSnapshot, partitionID, pa
 	for _, run := range snap.Runs {
 		if _, ok := invocationIDs[run.InvocationID]; !ok {
 			return fmt.Errorf("automation run %s references invocation outside snapshot partition", run.ID)
+		}
+	}
+	for _, operation := range snap.ReconciliationOperations {
+		if operation.DomainID == (graph.DomainID{}) || strings.TrimSpace(operation.SpaceID) == "" || strings.TrimSpace(operation.ID) == "" || !invocationInPartition(automation.Invocation{SpaceID: operation.SpaceID}, partitionID, partitionCount) {
+			return fmt.Errorf("reconciliation operation %s belongs to a different partition", operation.ID)
 		}
 	}
 	for _, fence := range snap.ProcedureControlFences {
@@ -836,6 +874,23 @@ func (m *AutomationManager) deleteAutomationPartitionExecution(ctx context.Conte
 			probe := automation.Invocation{SpaceID: checkpoint.SpaceID}
 			if invocationInPartition(probe, partitionID, partitionCount) {
 				if err := m.store.DeleteScheduleCheckpoint(ctx, domainID, checkpoint.AutomationID); err != nil && err != storage.ErrNotFound {
+					return mapStoreError(err)
+				}
+			}
+		}
+	}
+	operationDomains, err := m.store.ListReconciliationOperationDomains(ctx)
+	if err != nil {
+		return mapStoreError(err)
+	}
+	for _, domainID := range operationDomains {
+		operations, err := m.store.ListReconciliationOperations(ctx, domainID)
+		if err != nil {
+			return mapStoreError(err)
+		}
+		for _, operation := range operations {
+			if invocationInPartition(automation.Invocation{SpaceID: operation.SpaceID}, partitionID, partitionCount) {
+				if err := m.store.DeleteReconciliationOperation(ctx, operation); err != nil && err != storage.ErrNotFound {
 					return mapStoreError(err)
 				}
 			}

@@ -62,44 +62,47 @@ type nodeOverlayPage struct {
 }
 
 type Module struct {
-	mu                             sync.Mutex
-	dataDir                        string
-	stores                         map[domainStoreKey]*graphstorage.LocalStore
-	overlays                       map[string]*overlay
-	transactionMutationLocks       map[string]*transactionMutationLock
-	idempotencyScopeLocks          [64]sync.Mutex
-	activeMutationScopes           map[string]*mutationScope
-	finalizedTransactions          map[string]transactionFinalization
-	transactionValidator           TransactionValidator
-	changeSink                     graphchange.Sink
-	raftApplyChangeSink            graphchange.Sink
-	schemaValidator                SchemaValidator
-	blobRefs                       BlobReferenceChecker
-	automationOutputFenceValidator AutomationOutputFenceValidator
-	lastGraphChangeSinkErr         error
-	gate                           *quiesce.Gate
-	wal                            *wal.Manager
-	walProgress                    wal.AppliedLSNStore
-	walWaiter                      *wal.ApplyWaiter
-	encryption                     *encryption.Service
-	writeAllowed                   func() error
-	checkpointPolicy               CheckpointPolicyConfig
-	checkpointStates               map[domainStoreKey]checkpointRuntimeState
-	checkpointWorkerCancel         context.CancelFunc
-	checkpointWorkerDone           chan struct{}
-	raftGroups                     *consensus.MultiGroup
-	raftPartitionCount             uint32
-	raftLocalNode                  consensus.NodeID
-	raftNodeAddrs                  []string
-	raftBackendAuthToken           string
-	raftAppliedCommands            map[string]struct{}
-	raftAppliedCommandsPersistMu   sync.Mutex
-	logger                         *slog.Logger
-	writeTrace                     writetrace.Config
-	idempotencyReplayHits          atomic.Uint64
-	idempotencyReplayMisses        atomic.Uint64
-	idempotencyMismatches          atomic.Uint64
-	idempotencyCapacityRejections  atomic.Uint64
+	mu                               sync.Mutex
+	dataDir                          string
+	stores                           map[domainStoreKey]*graphstorage.LocalStore
+	overlays                         map[string]*overlay
+	transactionMutationLocks         map[string]*transactionMutationLock
+	idempotencyScopeLocks            [64]sync.Mutex
+	activeMutationScopes             map[string]*mutationScope
+	finalizedTransactions            map[string]transactionFinalization
+	transactionValidator             TransactionValidator
+	changeSink                       graphchange.Sink
+	raftApplyChangeSink              graphchange.Sink
+	schemaValidator                  SchemaValidator
+	blobRefs                         BlobReferenceChecker
+	automationOutputFenceValidator   AutomationOutputFenceValidator
+	lastGraphChangeSinkErr           error
+	gate                             *quiesce.Gate
+	wal                              *wal.Manager
+	walProgress                      wal.AppliedLSNStore
+	walWaiter                        *wal.ApplyWaiter
+	encryption                       *encryption.Service
+	writeAllowed                     func() error
+	checkpointPolicy                 CheckpointPolicyConfig
+	checkpointStates                 map[domainStoreKey]checkpointRuntimeState
+	checkpointWorkerCancel           context.CancelFunc
+	checkpointWorkerDone             chan struct{}
+	transactionLimits                GraphTransactionLimits
+	raftGroups                       *consensus.MultiGroup
+	raftPartitionCount               uint32
+	raftLocalNode                    consensus.NodeID
+	raftNodeAddrs                    []string
+	raftBackendAuthToken             string
+	revisionFenceMACKey              []byte
+	revisionFenceDependencyValidator RevisionFenceDependencyValidator
+	raftAppliedCommands              map[string]struct{}
+	raftAppliedCommandsPersistMu     sync.Mutex
+	logger                           *slog.Logger
+	writeTrace                       writetrace.Config
+	idempotencyReplayHits            atomic.Uint64
+	idempotencyReplayMisses          atomic.Uint64
+	idempotencyMismatches            atomic.Uint64
+	idempotencyCapacityRejections    atomic.Uint64
 }
 
 type domainStoreKey struct {
@@ -115,6 +118,7 @@ type overlay struct {
 	automationFenceNodes map[domaingraph.NodeID]struct{}
 	automationFenceEdges map[domaingraph.EdgeID]struct{}
 	opCount              int32
+	stagedBytes          int64
 }
 
 func NewModule() *Module {
@@ -130,7 +134,24 @@ func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
 	return m
 }
 
+func (m *Module) WithTransactionLimits(limits GraphTransactionLimits) *Module {
+	m.transactionLimits = normalizeGraphTransactionLimits(limits)
+	return m
+}
+
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) RevisionFenceMACKey() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]byte(nil), m.revisionFenceMACKey...)
+}
+
+func (m *Module) SetRevisionFenceDependencyValidator(validator RevisionFenceDependencyValidator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.revisionFenceDependencyValidator = validator
+}
 
 func (m *Module) SetChangeSink(sink graphchange.Sink) {
 	m.mu.Lock()
@@ -416,6 +437,7 @@ func (m *Module) ListNodes(ctx context.Context, tx sessionmodel.GraphTransaction
 		return nil, "", err
 	}
 	nodes, next, _, err := m.scanNodesLocal(ctx, tx, graphquery.NodeScan{Limit: pageSize, Cursor: pageToken, ExamineLimit: pageSize})
+	m.recordNodeDependencies(ctx, tx, nodes)
 	return nodes, next, err
 }
 
@@ -440,7 +462,9 @@ func (m *Module) ScanNodes(ctx context.Context, tx sessionmodel.GraphTransaction
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", stats, err
 	}
-	return m.scanNodesLocal(ctx, tx, scan)
+	nodes, next, stats, err := m.scanNodesLocal(ctx, tx, scan)
+	m.recordNodeDependencies(ctx, tx, nodes)
+	return nodes, next, stats, err
 }
 
 // ReadViewIdentity identifies the mutable transaction overlay observed by query
@@ -512,13 +536,14 @@ type edgeMutationUndo struct {
 }
 
 type mutationScope struct {
-	module         *Module
-	transactionID  string
-	release        func()
-	overlayExisted bool
-	initialOpCount int32
-	nodes          map[domaingraph.NodeID]nodeMutationUndo
-	edges          map[domaingraph.EdgeID]edgeMutationUndo
+	module             *Module
+	transactionID      string
+	release            func()
+	overlayExisted     bool
+	initialOpCount     int32
+	initialStagedBytes int64
+	nodes              map[domaingraph.NodeID]nodeMutationUndo
+	edges              map[domaingraph.EdgeID]edgeMutationUndo
 }
 
 func (m *Module) lockTransactionMutation(ctx context.Context, transactionID string) (context.Context, func(), error) {
@@ -561,6 +586,10 @@ func (m *Module) lockActiveTransactionMutation(ctx context.Context, tx sessionmo
 		return ctx, nil, err
 	}
 	if err := m.validateTransactionActive(lockedCtx, tx); err != nil {
+		release()
+		return ctx, nil, err
+	}
+	if err := m.checkTransactionAge(tx); err != nil {
 		release()
 		return ctx, nil, err
 	}
@@ -640,6 +669,7 @@ func (m *Module) BeginMutationStatement(ctx context.Context, tx sessionmodel.Gra
 	if current := m.overlays[tx.ID]; current != nil {
 		scope.overlayExisted = true
 		scope.initialOpCount = current.opCount
+		scope.initialStagedBytes = current.stagedBytes
 	}
 	m.activeMutationScopes[tx.ID] = scope
 	m.mu.Unlock()
@@ -712,6 +742,7 @@ func (m *Module) restoreMutationScopeLocked(scope *mutationScope) {
 		}
 	}
 	o.opCount = scope.initialOpCount
+	o.stagedBytes = scope.initialStagedBytes
 }
 
 func (m *Module) recordNodeMutationLocked(transactionID string, o *overlay, id domaingraph.NodeID) {
@@ -1032,7 +1063,9 @@ func (m *Module) ListEdges(ctx context.Context, tx sessionmodel.GraphTransaction
 	if _, err := m.strongGraphReadForTransaction(ctx, tx); err != nil {
 		return nil, "", err
 	}
-	return m.listEdgesLocal(ctx, tx, pageSize, pageToken)
+	edges, next, err := m.listEdgesLocal(ctx, tx, pageSize, pageToken)
+	m.recordEdgeDependencies(ctx, tx, edges)
+	return edges, next, err
 }
 
 func (m *Module) CreateEdge(ctx context.Context, tx sessionmodel.GraphTransaction, input domaingraph.EdgeInput) (domaingraph.Edge, error) {
@@ -1559,6 +1592,10 @@ func (m *Module) CurrentDomainRevision(ctx context.Context, spaceID string, doma
 }
 
 func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.GraphTransaction) (graphchange.CommitResult, error) {
+	return m.CommitTransactionGraphWithRevisionFences(ctx, tx, nil)
+}
+
+func (m *Module) CommitTransactionGraphWithRevisionFences(ctx context.Context, tx sessionmodel.GraphTransaction, witnesses [][]byte) (graphchange.CommitResult, error) {
 	lockedCtx, releaseMutation, lockErr := m.lockTransactionMutation(ctx, tx.ID)
 	if lockErr != nil {
 		return graphchange.CommitResult{}, lockErr
@@ -1575,6 +1612,13 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		return graphchange.CommitResult{}, fmt.Errorf("%w: transaction graph was discarded", ErrInvalidState)
 	}
 	if err := m.validateTransactionActive(ctx, tx); err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	if err := m.checkTransactionAge(tx); err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	fences, err := m.decodeRevisionFences(ctx, tx, witnesses)
+	if err != nil {
 		return graphchange.CommitResult{}, err
 	}
 	if tx.Mode == sessionmodel.TransactionModeReadOnly {
@@ -1630,7 +1674,7 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 	}
 	timing.StoreOpen = time.Since(stepStart)
 	stepStart = time.Now()
-	record := graphCommitRecordFromSnapshot(tx, snapshot)
+	record := graphCommitRecordFromSnapshot(tx, snapshot, fences)
 	idempotency, err := newGraphCommitIdempotency(tx, record)
 	if err != nil {
 		return graphchange.CommitResult{}, err
@@ -1679,6 +1723,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			return commitResult, nil
 		}
 	}
+	if err := m.checkGraphCommitRecordBytes(record); err != nil {
+		return graphchange.CommitResult{}, err
+	}
 	stepStart = time.Now()
 	changes, err := m.overlayChanges(ctx, store, snapshot)
 	if err != nil {
@@ -1712,6 +1759,10 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			return graphchange.CommitResult{}, err
 		}
 		timing.RaftBuild = time.Since(stepStart)
+		timing.RaftCommandBytes = len(cmd.Payload)
+		if err := m.checkGraphCommandBytes(timing.RaftCommandBytes); err != nil {
+			return graphchange.CommitResult{}, err
+		}
 		stepStart = time.Now()
 		proposal, err := m.proposeGraphRaftCommand(ctx, cmd)
 		if err != nil {
@@ -1761,6 +1812,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 			storageTx.SetIdempotency(idempotencyRecord)
 		}
 		storageTx.ExpectRevision(uint64(tx.BaseRevision))
+		for _, fence := range record.RevisionFences {
+			storageTx.ExpectRevisionFence(fence)
+		}
 		for _, node := range record.PutNodes {
 			if err := storageTx.PutNode(node); err != nil {
 				_ = storageTx.Rollback()
@@ -1798,6 +1852,9 @@ func (m *Module) CommitTransactionGraph(ctx context.Context, tx sessionmodel.Gra
 		stepStart = time.Now()
 		payload, err := json.Marshal(record)
 		if err != nil {
+			return graphchange.CommitResult{}, err
+		}
+		if err := m.checkGraphCommandBytes(len(payload)); err != nil {
 			return graphchange.CommitResult{}, err
 		}
 		timing.WALMarshal = time.Since(stepStart)
@@ -2285,6 +2342,32 @@ func newDomainStoreKey(spaceID string, domainID string) (domainStoreKey, error) 
 	return domainStoreKey{SpaceID: spaceID, DomainID: parsedDomain.String()}, nil
 }
 
+func (m *Module) recordNodeDependencies(ctx context.Context, tx sessionmodel.GraphTransaction, nodes []domaingraph.Node) {
+	if len(nodes) == 0 {
+		return
+	}
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		return
+	}
+	for _, node := range nodes {
+		RecordReadDependency(ctx, RevisionDependency{Kind: "node", ID: node.ID.String(), Revision: store.NodeRevision(node.ID)})
+	}
+}
+
+func (m *Module) recordEdgeDependencies(ctx context.Context, tx sessionmodel.GraphTransaction, edges []domaingraph.Edge) {
+	if len(edges) == 0 {
+		return
+	}
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		return
+	}
+	for _, edge := range edges {
+		RecordReadDependency(ctx, RevisionDependency{Kind: "edge", ID: edge.ID.String(), Revision: store.EdgeRevision(edge.ID)})
+	}
+}
+
 func (m *Module) node(ctx context.Context, tx sessionmodel.GraphTransaction, id domaingraph.NodeID) (domaingraph.Node, error) {
 	m.mu.Lock()
 	o := m.overlays[tx.ID]
@@ -2303,6 +2386,7 @@ func (m *Module) node(ctx context.Context, tx sessionmodel.GraphTransaction, id 
 	if err != nil {
 		return domaingraph.Node{}, err
 	}
+	RecordReadDependency(ctx, RevisionDependency{Kind: "node", ID: id.String(), Revision: store.NodeRevision(id)})
 	var node domaingraph.Node
 	if revision, ok := snapshotRevision(tx); ok {
 		node, err = store.GetNodeAt(ctx, id, revision)
@@ -2336,6 +2420,7 @@ func (m *Module) edge(ctx context.Context, tx sessionmodel.GraphTransaction, id 
 	if err != nil {
 		return domaingraph.Edge{}, err
 	}
+	RecordReadDependency(ctx, RevisionDependency{Kind: "edge", ID: id.String(), Revision: store.EdgeRevision(id)})
 	var edge domaingraph.Edge
 	if revision, ok := snapshotRevision(tx); ok {
 		edge, err = store.GetEdgeAt(ctx, id, revision)
@@ -2779,12 +2864,20 @@ func (m *Module) stageNodeWithFence(ctx context.Context, tx sessionmodel.GraphTr
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
+	nodeBytes, err := estimateNodeMutationBytes(node)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, nodeBytes); err != nil {
+		return err
+	}
 	m.recordNodeMutationLocked(tx.ID, o, node.ID)
 	delete(o.deleteNodes, node.ID)
 	o.putNodes[node.ID] = cloneNode(node)
+	o.stagedBytes += nodeBytes
 	if automationOutputFence {
 		o.automationFenceNodes[node.ID] = struct{}{}
 	}
@@ -2799,10 +2892,14 @@ func (m *Module) stageNodeDelete(ctx context.Context, tx sessionmodel.GraphTrans
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, estimateNodeDeleteBytes(id)); err != nil {
+		return err
+	}
 	m.recordNodeMutationLocked(tx.ID, o, id)
 	delete(o.putNodes, id)
 	delete(o.automationFenceNodes, id)
 	o.deleteNodes[id] = struct{}{}
+	o.stagedBytes += estimateNodeDeleteBytes(id)
 	o.opCount++
 	return nil
 }
@@ -2818,12 +2915,20 @@ func (m *Module) stageEdgeWithFence(ctx context.Context, tx sessionmodel.GraphTr
 	if err := m.requireRaftGraphWriteRoute(tx.SpaceID); err != nil {
 		return err
 	}
+	edgeBytes, err := estimateEdgeMutationBytes(edge)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, edgeBytes); err != nil {
+		return err
+	}
 	m.recordEdgeMutationLocked(tx.ID, o, edge.ID)
 	delete(o.deleteEdges, edge.ID)
 	o.putEdges[edge.ID] = cloneEdge(edge)
+	o.stagedBytes += edgeBytes
 	if automationOutputFence {
 		o.automationFenceEdges[edge.ID] = struct{}{}
 	}
@@ -2838,10 +2943,14 @@ func (m *Module) stageEdgeDelete(ctx context.Context, tx sessionmodel.GraphTrans
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.overlay(tx.ID)
+	if err := m.checkStagedMutationLocked(tx, o, estimateEdgeDeleteBytes(id)); err != nil {
+		return err
+	}
 	m.recordEdgeMutationLocked(tx.ID, o, id)
 	delete(o.putEdges, id)
 	delete(o.automationFenceEdges, id)
 	o.deleteEdges[id] = struct{}{}
+	o.stagedBytes += estimateEdgeDeleteBytes(id)
 	o.opCount++
 	return nil
 }
@@ -2940,6 +3049,7 @@ func boundedOverlayLimits(requestedLimit int, requestedExamine int) (int, int) {
 func (o *overlay) clone() *overlay {
 	out := newOverlay()
 	out.opCount = o.opCount
+	out.stagedBytes = o.stagedBytes
 	for id, node := range o.putNodes {
 		out.putNodes[id] = cloneNode(node)
 	}
@@ -2988,9 +3098,80 @@ func ensureWritable(tx sessionmodel.GraphTransaction) error {
 	return nil
 }
 
+func (m *Module) decodeRevisionFences(ctx context.Context, tx sessionmodel.GraphTransaction, witnesses [][]byte) ([]graphstorage.RevisionFence, error) {
+	if len(witnesses) == 0 {
+		return nil, nil
+	}
+	seen := map[string]graphstorage.RevisionFence{}
+	totalDependencies := 0
+	for _, raw := range witnesses {
+		if len(raw) > 128*1024 {
+			return nil, fmt.Errorf("%w: revision witness is too large", ErrInvalidInput)
+		}
+		spaceID, domainID, dependencies, err := DecodeRevisionWitness(raw, m.RevisionFenceMACKey())
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid revision witness", ErrInvalidInput)
+		}
+		if (spaceID != "" && spaceID != tx.SpaceID) || (domainID != "" && domainID != tx.DomainID) {
+			return nil, fmt.Errorf("%w: revision witness scope does not match transaction", ErrInvalidInput)
+		}
+		if len(dependencies) > 1024 {
+			return nil, fmt.Errorf("%w: revision witness has too many dependencies", ErrInvalidInput)
+		}
+		totalDependencies += len(dependencies)
+		if totalDependencies > 4096 {
+			return nil, fmt.Errorf("%w: revision witness set has too many dependencies", ErrInvalidInput)
+		}
+		for _, dependency := range dependencies {
+			if dependency.Kind != "node" && dependency.Kind != "edge" && dependency.Kind != "domain" && dependency.Kind != "authorization" && dependency.Kind != "visibility" {
+				return nil, fmt.Errorf("%w: revision witness has an unsupported dependency kind", ErrInvalidInput)
+			}
+			id, err := uuid.Parse(dependency.ID)
+			if err != nil || id == uuid.Nil {
+				return nil, fmt.Errorf("%w: revision witness has an invalid dependency id", ErrInvalidInput)
+			}
+			if dependency.Kind == "domain" && id.String() != tx.DomainID {
+				return nil, fmt.Errorf("%w: revision witness domain dependency does not match transaction", ErrInvalidInput)
+			}
+			if dependency.Kind == "authorization" || dependency.Kind == "visibility" {
+				m.mu.Lock()
+				validator := m.revisionFenceDependencyValidator
+				m.mu.Unlock()
+				if validator == nil {
+					return nil, fmt.Errorf("%w: revision witness dependency validation is unavailable", ErrInvalidInput)
+				}
+				if err := validator.ValidateRevisionFenceDependency(ctx, tx, dependency); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			fence := graphstorage.RevisionFence{Kind: dependency.Kind, ID: id, Revision: dependency.Revision}
+			key := dependency.Kind + ":" + id.String()
+			if existing, ok := seen[key]; ok && existing.Revision != fence.Revision {
+				return nil, fmt.Errorf("%w: revision witnesses disagree", ErrInvalidInput)
+			}
+			seen[key] = fence
+		}
+	}
+	out := make([]graphstorage.RevisionFence, 0, len(seen))
+	for _, fence := range seen {
+		out = append(out, fence)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return out, nil
+}
+
 func mapStorageError(err error) error {
 	if errors.Is(err, graphstorage.ErrNotFound) {
 		return ErrNotFound
+	}
+	if errors.Is(err, graphstorage.ErrRevisionFenceConflict) {
+		return ErrRevisionFenceConflict
 	}
 	if errors.Is(err, graphstorage.ErrConflict) {
 		return ErrConflict

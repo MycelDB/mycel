@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,13 +74,14 @@ type raftGraphReadRequest struct {
 }
 
 type StrongReadContext struct {
-	GroupID          consensus.GroupID `json:"group_id,omitempty"`
-	PartitionID      uint32            `json:"partition_id,omitempty"`
-	LeaderNodeID     consensus.NodeID  `json:"leader_node_id,omitempty"`
-	ReadIndex        uint64            `json:"read_index,omitempty"`
-	AppliedIndex     uint64            `json:"applied_index,omitempty"`
-	ObservedRevision int64             `json:"observed_revision,omitempty"`
-	Strong           bool              `json:"strong,omitempty"`
+	GroupID          consensus.GroupID    `json:"group_id,omitempty"`
+	PartitionID      uint32               `json:"partition_id,omitempty"`
+	LeaderNodeID     consensus.NodeID     `json:"leader_node_id,omitempty"`
+	ReadIndex        uint64               `json:"read_index,omitempty"`
+	AppliedIndex     uint64               `json:"applied_index,omitempty"`
+	ObservedRevision int64                `json:"observed_revision,omitempty"`
+	Strong           bool                 `json:"strong,omitempty"`
+	Dependencies     []RevisionDependency `json:"dependencies,omitempty"`
 }
 
 type raftGraphNodeResponse struct {
@@ -156,6 +158,10 @@ func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs 
 	m.raftLocalNode = local
 	m.raftNodeAddrs = append([]string(nil), addrs...)
 	m.raftBackendAuthToken = token
+	if strings.TrimSpace(token) != "" {
+		sum := sha256.Sum256([]byte("mycel.graph.revision-fence.v2\x00" + token))
+		m.revisionFenceMACKey = append([]byte(nil), sum[:]...)
+	}
 }
 
 func (m *Module) shouldForwardRaftGraphRead(spaceID string) (consensus.NodeID, bool, error) {
@@ -246,6 +252,52 @@ func (m *Module) raftGraphGroupRoute(spaceID string) (leader consensus.NodeID, l
 		return 0, 0, nil, partitionID, raftGraphUnavailable("raft partition group %d has no leader", partitionID)
 	}
 	return leader, local, g, partitionID, nil
+}
+
+func (m *Module) addNodeRevisionDependencies(ctx context.Context, tx sessionmodel.GraphTransaction, read *StrongReadContext, nodes []domaingraph.Node) (*StrongReadContext, error) {
+	for _, node := range nodes {
+		var err error
+		read, err = m.addNodeRevisionDependency(ctx, tx, read, node.ID)
+		if err != nil {
+			return read, err
+		}
+	}
+	return read, nil
+}
+
+func (m *Module) addEdgeRevisionDependencies(ctx context.Context, tx sessionmodel.GraphTransaction, read *StrongReadContext, edges []domaingraph.Edge) (*StrongReadContext, error) {
+	for _, edge := range edges {
+		var err error
+		read, err = m.addEdgeRevisionDependency(ctx, tx, read, edge.ID)
+		if err != nil {
+			return read, err
+		}
+	}
+	return read, nil
+}
+
+func (m *Module) addNodeRevisionDependency(ctx context.Context, tx sessionmodel.GraphTransaction, read *StrongReadContext, id domaingraph.NodeID) (*StrongReadContext, error) {
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		return read, err
+	}
+	if read == nil {
+		read = &StrongReadContext{}
+	}
+	read.Dependencies = append(read.Dependencies, RevisionDependency{Kind: "node", ID: id.String(), Revision: store.NodeRevision(id)})
+	return read, nil
+}
+
+func (m *Module) addEdgeRevisionDependency(ctx context.Context, tx sessionmodel.GraphTransaction, read *StrongReadContext, id domaingraph.EdgeID) (*StrongReadContext, error) {
+	store, err := m.store(ctx, tx.SpaceID, tx.DomainID)
+	if err != nil {
+		return read, err
+	}
+	if read == nil {
+		read = &StrongReadContext{}
+	}
+	read.Dependencies = append(read.Dependencies, RevisionDependency{Kind: "edge", ID: id.String(), Revision: store.EdgeRevision(id)})
+	return read, nil
 }
 
 func (m *Module) strongGraphRead(ctx context.Context, spaceID string) (*StrongReadContext, error) {
@@ -407,15 +459,27 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		if err != nil {
 			return nil, err
 		}
+		read, err = m.addNodeRevisionDependency(ctx, tx, read, id)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(raftGraphNodeResponse{Node: n, Read: read})
 	case "list_nodes":
 		n, next, stats, err := m.scanNodesLocal(ctx, tx, graphquery.NodeScan{Limit: req.PageSize, Cursor: req.PageToken, ExamineLimit: req.PageSize})
 		if err != nil {
 			return nil, err
 		}
+		read, err = m.addNodeRevisionDependencies(ctx, tx, read, n)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(raftGraphNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
 	case "scan_nodes":
 		n, next, stats, err := m.scanNodesLocal(ctx, tx, req.NodeScan)
+		if err != nil {
+			return nil, err
+		}
+		read, err = m.addNodeRevisionDependencies(ctx, tx, read, n)
 		if err != nil {
 			return nil, err
 		}
@@ -436,9 +500,17 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		if err != nil {
 			return nil, err
 		}
+		read, err = m.addNodeRevisionDependencies(ctx, tx, read, n)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(raftGraphIndexedNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
 	case "scan_tag":
 		n, next, stats, err := m.ScanTag(ctx, tx, req.TagScan)
+		if err != nil {
+			return nil, err
+		}
+		read, err = m.addNodeRevisionDependencies(ctx, tx, read, n)
 		if err != nil {
 			return nil, err
 		}
@@ -448,9 +520,17 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		if err != nil {
 			return nil, err
 		}
+		read, err = m.addNodeRevisionDependencies(ctx, tx, read, n)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(raftGraphIndexedNodesResponse{Nodes: n, NextPageToken: next, Stats: stats, Read: read})
 	case "scan_adjacency":
 		e, next, stats, err := m.ScanAdjacency(ctx, tx, req.AdjacencyScan)
+		if err != nil {
+			return nil, err
+		}
+		read, err = m.addEdgeRevisionDependencies(ctx, tx, read, e)
 		if err != nil {
 			return nil, err
 		}
@@ -470,9 +550,17 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		if err != nil {
 			return nil, err
 		}
+		read, err = m.addEdgeRevisionDependency(ctx, tx, read, id)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(raftGraphEdgeResponse{Edge: e, Read: read})
 	case "list_edges":
 		e, next, err := m.listEdgesLocal(ctx, tx, req.PageSize, req.PageToken)
+		if err != nil {
+			return nil, err
+		}
+		read, err = m.addEdgeRevisionDependencies(ctx, tx, read, e)
 		if err != nil {
 			return nil, err
 		}
@@ -482,11 +570,21 @@ func (m *Module) ExecuteLocalRaftGraphRead(ctx context.Context, spaceID string, 
 		if err != nil {
 			return nil, err
 		}
+		read, err = m.addEdgeRevisionDependencies(ctx, tx, read, e)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(raftGraphEdgesResponse{Edges: e, Read: read})
 	case "get_parent":
 		e, err := m.parentEdgeLocal(ctx, tx, req.ID)
 		if err != nil {
 			return nil, err
+		}
+		if e != nil {
+			read, err = m.addEdgeRevisionDependencies(ctx, tx, read, []domaingraph.Edge{*e})
+			if err != nil {
+				return nil, err
+			}
 		}
 		return json.Marshal(raftGraphOptionalEdgeResponse{Edge: e, Read: read})
 	case "get_idempotent_commit":

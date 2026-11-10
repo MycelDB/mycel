@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +40,25 @@ type phaseDIntegrationCluster struct {
 	transport      consensus.RoutedTransport
 	stopTick       chan struct{}
 	stopTickDone   chan struct{}
+	captureLogs    bool
+	logs           map[consensus.NodeID]*phaseDLogBuffer
+}
+
+type phaseDLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *phaseDLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *phaseDLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 type phaseDIntegrationNode struct {
@@ -194,7 +215,7 @@ func newPhaseDIntegrationCluster(t *testing.T, partitionCount uint32) *phaseDInt
 	for _, id := range peers {
 		dataDirs[id] = filepath.Join(t.TempDir(), fmt.Sprintf("node-%d", id))
 	}
-	return &phaseDIntegrationCluster{partitionCount: partitionCount, peers: peers, dataDirs: dataDirs}
+	return &phaseDIntegrationCluster{partitionCount: partitionCount, peers: peers, dataDirs: dataDirs, captureLogs: os.Getenv("MYCELD_RUN_ISSUE313_BASELINE") == "1", logs: map[consensus.NodeID]*phaseDLogBuffer{}}
 }
 
 func (c *phaseDIntegrationCluster) start(ctx context.Context, t *testing.T) {
@@ -283,6 +304,11 @@ func (c *phaseDIntegrationCluster) stopTicker() {
 func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id consensus.NodeID, dataDir string) *phaseDIntegrationNode {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if c.captureLogs {
+		buffer := &phaseDLogBuffer{}
+		c.logs[id] = buffer
+		logger = slog.New(slog.NewJSONHandler(buffer, nil))
+	}
 	host := &runtimetest.Runtime{Config: runtimetest.Config{DataDir: dataDir, Cluster: runtimetest.ClusterConfig{RaftPartitionCount: int(c.partitionCount)}}, LoggerValue: logger}
 	node := &phaseDIntegrationNode{id: id, dataDir: dataDir, space: spaceservice.NewModule(), schema: schemaservice.NewModule(""), graph: graphservice.NewModule(), blob: blobservice.NewModule(nil)}
 	semanticConfig := c.semanticConfig
