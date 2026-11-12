@@ -25,9 +25,9 @@ func (s *SearchService) lexicalSearch(ctx context.Context, principal principalUs
 	warnings := []string{}
 	nextOffset := offset
 	if hybridsearch.HasFilters(filters) {
-		result, nextOffset, warnings, err = s.filteredLexicalPage(ctx, principal, spaceID, domainID, query, pageSize, offset, filters, req.GetLexical())
+		result, nextOffset, warnings, err = s.filteredLexicalPage(ctx, principal, spaceID, domainID, query, pageSize, offset, filters, req.GetLexical(), req.GetAllowStale())
 	} else {
-		result, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: pageSize, Offset: offset})
+		result, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: pageSize, Offset: offset, AllowStale: req.GetAllowStale()})
 		nextOffset += len(result.Results)
 	}
 	if err != nil {
@@ -49,7 +49,7 @@ func (s *SearchService) lexicalSearch(ctx context.Context, principal principalUs
 	return out, nil
 }
 
-func (s *SearchService) filteredLexicalPage(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, pageSize, offset int, filters hybridsearch.Filters, opts *clientv1.LexicalSearchOptions) (lexicalindex.SearchResponse, int, []string, error) {
+func (s *SearchService) filteredLexicalPage(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, pageSize, offset int, filters hybridsearch.Filters, opts *clientv1.LexicalSearchOptions, allowStale bool) (lexicalindex.SearchResponse, int, []string, error) {
 	batchSize := hybridsearch.CandidateCount(pageSize, int(opts.GetCandidateCount()), lexicalMaxFilterCandidatesPerPage)
 	minimumBatchSize := max(pageSize, hybridsearch.DefaultMinCandidates)
 	if batchSize < minimumBatchSize {
@@ -65,7 +65,7 @@ func (s *SearchService) filteredLexicalPage(ctx context.Context, principal princ
 		if batchSize > remaining {
 			batchSize = remaining
 		}
-		batch, err := s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: batchSize, Offset: scanOffset})
+		batch, err := s.lexical.Search(ctx, spaceID.String(), domainID.String(), query, lexicalindex.SearchOptions{PageSize: batchSize, Offset: scanOffset, AllowStale: allowStale})
 		if err != nil {
 			return lexicalindex.SearchResponse{}, scanOffset, warnings, err
 		}

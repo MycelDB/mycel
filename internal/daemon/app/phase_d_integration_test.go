@@ -19,6 +19,7 @@ import (
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/identity/model"
+	"github.com/myceldb/mycel/internal/projection"
 	runtimetest "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -62,14 +63,15 @@ func (b *phaseDLogBuffer) String() string {
 }
 
 type phaseDIntegrationNode struct {
-	id       consensus.NodeID
-	dataDir  string
-	space    *spaceservice.Module
-	schema   *schemaservice.Module
-	graph    *graphservice.Module
-	blob     *blobservice.Module
-	semantic *semanticservice.Module
-	groups   *consensus.MultiGroup
+	id          consensus.NodeID
+	dataDir     string
+	space       *spaceservice.Module
+	schema      *schemaservice.Module
+	graph       *graphservice.Module
+	blob        *blobservice.Module
+	semantic    *semanticservice.Module
+	projections *projection.RegistryManager
+	groups      *consensus.MultiGroup
 }
 
 func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
@@ -133,6 +135,76 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	cluster.waitForNoVectorStore(ctx, t, "phase-d-store")
 }
 
+func TestPhaseDGraphCheckpointPublishesCommonMetadata(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cluster := newPhaseDIntegrationCluster(t, 1)
+	cluster.start(ctx, t)
+	defer cluster.close()
+	cluster.waitForLeaders(ctx, t)
+
+	ownerID := uuid.New()
+	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{Name: "phase-5-checkpoint", OwnerPrincipalID: identity.PrincipalID(ownerID.String()), DefaultDomainKey: "notes", DefaultDomainName: "Notes", CommandID: "phase-5-checkpoint-space"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaceID := created.Space.SpaceID.String()
+	domainID := created.Domain.ID
+	cluster.waitForSpace(ctx, t, spaceID)
+	schema := phaseDTestSchema(domainID)
+	schema.Indexes = []schemamodel.IndexDefinition{{Name: "person-first-name", TargetKind: schemamodel.IndexTargetNode, TargetType: "Person", Labels: []string{"Person"}, Field: schemamodel.FieldPath{Namespace: "properties", Name: "firstName"}, Kind: schemamodel.IndexKindEquality}}
+	if err := cluster.nodes[1].schema.PutDomainSchema(ctx, schema); err != nil {
+		t.Fatal(err)
+	}
+	cluster.waitForSchema(ctx, t, domainID)
+	leader := cluster.leaderForSpace(ctx, t, spaceID)
+	node := cluster.nodes[leader]
+	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
+	createdNode, err := node.graph.CreateNode(ctx, tx, graphmodel.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Checkpoint"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.graph.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	cluster.waitForGraphNode(ctx, t, spaceID, domainID.String(), createdNode.ID.String(), 1, "Checkpoint")
+	if err := node.graph.ConfigureIndexes(ctx, phaseDGraphTx(spaceID, domainID.String(), 1), "phase-d-schema-with-index", schema.Indexes); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
+	if _, err := node.graph.CreateGraphCheckpoint(ctx, spaceID, domainID.String()); err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
+	projectionID, err := projection.IDFor(projection.KindMetadata, projection.Scope{SpaceID: spaceID, DomainID: domainID.String()}, "graph-checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	partition := phaseDSpacePartition(t, spaceID, cluster.partitionCount)
+	reader, ok := node.projections.Reader(partition)
+	if !ok {
+		t.Fatalf("projection registry for partition %d unavailable", partition)
+	}
+	if err := consensus.WaitUntil(ctx, 10*time.Millisecond, func() bool {
+		definition, definitionOK := reader.Definition(projectionID)
+		desired, desiredOK := reader.DesiredFrontier(projectionID)
+		checkpoint, checkpointOK := reader.Checkpoint(projectionID)
+		return definitionOK && definition.Kind == projection.KindMetadata && definition.Key == "graph-checkpoint" && desiredOK && desired.Required.Revision == 1 && checkpointOK && checkpoint.State == projection.StateReady && checkpoint.Published.Revision == 1
+	}); err != nil {
+		t.Fatalf("common graph checkpoint metadata did not become ready: %v", err)
+	}
+	queryProjectionID, err := projection.IDFor(projection.KindMetadata, projection.Scope{SpaceID: spaceID, DomainID: domainID.String()}, "query-index:person-first-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consensus.WaitUntil(ctx, 10*time.Millisecond, func() bool {
+		definition, definitionOK := reader.Definition(queryProjectionID)
+		desired, desiredOK := reader.DesiredFrontier(queryProjectionID)
+		checkpoint, checkpointOK := reader.Checkpoint(queryProjectionID)
+		return definitionOK && definition.Key == "query-index:person-first-name" && desiredOK && desired.Required.Revision == 1 && checkpointOK && checkpoint.State == projection.StateReady && checkpoint.Published.Revision == 1
+	}); err != nil {
+		t.Fatalf("common graph query-index metadata did not become ready: %v", err)
+	}
+}
+
 func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -165,6 +237,9 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 		t.Fatalf("CommitTransactionGraph() error = %v", err)
 	}
 	cluster.waitForGraphNode(ctx, t, spaceID, domainID.String(), node.ID.String(), 1, "Ada")
+	if _, err := graphNode.graph.CreateGraphCheckpoint(ctx, spaceID, domainID.String()); err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
 
 	wipedID := consensus.NodeID(3)
 	cluster.stopAndWipeNode(ctx, t, wipedID)
@@ -205,6 +280,19 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	cluster.waitForGraphNodeOn(ctx, t, []consensus.NodeID{wipedID}, spaceID, domainID.String(), node.ID.String(), 3, "Ada Byron")
 	if got := cluster.snapshotIndexForNodeGroup(t, wipedID, consensus.PartitionGroupID(spacePartition)); got < snapshotIndex {
 		t.Fatalf("rejoined node partition snapshot index=%d want at least %d", got, snapshotIndex)
+	}
+	projectionID, err := projection.IDFor(projection.KindMetadata, projection.Scope{SpaceID: spaceID, DomainID: domainID.String()}, "graph-checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, ok := cluster.nodes[wipedID].projections.Reader(spacePartition)
+	if !ok {
+		t.Fatalf("rejoined node projection registry for partition %d unavailable", spacePartition)
+	}
+	definition, definitionOK := reader.Definition(projectionID)
+	checkpoint, checkpointOK := reader.Checkpoint(projectionID)
+	if !definitionOK || !checkpointOK || definition.Key != "graph-checkpoint" || checkpoint.Published.Revision != 1 {
+		t.Fatalf("projection lifecycle metadata did not survive snapshot rejoin: definition=%+v checkpoint=%+v", definition, checkpoint)
 	}
 }
 
@@ -249,6 +337,7 @@ func (c *phaseDIntegrationCluster) enableRaftForNode(id consensus.NodeID, node *
 	node.space.EnableExperimentalRaft(node.groups, id, nil, "")
 	node.schema.EnableExperimentalRaft(node.groups, c.partitionCount)
 	node.graph.EnableExperimentalRaft(node.groups, c.partitionCount)
+	node.graph.EnableProjectionLifecycle(node.groups, id, c.partitionCount)
 	node.graph.EnableExperimentalRaftNetworking(id, nil, "")
 	node.blob.EnableExperimentalRaft(node.groups, c.partitionCount)
 	node.semantic.EnableExperimentalRaft(node.groups, c.partitionCount)
@@ -259,7 +348,7 @@ func (c *phaseDIntegrationCluster) startGroupsForNode(ctx context.Context, t *te
 	mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: node.id, PeerNodeIDs: c.peers, PartitionCount: c.partitionCount, Transport: c.transport, StorageDir: filepath.Join(node.dataDir, "meta", "raft"), StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine {
 		return compositeSystemStateMachine{consensus.NewSystemStateMachine(), semanticservice.RaftStateMachine{Module: node.semantic, PartitionCount: c.partitionCount}}
 	}, Partition: func(partitionID uint32) consensus.StateMachine {
-		return compositePartitionStateMachine{spaceservice.RaftStateMachine{Module: node.space, PartitionID: partitionID, PartitionCount: c.partitionCount}, schemaservice.RaftStateMachine{Manager: node.schema.SchemaManager, PartitionID: partitionID, PartitionCount: c.partitionCount}, graphservice.RaftStateMachine{Module: node.graph, PartitionID: partitionID, PartitionCount: c.partitionCount}, blobservice.RaftStateMachine{Module: node.blob, PartitionID: partitionID, PartitionCount: c.partitionCount}, semanticservice.RaftStateMachine{Module: node.semantic, PartitionID: partitionID, PartitionCount: c.partitionCount}}
+		return compositePartitionStateMachine{spaceservice.RaftStateMachine{Module: node.space, PartitionID: partitionID, PartitionCount: c.partitionCount}, schemaservice.RaftStateMachine{Manager: node.schema.SchemaManager, PartitionID: partitionID, PartitionCount: c.partitionCount}, graphservice.RaftStateMachine{Module: node.graph, PartitionID: partitionID, PartitionCount: c.partitionCount}, blobservice.RaftStateMachine{Module: node.blob, PartitionID: partitionID, PartitionCount: c.partitionCount}, semanticservice.RaftStateMachine{Module: node.semantic, PartitionID: partitionID, PartitionCount: c.partitionCount}, node.projections.NewRaftStateMachine(partitionID)}
 	}}, ElectionTick: 20, HeartbeatTick: 1, RecoverEmptyStorageRejoin: recoverEmptyStorageRejoin})
 	if err != nil {
 		t.Fatalf("StartMultiGroup(%d) error = %v", node.id, err)
@@ -316,6 +405,8 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	semanticConfig.GraphReader = node.graph
 	semanticConfig.GraphRevisionReader = node.graph
 	node.semantic = semanticservice.NewModule(semanticConfig)
+	node.projections = projection.NewRegistryManager(c.partitionCount)
+	node.graph.WithProjectionRegistryManager(node.projections)
 	if result := node.space.Init(ctx, host); !result.OK {
 		t.Fatalf("space Init(%d): %v", id, result.Error)
 	}

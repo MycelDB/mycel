@@ -499,14 +499,18 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	if err := m.validateSemanticOperationLeadership(ctx, in.SpaceID); err != nil {
 		return ReliabilityStatus{}, err
 	}
-	return ReliabilityStatus{
+	result := ReliabilityStatus{
 		SpaceID: in.SpaceID, SemanticRuleID: rule.ID, EmbeddingBindingKey: binding.Key,
 		LatestObservedGraphRevision: latest, AnalyzedThroughGraphRevision: checkpoint.LastGraphRevision, FreshThroughGraphRevision: fresh, candidateFreshThroughGraphRevision: candidateFresh,
 		UnresolvedGapCount: gapCount, OldestUnresolvedGraphRevision: oldestGap, ConfiguredFrontierLimit: semanticReliabilityFrontierLimit,
 		ConfiguredGapIntervalLimit: semanticReliabilityGapIntervalLimit, ConfiguredRevisionSpanLimit: semanticReliabilityRevisionSpanLimit, ConfiguredSerializedByteLimit: semanticReliabilitySerializedByteLimit,
 		RetainedWorkItemCount: retained, RetainedGapIntervalCount: uint64(len(unresolved)), RetainedRevisionSpan: span, RetainedSerializedBytes: serializedBytes, SemanticGeneration: generation, CapacityState: capacityState, Degraded: degraded,
 		DegradedReason: degradedReason, RebuildRequired: gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running", Rebuild: reliability,
-	}, nil
+	}
+	if err := m.publishCommonSemanticProjection(ctx, rule, binding, result, false); err != nil {
+		return ReliabilityStatus{}, err
+	}
+	return result, nil
 }
 
 func mergeSemanticRevisionRanges(ranges []domainsemantic.SemanticRevisionRange) []domainsemantic.SemanticRevisionRange {

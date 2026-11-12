@@ -85,6 +85,7 @@ func analyzeIndexedDocument(a analyzer.Analyzer, docID uint64, doc IndexedDocume
 
 type SearchOptions struct {
 	PageSize    int
+	AllowStale  bool
 	PageToken   string
 	Offset      int
 	K1          float64
