@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
+	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/projection"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -60,12 +61,6 @@ func (m *Module) publishCommonGraphCheckpoint(ctx context.Context, spaceID, doma
 		return fmt.Errorf("graph checkpoint partition %d is unavailable", partition.Uint32())
 	}
 	leader := group.Leader()
-	if leader == 0 || leader != localNode {
-		// Checkpoints may be created locally on a follower for operational
-		// purposes, but only the source-partition leader may publish common
-		// lifecycle metadata.
-		return nil
-	}
 	term, _, _ := group.Progress()
 	reader, ok := manager.Reader(partition.Uint32())
 	if !ok {
@@ -77,6 +72,18 @@ func (m *Module) publishCommonGraphCheckpoint(ctx context.Context, spaceID, doma
 	}
 	configurationHash := graphCheckpointConfigurationHash()
 	definition := projection.Definition{ID: projectionID, Kind: projection.KindMetadata, Scope: scope, Key: "graph-checkpoint", ConfigurationHash: configurationHash, ConfigurationEpoch: 1, MaterializerVersion: graphCheckpointMaterializerVersion}
+	store, err := m.existingDomainStore(ctx, domainStoreKey{SpaceID: spaceID, DomainID: domainID})
+	if err != nil {
+		return err
+	}
+	if err := m.persistGraphCheckpointArtifactManifest(ctx, store, projectionID, scope, configurationHash, term, status); err != nil {
+		return err
+	}
+	if leader == 0 || leader != localNode {
+		// A follower may validate local artifacts and retain bounded manifest
+		// evidence, but only the source-partition leader may publish metadata.
+		return m.persistGraphQueryIndexArtifactManifests(ctx, store, scope, status, term, reader)
+	}
 	if current, exists := reader.Definition(projectionID); !exists || current != definition {
 		if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewDefinitionRecord(definition)); err != nil {
 			return err
@@ -122,7 +129,7 @@ func (m *Module) publishCommonGraphCheckpoint(ctx context.Context, spaceID, doma
 		expected.FencingEpoch = current.FencingEpoch
 		expected.ArtifactGeneration = current.ArtifactGeneration
 		if current == checkpoint || current.FencingEpoch > checkpoint.FencingEpoch || current.Published.Revision > checkpoint.Published.Revision {
-			return m.publishCommonGraphQueryIndexes(ctx, spaceID, domainID, status, term, localNode, reader)
+			return m.publishCommonGraphQueryIndexes(ctx, spaceID, domainID, status, store, term, localNode, reader)
 		}
 	}
 	if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewCheckpointCASRecord(checkpoint, expected)); err != nil {
@@ -130,7 +137,7 @@ func (m *Module) publishCommonGraphCheckpoint(ctx context.Context, spaceID, doma
 			return err
 		}
 	}
-	return m.publishCommonGraphQueryIndexes(ctx, spaceID, domainID, status, term, localNode, reader)
+	return m.publishCommonGraphQueryIndexes(ctx, spaceID, domainID, status, store, term, localNode, reader)
 }
 
 func graphQueryIndexProjectionIdentity(spaceID, domainID, indexIdentity string) (projection.ProjectionID, projection.Scope, string, error) {
@@ -150,12 +157,14 @@ func graphQueryIndexArtifactGeneration(id projection.ProjectionID, indexSetID st
 	return "gqi_" + hex.EncodeToString(digest[:16])
 }
 
-func (m *Module) publishCommonGraphQueryIndexes(ctx context.Context, spaceID, domainID string, status GraphCheckpointStatus, term uint64, localNode consensus.NodeID, reader projection.RegistryReader) error {
+func (m *Module) publishCommonGraphQueryIndexes(ctx context.Context, spaceID, domainID string, status GraphCheckpointStatus, store *graphstorage.LocalStore, term uint64, localNode consensus.NodeID, reader projection.RegistryReader) error {
+	scope := projection.Scope{SpaceID: strings.TrimSpace(spaceID), DomainID: strings.TrimSpace(domainID)}
+	activeIndexes := make(map[projection.ProjectionID]struct{}, len(status.PersistentIndex.QueryIndexes))
 	for _, queryIndex := range status.PersistentIndex.QueryIndexes {
 		if strings.TrimSpace(queryIndex.Identity) == "" {
 			continue
 		}
-		projectionID, scope, key, err := graphQueryIndexProjectionIdentity(spaceID, domainID, queryIndex.Name)
+		projectionID, indexScope, key, err := graphQueryIndexProjectionIdentity(spaceID, domainID, queryIndex.Name)
 		if err != nil {
 			return err
 		}
@@ -167,7 +176,8 @@ func (m *Module) publishCommonGraphQueryIndexes(ctx context.Context, spaceID, do
 				configurationEpoch++
 			}
 		}
-		definition := projection.Definition{ID: projectionID, Kind: projection.KindMetadata, Scope: scope, Key: key, ConfigurationHash: configurationHash, ConfigurationEpoch: configurationEpoch, MaterializerVersion: graphQueryIndexMaterializerVersion}
+		activeIndexes[projectionID] = struct{}{}
+		definition := projection.Definition{ID: projectionID, Kind: projection.KindMetadata, Scope: indexScope, Key: key, ConfigurationHash: configurationHash, ConfigurationEpoch: configurationEpoch, MaterializerVersion: graphQueryIndexMaterializerVersion}
 		if current, exists := reader.Definition(projectionID); !exists || current != definition {
 			if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewDefinitionRecord(definition)); err != nil {
 				return err
@@ -207,7 +217,13 @@ func (m *Module) publishCommonGraphQueryIndexes(ctx context.Context, spaceID, do
 			}
 		}
 		if state != projection.StateReady {
+			if err := store.RemoveProjectionArtifactManifest(ctx, projectionID); err != nil {
+				return err
+			}
 			continue
+		}
+		if err := m.persistGraphQueryIndexArtifactManifest(ctx, store, projectionID, indexScope, configurationHash, configurationEpoch, term, status.PersistentIndex.IndexSetID, queryIndex); err != nil {
+			return err
 		}
 		checkpoint := projection.Checkpoint{ProjectionID: projectionID, Published: published, ConfigurationEpoch: configurationEpoch, ConfigurationHash: configurationHash, MaterializerVersion: graphQueryIndexMaterializerVersion, FencingEpoch: term, ArtifactGeneration: artifactGeneration, State: projection.StateReady}
 		expected := projection.CheckpointExpectation{ProjectionID: projectionID}
@@ -227,7 +243,29 @@ func (m *Module) publishCommonGraphQueryIndexes(ctx context.Context, spaceID, do
 			}
 		}
 	}
+	manifests, err := store.ProjectionArtifactManifests(ctx)
+	if err != nil {
+		return err
+	}
+	for _, manifest := range manifests {
+		if manifest.Scope != scope || manifest.ProjectionID == "" {
+			continue
+		}
+		if manifest.ProjectionID == graphCheckpointProjectionID(scope) {
+			continue
+		}
+		if _, active := activeIndexes[manifest.ProjectionID]; !active {
+			if err := store.RemoveProjectionArtifactManifest(ctx, manifest.ProjectionID); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+func graphCheckpointProjectionID(scope projection.Scope) projection.ProjectionID {
+	id, _ := projection.IDFor(projection.KindMetadata, scope, "graph-checkpoint")
+	return id
 }
 
 const graphPersistentIndexLoadFallback = "fallback"

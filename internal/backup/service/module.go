@@ -54,6 +54,7 @@ type Module struct {
 	clusterLocalRaftNode  consensus.NodeID
 	encryption            *encryption.Service
 	projectionRegistries  *projection.RegistryManager
+	projectionArtifacts   func(context.Context) ([]projection.ArtifactManifest, error)
 }
 
 func NewModule(config ...Config) *Module {
@@ -68,6 +69,11 @@ func (m *Module) Name() string { return ModuleName }
 
 func (m *Module) WithProjectionRegistryManager(manager *projection.RegistryManager) *Module {
 	m.projectionRegistries = manager
+	return m
+}
+
+func (m *Module) WithProjectionArtifactProvider(provider func(context.Context) ([]projection.ArtifactManifest, error)) *Module {
+	m.projectionArtifacts = provider
 	return m
 }
 

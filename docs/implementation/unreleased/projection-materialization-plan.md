@@ -304,9 +304,13 @@ outbox contract.
   snapshot, so definitions, desired frontiers, checkpoints, replica claims, and
   applied-command hashes restore with the authoritative partition state.
 - Backups now record a bounded, deterministic projection catalog in each backup
-  manifest. The catalog includes partition snapshot digests and projection
-  checkpoint evidence without duplicating sensitive payloads or filesystem
-  paths. Backup and cluster-restore manifest readers validate this catalog.
+  manifest. The catalog includes partition snapshot digests, projection
+  definitions/checkpoint evidence, and validated local artifact manifests
+  without duplicating graph payloads or filesystem paths. Graph checkpoint and
+  persisted query-index materializers publish local manifests on followers and
+  leaders; backup validation cross-checks their generation, source revision,
+  configuration, materializer, and fencing evidence against the common
+  checkpoint.
 - Clustered empty-storage rejoin coverage proves graph-checkpoint lifecycle
   metadata survives a partition snapshot and is replayed on the rejoined node.
 - Existing graph, lexical, semantic, and vector artifact validators remain the
@@ -315,8 +319,8 @@ outbox contract.
 
 ### Remaining Phase 6 hardening
 
-- Add explicit per-materializer artifact-manifest catalog entries and restore
-  preflight cross-checks against the corresponding common checkpoint.
+- Extend explicit per-materializer artifact-manifest catalog entries and
+  restore preflight cross-checks to lexical and semantic physical artifacts.
 - Couple source-history compaction to the minimum active desired frontier and
   lagging replica frontier.
 - Expand restore cases for partial/corrupt/stale artifacts and checkpoints

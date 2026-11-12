@@ -30,15 +30,39 @@ type BackupPartitionCatalog struct {
 	PartitionID  uint32                    `json:"partition_id"`
 	SnapshotHash string                    `json:"snapshot_hash"`
 	Projections  []BackupProjectionCatalog `json:"projections,omitempty"`
+	Artifacts    []ArtifactManifest        `json:"artifacts,omitempty"`
 }
 
 type BackupProjectionCatalog struct {
-	ProjectionID       ProjectionID `json:"projection_id"`
-	ConfigurationEpoch uint64       `json:"configuration_epoch"`
-	RequiredRevision   uint64       `json:"required_revision"`
-	PublishedRevision  uint64       `json:"published_revision"`
-	FencingEpoch       uint64       `json:"fencing_epoch"`
-	ArtifactGeneration string       `json:"artifact_generation,omitempty"`
+	ProjectionID        ProjectionID `json:"projection_id"`
+	Kind                Kind         `json:"kind,omitempty"`
+	Scope               Scope        `json:"scope,omitempty"`
+	ConfigurationHash   string       `json:"configuration_hash,omitempty"`
+	MaterializerVersion string       `json:"materializer_version,omitempty"`
+	ConfigurationEpoch  uint64       `json:"configuration_epoch"`
+	RequiredRevision    uint64       `json:"required_revision"`
+	PublishedRevision   uint64       `json:"published_revision"`
+	FencingEpoch        uint64       `json:"fencing_epoch"`
+	ArtifactGeneration  string       `json:"artifact_generation,omitempty"`
+}
+
+// AddArtifact attaches validated local artifact evidence to its partition.
+// The checkpoint evidence must still be present when Validate is called.
+func (c *BackupCatalog) AddArtifact(partitionID uint32, artifact ArtifactManifest) error {
+	if c == nil {
+		return fmt.Errorf("projection backup catalog is nil")
+	}
+	if err := artifact.Validate(); err != nil {
+		return err
+	}
+	for i := range c.Partitions {
+		if c.Partitions[i].PartitionID != partitionID {
+			continue
+		}
+		c.Partitions[i].Artifacts = append(c.Partitions[i].Artifacts, artifact)
+		return nil
+	}
+	return fmt.Errorf("projection backup catalog partition %d is missing", partitionID)
 }
 
 // BackupCatalog returns deterministic evidence for every instantiated
@@ -71,12 +95,13 @@ func (m *RegistryManager) BackupCatalog() BackupCatalog {
 		for _, definition := range snapshot.Definitions {
 			checkpoint, exists := snapshotCheckpoint(snapshot.Checkpoints, definition.ID)
 			if !exists {
-				entry.Projections = append(entry.Projections, BackupProjectionCatalog{ProjectionID: definition.ID, ConfigurationEpoch: definition.ConfigurationEpoch})
+				entry.Projections = append(entry.Projections, BackupProjectionCatalog{ProjectionID: definition.ID, Kind: definition.Kind, Scope: definition.Scope, ConfigurationHash: definition.ConfigurationHash, MaterializerVersion: definition.MaterializerVersion, ConfigurationEpoch: definition.ConfigurationEpoch})
 				continue
 			}
 			desired, _ := snapshotDesired(snapshot.DesiredFrontiers, definition.ID)
-			entry.Projections = append(entry.Projections, BackupProjectionCatalog{ProjectionID: definition.ID, ConfigurationEpoch: definition.ConfigurationEpoch, RequiredRevision: desired.Required.Revision, PublishedRevision: checkpoint.Published.Revision, FencingEpoch: checkpoint.FencingEpoch, ArtifactGeneration: checkpoint.ArtifactGeneration})
+			entry.Projections = append(entry.Projections, BackupProjectionCatalog{ProjectionID: definition.ID, Kind: definition.Kind, Scope: definition.Scope, ConfigurationHash: definition.ConfigurationHash, MaterializerVersion: definition.MaterializerVersion, ConfigurationEpoch: definition.ConfigurationEpoch, RequiredRevision: desired.Required.Revision, PublishedRevision: checkpoint.Published.Revision, FencingEpoch: checkpoint.FencingEpoch, ArtifactGeneration: checkpoint.ArtifactGeneration})
 		}
+		sort.Slice(entry.Projections, func(i, j int) bool { return entry.Projections[i].ProjectionID < entry.Projections[j].ProjectionID })
 		catalog.Partitions = append(catalog.Partitions, entry)
 	}
 	return catalog
@@ -129,14 +154,49 @@ func (c BackupCatalog) Validate() error {
 		if len(partition.Projections) > MaxBackupCatalogProjections {
 			return fmt.Errorf("projection backup catalog contains too many projections")
 		}
+		projectionIDs := make(map[ProjectionID]struct{}, len(partition.Projections))
+		projectionEvidence := make(map[ProjectionID]BackupProjectionCatalog, len(partition.Projections))
 		for _, projection := range partition.Projections {
+			projectionEvidence[projection.ProjectionID] = projection
+			projectionIDs[projection.ProjectionID] = struct{}{}
 			if err := validateBackupProjectionID(projection.ProjectionID); err != nil {
 				return fmt.Errorf("projection backup catalog projection: %w", err)
+			}
+			if projection.Kind != "" {
+				if err := validateKind(projection.Kind); err != nil {
+					return fmt.Errorf("projection backup catalog projection kind: %w", err)
+				}
+				if err := projection.Scope.validate(); err != nil {
+					return fmt.Errorf("projection backup catalog projection scope: %w", err)
+				}
 			}
 			if _, exists := seenProjections[projection.ProjectionID]; exists {
 				return fmt.Errorf("projection backup catalog contains duplicate projection")
 			}
 			seenProjections[projection.ProjectionID] = struct{}{}
+		}
+		if len(partition.Artifacts) > MaxBackupCatalogProjections {
+			return fmt.Errorf("projection backup catalog contains too many artifacts")
+		}
+		artifactIDs := make(map[ProjectionID]struct{}, len(partition.Artifacts))
+		for _, artifact := range partition.Artifacts {
+			if err := artifact.Validate(); err != nil {
+				return fmt.Errorf("projection backup catalog artifact: %w", err)
+			}
+			if _, exists := artifactIDs[artifact.ProjectionID]; exists {
+				return fmt.Errorf("projection backup catalog contains duplicate artifact")
+			}
+			artifactIDs[artifact.ProjectionID] = struct{}{}
+			evidence, exists := projectionEvidence[artifact.ProjectionID]
+			if !exists {
+				return fmt.Errorf("projection backup catalog artifact has no projection definition")
+			}
+			if evidence.ArtifactGeneration == "" || evidence.ArtifactGeneration != artifact.Generation || evidence.PublishedRevision != artifact.Source.Revision || evidence.ConfigurationEpoch != artifact.ConfigurationEpoch || evidence.FencingEpoch != artifact.FencingEpoch {
+				return fmt.Errorf("projection backup catalog artifact does not match checkpoint evidence")
+			}
+			if evidence.Kind != "" && (evidence.Kind != artifact.Kind || evidence.Scope != artifact.Scope || evidence.ConfigurationHash != artifact.ConfigurationHash || evidence.MaterializerVersion != artifact.MaterializerVersion) {
+				return fmt.Errorf("projection backup catalog artifact does not match projection definition")
+			}
 		}
 	}
 	return nil
