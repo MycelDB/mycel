@@ -175,6 +175,9 @@ known leadership and identity failure modes.
   typed and content-free.
 - The legacy lease remains local artifact evidence during this pilot; it is not
   treated as a replicated artifact or an alternative authority.
+- Added a three-node common-registry failover test proving that a promoted
+  leader remains fenced until it publishes its own term-fenced replica claim
+  and checkpoint.
 
 ### Tests
 
@@ -191,6 +194,12 @@ known leadership and identity failure modes.
 - Semantic recovery, readiness, and deterministic vector-store identity use the
   common contract.
 - Existing semantic reliability and search suites pass without weakened fences.
+
+Current validation covers the semantic service, vector store, projection
+registry, daemon wiring, race detection, default-store migration, local
+restart/recovery, and three-node common-registry failover. Destructive Lab
+qualification and the final broader release gate remain separate follow-up
+work before closing this phase.
 
 ## Phase 4 — Lexical projection adoption
 
