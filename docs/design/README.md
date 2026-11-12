@@ -7,6 +7,7 @@ then use the component indexes below for detail.
 ## Core overview
 
 - [System overview](system-overview.md) — high-level architecture, data flows, and subsystem relationships.
+- [Projection and materialization lifecycle](projection-materialization.md) — common correctness, checkpoint, fencing, and recovery contract for derived state.
 
 ## Component areas
 

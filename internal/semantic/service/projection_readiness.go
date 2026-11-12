@@ -25,6 +25,8 @@ const (
 	ProjectionReadinessRebuildRequired    = "rebuild_required"
 	ProjectionReadinessRebuildRunning     = "rebuild_running"
 	ProjectionReadinessRebuildFailed      = "rebuild_failed"
+	ProjectionReadinessCommonRegistry     = "common_registry_unavailable"
+	ProjectionReadinessCommonNotReady     = "common_projection_not_ready"
 )
 
 // ProjectionReadinessTuple is the non-content evidence required to certify a
@@ -48,6 +50,7 @@ type ProjectionReadinessError struct {
 	Observed            *ProjectionReadinessTuple
 	Reasons             []string
 	RebuildState        string
+	CommonState         string
 }
 
 func (e *ProjectionReadinessError) Error() string {
@@ -59,7 +62,7 @@ func (e *ProjectionReadinessError) Error() string {
 	if e.Observed != nil {
 		observed = fmt.Sprintf("leader=%d term=%d generation=%d rebuild_epoch=%q fresh_through=%d", e.Observed.LeaderNode, e.Observed.LeaderTerm, e.Observed.SemanticGeneration, e.Observed.RebuildEpoch, e.Observed.FreshThrough)
 	}
-	return fmt.Sprintf("%s (reasons=%s; local_node=%d; expected={leader=%d term=%d generation=%d rebuild_epoch=%q fresh_through=%d}; lease={%s}; rebuild_state=%q)", prefix, strings.Join(e.Reasons, ","), e.LocalNode, e.Expected.LeaderNode, e.Expected.LeaderTerm, e.Expected.SemanticGeneration, e.Expected.RebuildEpoch, e.Expected.FreshThrough, observed, e.RebuildState)
+	return fmt.Sprintf("%s (reasons=%s; local_node=%d; expected={leader=%d term=%d generation=%d rebuild_epoch=%q fresh_through=%d}; lease={%s}; rebuild_state=%q; common_state=%q)", prefix, strings.Join(e.Reasons, ","), e.LocalNode, e.Expected.LeaderNode, e.Expected.LeaderTerm, e.Expected.SemanticGeneration, e.Expected.RebuildEpoch, e.Expected.FreshThrough, observed, e.RebuildState, e.CommonState)
 }
 
 // GRPCStatus preserves readiness classification and safe diagnostics through the
@@ -96,6 +99,7 @@ func (e *ProjectionReadinessError) DiagnosticMetadata() map[string]string {
 		"rebuild_epoch":                e.Expected.RebuildEpoch,
 		"fresh_through_graph_revision": strconv.FormatUint(e.Expected.FreshThrough, 10),
 		"rebuild_state":                e.RebuildState,
+		"common_state":                 e.CommonState,
 		"lease_present":                strconv.FormatBool(e.Observed != nil),
 	}
 	if e.SemanticRuleID != uuid.Nil {

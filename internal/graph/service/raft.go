@@ -172,6 +172,14 @@ func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionC
 	m.mu.Unlock()
 }
 
+func (m *Module) EnableProjectionLifecycle(groups *consensus.MultiGroup, localNode consensus.NodeID, partitionCount uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.raftGroups = groups
+	m.raftLocalNode = localNode
+	m.raftPartitionCount = partitionCount
+}
+
 func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.RaftCommand) (consensus.ProposalResult, error) {
 	if m.raftGroups == nil {
 		return consensus.ProposalResult{}, fmt.Errorf("raft groups are not configured")

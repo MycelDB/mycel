@@ -19,6 +19,7 @@ import (
 	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/graph/model"
 	identity "github.com/myceldb/mycel/internal/identity/model"
+	"github.com/myceldb/mycel/internal/projection"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -82,6 +83,7 @@ type Module struct {
 	raftLocalNode                    consensus.NodeID
 	raftNodeAddrs                    []string
 	raftBackendAuthToken             string
+	projectionRegistries             *projection.RegistryManager
 	conditionalRuleSupportProbe      func(context.Context, consensus.NodeID, domainspace.SpaceID) error
 	semanticLeadershipProbe          func(domainspace.SpaceID) (consensus.NodeID, uint64, bool, error)
 	raftAppliedCommands              map[string]struct{}

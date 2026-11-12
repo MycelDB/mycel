@@ -13,6 +13,7 @@ import (
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
 	"github.com/myceldb/mycel/internal/encryption"
+	"github.com/myceldb/mycel/internal/projection"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
@@ -61,6 +62,7 @@ type Runtime struct {
 	RaftGroups               *consensus.MultiGroup
 	RaftRouter               consensus.MessageSender
 	RaftTransportDiagnostics *consensus.TransportDiagnostics
+	ProjectionRegistries     *projection.RegistryManager
 
 	LogPath string
 
