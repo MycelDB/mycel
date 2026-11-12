@@ -2,6 +2,7 @@ package projection
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -63,6 +64,29 @@ func TestRegistryRejectsCheckpointWithoutDefinitionAndRegression(t *testing.T) {
 	checkpoint.Published.Revision = 0
 	if err := registry.ApplyRecord(context.Background(), NewCheckpointRecord(checkpoint)); err == nil || !strings.Contains(err.Error(), "regressed") {
 		t.Fatalf("regressed checkpoint error = %v", err)
+	}
+}
+
+func TestRegistryCheckpointCASRejectsStaleWorker(t *testing.T) {
+	registry := NewRegistry()
+	definition := testDefinition("prj_rules")
+	if err := registry.ApplyRecord(context.Background(), NewDefinitionRecord(definition)); err != nil {
+		t.Fatalf("apply definition: %v", err)
+	}
+	first := Checkpoint{ProjectionID: definition.ID, Published: Frontier{Revision: 10, Cursor: "cursor-10"}, ConfigurationEpoch: 1, ConfigurationHash: definition.ConfigurationHash, MaterializerVersion: definition.MaterializerVersion, FencingEpoch: 4, ArtifactGeneration: "artifact-1", State: StateReady}
+	if err := registry.ApplyRecord(context.Background(), NewCheckpointCASRecord(first, CheckpointExpectation{ProjectionID: definition.ID})); err != nil {
+		t.Fatalf("apply first CAS checkpoint: %v", err)
+	}
+	stale := first
+	stale.FencingEpoch = 3
+	stale.ArtifactGeneration = "artifact-stale"
+	err := registry.ApplyRecord(context.Background(), NewCheckpointCASRecord(stale, CheckpointExpectation{ProjectionID: definition.ID, Exists: true, Published: first.Published, ConfigurationEpoch: 1, FencingEpoch: 3, ArtifactGeneration: "artifact-stale"}))
+	if !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("stale CAS error = %v, want checkpoint conflict", err)
+	}
+	got, ok := registry.Checkpoint(definition.ID)
+	if !ok || got != first {
+		t.Fatalf("checkpoint after stale CAS = %+v, ok=%v", got, ok)
 	}
 }
 

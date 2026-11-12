@@ -90,6 +90,15 @@ type DesiredFrontier struct {
 	ConfigurationEpoch uint64       `json:"configuration_epoch"`
 }
 
+type CheckpointExpectation struct {
+	ProjectionID       ProjectionID `json:"projection_id"`
+	Exists             bool         `json:"exists"`
+	Published          Frontier     `json:"published,omitempty"`
+	ConfigurationEpoch uint64       `json:"configuration_epoch,omitempty"`
+	FencingEpoch       uint64       `json:"fencing_epoch,omitempty"`
+	ArtifactGeneration string       `json:"artifact_generation,omitempty"`
+}
+
 type Checkpoint struct {
 	ProjectionID        ProjectionID `json:"projection_id"`
 	Published           Frontier     `json:"published"`
@@ -143,12 +152,13 @@ const (
 )
 
 type Record struct {
-	Version    int              `json:"version"`
-	Type       RecordType       `json:"type"`
-	Definition *Definition      `json:"definition,omitempty"`
-	Frontier   *DesiredFrontier `json:"frontier,omitempty"`
-	Checkpoint *Checkpoint      `json:"checkpoint,omitempty"`
-	Replica    *ReplicaStatus   `json:"replica,omitempty"`
+	Version    int                    `json:"version"`
+	Type       RecordType             `json:"type"`
+	Definition *Definition            `json:"definition,omitempty"`
+	Frontier   *DesiredFrontier       `json:"frontier,omitempty"`
+	Checkpoint *Checkpoint            `json:"checkpoint,omitempty"`
+	Expected   *CheckpointExpectation `json:"expected,omitempty"`
+	Replica    *ReplicaStatus         `json:"replica,omitempty"`
 }
 
 type Snapshot struct {
@@ -209,6 +219,25 @@ func (f DesiredFrontier) Validate() error {
 		return err
 	}
 	if err := f.Required.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e CheckpointExpectation) Validate() error {
+	if err := validateProjectionID(e.ProjectionID); err != nil {
+		return err
+	}
+	if !e.Exists {
+		if e.Published != (Frontier{}) || e.ConfigurationEpoch != 0 || e.FencingEpoch != 0 || e.ArtifactGeneration != "" {
+			return fmt.Errorf("non-existent checkpoint expectation must not contain checkpoint state")
+		}
+		return nil
+	}
+	if err := e.Published.validate(); err != nil {
+		return err
+	}
+	if err := validateBounded("artifact_generation", e.ArtifactGeneration, MaxArtifactGenerationBytes, false); err != nil {
 		return err
 	}
 	return nil
@@ -340,22 +369,30 @@ func (r Record) Validate() error {
 	}
 	switch r.Type {
 	case RecordTypeDefinitionUpsert:
-		if r.Definition == nil || r.Frontier != nil || r.Checkpoint != nil || r.Replica != nil {
+		if r.Definition == nil || r.Frontier != nil || r.Checkpoint != nil || r.Expected != nil || r.Replica != nil {
 			return fmt.Errorf("definition upsert record must contain only a definition")
 		}
 		return r.Definition.Validate()
 	case RecordTypeFrontierAdvance:
-		if r.Frontier == nil || r.Definition != nil || r.Checkpoint != nil || r.Replica != nil {
+		if r.Frontier == nil || r.Definition != nil || r.Checkpoint != nil || r.Expected != nil || r.Replica != nil {
 			return fmt.Errorf("frontier advance record must contain only a desired frontier")
 		}
 		return r.Frontier.Validate()
 	case RecordTypeCheckpointPublish:
 		if r.Checkpoint == nil || r.Definition != nil || r.Frontier != nil || r.Replica != nil {
-			return fmt.Errorf("checkpoint publish record must contain only a checkpoint")
+			return fmt.Errorf("checkpoint publish record must contain a checkpoint")
+		}
+		if r.Expected != nil {
+			if r.Expected.ProjectionID != r.Checkpoint.ProjectionID {
+				return fmt.Errorf("checkpoint expectation projection_id does not match checkpoint")
+			}
+			if err := r.Expected.Validate(); err != nil {
+				return err
+			}
 		}
 		return r.Checkpoint.Validate()
 	case RecordTypeReplicaStatus:
-		if r.Replica == nil || r.Definition != nil || r.Frontier != nil || r.Checkpoint != nil {
+		if r.Replica == nil || r.Definition != nil || r.Frontier != nil || r.Checkpoint != nil || r.Expected != nil {
 			return fmt.Errorf("replica status record must contain only replica status")
 		}
 		return r.Replica.Validate()

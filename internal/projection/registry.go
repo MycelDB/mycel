@@ -3,10 +3,13 @@ package projection
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 )
+
+var ErrCheckpointConflict = errors.New("projection checkpoint compare-and-swap conflict")
 
 // Registry is the authoritative in-memory view applied by a source-partition
 // state machine. It contains control metadata only; physical projection
@@ -123,6 +126,12 @@ func (r *Registry) applyRecordLocked(record Record) error {
 
 	case RecordTypeCheckpointPublish:
 		checkpoint := *record.Checkpoint
+		if expected := record.Expected; expected != nil {
+			current, exists := r.checkpoints[checkpoint.ProjectionID]
+			if expected.Exists != exists || (exists && !checkpointExpectationMatches(*expected, current)) {
+				return fmt.Errorf("%w: projection %q expected checkpoint does not match current state", ErrCheckpointConflict, checkpoint.ProjectionID)
+			}
+		}
 		definition, ok := r.definitions[checkpoint.ProjectionID]
 		if !ok {
 			return fmt.Errorf("projection definition %q is missing", checkpoint.ProjectionID)
@@ -163,6 +172,14 @@ func (r *Registry) applyRecordLocked(record Record) error {
 	default:
 		return fmt.Errorf("unsupported projection record type %q", record.Type)
 	}
+}
+
+func checkpointExpectationMatches(expected CheckpointExpectation, current Checkpoint) bool {
+	return expected.ProjectionID == current.ProjectionID && expected.Published == current.Published && expected.ConfigurationEpoch == current.ConfigurationEpoch && expected.FencingEpoch == current.FencingEpoch && expected.ArtifactGeneration == current.ArtifactGeneration
+}
+
+func (r *Registry) PublishCheckpoint(ctx context.Context, commandID string, commandHash []byte, checkpoint Checkpoint, expected CheckpointExpectation) error {
+	return r.Apply(ctx, commandID, commandHash, NewCheckpointCASRecord(checkpoint, expected))
 }
 
 func validateCheckpointAgainstDefinition(checkpoint Checkpoint, definition Definition) error {

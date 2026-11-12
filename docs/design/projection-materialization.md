@@ -182,6 +182,29 @@ This tranche does not yet select the authoritative source adapter or change
 lexical/semantic query behavior. Those decisions belong to the Phase 2/3
 reviews.
 
+### Phase 2 protocol decisions
+
+The common source/publication layer now fixes the following boundaries without
+adopting them into an existing query path:
+
+- Source adapters expose committed pages and a consistent snapshot boundary.
+  Cursors are compared only for exact equality or carried forward opaquely;
+  they are never decoded or retried blindly.
+- Cursor expiry, source gaps, and malformed pages use typed rebuild-required
+  failures. Deletes and tombstones are ordinary page entries and therefore
+  advance the same frontier as upserts.
+- Private artifact manifests prove projection identity, source frontier,
+  configuration, materializer version, fencing epoch, generation, format, and
+  checksum. They contain no local paths or sensitive payloads.
+- Publication activates a validated private generation, then performs an
+  authoritative checkpoint CAS. A losing CAS invokes the artifact rollback
+  contract, leaving the prior checkpoint active. Recovery must ignore any
+  orphan generation whose manifest does not match the authoritative checkpoint.
+
+Physical artifact stores still implement their own durable activation and
+rollback mechanics; this common layer only enforces the lifecycle ordering and
+fail-closed contract.
+
 ## Lifecycle
 
 A projection definition and each materialization replica use the following

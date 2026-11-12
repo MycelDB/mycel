@@ -2,10 +2,10 @@
 
 ## Status
 
-Phase 0 is complete and the Phase 1 common metadata tranche is implemented on
-`design/projection-materialization-lifecycle` for
-[mycel#330](https://github.com/MycelDB/mycel/issues/330). Phase 2 and later
-materializer adoption remain pending.
+Phase 0 is complete. Phase 1 and the Phase 2 common frontier/publication
+tranche are implemented on `design/projection-materialization-lifecycle` for
+[mycel#330](https://github.com/MycelDB/mycel/issues/330). Existing materializer
+adoption and Phase 3 remain pending.
 
 The design contract is in
 [`docs/design/projection-materialization.md`](../../design/projection-materialization.md).
@@ -86,6 +86,10 @@ behavior.
 - Added a runtime registry manager/read-only view and a generic partition
   proposal helper for future materializers.
 - Added fail-closed unknown-manifest bootstrap and bounded readiness marshaling.
+- Added replayable source-page/snapshot contracts with opaque cursor validation,
+  typed expiry/gap/malformed-source rebuild failures, and tombstone entries.
+- Added artifact manifest validation and a publication coordinator that activates
+  private generations, performs checkpoint CAS, and rolls back on CAS loss.
 
 ### Tests
 
@@ -95,13 +99,16 @@ behavior.
 - Unknown or malformed metadata fails closed.
 - Bounded status serialization and redaction-shaped metadata.
 - Partition Raft apply, snapshot, and restore round-trip.
+- Source cursor expiry/gap, snapshot replay-boundary, tombstone, manifest, CAS,
+  activation-failure, and rollback coverage.
 
 ### Exit criteria
 
 - Control metadata survives restart and Raft replay through the composite
   state-machine snapshot path.
-- Existing projection behavior is unchanged; no materializer or query path is
-  switched to the registry until the Phase 2 publication contract is reviewed.
+- The common source/publication protocol is validated independently of existing
+  materializers; no materializer or query path is switched until the semantic
+  pilot review.
 
 ## Phase 2 — Source frontier and publication protocol
 
@@ -263,7 +270,7 @@ internal/projection/
   registry.go       # authoritative metadata contract
   raft.go           # source-partition Raft record ownership and snapshots
   frontier.go       # source revision/cursor and gap semantics
-  publication.go    # private generation and CAS publication rules
+  publication.go    # private generation and checkpoint CAS protocol
   fencing.go        # ownership/epoch validation
   diagnostics.go    # bounded readiness/status mapping
 

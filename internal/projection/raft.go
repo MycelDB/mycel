@@ -129,6 +129,10 @@ func NewCheckpointRecord(checkpoint Checkpoint) Record {
 	return Record{Version: RecordVersion, Type: RecordTypeCheckpointPublish, Checkpoint: &checkpoint}
 }
 
+func NewCheckpointCASRecord(checkpoint Checkpoint, expected CheckpointExpectation) Record {
+	return Record{Version: RecordVersion, Type: RecordTypeCheckpointPublish, Checkpoint: &checkpoint, Expected: &expected}
+}
+
 func NewReplicaStatusRecord(status ReplicaStatus) Record {
 	return Record{Version: RecordVersion, Type: RecordTypeReplicaStatus, Replica: &status}
 }
