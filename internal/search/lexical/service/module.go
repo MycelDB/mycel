@@ -2,13 +2,16 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/encryption"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	graph "github.com/myceldb/mycel/internal/graph/model"
+	"github.com/myceldb/mycel/internal/projection"
 	"github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/search/lexical/analyzer"
@@ -25,14 +28,18 @@ type Manager interface {
 }
 
 type Module struct {
-	mu         sync.Mutex
-	root       string
-	services   map[string]*Service
-	started    bool
-	startedAt  time.Time
-	lastErr    error
-	encryption *encryption.Service
-	gate       *quiesce.Gate
+	mu                   sync.Mutex
+	root                 string
+	services             map[string]*Service
+	started              bool
+	startedAt            time.Time
+	lastErr              error
+	encryption           *encryption.Service
+	gate                 *quiesce.Gate
+	projectionRegistries *projection.RegistryManager
+	raftGroups           *consensus.MultiGroup
+	raftPartitionCount   uint32
+	raftLocalNode        consensus.NodeID
 }
 
 func NewModule() *Module {
@@ -40,6 +47,24 @@ func NewModule() *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) WithProjectionRegistryManager(manager *projection.RegistryManager) *Module {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.projectionRegistries = manager
+	return m
+}
+
+// EnableExperimentalRaft supplies the source-partition ownership and common
+// projection registry used by clustered lexical materialization. The lexical
+// artifact remains node-local; only lifecycle metadata is replicated.
+func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, localNode consensus.NodeID, partitionCount uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.raftGroups = groups
+	m.raftLocalNode = localNode
+	m.raftPartitionCount = partitionCount
+}
 
 func (m *Module) Init(_ context.Context, host runtime.Host) runtime.InitResult {
 	m.mu.Lock()
@@ -89,13 +114,23 @@ func (m *Module) StatusReport(context.Context) runtime.ServiceStatus {
 }
 
 func (m *Module) Status(ctx context.Context, spaceID string, domainID string, latestKnownGraphRevision uint64) Status {
-	_ = ctx
-	return m.serviceFor(spaceID, domainID).Status(latestKnownGraphRevision)
+	status := m.serviceFor(spaceID, domainID).Status(latestKnownGraphRevision)
+	if err := m.validateCommonLexicalProjection(ctx, spaceID, domainID, status, true); err != nil {
+		status.State = StateUnavailable
+		status.LastError = err.Error()
+	}
+	return status
 }
 
 func (m *Module) Search(ctx context.Context, spaceID string, domainID string, query string, opts index.SearchOptions) (index.SearchResponse, error) {
-	_ = ctx
+	if err := m.validateCommonLexicalProjection(ctx, spaceID, domainID, m.serviceFor(spaceID, domainID).Status(0), opts.AllowStale); err != nil {
+		return index.SearchResponse{}, fmt.Errorf("%w: %v", ErrIndexUnavailable, err)
+	}
 	return m.serviceFor(spaceID, domainID).Search(query, opts)
+}
+
+func (m *Module) RefreshCommonProjection(ctx context.Context, spaceID string, domainID string, latestRevision uint64) error {
+	return m.publishCommonLexicalProjection(ctx, spaceID, domainID, latestRevision)
 }
 
 func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, docs []index.IndexedDocument, latestRevision uint64) error {
@@ -104,7 +139,10 @@ func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, d
 		return err
 	}
 	defer release()
-	return m.serviceFor(spaceID, domainID).Rebuild(docs, latestRevision)
+	if err := m.serviceFor(spaceID, domainID).Rebuild(docs, latestRevision); err != nil {
+		return err
+	}
+	return m.publishCommonLexicalProjection(ctx, spaceID, domainID, latestRevision)
 }
 
 // RebuildFromSnapshot serializes snapshot capture and publication with graph
@@ -116,7 +154,16 @@ func (m *Module) RebuildFromSnapshot(ctx context.Context, spaceID string, domain
 		return err
 	}
 	defer release()
-	return m.serviceFor(spaceID, domainID).RebuildFromSnapshot(snapshot)
+	var latestRevision uint64
+	wrapped := func() ([]index.IndexedDocument, uint64, error) {
+		docs, revision, err := snapshot()
+		latestRevision = revision
+		return docs, revision, err
+	}
+	if err := m.serviceFor(spaceID, domainID).RebuildFromSnapshot(wrapped); err != nil {
+		return err
+	}
+	return m.publishCommonLexicalProjection(ctx, spaceID, domainID, latestRevision)
 }
 
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
@@ -161,6 +208,10 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 	}
 	for domainID, docs := range byDomain {
 		if err := m.serviceFor(event.SpaceID.String(), domainID).ApplyDocuments(docs, event.GraphRevision); err != nil {
+			m.recordError(err)
+			return err
+		}
+		if err := m.publishCommonLexicalProjection(ctx, event.SpaceID.String(), domainID, event.GraphRevision); err != nil {
 			m.recordError(err)
 			return err
 		}

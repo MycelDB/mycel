@@ -355,6 +355,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	if cfg.Cluster.RaftRuntimeConfigured() {
 		rt.ProjectionRegistries = projection.NewRegistryManager(uint32(cfg.Cluster.RaftPartitionCount))
 		semanticService.WithProjectionRegistryManager(rt.ProjectionRegistries)
+		lexicalService.WithProjectionRegistryManager(rt.ProjectionRegistries)
 	}
 	inferenceService.WithAuthorizationRevisionSource(semanticService)
 	backupService := backupservice.NewModule(backupservice.Config{
@@ -414,6 +415,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		lexicalService.EnableExperimentalRaft(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), uint32(cfg.Cluster.RaftPartitionCount))
 		inferenceService.EnableExperimentalAuthorizationRaft(rt.RaftGroups)
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		automationService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))

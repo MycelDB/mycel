@@ -19,6 +19,7 @@ import (
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	"github.com/myceldb/mycel/internal/identity/model"
+	"github.com/myceldb/mycel/internal/projection"
 	runtimetest "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
@@ -62,14 +63,15 @@ func (b *phaseDLogBuffer) String() string {
 }
 
 type phaseDIntegrationNode struct {
-	id       consensus.NodeID
-	dataDir  string
-	space    *spaceservice.Module
-	schema   *schemaservice.Module
-	graph    *graphservice.Module
-	blob     *blobservice.Module
-	semantic *semanticservice.Module
-	groups   *consensus.MultiGroup
+	id          consensus.NodeID
+	dataDir     string
+	space       *spaceservice.Module
+	schema      *schemaservice.Module
+	graph       *graphservice.Module
+	blob        *blobservice.Module
+	semantic    *semanticservice.Module
+	projections *projection.RegistryManager
+	groups      *consensus.MultiGroup
 }
 
 func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
@@ -259,7 +261,7 @@ func (c *phaseDIntegrationCluster) startGroupsForNode(ctx context.Context, t *te
 	mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: node.id, PeerNodeIDs: c.peers, PartitionCount: c.partitionCount, Transport: c.transport, StorageDir: filepath.Join(node.dataDir, "meta", "raft"), StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine {
 		return compositeSystemStateMachine{consensus.NewSystemStateMachine(), semanticservice.RaftStateMachine{Module: node.semantic, PartitionCount: c.partitionCount}}
 	}, Partition: func(partitionID uint32) consensus.StateMachine {
-		return compositePartitionStateMachine{spaceservice.RaftStateMachine{Module: node.space, PartitionID: partitionID, PartitionCount: c.partitionCount}, schemaservice.RaftStateMachine{Manager: node.schema.SchemaManager, PartitionID: partitionID, PartitionCount: c.partitionCount}, graphservice.RaftStateMachine{Module: node.graph, PartitionID: partitionID, PartitionCount: c.partitionCount}, blobservice.RaftStateMachine{Module: node.blob, PartitionID: partitionID, PartitionCount: c.partitionCount}, semanticservice.RaftStateMachine{Module: node.semantic, PartitionID: partitionID, PartitionCount: c.partitionCount}}
+		return compositePartitionStateMachine{spaceservice.RaftStateMachine{Module: node.space, PartitionID: partitionID, PartitionCount: c.partitionCount}, schemaservice.RaftStateMachine{Manager: node.schema.SchemaManager, PartitionID: partitionID, PartitionCount: c.partitionCount}, graphservice.RaftStateMachine{Module: node.graph, PartitionID: partitionID, PartitionCount: c.partitionCount}, blobservice.RaftStateMachine{Module: node.blob, PartitionID: partitionID, PartitionCount: c.partitionCount}, semanticservice.RaftStateMachine{Module: node.semantic, PartitionID: partitionID, PartitionCount: c.partitionCount}, node.projections.NewRaftStateMachine(partitionID)}
 	}}, ElectionTick: 20, HeartbeatTick: 1, RecoverEmptyStorageRejoin: recoverEmptyStorageRejoin})
 	if err != nil {
 		t.Fatalf("StartMultiGroup(%d) error = %v", node.id, err)
@@ -316,6 +318,7 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	semanticConfig.GraphReader = node.graph
 	semanticConfig.GraphRevisionReader = node.graph
 	node.semantic = semanticservice.NewModule(semanticConfig)
+	node.projections = projection.NewRegistryManager(c.partitionCount)
 	if result := node.space.Init(ctx, host); !result.OK {
 		t.Fatalf("space Init(%d): %v", id, result.Error)
 	}

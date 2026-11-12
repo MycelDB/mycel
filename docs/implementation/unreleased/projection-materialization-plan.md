@@ -4,8 +4,8 @@
 
 Phase 0 is complete. Phase 1 and the Phase 2 common frontier/publication
 tranche are implemented on `design/projection-materialization-lifecycle` for
-[mycel#330](https://github.com/MycelDB/mycel/issues/330). Existing materializer
-Phase 3 semantic adoption is in progress; lexical adoption and later phases remain pending.
+[mycel#330](https://github.com/MycelDB/mycel/issues/330). Phase 3 semantic and
+Phase 4 lexical adoption tranches are implemented; later phases remain pending.
 
 The design contract is in
 [`docs/design/projection-materialization.md`](../../design/projection-materialization.md).
@@ -217,6 +217,23 @@ Use the same lifecycle for lexical indexes and new-domain/leadership recovery.
 - Define tombstone retention and rebuild/compaction interaction.
 - Preserve current leader/read-index routing and explicit stale-read policy.
 
+### Implemented tranche
+
+- Lexical indexes now use stable `lexical/default` projection identities scoped
+  by space and domain, with analyzer/format configuration hashes and common
+  desired frontiers, replica claims, and fenced checkpoints.
+- Local segment files remain rebuildable artifacts. Graph-commit, rebuild, and
+  durable replay paths refresh common metadata only after local cursor/manifest
+  progress; replay also republishes a promoted leader's claim when no new graph
+  event is needed.
+- Search and status require the leader-local common readiness claim and
+  checkpoint. Explicit stale reads continue to use the existing freshness
+  policy; a stale local artifact cannot bypass common fencing or configuration
+  checks.
+- Checkpoint/frontier races from retained replicas are ignored only when a
+  newer common record already won; common checkpoints never regress during
+  promoted-leader catch-up.
+
 ### Tests
 
 - New domain becomes ready after committed writes.
@@ -229,6 +246,11 @@ Use the same lifecycle for lexical indexes and new-domain/leadership recovery.
 
 - Lexical and semantic readiness diagnostics use comparable terminology and
   source-frontier semantics.
+
+Current validation covers the service-level corrupt-segment and tombstone-heavy
+rebuild cases, plus a three-node clustered new-domain, retained-volume,
+leadership-promotion, restart/replay, and common-readiness fail-closed path.
+Broader Lab qualification remains separate from this implementation tranche.
 
 ## Phase 5 — Other projections
 
