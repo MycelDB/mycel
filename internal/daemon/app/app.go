@@ -352,6 +352,10 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		},
 	})
 	semanticService.WithAuthorizationRevisionSink(automationService)
+	if cfg.Cluster.RaftRuntimeConfigured() {
+		rt.ProjectionRegistries = projection.NewRegistryManager(uint32(cfg.Cluster.RaftPartitionCount))
+		semanticService.WithProjectionRegistryManager(rt.ProjectionRegistries)
+	}
 	inferenceService.WithAuthorizationRevisionSource(semanticService)
 	backupService := backupservice.NewModule(backupservice.Config{
 		Enabled:                cfg.Backup.Enabled,
@@ -385,7 +389,6 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	if cfg.Cluster.RaftRuntimeConfigured() {
 		backupService.PrepareExperimentalRaftMode()
-		rt.ProjectionRegistries = projection.NewRegistryManager(uint32(cfg.Cluster.RaftPartitionCount))
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
 			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}, inferenceservice.AuthorizationRaftStateMachine{Module: inferenceService}}

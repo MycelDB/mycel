@@ -5,7 +5,7 @@
 Phase 0 is complete. Phase 1 and the Phase 2 common frontier/publication
 tranche are implemented on `design/projection-materialization-lifecycle` for
 [mycel#330](https://github.com/MycelDB/mycel/issues/330). Existing materializer
-adoption and Phase 3 remain pending.
+Phase 3 semantic adoption is in progress; lexical adoption and later phases remain pending.
 
 The design contract is in
 [`docs/design/projection-materialization.md`](../../design/projection-materialization.md).
@@ -162,6 +162,19 @@ known leadership and identity failure modes.
 - Map not-ready states to typed, sanitized status details.
 - Reuse existing semantic tombstone, rebuild, provider-budget, and source
   revision logic rather than duplicating it.
+
+### Implemented tranche
+
+- Semantic rule/binding pairs now derive stable, binding-scoped common
+  projection identities and use the existing partitioned Raft registry.
+- Reliability status publishes common definitions, desired graph frontiers, and
+  fenced replica claims; successful local lease recovery publishes a common
+  checkpoint through compare-and-swap.
+- Strong semantic search re-certifies the common replica readiness after the
+  existing local vector-store lease and rebuild checks. Common failures remain
+  typed and content-free.
+- The legacy lease remains local artifact evidence during this pilot; it is not
+  treated as a replicated artifact or an alternative authority.
 
 ### Tests
 

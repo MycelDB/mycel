@@ -243,6 +243,12 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 					return nil, newProjectionReadinessError(state.Entries, rule.ID, binding.Key, uint64(m.raftLocalNode), expected, status.Rebuild.RebuildState, recovery.blockedReason)
 				}
 			}
+			if err := m.publishCommonSemanticProjection(ctx, rule, binding, status, true); err != nil {
+				return nil, err
+			}
+			if err := m.validateCommonSemanticProjection(ctx, rule, binding, status, leader, term); err != nil {
+				return nil, err
+			}
 			observations[key] = current
 			if _, searched := searchedBindings[key]; searched {
 				validatedSearchBindings[key] = true
@@ -320,6 +326,9 @@ func (m *Module) recoverProjectionLeaseForCurrentLeadership(ctx context.Context,
 		return projectionRecoveryResult{blockedReason: ProjectionReadinessMissingBaseline}, nil
 	}
 	if err := m.saveProjectionLease(ctx, spaceID, rule.ID, binding.Key, status.SemanticGeneration, status.Rebuild.RebuildEpoch, status.FreshThroughGraphRevision); err != nil {
+		return projectionRecoveryResult{}, err
+	}
+	if err := m.publishCommonSemanticProjection(ctx, rule, binding, status, true); err != nil {
 		return projectionRecoveryResult{}, err
 	}
 	return projectionRecoveryResult{ready: true}, nil
