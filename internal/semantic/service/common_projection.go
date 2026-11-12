@@ -53,6 +53,54 @@ func semanticProjectionCommandID(record projection.Record) (string, error) {
 	return "semantic-projection-" + hex.EncodeToString(digest[:16]), nil
 }
 
+func (m *Module) publishCommonSemanticProjectionForLease(ctx context.Context, spaceID domainspace.SpaceID, ruleID domainsemantic.SemanticRuleID, bindingKey string, generation uint64, rebuildEpoch string, freshThrough uint64) error {
+	m.mu.Lock()
+	manager := m.projectionRegistries
+	groups := m.raftGroups
+	m.mu.Unlock()
+	if manager == nil || groups == nil {
+		return nil
+	}
+	spaceManager, err := m.SpaceManager(ctx, spaceID)
+	if err != nil {
+		return err
+	}
+	rules, err := spaceManager.ListSemanticRules(ctx)
+	if err != nil {
+		return err
+	}
+	bindingKey = strings.ToLower(strings.TrimSpace(bindingKey))
+	var rule domainsemantic.SemanticGenerationRule
+	var binding domainsemantic.SemanticEmbeddingBinding
+	found := false
+	for _, candidate := range rules {
+		if candidate.ID != ruleID {
+			continue
+		}
+		for _, candidateBinding := range candidate.Embeddings {
+			candidateBinding = domainsemantic.NormalizeSemanticEmbeddingBinding(candidateBinding)
+			if candidateBinding.Key == bindingKey {
+				rule = candidate
+				binding = candidateBinding
+				found = true
+				break
+			}
+		}
+		break
+	}
+	if !found {
+		return fmt.Errorf("semantic rule %s binding %q is unavailable for common projection publication", ruleID, bindingKey)
+	}
+	status, err := m.GetReliabilityStatus(ctx, ReliabilityStatusInput{SpaceID: spaceID, SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey})
+	if err != nil {
+		return err
+	}
+	if status.SemanticGeneration != generation || status.Rebuild.RebuildEpoch != rebuildEpoch || status.FreshThroughGraphRevision < freshThrough {
+		return fmt.Errorf("semantic projection lease does not match authoritative reliability state")
+	}
+	return m.publishCommonSemanticProjection(ctx, rule, binding, status, true)
+}
+
 func (m *Module) publishCommonSemanticProjection(ctx context.Context, rule domainsemantic.SemanticGenerationRule, binding domainsemantic.SemanticEmbeddingBinding, status ReliabilityStatus, artifactReady bool) error {
 	m.mu.Lock()
 	manager := m.projectionRegistries

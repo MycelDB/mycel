@@ -169,7 +169,9 @@ known leadership and identity failure modes.
   projection identities and use the existing partitioned Raft registry.
 - Reliability status publishes common definitions, desired graph frontiers, and
   fenced replica claims; successful local lease recovery publishes a common
-  checkpoint through compare-and-swap.
+  checkpoint through compare-and-swap. Lease certification now also updates
+  the common claim after rebuild/backfill completion rather than waiting for a
+  subsequent search request.
 - Strong semantic search re-certifies the common replica readiness after the
   existing local vector-store lease and rebuild checks. Common failures remain
   typed and content-free.
