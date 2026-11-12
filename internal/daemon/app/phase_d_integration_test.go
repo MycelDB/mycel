@@ -135,6 +135,59 @@ func TestPhaseDMultiSubsystemRaftConvergesAndRestarts(t *testing.T) {
 	cluster.waitForNoVectorStore(ctx, t, "phase-d-store")
 }
 
+func TestPhaseDGraphCheckpointPublishesCommonMetadata(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cluster := newPhaseDIntegrationCluster(t, 1)
+	cluster.start(ctx, t)
+	defer cluster.close()
+	cluster.waitForLeaders(ctx, t)
+
+	ownerID := uuid.New()
+	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{Name: "phase-5-checkpoint", OwnerPrincipalID: identity.PrincipalID(ownerID.String()), DefaultDomainKey: "notes", DefaultDomainName: "Notes", CommandID: "phase-5-checkpoint-space"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaceID := created.Space.SpaceID.String()
+	domainID := created.Domain.ID
+	cluster.waitForSpace(ctx, t, spaceID)
+	if err := cluster.nodes[1].schema.PutDomainSchema(ctx, phaseDTestSchema(domainID)); err != nil {
+		t.Fatal(err)
+	}
+	cluster.waitForSchema(ctx, t, domainID)
+	leader := cluster.leaderForSpace(ctx, t, spaceID)
+	node := cluster.nodes[leader]
+	tx := phaseDGraphTx(spaceID, domainID.String(), 0)
+	createdNode, err := node.graph.CreateNode(ctx, tx, graphmodel.NodeInput{Labels: []string{"Person"}, Properties: map[string]any{"firstName": "Checkpoint"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.graph.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	cluster.waitForGraphNode(ctx, t, spaceID, domainID.String(), createdNode.ID.String(), 1, "Checkpoint")
+	if _, err := node.graph.CreateGraphCheckpoint(ctx, spaceID, domainID.String()); err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
+	projectionID, err := projection.IDFor(projection.KindMetadata, projection.Scope{SpaceID: spaceID, DomainID: domainID.String()}, "graph-checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	partition := phaseDSpacePartition(t, spaceID, cluster.partitionCount)
+	reader, ok := node.projections.Reader(partition)
+	if !ok {
+		t.Fatalf("projection registry for partition %d unavailable", partition)
+	}
+	if err := consensus.WaitUntil(ctx, 10*time.Millisecond, func() bool {
+		definition, definitionOK := reader.Definition(projectionID)
+		desired, desiredOK := reader.DesiredFrontier(projectionID)
+		checkpoint, checkpointOK := reader.Checkpoint(projectionID)
+		return definitionOK && definition.Kind == projection.KindMetadata && definition.Key == "graph-checkpoint" && desiredOK && desired.Required.Revision == 1 && checkpointOK && checkpoint.State == projection.StateReady && checkpoint.Published.Revision == 1
+	}); err != nil {
+		t.Fatalf("common graph checkpoint metadata did not become ready: %v", err)
+	}
+}
+
 func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -251,6 +304,7 @@ func (c *phaseDIntegrationCluster) enableRaftForNode(id consensus.NodeID, node *
 	node.space.EnableExperimentalRaft(node.groups, id, nil, "")
 	node.schema.EnableExperimentalRaft(node.groups, c.partitionCount)
 	node.graph.EnableExperimentalRaft(node.groups, c.partitionCount)
+	node.graph.EnableProjectionLifecycle(node.groups, id, c.partitionCount)
 	node.graph.EnableExperimentalRaftNetworking(id, nil, "")
 	node.blob.EnableExperimentalRaft(node.groups, c.partitionCount)
 	node.semantic.EnableExperimentalRaft(node.groups, c.partitionCount)
@@ -319,6 +373,7 @@ func (c *phaseDIntegrationCluster) newNode(ctx context.Context, t *testing.T, id
 	semanticConfig.GraphRevisionReader = node.graph
 	node.semantic = semanticservice.NewModule(semanticConfig)
 	node.projections = projection.NewRegistryManager(c.partitionCount)
+	node.graph.WithProjectionRegistryManager(node.projections)
 	if result := node.space.Init(ctx, host); !result.OK {
 		t.Fatalf("space Init(%d): %v", id, result.Error)
 	}

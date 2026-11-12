@@ -94,7 +94,14 @@ func (m *Module) CreateGraphCheckpoint(ctx context.Context, spaceID string, doma
 		return GraphCheckpointStatus{}, err
 	}
 	m.recordCheckpointSuccess(key, time.Since(started))
-	return m.GraphCheckpointStatus(ctx, key.SpaceID, key.DomainID)
+	status, err := m.GraphCheckpointStatus(ctx, key.SpaceID, key.DomainID)
+	if err != nil {
+		return GraphCheckpointStatus{}, err
+	}
+	if err := m.publishCommonGraphCheckpoint(ctx, key.SpaceID, key.DomainID, status); err != nil {
+		return GraphCheckpointStatus{}, err
+	}
+	return status, nil
 }
 
 // GraphCheckpointStatus returns local latest checkpoint status for one domain

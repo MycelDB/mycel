@@ -261,7 +261,22 @@ Adopt the contract selectively for:
 - change-stream consumer checkpoints;
 - future projection-backed APIs.
 
-Each adoption must identify whether its physical output is local/rebuildable,
+### Implemented tranche
+
+- Domain graph checkpoints now publish a stable metadata projection identity
+  (`graph-checkpoint`) through the source-partition registry after the local
+  checkpoint and persistent-index manifest are written.
+- Common graph-checkpoint definitions, desired frontiers, leader-fenced replica
+  claims, artifact generations, and CAS checkpoints are wired into clustered
+  daemon and integration-test Raft state machines. Follower-local checkpoint
+  operations never publish authoritative claims.
+- Existing graph/query index fallback behavior is unchanged: the common record
+  describes the validated checkpoint lifecycle while graph storage remains the
+  rebuildable artifact owner.
+
+Automation/reconciliation consumers, retained change-stream cursors, and
+separate per-query-index identities remain subsequent Phase 5 tranches. Each
+adoption must identify whether its physical output is local/rebuildable,
 Raft-owned durable state, or an external side effect with an outbox contract.
 No subsystem should be forced into the model if it does not maintain a derived
 view.
