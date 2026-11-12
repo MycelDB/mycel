@@ -316,11 +316,10 @@ outbox contract.
 - Existing graph, lexical, semantic, and vector artifact validators remain the
   local-artifact authority: missing, corrupt, stale, or incompatible artifacts
   fail closed rather than making a restored common checkpoint authoritative.
-
-### Remaining Phase 6 hardening
-
-- Expand restore cases for partial/corrupt/stale artifacts and checkpoints
-  newer than restored source state.
+- Restore preflight regression coverage now exercises missing, partial, corrupt,
+  stale, configuration-mismatched, fencing-mismatched, and newer-than-source
+  artifact/checkpoint evidence. Missing artifacts remain explicitly rebuildable;
+  no invalid artifact can certify a restored checkpoint.
 - Source-history compaction remains subsystem-owned: common lexical and semantic
   artifacts rebuild from authoritative graph snapshots, while graph notification
   cursors are opaque caller-owned state and are not common projection
@@ -343,19 +342,21 @@ outbox contract.
   resolution without provisioning resources.
 - Operator procedures now cover bounded readiness inspection, graph checkpoint
   inspection, lexical/semantic rebuilds, and projection backup/restore evidence.
-- Release execution bundles already bind source, daemon, harness, scenario, and
-  image identities; destructive qualification remains blocked until a fresh
-  hermetic bundle has matching provenance and immutable multi-platform images.
+- The semantic graph-recovery Lab scenario now asserts restart/leadership
+  recovery, tombstone/delete freshness, generation-changing rebuild with a
+  concurrent delta, and local-baseline loss followed by readiness recovery.
+- Hermetic destructive qualification passed Compose validation, k3d validation,
+  and k3d system backup/restore with immutable daemon/helper identities;
+  cleanup and redaction scans passed. The retained bundle digest is
+  `e90b547b8147e5b8db6df0b4cb17ac76878edca149fa1d7279a17e741124b92e`.
 
 ### Remaining qualification
 
-- Run the non-dry-run Compose/k3d scenarios and retain cleanup/redaction
-  evidence.
-- Add or enable projection-specific assertions for leadership change,
-  local-baseline loss, tombstone/delete, rebuild, and readiness recovery in the
-  appropriate Lab scenarios.
-- Complete the destructive aggregate release gate after provenance and image
-  prerequisites are satisfied.
+- Repeat the projection-specific scenario on the final pushed daemon digest and
+  retain its scenario artifacts with the release evidence.
+- Complete the formal Phase 4 clustered qualification and investigate any
+  intermittent pre-existing clustered automation timeout separately from the
+  passing targeted Raft tests.
 
 ### Exit criteria
 
