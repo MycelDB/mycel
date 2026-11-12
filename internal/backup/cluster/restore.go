@@ -361,6 +361,9 @@ func verifyNodeManifestLocal(node NodeArtifact, path string) error {
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		return fmt.Errorf("parse node manifest ordinal %d: %w", node.Ordinal, err)
 	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("validate node manifest ordinal %d: %w", node.Ordinal, err)
+	}
 	if manifest.ArchiveName != node.ArchiveName {
 		return fmt.Errorf("node manifest ordinal %d archive_name=%s want %s", node.Ordinal, manifest.ArchiveName, node.ArchiveName)
 	}

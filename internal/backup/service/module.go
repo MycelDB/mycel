@@ -10,6 +10,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/encryption"
+	"github.com/myceldb/mycel/internal/projection"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/wal"
@@ -52,6 +53,7 @@ type Module struct {
 	clusterNodeAddrs      []string
 	clusterLocalRaftNode  consensus.NodeID
 	encryption            *encryption.Service
+	projectionRegistries  *projection.RegistryManager
 }
 
 func NewModule(config ...Config) *Module {
@@ -63,6 +65,11 @@ func NewModule(config ...Config) *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) WithProjectionRegistryManager(manager *projection.RegistryManager) *Module {
+	m.projectionRegistries = manager
+	return m
+}
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	config := m.config
@@ -82,7 +89,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	if provider, ok := host.(runtime.EncryptionProvider); ok {
 		m.encryption = provider.EncryptionService()
 	}
-	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator, Encryption: m.encryption, PreArchive: m.prepareBackupSnapshot})
+	var projectionCatalog func(context.Context) (projection.BackupCatalog, error)
+	if m.projectionRegistries != nil {
+		projectionCatalog = m.projectionBackupCatalog
+	}
+	m.manager = backupcore.NewManager(backupcore.ManagerConfig{DataDir: host.DataDir(), Policy: policy, Logger: host.Log(), Quiesce: quiesceCoordinator, Encryption: m.encryption, PreArchive: m.prepareBackupSnapshot, ProjectionCatalog: projectionCatalog})
 	policy = m.manager.Policy()
 	m.policy = policy
 	m.logger = host.Log()

@@ -15,6 +15,7 @@ import (
 
 	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/fsperm"
+	"github.com/myceldb/mycel/internal/projection"
 
 	"github.com/google/uuid"
 
@@ -28,31 +29,33 @@ var (
 
 // Manager owns backup policy/status and archive creation.
 type Manager struct {
-	mu          sync.Mutex
-	dataDir     string
-	policy      Policy
-	logger      *slog.Logger
-	quiesce     *quiesce.Coordinator
-	version     string
-	now         func() time.Time
-	running     bool
-	lastRunAt   time.Time
-	lastSuccess time.Time
-	last        RunStatus
-	history     []RunStatus
-	encryption  *encryption.Service
-	preArchive  func(context.Context) error
+	mu                sync.Mutex
+	dataDir           string
+	policy            Policy
+	logger            *slog.Logger
+	quiesce           *quiesce.Coordinator
+	version           string
+	now               func() time.Time
+	running           bool
+	lastRunAt         time.Time
+	lastSuccess       time.Time
+	last              RunStatus
+	history           []RunStatus
+	encryption        *encryption.Service
+	preArchive        func(context.Context) error
+	projectionCatalog func(context.Context) (projection.BackupCatalog, error)
 }
 
 type ManagerConfig struct {
-	DataDir    string
-	Policy     Policy
-	Logger     *slog.Logger
-	Quiesce    *quiesce.Coordinator
-	Version    string
-	Now        func() time.Time
-	Encryption *encryption.Service
-	PreArchive func(context.Context) error
+	DataDir           string
+	Policy            Policy
+	Logger            *slog.Logger
+	Quiesce           *quiesce.Coordinator
+	Version           string
+	Now               func() time.Time
+	Encryption        *encryption.Service
+	PreArchive        func(context.Context) error
+	ProjectionCatalog func(context.Context) (projection.BackupCatalog, error)
 }
 
 type TriggerInput struct {
@@ -107,7 +110,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if persisted, err := loadPersistedPolicy(cfg.DataDir); err == nil {
 		policy = EffectivePolicy(cfg.DataDir, persisted)
 	}
-	return &Manager{dataDir: cfg.DataDir, policy: policy, logger: cfg.Logger, quiesce: cfg.Quiesce, version: cfg.Version, now: now, encryption: cfg.Encryption, preArchive: cfg.PreArchive, last: RunStatus{State: RunStateIdle}}
+	return &Manager{dataDir: cfg.DataDir, policy: policy, logger: cfg.Logger, quiesce: cfg.Quiesce, version: cfg.Version, now: now, encryption: cfg.Encryption, preArchive: cfg.PreArchive, projectionCatalog: cfg.ProjectionCatalog, last: RunStatus{State: RunStateIdle}}
 }
 
 func (m *Manager) Policy() Policy {
@@ -388,6 +391,17 @@ func (m *Manager) createArchiveWithPolicy(ctx context.Context, backupID string, 
 			return TriggerResult{}, fmt.Errorf("prepare backup snapshot: %w", err)
 		}
 	}
+	var projectionCatalog *projection.BackupCatalog
+	if m.projectionCatalog != nil {
+		catalog, err := m.projectionCatalog(runCtx)
+		if err != nil {
+			return TriggerResult{}, fmt.Errorf("capture projection backup catalog: %w", err)
+		}
+		if err := catalog.Validate(); err != nil {
+			return TriggerResult{}, fmt.Errorf("validate projection backup catalog: %w", err)
+		}
+		projectionCatalog = &catalog
+	}
 
 	stagingRoot := filepath.Join(backupDir, ".staging")
 	stagingDir := filepath.Join(stagingRoot, backupID)
@@ -421,7 +435,10 @@ func (m *Manager) createArchiveWithPolicy(ctx context.Context, backupID string, 
 	if err != nil {
 		return TriggerResult{}, fmt.Errorf("checksum archive: %w", err)
 	}
-	manifest := Manifest{Version: ManifestVersion, BackupID: backupID, ArchiveName: archiveName, CreatedAt: started, CompletedAt: m.now().UTC(), SizeBytes: size, ChecksumSHA256: checksum, DaemonVersion: m.version, Policy: policySummary(policy)}
+	manifest := Manifest{Version: ManifestVersion, BackupID: backupID, ArchiveName: archiveName, CreatedAt: started, CompletedAt: m.now().UTC(), SizeBytes: size, ChecksumSHA256: checksum, DaemonVersion: m.version, Policy: policySummary(policy), ProjectionCatalog: projectionCatalog}
+	if err := manifest.Validate(); err != nil {
+		return TriggerResult{}, err
+	}
 	manifestPath := filepath.Join(backupDir, backupID+".manifest.json")
 	manifestTmp := manifestPath + ".tmp"
 	defer os.Remove(manifestTmp)
@@ -567,6 +584,9 @@ func readManifestFile(path string) (Manifest, error) {
 	}
 	var manifest Manifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return Manifest{}, err
+	}
+	if err := manifest.Validate(); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil

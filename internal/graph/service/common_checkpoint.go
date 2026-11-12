@@ -15,7 +15,10 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-const graphCheckpointMaterializerVersion = "graph-checkpoint-projection-v1"
+const (
+	graphCheckpointMaterializerVersion = "graph-checkpoint-projection-v1"
+	graphQueryIndexMaterializerVersion = "graph-query-index-projection-v1"
+)
 
 func graphCheckpointProjectionIdentity(spaceID, domainID string) (projection.ProjectionID, projection.Scope, error) {
 	scope := projection.Scope{SpaceID: strings.TrimSpace(spaceID), DomainID: strings.TrimSpace(domainID)}
@@ -119,7 +122,7 @@ func (m *Module) publishCommonGraphCheckpoint(ctx context.Context, spaceID, doma
 		expected.FencingEpoch = current.FencingEpoch
 		expected.ArtifactGeneration = current.ArtifactGeneration
 		if current == checkpoint || current.FencingEpoch > checkpoint.FencingEpoch || current.Published.Revision > checkpoint.Published.Revision {
-			return nil
+			return m.publishCommonGraphQueryIndexes(ctx, spaceID, domainID, status, term, localNode, reader)
 		}
 	}
 	if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewCheckpointCASRecord(checkpoint, expected)); err != nil {
@@ -127,8 +130,107 @@ func (m *Module) publishCommonGraphCheckpoint(ctx context.Context, spaceID, doma
 			return err
 		}
 	}
+	return m.publishCommonGraphQueryIndexes(ctx, spaceID, domainID, status, term, localNode, reader)
+}
+
+func graphQueryIndexProjectionIdentity(spaceID, domainID, indexIdentity string) (projection.ProjectionID, projection.Scope, string, error) {
+	scope := projection.Scope{SpaceID: strings.TrimSpace(spaceID), DomainID: strings.TrimSpace(domainID)}
+	key := "query-index:" + strings.TrimSpace(indexIdentity)
+	id, err := projection.IDFor(projection.KindMetadata, scope, key)
+	return id, scope, key, err
+}
+
+func graphQueryIndexConfigurationHash(status GraphPersistentQueryIndexStatus) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{graphQueryIndexMaterializerVersion, strings.TrimSpace(status.SchemaHash), strings.TrimSpace(status.DefinitionFingerprint), strconv.Itoa(status.KeyEncodingVersion)}, ":")))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func graphQueryIndexArtifactGeneration(id projection.ProjectionID, indexSetID string, status GraphPersistentQueryIndexStatus) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d:%d:%s", id, strings.TrimSpace(indexSetID), status.LastIndexedGraphRevision, status.EntryCount, status.DefinitionFingerprint)))
+	return "gqi_" + hex.EncodeToString(digest[:16])
+}
+
+func (m *Module) publishCommonGraphQueryIndexes(ctx context.Context, spaceID, domainID string, status GraphCheckpointStatus, term uint64, localNode consensus.NodeID, reader projection.RegistryReader) error {
+	for _, queryIndex := range status.PersistentIndex.QueryIndexes {
+		if strings.TrimSpace(queryIndex.Identity) == "" {
+			continue
+		}
+		projectionID, scope, key, err := graphQueryIndexProjectionIdentity(spaceID, domainID, queryIndex.Name)
+		if err != nil {
+			return err
+		}
+		configurationHash := graphQueryIndexConfigurationHash(queryIndex)
+		configurationEpoch := uint64(1)
+		if current, exists := reader.Definition(projectionID); exists {
+			configurationEpoch = current.ConfigurationEpoch
+			if current.ConfigurationHash != configurationHash || current.MaterializerVersion != graphQueryIndexMaterializerVersion {
+				configurationEpoch++
+			}
+		}
+		definition := projection.Definition{ID: projectionID, Kind: projection.KindMetadata, Scope: scope, Key: key, ConfigurationHash: configurationHash, ConfigurationEpoch: configurationEpoch, MaterializerVersion: graphQueryIndexMaterializerVersion}
+		if current, exists := reader.Definition(projectionID); !exists || current != definition {
+			if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewDefinitionRecord(definition)); err != nil {
+				return err
+			}
+		}
+		desired := projection.DesiredFrontier{ProjectionID: projectionID, Required: projection.Frontier{Revision: status.CurrentRevision}, ConfigurationEpoch: configurationEpoch}
+		if current, exists := reader.DesiredFrontier(projectionID); !exists || current != desired {
+			if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewDesiredFrontierRecord(desired)); err != nil {
+				if current, exists := reader.DesiredFrontier(projectionID); !exists || current.Required.Revision < desired.Required.Revision {
+					return err
+				}
+			}
+		}
+		state := projection.StateRebuildRequired
+		reasons := []projection.Reason{projection.ReasonRebuildRequired}
+		if queryIndex.BuildState == "building" {
+			state = projection.StateBuilding
+			reasons = nil
+		} else if queryIndex.BuildState == "ready" && queryIndex.LastIndexedGraphRevision < status.CurrentRevision {
+			state = projection.StateCatchingUp
+			reasons = []projection.Reason{projection.ReasonSourceLag}
+		} else if queryIndex.BuildState == "ready" && queryIndex.LastIndexedGraphRevision >= status.CurrentRevision && status.PersistentIndex.Present && status.PersistentIndex.GraphRevision >= status.CurrentRevision && status.PersistentIndex.LoadResult != graphPersistentIndexLoadFallback {
+			state = projection.StateReady
+			reasons = nil
+		}
+		if queryIndex.BuildState == "failed" || queryIndex.BuildState == "stale" || queryIndex.BuildState == "retired" {
+			state = projection.StateRebuildRequired
+			reasons = []projection.Reason{projection.ReasonRebuildRequired}
+		}
+		published := projection.Frontier{Revision: queryIndex.LastIndexedGraphRevision}
+		artifactGeneration := graphQueryIndexArtifactGeneration(projectionID, status.PersistentIndex.IndexSetID, queryIndex)
+		nodeID := strconv.FormatUint(uint64(localNode), 10)
+		replica := projection.ReplicaStatus{ProjectionID: projectionID, NodeID: nodeID, State: state, Reasons: reasons, Required: desired.Required, Published: published, ConfigurationEpoch: configurationEpoch, MaterializerVersion: graphQueryIndexMaterializerVersion, FencingEpoch: term, ArtifactGeneration: artifactGeneration}
+		if current, exists := reader.ReplicaStatus(projectionID, nodeID); !exists || !graphCheckpointReplicaEqual(current, replica) {
+			if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewReplicaStatusRecord(replica)); err != nil {
+				return err
+			}
+		}
+		if state != projection.StateReady {
+			continue
+		}
+		checkpoint := projection.Checkpoint{ProjectionID: projectionID, Published: published, ConfigurationEpoch: configurationEpoch, ConfigurationHash: configurationHash, MaterializerVersion: graphQueryIndexMaterializerVersion, FencingEpoch: term, ArtifactGeneration: artifactGeneration, State: projection.StateReady}
+		expected := projection.CheckpointExpectation{ProjectionID: projectionID}
+		if current, exists := reader.Checkpoint(projectionID); exists {
+			expected.Exists = true
+			expected.Published = current.Published
+			expected.ConfigurationEpoch = current.ConfigurationEpoch
+			expected.FencingEpoch = current.FencingEpoch
+			expected.ArtifactGeneration = current.ArtifactGeneration
+			if current == checkpoint || current.FencingEpoch > checkpoint.FencingEpoch || current.Published.Revision > checkpoint.Published.Revision {
+				continue
+			}
+		}
+		if err := m.proposeCommonGraphCheckpointRecord(ctx, spaceID, projection.NewCheckpointCASRecord(checkpoint, expected)); err != nil {
+			if current, exists := reader.Checkpoint(projectionID); !exists || current.FencingEpoch < checkpoint.FencingEpoch || current.Published.Revision < checkpoint.Published.Revision {
+				return err
+			}
+		}
+	}
 	return nil
 }
+
+const graphPersistentIndexLoadFallback = "fallback"
 
 func graphCheckpointReplicaEqual(a, b projection.ReplicaStatus) bool {
 	if a.ProjectionID != b.ProjectionID || a.NodeID != b.NodeID || a.State != b.State || a.Required != b.Required || a.Published != b.Published || a.ConfigurationEpoch != b.ConfigurationEpoch || a.MaterializerVersion != b.MaterializerVersion || a.FencingEpoch != b.FencingEpoch || a.ArtifactGeneration != b.ArtifactGeneration || len(a.Reasons) != len(b.Reasons) {

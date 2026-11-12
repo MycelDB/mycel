@@ -4,8 +4,10 @@
 
 Phase 0 is complete. Phase 1 and the Phase 2 common frontier/publication
 tranche are implemented on `design/projection-materialization-lifecycle` for
-[mycel#330](https://github.com/MycelDB/mycel/issues/330). Phase 3 semantic and
-Phase 4 lexical adoption tranches are implemented; later phases remain pending.
+[mycel#330](https://github.com/MycelDB/mycel/issues/330). Phase 3 semantic,
+Phase 4 lexical, and the in-scope Phase 5 graph/query adoption tranches are
+implemented. The initial Phase 6 snapshot/backup catalog tranche is also
+implemented; restore preflight and source-retention hardening remain.
 
 The design contract is in
 [`docs/design/projection-materialization.md`](../../design/projection-materialization.md).
@@ -270,30 +272,55 @@ Adopt the contract selectively for:
   claims, artifact generations, and CAS checkpoints are wired into clustered
   daemon and integration-test Raft state machines. Follower-local checkpoint
   operations never publish authoritative claims.
-- Existing graph/query index fallback behavior is unchanged: the common record
-  describes the validated checkpoint lifecycle while graph storage remains the
-  rebuildable artifact owner.
+- Checkpoint-persisted graph query indexes publish stable, name-scoped
+  metadata identities (`query-index:<name>`) with schema/definition
+  configuration hashes, desired frontiers, leader-fenced replica claims,
+  artifact generations, and checkpoint CAS records. Generated local `idx-*`
+  generations are never used as identities.
+- Existing graph/query index fallback behavior is unchanged: common records
+  describe validated rebuildable artifacts while graph storage remains the
+  artifact owner.
+- Automation schedule checkpoints, reconciliation operations, and graph replay
+  cursors remain durable workflow/consumer state rather than materialized
+  artifacts. Their existing automation-Raft replay/snapshot semantics remain
+  authoritative, while their wall-clock or binding-aggregated cursors do not
+  satisfy the common artifact readiness contract.
+- The retained graph-change stream does not own server-side consumer
+  checkpoints; callers retain opaque cursors and rebuild after retention gaps.
+  Ephemeral adjacency and metadata accelerators likewise remain local,
+  rebuildable state without registry entries.
 
-Automation/reconciliation consumers, retained change-stream cursors, and
-separate per-query-index identities remain subsequent Phase 5 tranches. Each
-adoption must identify whether its physical output is local/rebuildable,
-Raft-owned durable state, or an external side effect with an outbox contract.
-No subsystem should be forced into the model if it does not maintain a derived
-view.
+This completes the currently in-scope Phase 5 projection adoptions without
+reclassifying workflow state or ephemeral accelerators as materialized
+projections. Each adoption identifies whether its physical output is
+local/rebuildable, Raft-owned durable state, or an external side effect with an
+outbox contract.
 
 ## Phase 6 — Snapshot, backup, and restore integration
 
-### Work
+### Implemented tranche
 
-- Include projection definitions, configuration generations, desired
-  frontiers, and checkpoint manifests in authoritative snapshots/backups.
-- Validate physical artifacts against source revision, generation, materializer
-  version, and checksums during restore.
-- Mark missing/incompatible artifacts `rebuild_required`.
-- Add restore tests for empty, partial, stale, corrupt, and newer-than-source
-  artifacts.
-- Ensure compaction cannot remove source history needed by an active checkpoint
-  or lagging replica.
+- Projection registry state remains a child of each partition's composite Raft
+  snapshot, so definitions, desired frontiers, checkpoints, replica claims, and
+  applied-command hashes restore with the authoritative partition state.
+- Backups now record a bounded, deterministic projection catalog in each backup
+  manifest. The catalog includes partition snapshot digests and projection
+  checkpoint evidence without duplicating sensitive payloads or filesystem
+  paths. Backup and cluster-restore manifest readers validate this catalog.
+- Clustered empty-storage rejoin coverage proves graph-checkpoint lifecycle
+  metadata survives a partition snapshot and is replayed on the rejoined node.
+- Existing graph, lexical, semantic, and vector artifact validators remain the
+  local-artifact authority: missing, corrupt, stale, or incompatible artifacts
+  fail closed rather than making a restored common checkpoint authoritative.
+
+### Remaining Phase 6 hardening
+
+- Add explicit per-materializer artifact-manifest catalog entries and restore
+  preflight cross-checks against the corresponding common checkpoint.
+- Couple source-history compaction to the minimum active desired frontier and
+  lagging replica frontier.
+- Expand restore cases for partial/corrupt/stale artifacts and checkpoints
+  newer than restored source state.
 
 ### Exit criteria
 

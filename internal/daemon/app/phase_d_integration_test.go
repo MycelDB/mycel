@@ -151,7 +151,9 @@ func TestPhaseDGraphCheckpointPublishesCommonMetadata(t *testing.T) {
 	spaceID := created.Space.SpaceID.String()
 	domainID := created.Domain.ID
 	cluster.waitForSpace(ctx, t, spaceID)
-	if err := cluster.nodes[1].schema.PutDomainSchema(ctx, phaseDTestSchema(domainID)); err != nil {
+	schema := phaseDTestSchema(domainID)
+	schema.Indexes = []schemamodel.IndexDefinition{{Name: "person-first-name", TargetKind: schemamodel.IndexTargetNode, TargetType: "Person", Labels: []string{"Person"}, Field: schemamodel.FieldPath{Namespace: "properties", Name: "firstName"}, Kind: schemamodel.IndexKindEquality}}
+	if err := cluster.nodes[1].schema.PutDomainSchema(ctx, schema); err != nil {
 		t.Fatal(err)
 	}
 	cluster.waitForSchema(ctx, t, domainID)
@@ -166,6 +168,9 @@ func TestPhaseDGraphCheckpointPublishesCommonMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	cluster.waitForGraphNode(ctx, t, spaceID, domainID.String(), createdNode.ID.String(), 1, "Checkpoint")
+	if err := node.graph.ConfigureIndexes(ctx, phaseDGraphTx(spaceID, domainID.String(), 1), "phase-d-schema-with-index", schema.Indexes); err != nil {
+		t.Fatalf("ConfigureIndexes() error = %v", err)
+	}
 	if _, err := node.graph.CreateGraphCheckpoint(ctx, spaceID, domainID.String()); err != nil {
 		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
 	}
@@ -185,6 +190,18 @@ func TestPhaseDGraphCheckpointPublishesCommonMetadata(t *testing.T) {
 		return definitionOK && definition.Kind == projection.KindMetadata && definition.Key == "graph-checkpoint" && desiredOK && desired.Required.Revision == 1 && checkpointOK && checkpoint.State == projection.StateReady && checkpoint.Published.Revision == 1
 	}); err != nil {
 		t.Fatalf("common graph checkpoint metadata did not become ready: %v", err)
+	}
+	queryProjectionID, err := projection.IDFor(projection.KindMetadata, projection.Scope{SpaceID: spaceID, DomainID: domainID.String()}, "query-index:person-first-name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consensus.WaitUntil(ctx, 10*time.Millisecond, func() bool {
+		definition, definitionOK := reader.Definition(queryProjectionID)
+		desired, desiredOK := reader.DesiredFrontier(queryProjectionID)
+		checkpoint, checkpointOK := reader.Checkpoint(queryProjectionID)
+		return definitionOK && definition.Key == "query-index:person-first-name" && desiredOK && desired.Required.Revision == 1 && checkpointOK && checkpoint.State == projection.StateReady && checkpoint.Published.Revision == 1
+	}); err != nil {
+		t.Fatalf("common graph query-index metadata did not become ready: %v", err)
 	}
 }
 
@@ -220,6 +237,9 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 		t.Fatalf("CommitTransactionGraph() error = %v", err)
 	}
 	cluster.waitForGraphNode(ctx, t, spaceID, domainID.String(), node.ID.String(), 1, "Ada")
+	if _, err := graphNode.graph.CreateGraphCheckpoint(ctx, spaceID, domainID.String()); err != nil {
+		t.Fatalf("CreateGraphCheckpoint() error = %v", err)
+	}
 
 	wipedID := consensus.NodeID(3)
 	cluster.stopAndWipeNode(ctx, t, wipedID)
@@ -260,6 +280,19 @@ func TestPhaseDCompositeSnapshotRestoresEmptyStorageRejoin(t *testing.T) {
 	cluster.waitForGraphNodeOn(ctx, t, []consensus.NodeID{wipedID}, spaceID, domainID.String(), node.ID.String(), 3, "Ada Byron")
 	if got := cluster.snapshotIndexForNodeGroup(t, wipedID, consensus.PartitionGroupID(spacePartition)); got < snapshotIndex {
 		t.Fatalf("rejoined node partition snapshot index=%d want at least %d", got, snapshotIndex)
+	}
+	projectionID, err := projection.IDFor(projection.KindMetadata, projection.Scope{SpaceID: spaceID, DomainID: domainID.String()}, "graph-checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, ok := cluster.nodes[wipedID].projections.Reader(spacePartition)
+	if !ok {
+		t.Fatalf("rejoined node projection registry for partition %d unavailable", spacePartition)
+	}
+	definition, definitionOK := reader.Definition(projectionID)
+	checkpoint, checkpointOK := reader.Checkpoint(projectionID)
+	if !definitionOK || !checkpointOK || definition.Key != "graph-checkpoint" || checkpoint.Published.Revision != 1 {
+		t.Fatalf("projection lifecycle metadata did not survive snapshot rejoin: definition=%+v checkpoint=%+v", definition, checkpoint)
 	}
 }
 
