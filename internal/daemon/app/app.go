@@ -31,6 +31,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/writetrace"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	projection "github.com/myceldb/mycel/internal/projection"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
@@ -351,6 +352,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		},
 	})
 	semanticService.WithAuthorizationRevisionSink(automationService)
+	if cfg.Cluster.RaftRuntimeConfigured() {
+		rt.ProjectionRegistries = projection.NewRegistryManager(uint32(cfg.Cluster.RaftPartitionCount))
+		semanticService.WithProjectionRegistryManager(rt.ProjectionRegistries)
+		lexicalService.WithProjectionRegistryManager(rt.ProjectionRegistries)
+		graphService.WithProjectionRegistryManager(rt.ProjectionRegistries)
+	}
 	inferenceService.WithAuthorizationRevisionSource(semanticService)
 	backupService := backupservice.NewModule(backupservice.Config{
 		Enabled:                cfg.Backup.Enabled,
@@ -365,6 +372,28 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
+	if rt.ProjectionRegistries != nil {
+		backupService.WithProjectionRegistryManager(rt.ProjectionRegistries)
+		backupService.WithProjectionArtifactProvider(func(ctx context.Context) ([]projection.ArtifactManifest, error) {
+			graphArtifacts, err := graphService.ProjectionArtifactManifests(ctx)
+			if err != nil {
+				return nil, err
+			}
+			lexicalArtifacts, err := lexicalService.ProjectionArtifactManifests(ctx)
+			if err != nil {
+				return nil, err
+			}
+			semanticArtifacts, err := semanticService.ProjectionArtifactManifests(ctx)
+			if err != nil {
+				return nil, err
+			}
+			artifacts := make([]projection.ArtifactManifest, 0, len(graphArtifacts)+len(lexicalArtifacts)+len(semanticArtifacts))
+			artifacts = append(artifacts, graphArtifacts...)
+			artifacts = append(artifacts, lexicalArtifacts...)
+			artifacts = append(artifacts, semanticArtifacts...)
+			return artifacts, nil
+		})
+	}
 	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, lexicalService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
@@ -395,6 +424,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 				graphservice.RaftStateMachine{Module: graphService, PartitionID: partitionID, PartitionCount: partitionCount},
 				blobservice.RaftStateMachine{Module: blobService, PartitionID: partitionID, PartitionCount: partitionCount},
 				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionID: partitionID, PartitionCount: partitionCount},
+				rt.ProjectionRegistries.NewRaftStateMachine(partitionID),
 				automationservice.RaftStateMachine{Manager: automationService.AutomationManager, PartitionID: partitionID, PartitionCount: partitionCount},
 			}
 		}); err != nil {
@@ -404,10 +434,12 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		spaceService.EnableExperimentalRaft(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		schemaService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		graphService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		graphService.EnableProjectionLifecycle(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), uint32(cfg.Cluster.RaftPartitionCount))
 		graphService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
+		lexicalService.EnableExperimentalRaft(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), uint32(cfg.Cluster.RaftPartitionCount))
 		inferenceService.EnableExperimentalAuthorizationRaft(rt.RaftGroups)
 		semanticService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
 		automationService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))

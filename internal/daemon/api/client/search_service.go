@@ -139,7 +139,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	}
 	lexicalResult := lexicalindex.SearchResponse{}
 	if opts.Weights.Lexical > 0 || opts.RequireBoth {
-		lexicalResult, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), lexicalQuery, lexicalindex.SearchOptions{PageSize: lexicalCandidates})
+		lexicalResult, err = s.lexical.Search(ctx, spaceID.String(), domainID.String(), lexicalQuery, lexicalindex.SearchOptions{PageSize: lexicalCandidates, AllowStale: req.GetAllowStale()})
 		if err != nil {
 			return nil, mapLexicalError(err, "hybrid lexical search")
 		}

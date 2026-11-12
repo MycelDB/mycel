@@ -143,6 +143,13 @@ func (m *Module) maybeAutoCheckpointStore(ctx context.Context, key domainStoreKe
 		return err
 	}
 	duration := time.Since(started)
+	checkpointStatus, err := m.GraphCheckpointStatus(ctx, key.SpaceID, key.DomainID)
+	if err != nil {
+		return err
+	}
+	if err := m.publishCommonGraphCheckpoint(ctx, key.SpaceID, key.DomainID, checkpointStatus); err != nil {
+		return err
+	}
 	m.recordCheckpointSuccess(key, duration)
 	if m.logger != nil {
 		m.logger.Info("automatic graph checkpoint written", "space_id", key.SpaceID, "domain_id", key.DomainID, "duration", duration.String(), "previous_tail_revisions", status.TailRevisions, "current_revision", status.CurrentRevision)

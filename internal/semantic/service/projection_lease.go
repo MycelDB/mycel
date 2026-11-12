@@ -71,9 +71,9 @@ func (m *Module) saveProjectionLease(ctx context.Context, spaceID domainspace.Sp
 		return fmt.Errorf("semantic rule id and embedding binding key are required for projection readiness")
 	}
 	m.projectionLeasesMu.Lock()
-	defer m.projectionLeasesMu.Unlock()
 	state, err := m.loadProjectionLeasesLocked(spaceID)
 	if err != nil {
+		m.projectionLeasesMu.Unlock()
 		return err
 	}
 	entry := semanticProjectionLease{SemanticRuleID: ruleID, EmbeddingBindingKey: bindingKey, LeaderNode: uint64(leadership.NodeID), LeaderTerm: leadership.Term, SemanticGeneration: generation, RebuildEpoch: rebuildEpoch, FreshThrough: freshThrough, UpdatedAt: time.Now().UTC()}
@@ -88,7 +88,12 @@ func (m *Module) saveProjectionLease(ctx context.Context, spaceID domainspace.Sp
 	if !replaced {
 		state.Entries = append(state.Entries, entry)
 	}
-	return m.saveProjectionLeasesLocked(spaceID, state)
+	err = m.saveProjectionLeasesLocked(spaceID, state)
+	m.projectionLeasesMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return m.publishCommonSemanticProjectionForLease(ctx, spaceID, ruleID, bindingKey, generation, rebuildEpoch, freshThrough)
 }
 
 func (m *Module) saveProjectionLeasesLocked(spaceID domainspace.SpaceID, state semanticProjectionLeaseFile) error {
@@ -242,6 +247,12 @@ func (m *Module) validateLocalProjectionForSearchWithRebuildBlock(ctx context.Co
 					expected := ProjectionReadinessTuple{LeaderNode: uint64(leader), LeaderTerm: term, SemanticGeneration: status.SemanticGeneration, RebuildEpoch: status.Rebuild.RebuildEpoch, FreshThrough: status.FreshThroughGraphRevision}
 					return nil, newProjectionReadinessError(state.Entries, rule.ID, binding.Key, uint64(m.raftLocalNode), expected, status.Rebuild.RebuildState, recovery.blockedReason)
 				}
+			}
+			if err := m.publishCommonSemanticProjection(ctx, rule, binding, status, true); err != nil {
+				return nil, err
+			}
+			if err := m.validateCommonSemanticProjection(ctx, rule, binding, status, leader, term); err != nil {
+				return nil, err
 			}
 			observations[key] = current
 			if _, searched := searchedBindings[key]; searched {

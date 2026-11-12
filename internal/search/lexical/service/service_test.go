@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,6 +68,42 @@ func TestServiceRebuildProducesSearchableIndex(t *testing.T) {
 	}
 	if got := resultIDs(res.Results); len(got) != 1 || got[0] != "node-b" {
 		t.Fatalf("results = %#v", got)
+	}
+}
+
+func TestServiceTombstoneHeavyRebuildDoesNotResurrectDeletedDocuments(t *testing.T) {
+	svc := New(t.TempDir(), "space-1", "domain-1")
+	for i := 0; i < 32; i++ {
+		nodeID := fmt.Sprintf("node-%02d", i)
+		if err := svc.UpsertDocument(testDoc(nodeID, "tombstone-target"), uint64(i+1)); err != nil {
+			t.Fatalf("upsert %s: %v", nodeID, err)
+		}
+	}
+	for i := 0; i < 31; i++ {
+		if err := svc.DeleteDocument(fmt.Sprintf("node-%02d", i), uint64(33+i)); err != nil {
+			t.Fatalf("delete node-%02d: %v", i, err)
+		}
+	}
+	if err := svc.Rebuild([]index.IndexedDocument{{Document: testDoc("node-31", "survivor"), GraphRevision: 64}}, 64); err != nil {
+		t.Fatalf("rebuild after tombstones: %v", err)
+	}
+	deleted, err := svc.Search("tombstone-target", index.SearchOptions{PageSize: 100})
+	if err != nil {
+		t.Fatalf("search deleted documents: %v", err)
+	}
+	if len(deleted.Results) != 0 {
+		t.Fatalf("deleted documents resurrected: %#v", resultIDs(deleted.Results))
+	}
+	live, err := svc.Search("survivor", index.SearchOptions{PageSize: 10})
+	if err != nil {
+		t.Fatalf("search survivor: %v", err)
+	}
+	if got := resultIDs(live.Results); len(got) != 1 || got[0] != "node-31" {
+		t.Fatalf("survivor results = %#v", got)
+	}
+	status := svc.Status(64)
+	if status.State != StateFresh || status.IndexedGraphRevision != 64 || status.DeletedDocumentCount != 0 {
+		t.Fatalf("post-rebuild status = %#v", status)
 	}
 }
 

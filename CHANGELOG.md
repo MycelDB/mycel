@@ -6,6 +6,36 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.2] - 2026-11-12
+
+### Fixed
+
+- Added a common projection/materialization lifecycle for graph checkpoints,
+  lexical indexes, and semantic indexes, with source-partition Raft control
+  metadata, opaque frontiers, fenced ownership, atomic checkpoint publication,
+  rebuildable local artifacts, and fail-closed readiness after restart or
+  leadership changes (#330).
+- Added deterministic projection backup catalogs and artifact evidence with
+  restore validation for missing, stale, corrupt, incompatible, or mismatched
+  derived state; invalid local artifacts cannot certify a restored checkpoint
+  (#330).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains
+  compatible with the `mycel-api` v0.22.0 contract pinned in
+  `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Projection artifacts are rebuildable and graph/Raft state remains
+  authoritative. Operators should follow the projection materialization
+  recovery procedure after a fail-closed readiness result.
+
+### Validation
+
+- `go test ./...` passed for the daemon and Mycel Lab.
+- Hermetic Compose/k3d release qualification passed with cleanup and redaction
+  evidence; bundle SHA-256:
+  `e90b547b8147e5b8db6df0b4cb17ac76878edca149fa1d7279a17e741124b92e`.
+
 ## [v0.22.1] - 2026-11-10
 
 ### Fixed

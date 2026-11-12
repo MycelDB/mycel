@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
 	"go.etcd.io/raft/v3/raftpb"
+	"google.golang.org/protobuf/proto"
 )
 
 // Exercise the production graph-apply -> notification -> asynchronous lexical
@@ -138,6 +141,48 @@ func TestClusteredNewDomainLexicalIndexWithoutRebuild(t *testing.T) {
 	eventuallyLexicalSearchResult(t, userCtx, search, spaceID, created.Domain.ID.String(), "baseline", oldNodeID)
 }
 
+func TestClusteredLexicalCorruptionFailsClosed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cluster := newPhaseDIntegrationCluster(t, 1)
+	cluster.start(ctx, t)
+	defer cluster.close()
+	cluster.waitForLeaders(ctx, t)
+	lexical := startClusteredLexicalForTest(ctx, t, cluster)
+	defer func() { lexical.close(t) }()
+
+	ownerID := uuid.NewString()
+	created, err := cluster.nodes[1].space.CreateSpaceWithResult(ctx, spaceservice.CreateSpaceInput{Name: "corrupt lexical", OwnerPrincipalID: identity.PrincipalID(ownerID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaceID := created.Space.SpaceID.String()
+	domainID := created.Domain.ID.String()
+	waitForClusteredLexicalSpace(t, ctx, cluster, spaceID)
+	leader := cluster.leaderForSpace(ctx, t, spaceID)
+	node := cluster.nodes[leader]
+	userCtx := daemonauth.ContextWithPrincipal(ctx, daemonauth.Principal{Kind: daemonauth.PrincipalKindHuman, PrincipalID: ownerID, Username: "alice"})
+	write := clusteredLexicalWriterForTest(t, userCtx, node, spaceID, domainID)
+	nodeID := write("corruption sentinel")
+	search := clientapi.NewSearchService(lexical.modules[leader], node.space, node.graph)
+	eventuallyLexicalSearchResult(t, userCtx, search, spaceID, domainID, "sentinel", nodeID)
+
+	segment := filepath.Join(node.dataDir, "search", "lexical", spaceID, domainID, "segments", "seg_000001", "postings.bin")
+	if err := os.WriteFile(segment, []byte("corrupt"), 0o644); err != nil {
+		t.Fatalf("corrupt lexical segment: %v", err)
+	}
+	status, err := search.GetLexicalIndexStatus(userCtx, &clientv1.GetLexicalIndexStatusRequest{SpaceId: spaceID, DomainId: domainID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.GetStatus().GetState(); got != clientv1.SearchFreshnessState_SEARCH_FRESHNESS_STATE_UNAVAILABLE {
+		t.Fatalf("corrupt lexical status = %v, want unavailable", got)
+	}
+	if _, err := search.Search(userCtx, &clientv1.SearchRequest{SpaceId: spaceID, DomainId: domainID, Mode: clientv1.SearchMode_SEARCH_MODE_LEXICAL, Lexical: &clientv1.LexicalSearchOptions{Query: proto.String("sentinel")}}); err == nil {
+		t.Fatal("corrupt lexical search succeeded")
+	}
+}
+
 // Synchronize fixture-local metadata reads with committed Raft apply instead
 // of polling a follower's space cache while CreateSpace is still applying.
 func waitForClusteredLexicalSpace(t *testing.T, ctx context.Context, cluster *phaseDIntegrationCluster, spaceID string) {
@@ -227,7 +272,8 @@ func startClusteredLexicalForTest(ctx context.Context, t *testing.T, cluster *ph
 			t.Fatal(result.Error)
 		}
 		out.notifications = append(out.notifications, notifications)
-		lexical := lexicalservice.NewModule()
+		lexical := lexicalservice.NewModule().WithProjectionRegistryManager(node.projections)
+		lexical.EnableExperimentalRaft(node.groups, id, cluster.partitionCount)
 		if result := lexical.Init(ctx, host); !result.OK {
 			t.Fatal(result.Error)
 		}

@@ -393,6 +393,9 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	if err != nil {
 		return err
 	}
+	if err := lexical.RefreshCommonProjection(ctx, scope.SpaceID, scope.DomainID, latestRevision); err != nil {
+		return fmt.Errorf("refresh common lexical projection: %w", err)
+	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
 		return nil
@@ -446,6 +449,9 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		if err := consumer.HandleGraphChange(ctx, event); err != nil {
 			return fmt.Errorf("apply replayed graph change at revision %d: %w", eventRevision(event), err)
 		}
+	}
+	if err := lexical.RefreshCommonProjection(ctx, scope.SpaceID, scope.DomainID, latestRevision); err != nil {
+		return fmt.Errorf("publish common lexical projection after replay: %w", err)
 	}
 	finalStatus := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	if finalStatus.IndexedGraphRevision != latestRevision || finalStatus.State != lexicalservice.StateFresh {

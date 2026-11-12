@@ -33,6 +33,7 @@ import (
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	"github.com/myceldb/mycel/internal/graph/writetrace"
+	"github.com/myceldb/mycel/internal/projection"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
@@ -90,6 +91,7 @@ type Module struct {
 	transactionLimits                GraphTransactionLimits
 	raftGroups                       *consensus.MultiGroup
 	raftPartitionCount               uint32
+	projectionRegistries             *projection.RegistryManager
 	raftLocalNode                    consensus.NodeID
 	raftNodeAddrs                    []string
 	raftBackendAuthToken             string
@@ -131,6 +133,13 @@ func NewModule() *Module {
 
 func (m *Module) WithCheckpointPolicy(cfg CheckpointPolicyConfig) *Module {
 	m.checkpointPolicy = normalizeCheckpointPolicyConfig(cfg)
+	return m
+}
+
+func (m *Module) WithProjectionRegistryManager(manager *projection.RegistryManager) *Module {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.projectionRegistries = manager
 	return m
 }
 
