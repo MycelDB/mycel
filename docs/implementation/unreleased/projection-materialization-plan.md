@@ -306,11 +306,11 @@ outbox contract.
 - Backups now record a bounded, deterministic projection catalog in each backup
   manifest. The catalog includes partition snapshot digests, projection
   definitions/checkpoint evidence, and validated local artifact manifests
-  without duplicating graph payloads or filesystem paths. Graph checkpoint and
-  persisted query-index materializers publish local manifests on followers and
-  leaders; backup validation cross-checks their generation, source revision,
-  configuration, materializer, and fencing evidence against the common
-  checkpoint.
+  without duplicating graph payloads or filesystem paths. Graph checkpoint,
+  persisted query-index, lexical, and semantic materializers contribute local
+  artifact evidence on followers and leaders; backup validation cross-checks
+  generation, source revision, configuration, materializer, and fencing
+  evidence against the common checkpoint.
 - Clustered empty-storage rejoin coverage proves graph-checkpoint lifecycle
   metadata survives a partition snapshot and is replayed on the rejoined node.
 - Existing graph, lexical, semantic, and vector artifact validators remain the
@@ -319,12 +319,13 @@ outbox contract.
 
 ### Remaining Phase 6 hardening
 
-- Extend explicit per-materializer artifact-manifest catalog entries and
-  restore preflight cross-checks to lexical and semantic physical artifacts.
-- Couple source-history compaction to the minimum active desired frontier and
-  lagging replica frontier.
 - Expand restore cases for partial/corrupt/stale artifacts and checkpoints
   newer than restored source state.
+- Source-history compaction remains subsystem-owned: common lexical and semantic
+  artifacts rebuild from authoritative graph snapshots, while graph notification
+  cursors are opaque caller-owned state and are not common projection
+  watermarks. Retain retention-gap regression coverage rather than coupling
+  compaction to local artifact claims.
 
 ### Exit criteria
 

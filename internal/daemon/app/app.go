@@ -374,7 +374,25 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	})
 	if rt.ProjectionRegistries != nil {
 		backupService.WithProjectionRegistryManager(rt.ProjectionRegistries)
-		backupService.WithProjectionArtifactProvider(graphService.ProjectionArtifactManifests)
+		backupService.WithProjectionArtifactProvider(func(ctx context.Context) ([]projection.ArtifactManifest, error) {
+			graphArtifacts, err := graphService.ProjectionArtifactManifests(ctx)
+			if err != nil {
+				return nil, err
+			}
+			lexicalArtifacts, err := lexicalService.ProjectionArtifactManifests(ctx)
+			if err != nil {
+				return nil, err
+			}
+			semanticArtifacts, err := semanticService.ProjectionArtifactManifests(ctx)
+			if err != nil {
+				return nil, err
+			}
+			artifacts := make([]projection.ArtifactManifest, 0, len(graphArtifacts)+len(lexicalArtifacts)+len(semanticArtifacts))
+			artifacts = append(artifacts, graphArtifacts...)
+			artifacts = append(artifacts, lexicalArtifacts...)
+			artifacts = append(artifacts, semanticArtifacts...)
+			return artifacts, nil
+		})
 	}
 	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, lexicalService, backupService}); err != nil {
 		_ = rt.Close()
