@@ -33,6 +33,12 @@ func semanticProjectionIdentity(rule domainsemantic.SemanticGenerationRule, bind
 	return id, scope, key, err
 }
 
+func semanticProjectionConfigurationHash(rule domainsemantic.SemanticGenerationRule, resolvedHash string) string {
+	payload := rule.ID.String() + ":" + domainsemantic.SemanticRuleConfigurationHash(rule) + ":" + strings.TrimSpace(resolvedHash)
+	digest := sha256.Sum256([]byte(payload))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 func semanticArtifactGeneration(id projection.ProjectionID, generation uint64, rebuildEpoch string, revision uint64) string {
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s:%d", id, generation, rebuildEpoch, revision)))
 	return "sem_" + hex.EncodeToString(digest[:16])
@@ -72,7 +78,7 @@ func (m *Module) publishCommonSemanticProjection(ctx context.Context, rule domai
 	if generation == 0 {
 		generation = 1
 	}
-	configurationHash := strings.TrimSpace(status.Rebuild.ResolvedConfigurationHash)
+	configurationHash := semanticProjectionConfigurationHash(rule, status.Rebuild.ResolvedConfigurationHash)
 	definition := projection.Definition{ID: projectionID, Kind: projection.KindSemantic, Scope: scope, Key: key, ConfigurationHash: configurationHash, ConfigurationEpoch: generation, MaterializerVersion: semanticProjectionMaterializerVersion}
 	if current, exists := reader.Definition(projectionID); !exists || current != definition {
 		if err := m.proposeCommonProjectionRecord(ctx, rule.SpaceID, projection.NewDefinitionRecord(definition)); err != nil {
