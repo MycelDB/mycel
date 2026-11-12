@@ -334,17 +334,28 @@ outbox contract.
 
 ## Phase 7 — Release qualification and operations
 
-### Work
+### Completed tranche
 
-- Add deterministic unit and restart/replay tests for the common lifecycle.
-- Add Compose clustered scenarios for leadership change, local-baseline loss,
-  tombstone/delete, rebuild, and readiness recovery.
-- Add k3d coverage for backup/restore and PVC rejoin where applicable.
-- Record source, daemon, harness, scenario, and image identities in release
-  artifacts.
-- Document operator procedures for inspecting projection state and requesting
-  rebuilds without exposing sensitive data.
-- Add bounded cleanup and redaction assertions for projection artifacts.
+- Deterministic common-lifecycle, restart/replay, snapshot-rejoin, and
+  checkpoint/backup validation coverage is in place.
+- The canonical Compose backup/restore, k3d system backup/restore, PVC rejoin,
+  and aggregate release-gate suites pass dry-run preflight and scenario
+  resolution without provisioning resources.
+- Operator procedures now cover bounded readiness inspection, graph checkpoint
+  inspection, lexical/semantic rebuilds, and projection backup/restore evidence.
+- Release execution bundles already bind source, daemon, harness, scenario, and
+  image identities; destructive qualification remains blocked until a fresh
+  hermetic bundle has matching provenance and immutable multi-platform images.
+
+### Remaining qualification
+
+- Run the non-dry-run Compose/k3d scenarios and retain cleanup/redaction
+  evidence.
+- Add or enable projection-specific assertions for leadership change,
+  local-baseline loss, tombstone/delete, rebuild, and readiness recovery in the
+  appropriate Lab scenarios.
+- Complete the destructive aggregate release gate after provenance and image
+  prerequisites are satisfied.
 
 ### Exit criteria
 
