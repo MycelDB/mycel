@@ -149,6 +149,39 @@ The control metadata has two layers:
 A global `ready` bit is insufficient in a clustered system. The relevant
 leader-local materialization must be ready for leader-routed strong reads.
 
+### Phase 1 concrete decisions
+
+The first implementation keeps the contract internal and narrow:
+
+- `internal/projection` derives stable opaque IDs from kind, source scope, and
+  a caller-supplied key; it does not generate IDs independently at daemon
+  startup.
+- Each source-partition Raft composite owns one projection registry child. The
+  child stores definitions, desired source frontiers, published checkpoints,
+  and per-node status, while physical artifacts remain local and rebuildable.
+- Desired frontiers are authoritative replicated metadata. Per-node status is
+  also recorded through the source partition so leadership and restart can see
+  the last claim, but it is never sufficient by itself: a materializer must
+  validate its local artifact before publishing status, and missing local
+  artifacts fail closed.
+- Registry records are versioned and partition-scoped. Replayed commands are
+  idempotent by command ID and hash; conflicting hashes, stale source
+  frontiers, stale fencing epochs, and same-frontier cursor conflicts fail
+  closed.
+- Configuration changes require a strictly newer configuration epoch and
+  invalidate the prior desired frontier and checkpoint. Existing replica
+  status is retained only as an explicit `rebuild_required` diagnostic.
+- Unknown existing artifacts can be bootstrapped only as
+  `rebuild_required`; no local file is promoted to `ready` without a later
+  manifest/checkpoint publication.
+- Readiness diagnostics contain only bounded IDs, revisions, opaque cursors,
+  lifecycle states, and enumerated reasons. They do not carry vectors, graph
+  payloads, provider bodies, credentials, or filesystem paths.
+
+This tranche does not yet select the authoritative source adapter or change
+lexical/semantic query behavior. Those decisions belong to the Phase 2/3
+reviews.
+
 ## Lifecycle
 
 A projection definition and each materialization replica use the following

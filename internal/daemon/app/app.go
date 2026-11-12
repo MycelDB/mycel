@@ -31,6 +31,7 @@ import (
 	"github.com/myceldb/mycel/internal/graph/writetrace"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	inferenceservice "github.com/myceldb/mycel/internal/inference/service"
+	projection "github.com/myceldb/mycel/internal/projection"
 	queryengine "github.com/myceldb/mycel/internal/query/engine"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
@@ -384,6 +385,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	if cfg.Cluster.RaftRuntimeConfigured() {
 		backupService.PrepareExperimentalRaftMode()
+		rt.ProjectionRegistries = projection.NewRegistryManager(uint32(cfg.Cluster.RaftPartitionCount))
 		systemMetadataSM := consensus.NewSystemStateMachine()
 		if err := initializeExperimentalRaft(ctx, rt, func() consensus.StateMachine {
 			return compositeSystemStateMachine{systemMetadataSM, identityservice.PrincipalRaftStateMachine{Module: principalService}, backupservice.RaftStateMachine{Module: backupService}, daemonsemantic.RaftStateMachine{Module: semanticService, System: true, PartitionCount: uint32(cfg.Cluster.RaftPartitionCount)}, inferenceservice.AuthorizationRaftStateMachine{Module: inferenceService}}
@@ -395,6 +397,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 				graphservice.RaftStateMachine{Module: graphService, PartitionID: partitionID, PartitionCount: partitionCount},
 				blobservice.RaftStateMachine{Module: blobService, PartitionID: partitionID, PartitionCount: partitionCount},
 				daemonsemantic.RaftStateMachine{Module: semanticService, PartitionID: partitionID, PartitionCount: partitionCount},
+				rt.ProjectionRegistries.NewRaftStateMachine(partitionID),
 				automationservice.RaftStateMachine{Manager: automationService.AutomationManager, PartitionID: partitionID, PartitionCount: partitionCount},
 			}
 		}); err != nil {

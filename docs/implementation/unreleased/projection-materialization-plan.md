@@ -2,7 +2,10 @@
 
 ## Status
 
-Future implementation plan for [mycel#330](https://github.com/MycelDB/mycel/issues/330).
+Phase 0 is complete and the Phase 1 common metadata tranche is implemented on
+`design/projection-materialization-lifecycle` for
+[mycel#330](https://github.com/MycelDB/mycel/issues/330). Phase 2 and later
+materializer adoption remain pending.
 
 The design contract is in
 [`docs/design/projection-materialization.md`](../../design/projection-materialization.md).
@@ -68,18 +71,37 @@ behavior.
 - Add migration/bootstrap behavior for existing projections with unknown
   manifests; they start as `rebuild_required` rather than `ready`.
 
+### Implementation tranche
+
+- Added `internal/projection` identity, definition, frontier, checkpoint,
+  replica-status, lifecycle-state, and readiness types.
+- Added a deterministic digest-based projection identity; source cursors remain
+  opaque and bounded.
+- Added a source-partition-owned registry with command-id/hash idempotency,
+  authoritative desired frontiers, monotonic source/fencing guards, generation
+  invalidation, and snapshots.
+- Added versioned projection registry records for definitions, desired frontiers,
+  checkpoints, and replica status. The registry is wired into every experimental
+  partition Raft composite without owning physical index files.
+- Added a runtime registry manager/read-only view and a generic partition
+  proposal helper for future materializers.
+- Added fail-closed unknown-manifest bootstrap and bounded readiness marshaling.
+
 ### Tests
 
 - Registry replay and idempotency.
 - Stale-generation and stale-fencing updates rejected.
 - Duplicate checkpoint publication is safe.
 - Unknown or malformed metadata fails closed.
-- Bounded status serialization and redaction.
+- Bounded status serialization and redaction-shaped metadata.
+- Partition Raft apply, snapshot, and restore round-trip.
 
 ### Exit criteria
 
-- Control metadata survives restart and Raft replay.
-- Existing projection behavior is unchanged except for new diagnostics.
+- Control metadata survives restart and Raft replay through the composite
+  state-machine snapshot path.
+- Existing projection behavior is unchanged; no materializer or query path is
+  switched to the registry until the Phase 2 publication contract is reviewed.
 
 ## Phase 2 — Source frontier and publication protocol
 
@@ -239,6 +261,7 @@ The first implementation should stay internal and narrow:
 internal/projection/
   model.go          # identity, definition, checkpoint, status
   registry.go       # authoritative metadata contract
+  raft.go           # source-partition Raft record ownership and snapshots
   frontier.go       # source revision/cursor and gap semantics
   publication.go    # private generation and CAS publication rules
   fencing.go        # ownership/epoch validation
