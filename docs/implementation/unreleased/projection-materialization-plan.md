@@ -6,6 +6,8 @@ Future implementation plan for [mycel#330](https://github.com/MycelDB/mycel/issu
 
 The design contract is in
 [`docs/design/projection-materialization.md`](../../design/projection-materialization.md).
+The completed Phase 0 inventory and boundary lock are in
+[`projection-materialization-inventory.md`](projection-materialization-inventory.md).
 This plan deliberately sequences small, verifiable tranches rather than
 introducing a generic index framework or rewriting all derived stores at once.
 

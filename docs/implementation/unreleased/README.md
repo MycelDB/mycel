@@ -19,3 +19,4 @@ patch-version directories.
 - [Procedure inference observability and control release readiness](procedure-inference-observability-control-release-readiness.md) — merged baselines, fixed capacity/retention diagnostics, cluster rollout constraints, compatibility, and required API/SDK/daemon release order.
 - [Issue #313 large-transaction responsiveness](issue-313-large-transaction-responsiveness-plan.md) — measurement, transaction budgets, bounded Raft/storage execution, cancellation semantics, diagnostics, and qualification.
 - [Projection and materialization lifecycle](projection-materialization-plan.md) — common identity, source-frontier, checkpoint, fencing, recovery, and rollout plan for derived projections.
+- [Projection and materialization Phase 0 inventory](projection-materialization-inventory.md) — current projection, source-feed, checkpoint, fencing, snapshot, tombstone, and authority inventory with pilot boundary decisions.
