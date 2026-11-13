@@ -15,6 +15,7 @@ import (
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	lexicalindex "github.com/myceldb/mycel/internal/search/lexical/index"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
@@ -34,6 +35,16 @@ type asyncLexicalConsumer struct {
 
 type asyncLexicalDomainRevisionReader interface {
 	CurrentDomainRevision(ctx context.Context, spaceID string, domainID string) (int64, error)
+}
+
+type asyncLexicalReplayProjection interface {
+	RefreshCommonProjection(ctx context.Context, spaceID string, domainID string, latestRevision uint64) error
+	RebuildWithoutPublication(ctx context.Context, spaceID string, domainID string, docs []lexicalindex.IndexedDocument, latestRevision uint64) error
+	Status(ctx context.Context, spaceID string, domainID string, latestKnownGraphRevision uint64) lexicalservice.Status
+}
+
+type asyncLexicalReplayConsumer interface {
+	HandleGraphChangeForReplay(ctx context.Context, event graphchange.CommittedEvent) error
 }
 
 type asyncLexicalReplayCollector struct {
@@ -373,7 +384,7 @@ func replayAsyncLexicalStoredScopes(ctx context.Context, logger *slog.Logger, no
 	}
 }
 
-func replayAsyncLexicalScopes(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module, revisions asyncLexicalDomainRevisionReader, consumer graphnotification.Consumer, scopes []graphchange.Scope) error {
+func replayAsyncLexicalScopes(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical asyncLexicalReplayProjection, revisions asyncLexicalDomainRevisionReader, consumer graphnotification.Consumer, scopes []graphchange.Scope) error {
 	for _, scope := range scopes {
 		if err := replayAsyncLexicalScope(ctx, logger, notifications, lexical, revisions, consumer, scope); err != nil {
 			return err
@@ -382,7 +393,7 @@ func replayAsyncLexicalScopes(ctx context.Context, logger *slog.Logger, notifica
 	return nil
 }
 
-func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module, revisions asyncLexicalDomainRevisionReader, consumer graphnotification.Consumer, scope graphchange.Scope) error {
+func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical asyncLexicalReplayProjection, revisions asyncLexicalDomainRevisionReader, consumer graphnotification.Consumer, scope graphchange.Scope) error {
 	if scope.SpaceID == "" || scope.DomainID == "" {
 		return nil
 	}
@@ -392,9 +403,6 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	notificationRevision, latestRevision, err := asyncLexicalRevisions(ctx, notifications, revisions, scope)
 	if err != nil {
 		return err
-	}
-	if err := lexical.RefreshCommonProjection(ctx, scope.SpaceID, scope.DomainID, latestRevision); err != nil {
-		return fmt.Errorf("refresh common lexical projection: %w", err)
 	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
@@ -438,7 +446,7 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		if reset && logger != nil {
 			logger.Warn("rebuilding lexical index with cursor ahead of domain revision", "space_id", scope.SpaceID, "domain_id", scope.DomainID, "indexed_revision", status.IndexedGraphRevision, "domain_revision", latestRevision)
 		}
-		if err := lexical.Rebuild(ctx, scope.SpaceID, scope.DomainID, nil, 0); err != nil {
+		if err := lexical.RebuildWithoutPublication(ctx, scope.SpaceID, scope.DomainID, nil, 0); err != nil {
 			return fmt.Errorf("initialize lexical index before replay: %w", err)
 		}
 	}
@@ -446,7 +454,13 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
 			return err
 		}
-		if err := consumer.HandleGraphChange(ctx, event); err != nil {
+		var err error
+		if replayConsumer, ok := consumer.(asyncLexicalReplayConsumer); ok {
+			err = replayConsumer.HandleGraphChangeForReplay(ctx, event)
+		} else {
+			err = consumer.HandleGraphChange(ctx, event)
+		}
+		if err != nil {
 			return fmt.Errorf("apply replayed graph change at revision %d: %w", eventRevision(event), err)
 		}
 	}
@@ -506,17 +520,31 @@ func validateAsyncLexicalReplay(events []graphchange.CommittedEvent, afterRevisi
 }
 
 func (c *asyncLexicalConsumer) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
+	return c.handleGraphChange(ctx, event, true)
+}
+
+func (c *asyncLexicalConsumer) HandleGraphChangeForReplay(ctx context.Context, event graphchange.CommittedEvent) error {
+	return c.handleGraphChange(ctx, event, false)
+}
+
+func (c *asyncLexicalConsumer) handleGraphChange(ctx context.Context, event graphchange.CommittedEvent, publish bool) error {
 	if c == nil || c.lexical == nil || event.Empty() {
 		return nil
 	}
-	if err := c.lexical.OnGraphCommitted(ctx, event); err != nil {
+	var err error
+	if publish {
+		err = c.lexical.OnGraphCommitted(ctx, event)
+	} else {
+		err = c.lexical.ApplyGraphCommittedWithoutPublication(ctx, event)
+	}
+	if err != nil {
 		if c.logger != nil {
 			c.logger.Warn("async lexical graph-change indexing failed", "space_id", event.SpaceID.String(), "domain_id", event.DomainID.String(), "graph_revision", eventRevision(event), "error", err)
 		}
 		return err
 	}
 	if c.logger != nil {
-		c.logger.Debug("async lexical graph-change indexed", "space_id", event.SpaceID.String(), "domain_id", event.DomainID.String(), "graph_revision", eventRevision(event))
+		c.logger.Debug("async lexical graph-change indexed", "space_id", event.SpaceID.String(), "domain_id", event.DomainID.String(), "graph_revision", eventRevision(event), "publish", publish)
 	}
 	return nil
 }
