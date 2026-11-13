@@ -11,6 +11,7 @@ import (
 	daemonconfig "github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
+	graphjournal "github.com/myceldb/mycel/internal/graph/journal"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
@@ -133,6 +134,96 @@ func TestAsyncSemanticDirtyReplayUsesCheckpoint(t *testing.T) {
 	}
 	if checkpoint.LastGraphRevision != 2 {
 		t.Fatalf("checkpoint revision = %d, want 2", checkpoint.LastGraphRevision)
+	}
+}
+
+func TestAsyncSemanticDirtyJournalReplaySurvivesNotificationRetentionGap(t *testing.T) {
+	ctx := context.Background()
+	semantic := newTestSemanticModule(t)
+	scope := graphchange.Scope{SpaceID: uuid.NewString(), DomainID: uuid.NewString()}
+	spaceID := domainspace.SpaceID(uuid.MustParse(scope.SpaceID))
+	domainID := graph.DomainID(uuid.MustParse(scope.DomainID))
+	first := semanticDirtyTestEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1)
+	second := semanticDirtyTestEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2)
+	firstEntry, err := graphjournal.EntryFromEvent(first)
+	if err != nil {
+		t.Fatalf("EntryFromEvent(first) error = %v", err)
+	}
+	secondEntry, err := graphjournal.EntryFromEvent(second)
+	if err != nil {
+		t.Fatalf("EntryFromEvent(second) error = %v", err)
+	}
+	consumer := &asyncSemanticDirtyConsumer{semantic: semantic, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), journal: semanticJournalTestReader{entries: []graphjournal.Entry{firstEntry, secondEntry}, latest: 2}, partitionCount: 1}
+	if err := replayAsyncSemanticDirtyJournalScope(ctx, consumer.logger, semantic, consumer, scope); err != nil {
+		t.Fatalf("replayAsyncSemanticDirtyJournalScope() error = %v", err)
+	}
+	mgr, err := semantic.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("MaintenanceManager() error = %v", err)
+	}
+	dirty, err := mgr.ListGraphDirtyEvents(ctx)
+	if err != nil {
+		t.Fatalf("ListGraphDirtyEvents() error = %v", err)
+	}
+	if len(dirty) != 2 {
+		t.Fatalf("dirty events after authoritative replay = %d, want 2", len(dirty))
+	}
+	checkpoint, err := mgr.GetCheckpoint(ctx, asyncSemanticDirtyCheckpointConsumer(domainID.String()))
+	if err != nil {
+		t.Fatalf("GetCheckpoint() error = %v", err)
+	}
+	if checkpoint.LastGraphRevision != 2 || checkpoint.RebuildRequired {
+		t.Fatalf("unexpected authoritative replay checkpoint: %+v", checkpoint)
+	}
+}
+
+type semanticJournalTestReader struct {
+	entries []graphjournal.Entry
+	latest  int64
+}
+
+func (r semanticJournalTestReader) GraphChangeJournalEntriesAfter(_ context.Context, _ uint32, _ graphchange.Scope, after uint64) ([]graphjournal.Entry, error) {
+	var out []graphjournal.Entry
+	for _, entry := range r.entries {
+		if entry.Revision > after {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
+}
+
+func (r semanticJournalTestReader) GraphChangeJournalScopes(context.Context, uint32) ([]graphchange.Scope, error) {
+	return nil, nil
+}
+
+func (r semanticJournalTestReader) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	return r.latest, nil
+}
+
+func TestAsyncSemanticDirtyJournalGapRequiresRebuild(t *testing.T) {
+	ctx := context.Background()
+	semantic := newTestSemanticModule(t)
+	scope := graphchange.Scope{SpaceID: uuid.NewString(), DomainID: uuid.NewString()}
+	spaceID := domainspace.SpaceID(uuid.MustParse(scope.SpaceID))
+	domainID := graph.DomainID(uuid.MustParse(scope.DomainID))
+	entry, err := graphjournal.EntryFromEvent(semanticDirtyTestEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2))
+	if err != nil {
+		t.Fatalf("EntryFromEvent() error = %v", err)
+	}
+	consumer := &asyncSemanticDirtyConsumer{semantic: semantic, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), journal: semanticJournalTestReader{entries: []graphjournal.Entry{entry}, latest: 2}, partitionCount: 1}
+	if err := replayAsyncSemanticDirtyJournalScope(ctx, consumer.logger, semantic, consumer, scope); err == nil {
+		t.Fatal("replayAsyncSemanticDirtyJournalScope() error = nil, want rebuild-required gap")
+	}
+	mgr, err := semantic.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("MaintenanceManager() error = %v", err)
+	}
+	checkpoint, err := mgr.GetCheckpoint(ctx, asyncSemanticDirtyCheckpointConsumer(domainID.String()))
+	if err != nil {
+		t.Fatalf("GetCheckpoint() error = %v", err)
+	}
+	if !checkpoint.RebuildRequired || checkpoint.RebuildReason == "" {
+		t.Fatalf("checkpoint = %+v, want rebuild_required", checkpoint)
 	}
 }
 

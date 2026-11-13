@@ -536,7 +536,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	}
 	sinkPolicy := graphCommitSinkPolicyForConfig(cfg)
 	if sinkPolicy.Clustered {
-		if err := startAsyncSemanticDirtyConsumer(ctx, logger, graphNotificationService, semanticService); err != nil {
+		if err := startAsyncSemanticDirtyConsumerWithJournal(ctx, logger, graphNotificationService, semanticService, graphService, uint32(cfg.Cluster.RaftPartitionCount)); err != nil {
 			_ = rt.Close()
 			return nil, err
 		}

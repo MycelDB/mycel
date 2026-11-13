@@ -505,7 +505,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 		UnresolvedGapCount: gapCount, OldestUnresolvedGraphRevision: oldestGap, ConfiguredFrontierLimit: semanticReliabilityFrontierLimit,
 		ConfiguredGapIntervalLimit: semanticReliabilityGapIntervalLimit, ConfiguredRevisionSpanLimit: semanticReliabilityRevisionSpanLimit, ConfiguredSerializedByteLimit: semanticReliabilitySerializedByteLimit,
 		RetainedWorkItemCount: retained, RetainedGapIntervalCount: uint64(len(unresolved)), RetainedRevisionSpan: span, RetainedSerializedBytes: serializedBytes, SemanticGeneration: generation, CapacityState: capacityState, Degraded: degraded,
-		DegradedReason: degradedReason, RebuildRequired: gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running", Rebuild: reliability,
+		DegradedReason: degradedReason, RebuildRequired: checkpoint.RebuildRequired || gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running", Rebuild: reliability,
 	}
 	if err := m.publishCommonSemanticProjection(ctx, rule, binding, result, false); err != nil {
 		return ReliabilityStatus{}, err

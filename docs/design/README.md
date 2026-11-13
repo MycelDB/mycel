@@ -8,6 +8,7 @@ then use the component indexes below for detail.
 
 - [System overview](system-overview.md) — high-level architecture, data flows, and subsystem relationships.
 - [Projection and materialization lifecycle](projection-materialization.md) — common correctness, checkpoint, fencing, and recovery contract for derived state.
+- [Authoritative graph-change outbox](graph-change-outbox.md) — durable graph-to-derived-consumer handoff and recovery contract.
 
 ## Component areas
 

@@ -11,19 +11,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
+	graphjournal "github.com/myceldb/mycel/internal/graph/journal"
 	graphmodel "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
-const graphRaftSnapshotVersion = 2
+const graphRaftSnapshotVersion = 4
 
 type graphRaftSnapshot struct {
-	Version         int                   `json:"version"`
-	PartitionID     uint32                `json:"partition_id"`
-	PartitionCount  uint32                `json:"partition_count"`
-	Spaces          []graphRaftSpaceState `json:"spaces"`
-	AppliedCommands []string              `json:"applied_commands,omitempty"`
+	Version         int                              `json:"version"`
+	PartitionID     uint32                           `json:"partition_id"`
+	PartitionCount  uint32                           `json:"partition_count"`
+	Spaces          []graphRaftSpaceState            `json:"spaces"`
+	AppliedCommands []string                         `json:"applied_commands,omitempty"`
+	ChangeJournal   []graphjournal.Entry             `json:"change_journal,omitempty"`
+	JournalCursors  []graphChangeJournalCursorRecord `json:"journal_cursors,omitempty"`
 }
 
 type graphRaftSpaceState struct {
@@ -54,6 +57,23 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 		return nil, fmt.Errorf("graph raft snapshot partition_count is required")
 	}
 	snap := graphRaftSnapshot{Version: graphRaftSnapshotVersion, PartitionID: partitionID, PartitionCount: partitionCount}
+	journalEntries, err := m.graphChangeJournalEntries(ctx, partitionID)
+	if err != nil {
+		return nil, err
+	}
+	snap.ChangeJournal = journalEntries
+	m.mu.Lock()
+	for _, cursor := range m.graphJournalCursors {
+		spaceID, parseErr := uuid.Parse(cursor.SpaceID)
+		if parseErr != nil {
+			continue
+		}
+		cursorPartition, partitionErr := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), partitionCount)
+		if partitionErr == nil && uint32(cursorPartition) == partitionID {
+			snap.JournalCursors = append(snap.JournalCursors, cursor)
+		}
+	}
+	m.mu.Unlock()
 	keys, err := m.partitionDomainStoreKeys(ctx, partitionID, partitionCount)
 	if err != nil {
 		return nil, err
@@ -93,6 +113,15 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 		sort.Slice(snap.Spaces[i].Edges, func(a, b int) bool { return snap.Spaces[i].Edges[a].ID.String() < snap.Spaces[i].Edges[b].ID.String() })
 	}
 	sort.Strings(snap.AppliedCommands)
+	sort.Slice(snap.JournalCursors, func(i, j int) bool {
+		if snap.JournalCursors[i].SpaceID == snap.JournalCursors[j].SpaceID {
+			if snap.JournalCursors[i].DomainID == snap.JournalCursors[j].DomainID {
+				return snap.JournalCursors[i].Consumer < snap.JournalCursors[j].Consumer
+			}
+			return snap.JournalCursors[i].DomainID < snap.JournalCursors[j].DomainID
+		}
+		return snap.JournalCursors[i].SpaceID < snap.JournalCursors[j].SpaceID
+	})
 	return json.Marshal(snap)
 }
 
@@ -104,7 +133,7 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
-	if snap.Version != 1 && snap.Version != graphRaftSnapshotVersion {
+	if snap.Version != 1 && snap.Version != 2 && snap.Version != 3 && snap.Version != graphRaftSnapshotVersion {
 		return fmt.Errorf("unsupported graph raft snapshot version %d", snap.Version)
 	}
 	if snap.PartitionID != partitionID || snap.PartitionCount != partitionCount {
@@ -147,7 +176,41 @@ func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitio
 			return err
 		}
 	}
+	if err := m.restoreGraphChangeJournal(ctx, partitionID, snap.ChangeJournal); err != nil {
+		return err
+	}
 	m.mu.Lock()
+	if m.graphJournalCursors == nil {
+		m.graphJournalCursors = map[string]graphChangeJournalCursorRecord{}
+	}
+	for key, cursor := range m.graphJournalCursors {
+		spaceID, parseErr := uuid.Parse(cursor.SpaceID)
+		if parseErr != nil {
+			continue
+		}
+		cursorPartition, partitionErr := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), partitionCount)
+		if partitionErr == nil && uint32(cursorPartition) == partitionID {
+			delete(m.graphJournalCursors, key)
+		}
+	}
+	for _, cursor := range snap.JournalCursors {
+		if strings.TrimSpace(cursor.Consumer) == "" || strings.TrimSpace(cursor.SpaceID) == "" || strings.TrimSpace(cursor.DomainID) == "" || cursor.Revision == 0 {
+			m.mu.Unlock()
+			return fmt.Errorf("invalid graph journal cursor in snapshot")
+		}
+		spaceID, parseErr := uuid.Parse(cursor.SpaceID)
+		if parseErr != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("invalid graph journal cursor space_id")
+		}
+		cursorPartition, partitionErr := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), partitionCount)
+		if partitionErr != nil || uint32(cursorPartition) != partitionID {
+			m.mu.Unlock()
+			return fmt.Errorf("graph journal cursor partition mismatch")
+		}
+		key := cursor.Consumer + "\x00" + cursor.SpaceID + "\x00" + cursor.DomainID
+		m.graphJournalCursors[key] = cursor
+	}
 	if m.raftAppliedCommands == nil {
 		m.raftAppliedCommands = map[string]struct{}{}
 	}
