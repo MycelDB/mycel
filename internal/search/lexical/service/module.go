@@ -134,6 +134,17 @@ func (m *Module) RefreshCommonProjection(ctx context.Context, spaceID string, do
 }
 
 func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, docs []index.IndexedDocument, latestRevision uint64) error {
+	return m.rebuild(ctx, spaceID, domainID, docs, latestRevision, true)
+}
+
+// RebuildWithoutPublication materializes a local lexical artifact without
+// advancing replicated projection metadata. Historical replay uses this until
+// the complete local artifact and cursor have been materialized.
+func (m *Module) RebuildWithoutPublication(ctx context.Context, spaceID string, domainID string, docs []index.IndexedDocument, latestRevision uint64) error {
+	return m.rebuild(ctx, spaceID, domainID, docs, latestRevision, false)
+}
+
+func (m *Module) rebuild(ctx context.Context, spaceID string, domainID string, docs []index.IndexedDocument, latestRevision uint64, publish bool) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {
 		return err
@@ -141,6 +152,9 @@ func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, d
 	defer release()
 	if err := m.serviceFor(spaceID, domainID).Rebuild(docs, latestRevision); err != nil {
 		return err
+	}
+	if !publish {
+		return nil
 	}
 	return m.publishCommonLexicalProjection(ctx, spaceID, domainID, latestRevision)
 }
@@ -167,6 +181,17 @@ func (m *Module) RebuildFromSnapshot(ctx context.Context, spaceID string, domain
 }
 
 func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.CommittedEvent) error {
+	return m.applyGraphCommitted(ctx, event, true)
+}
+
+// ApplyGraphCommittedWithoutPublication applies one graph change to the local
+// lexical artifact without publishing a common projection frontier. Replay
+// callers publish once after the complete history has been materialized.
+func (m *Module) ApplyGraphCommittedWithoutPublication(ctx context.Context, event graphchange.CommittedEvent) error {
+	return m.applyGraphCommitted(ctx, event, false)
+}
+
+func (m *Module) applyGraphCommitted(ctx context.Context, event graphchange.CommittedEvent, publish bool) error {
 	release, err := m.enterMutation(ctx)
 	if err != nil {
 		return err
@@ -211,9 +236,11 @@ func (m *Module) OnGraphCommitted(ctx context.Context, event graphchange.Committ
 			m.recordError(err)
 			return err
 		}
-		if err := m.publishCommonLexicalProjection(ctx, event.SpaceID.String(), domainID, event.GraphRevision); err != nil {
-			m.recordError(err)
-			return err
+		if publish {
+			if err := m.publishCommonLexicalProjection(ctx, event.SpaceID.String(), domainID, event.GraphRevision); err != nil {
+				m.recordError(err)
+				return err
+			}
 		}
 	}
 	return nil
