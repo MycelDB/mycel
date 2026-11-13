@@ -107,6 +107,13 @@ func replayAsyncSemanticDirtyJournalScopes(ctx context.Context, logger *slog.Log
 			return
 		}
 		scopes, err := consumer.journal.GraphChangeJournalScopes(ctx, consumer.partitionCount)
+		if err == nil && len(scopes) == 0 {
+			// Raft restores the graph journal after daemon consumers are
+			// registered. Do not treat an early empty scope listing as a
+			// successful replay; a restart would otherwise permanently miss
+			// retained entries until a new live notification arrives.
+			err = errors.New("authoritative graph-change journal has no scopes yet")
+		}
 		if err == nil {
 			for _, scope := range scopes {
 				if err = replayAsyncSemanticDirtyJournalScope(ctx, logger, semantic, consumer, scope); err != nil {

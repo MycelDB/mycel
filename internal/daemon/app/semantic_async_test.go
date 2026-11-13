@@ -200,6 +200,60 @@ func (r semanticJournalTestReader) CurrentDomainRevision(context.Context, string
 	return r.latest, nil
 }
 
+func TestAsyncSemanticDirtyJournalScopesRetryAfterEarlyEmptyRestore(t *testing.T) {
+	ctx := context.Background()
+	semantic := newTestSemanticModule(t)
+	scope := graphchange.Scope{SpaceID: uuid.NewString(), DomainID: uuid.NewString()}
+	spaceID := domainspace.SpaceID(uuid.MustParse(scope.SpaceID))
+	domainID := graph.DomainID(uuid.MustParse(scope.DomainID))
+	entry, err := graphjournal.EntryFromEvent(semanticDirtyTestEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1))
+	if err != nil {
+		t.Fatalf("EntryFromEvent() error = %v", err)
+	}
+	reader := &delayedSemanticJournalTestReader{scope: scope, entry: entry}
+	consumer := &asyncSemanticDirtyConsumer{semantic: semantic, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), journal: reader, partitionCount: 1}
+	replayAsyncSemanticDirtyJournalScopes(ctx, consumer.logger, semantic, consumer)
+	if reader.scopeCalls < 2 {
+		t.Fatalf("journal scope calls = %d, want retry after early empty restore", reader.scopeCalls)
+	}
+	mgr, err := semantic.MaintenanceManager(ctx, spaceID)
+	if err != nil {
+		t.Fatalf("MaintenanceManager() error = %v", err)
+	}
+	checkpoint, err := mgr.GetCheckpoint(ctx, asyncSemanticDirtyCheckpointConsumer(domainID.String()))
+	if err != nil {
+		t.Fatalf("GetCheckpoint() error = %v", err)
+	}
+	if checkpoint.LastGraphRevision != 1 || checkpoint.RebuildRequired {
+		t.Fatalf("checkpoint = %+v, want revision 1 without rebuild_required", checkpoint)
+	}
+}
+
+type delayedSemanticJournalTestReader struct {
+	scope      graphchange.Scope
+	entry      graphjournal.Entry
+	scopeCalls int
+}
+
+func (r *delayedSemanticJournalTestReader) GraphChangeJournalEntriesAfter(_ context.Context, _ uint32, _ graphchange.Scope, after uint64) ([]graphjournal.Entry, error) {
+	if r.entry.Revision <= after {
+		return nil, nil
+	}
+	return []graphjournal.Entry{r.entry}, nil
+}
+
+func (r *delayedSemanticJournalTestReader) GraphChangeJournalScopes(context.Context, uint32) ([]graphchange.Scope, error) {
+	r.scopeCalls++
+	if r.scopeCalls == 1 {
+		return nil, nil
+	}
+	return []graphchange.Scope{r.scope}, nil
+}
+
+func (r *delayedSemanticJournalTestReader) CurrentDomainRevision(context.Context, string, string) (int64, error) {
+	return int64(r.entry.Revision), nil
+}
+
 func TestAsyncSemanticDirtyJournalGapRequiresRebuild(t *testing.T) {
 	ctx := context.Background()
 	semantic := newTestSemanticModule(t)
