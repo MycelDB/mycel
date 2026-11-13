@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -122,6 +124,32 @@ func TestAsyncLexicalReplayUsesIndexedRevisionCursor(t *testing.T) {
 	status = lexical.Status(ctx, spaceID.String(), domainID.String(), 2)
 	if status.IndexedGraphRevision != 2 || status.LiveDocumentCount != 2 || status.SegmentCount != 2 {
 		t.Fatalf("unexpected lexical status after second replay: %+v", status)
+	}
+}
+
+func TestAsyncLexicalReplayPublishesOnlyFinalFrontier(t *testing.T) {
+	ctx := context.Background()
+	notifications := newTestGraphNotifications(t)
+	projection := &recordingAsyncLexicalProjection{status: lexicalservice.Status{State: lexicalservice.StateUnavailable}}
+	consumer := &recordingAsyncLexicalReplayConsumer{projection: projection}
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	for revision := uint64(1); revision <= 3; revision++ {
+		if err := notifications.OnGraphCommitted(ctx, lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), revision, "historical replay")); err != nil {
+			t.Fatalf("OnGraphCommitted(%d) error = %v", revision, err)
+		}
+	}
+
+	scope := graphchange.Scope{SpaceID: spaceID.String(), DomainID: domainID.String()}
+	if err := replayAsyncLexicalScope(ctx, nil, notifications, projection, nil, consumer, scope); err != nil {
+		t.Fatalf("replayAsyncLexicalScope() error = %v", err)
+	}
+	if len(projection.refreshes) != 1 || projection.refreshes[0] != 3 {
+		t.Fatalf("common projection refreshes = %v, want only final revision [3]", projection.refreshes)
+	}
+	wantSequence := []string{"materialize:1", "materialize:2", "materialize:3", "refresh:3"}
+	if !reflect.DeepEqual(projection.sequence, wantSequence) {
+		t.Fatalf("replay publication sequence = %v, want %v", projection.sequence, wantSequence)
 	}
 }
 
@@ -593,6 +621,58 @@ func TestUserOwnedDomainGraphWritesAreIndexedRebuiltAndPreserved(t *testing.T) {
 	}
 	restartedSearchAPI := clientapi.NewSearchService(restartedLexical, spaces, graphs)
 	assertLexicalSearchResult(t, userCtx, restartedSearchAPI, space.SpaceID.String(), contentDomain.ID.String(), "marmalade", secondNodeID)
+}
+
+type recordingAsyncLexicalProjection struct {
+	status    lexicalservice.Status
+	refreshes []uint64
+	sequence  []string
+}
+
+func (p *recordingAsyncLexicalProjection) RefreshCommonProjection(_ context.Context, _ string, _ string, revision uint64) error {
+	p.refreshes = append(p.refreshes, revision)
+	p.sequence = append(p.sequence, fmt.Sprintf("refresh:%d", revision))
+	return nil
+}
+
+func (p *recordingAsyncLexicalProjection) RebuildWithoutPublication(_ context.Context, _ string, _ string, _ []lexicalindex.IndexedDocument, revision uint64) error {
+	p.status.State = lexicalservice.StateFresh
+	p.status.IndexedGraphRevision = revision
+	p.status.LatestKnownGraphRevision = revision
+	return nil
+}
+
+func (p *recordingAsyncLexicalProjection) Status(_ context.Context, _ string, _ string, latestRevision uint64) lexicalservice.Status {
+	p.status.LatestKnownGraphRevision = latestRevision
+	return p.status
+}
+
+type recordingAsyncLexicalReplayConsumer struct {
+	projection *recordingAsyncLexicalProjection
+}
+
+func (c *recordingAsyncLexicalReplayConsumer) HandleGraphChange(ctx context.Context, event graphchange.CommittedEvent) error {
+	if err := c.materialize(event); err != nil {
+		return err
+	}
+	return c.projection.RefreshCommonProjection(ctx, event.SpaceID.String(), event.DomainID.String(), eventRevision(event))
+}
+
+func (c *recordingAsyncLexicalReplayConsumer) HandleGraphChangeForReplay(_ context.Context, event graphchange.CommittedEvent) error {
+	return c.materialize(event)
+}
+
+func (c *recordingAsyncLexicalReplayConsumer) materialize(event graphchange.CommittedEvent) error {
+	revision := eventRevision(event)
+	c.projection.status.State = lexicalservice.StateFresh
+	c.projection.status.IndexedGraphRevision = revision
+	c.projection.status.LatestKnownGraphRevision = revision
+	c.projection.sequence = append(c.projection.sequence, fmt.Sprintf("materialize:%d", revision))
+	return nil
+}
+
+func (*recordingAsyncLexicalReplayConsumer) HandleGraphChangeGap(_ context.Context, _ graphchange.Gap) error {
+	return errors.New("unexpected graph-change replay gap")
 }
 
 type blockingAsyncLexicalRevisionReader struct {

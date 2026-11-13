@@ -6,6 +6,32 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.3] - 2026-11-13
+
+### Fixed
+
+- Fixed clustered lexical historical replay so intermediate materializations do
+  not publish lower projection frontiers after a newer frontier has already been
+  observed. Replay now publishes one final frontier only after the complete
+  cursor is materialized, preventing fresh multi-node startup failures caused by
+  rejected frontier regressions (#330).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains
+  compatible with the `mycel-api` v0.22.0 contract pinned in
+  `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Live lexical graph changes retain their existing publish-after-materialization
+  behavior. Historical replay publication suppression affects only intermediate
+  replay progress; local artifacts remain rebuildable from authoritative graph
+  history and projection metadata.
+
+### Validation
+
+- Targeted lexical replay, clustered lexical, and full daemon tests passed.
+- Mycel Lab Compose lexical replay guardrail passed against both the released
+  `v0.22.2` image and the fixed local image, with cleanup and redaction checks.
+
 ## [v0.22.2] - 2026-11-12
 
 ### Fixed
