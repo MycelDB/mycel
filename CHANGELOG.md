@@ -6,6 +6,22 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.5] - 2026-11-14
+
+### Fixed
+
+- Raft apply and replay now distinguish deterministic command rejections from infrastructure/state-machine failures. Failed applications fence the local group, leave the applied index unchanged, fail closed in status/readiness, and replay the committed entry after recovery instead of skipping it (#340).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains compatible with the `mycel-api` v0.22.0 contract pinned in `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Committed Raft entries remain authoritative. Deterministic command rejections are recorded as terminal outcomes, while infrastructure and state-machine failures remain replayable after recovery.
+
+### Validation
+
+- Daemon CI, targeted Raft apply/replay tests, and SonarCloud quality gates passed.
+- Mycel Lab unit, race, vet, documentation, and workflow-policy checks passed. The destructive Compose apply-failure recovery qualification is available in Mycel Lab and requires a pinned release image.
+
 ## [v0.22.4] - 2026-11-14
 
 ### Fixed
