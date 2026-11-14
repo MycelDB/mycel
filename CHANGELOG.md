@@ -6,6 +6,34 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.4] - 2026-11-14
+
+### Fixed
+
+- Made graph-change handoff durable through an authoritative source-partition
+  Raft journal, so committed graph mutations remain recoverable when local
+  notification delivery is lost (#337).
+- Added idempotent semantic and lexical journal replay with revision-pinned
+  graph reads, contiguous-history validation, durable consumer cursors, and
+  fail-closed `rebuild_required` fencing for replay gaps.
+- Preserved the lexical historical replay final-frontier publication invariant
+  while recovering retained graph history after restart.
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains
+  compatible with the `mycel-api` v0.22.0 contract pinned in
+  `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Graph journal and projection metadata are Raft-authoritative. Local semantic
+  and lexical artifacts remain rebuildable and are not part of the public
+  compatibility contract.
+
+### Validation
+
+- Full daemon tests, documentation checks, and SonarCloud quality gates passed.
+- Destructive Compose graph-change handoff-loss and lexical replay frontier
+  qualifications passed with cleanup and redaction evidence.
+
 ## [v0.22.3] - 2026-11-13
 
 ### Fixed

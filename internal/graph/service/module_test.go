@@ -18,6 +18,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
+	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
@@ -1163,6 +1164,57 @@ func sameStringSet(got []string, want []string) bool {
 		}
 	}
 	return true
+}
+
+func TestModuleGraphChangeSinkFailureLeavesCommittedGraphWithoutReplayableNotification(t *testing.T) {
+	ctx := context.Background()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	module, dataDir := newTestGraphModuleWithDataDir(t, ctx)
+
+	blockedNotificationDir := filepath.Join(dataDir, "blocked-notifications")
+	if err := os.WriteFile(blockedNotificationDir, []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("create blocked notification path: %v", err)
+	}
+	notifications := graphnotification.NewModule()
+	notifications.SetDataDirForTest(blockedNotificationDir)
+	module.SetChangeSink(notifications)
+
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := module.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "sink failure replay node", Props: map[string]any{}}); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	commit, err := module.CommitTransactionGraph(ctx, tx)
+	if err != nil {
+		t.Fatalf("commit graph mutation: %v", err)
+	}
+	if commit.CommittedRevision == 0 {
+		t.Fatal("graph mutation did not commit")
+	}
+	if module.LastGraphChangeSinkError() == nil {
+		t.Fatal("expected graph-change sink failure to be recorded")
+	}
+
+	readTx := graphTx(spaceID, domainID, commit.CommittedRevision)
+	nodes, _, err := module.ListNodes(ctx, readTx, 10, "")
+	if err != nil {
+		t.Fatalf("read committed graph: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("committed graph node count = %d, want 1", len(nodes))
+	}
+
+	// Reproduction: the committed graph survives, but a new notification reader
+	// has no durable event to replay after the sink failure.
+	recoveredNotifications := graphnotification.NewModule()
+	recoveredNotifications.SetDataDirForTest(filepath.Join(dataDir, "recovered-notifications"))
+	recoveredRevision, err := recoveredNotifications.CurrentRevision(ctx, spaceID, domainID)
+	if err != nil {
+		t.Fatalf("read recovered notification revision: %v", err)
+	}
+	if recoveredRevision != 0 {
+		t.Fatalf("recovered notification revision = %d, want 0", recoveredRevision)
+	}
 }
 
 func TestModuleGraphChangeSinkFailureDoesNotFailCommit(t *testing.T) {

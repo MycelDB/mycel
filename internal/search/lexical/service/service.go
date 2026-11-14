@@ -30,12 +30,14 @@ const (
 )
 
 type Service struct {
-	mu       sync.RWMutex
-	store    storage.Store
-	spaceID  string
-	domainID string
-	analyzer analyzer.Analyzer
-	paused   bool
+	mu              sync.RWMutex
+	store           storage.Store
+	spaceID         string
+	domainID        string
+	analyzer        analyzer.Analyzer
+	paused          bool
+	rebuildRequired bool
+	rebuildReason   string
 }
 
 type Status struct {
@@ -76,6 +78,21 @@ func (s *Service) ResumeIndexing() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = false
+}
+
+// MarkRebuildRequired fences publication after an authoritative replay gap.
+// The local artifact remains available for diagnostics, but callers must not
+// treat it as current until a complete rebuild clears this marker.
+func (s *Service) MarkRebuildRequired(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rebuildRequired = true
+	s.rebuildReason = reason
+}
+
+func (s *Service) clearRebuildRequired() {
+	s.rebuildRequired = false
+	s.rebuildReason = ""
 }
 
 func (s *Service) UpsertDocument(doc analyzer.Document, revision uint64) error {
@@ -129,7 +146,11 @@ func (s *Service) rebuildLocked(docs []index.IndexedDocument, latestRevision uin
 	if err := s.store.PublishSegment(segment); err != nil {
 		return err
 	}
-	return s.store.WriteCursor(storage.Cursor{IndexedGraphRevision: latestRevision})
+	if err := s.store.WriteCursor(storage.Cursor{IndexedGraphRevision: latestRevision}); err != nil {
+		return err
+	}
+	s.clearRebuildRequired()
+	return nil
 }
 
 func (s *Service) Search(input string, opts index.SearchOptions) (index.SearchResponse, error) {
@@ -150,6 +171,10 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := Status{SpaceID: s.spaceID, DomainID: s.domainID, LatestKnownGraphRevision: latestKnownGraphRevision, RevisionLag: latestKnownGraphRevision, AnalyzerVersion: s.analyzer.Version(), IndexFormatVersion: storage.IndexFormatVersion}
+	if s.rebuildRequired {
+		status.State = StateUnavailable
+		status.LastError = s.rebuildReason
+	}
 	manifest, err := s.store.ReadManifest()
 	if err != nil {
 		status.State = StateUnavailable
@@ -180,6 +205,10 @@ func (s *Service) Status(latestKnownGraphRevision uint64) Status {
 		status.State = StateStale
 	default:
 		status.State = StateFresh
+	}
+	if s.rebuildRequired {
+		status.State = StateUnavailable
+		status.LastError = s.rebuildReason
 	}
 	for _, segmentID := range manifest.Segments {
 		segment, err := s.store.ReadSegment(segmentID)

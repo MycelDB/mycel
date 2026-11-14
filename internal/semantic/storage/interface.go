@@ -127,6 +127,8 @@ type MaintenanceCheckpoint struct {
 	SpaceID               domainspace.SpaceID              `json:"space_id"`
 	LastGraphRevision     uint64                           `json:"last_graph_revision,omitempty"`
 	LastGraphDirtyEventID domainsemantic.GraphDirtyEventID `json:"last_graph_dirty_event_id,omitempty"`
+	RebuildRequired       bool                             `json:"rebuild_required,omitempty"`
+	RebuildReason         string                           `json:"rebuild_reason,omitempty"`
 	UpdatedAt             time.Time                        `json:"updated_at"`
 }
 

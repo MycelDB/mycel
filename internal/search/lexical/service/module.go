@@ -133,6 +133,18 @@ func (m *Module) RefreshCommonProjection(ctx context.Context, spaceID string, do
 	return m.publishCommonLexicalProjection(ctx, spaceID, domainID, latestRevision)
 }
 
+// MarkRebuildRequired fences the replicated lexical readiness state after an
+// authoritative journal gap. A complete rebuild clears the local marker.
+func (m *Module) MarkRebuildRequired(ctx context.Context, spaceID string, domainID string, reason string, latestRevision uint64) error {
+	release, err := m.enterMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	m.serviceFor(spaceID, domainID).MarkRebuildRequired(reason)
+	return m.publishCommonLexicalProjection(ctx, spaceID, domainID, latestRevision)
+}
+
 func (m *Module) Rebuild(ctx context.Context, spaceID string, domainID string, docs []index.IndexedDocument, latestRevision uint64) error {
 	return m.rebuild(ctx, spaceID, domainID, docs, latestRevision, true)
 }
