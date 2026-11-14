@@ -284,41 +284,11 @@ func (j *Journal) Restore(ctx context.Context, entries []Entry) error {
 	sort.Slice(cloned, func(i, k int) bool { return cloned[i].Revision < cloned[k].Revision })
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	tmp := j.path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fsperm.PrivateFile)
-	if err != nil {
-		return err
-	}
-	sequence := uint64(1)
-	for _, entry := range cloned {
-		payload, err := json.Marshal(record{Version: journalVersion, Sequence: sequence, Entry: entry})
-		if err != nil {
-			_ = file.Close()
-			_ = os.Remove(tmp)
-			return err
-		}
-		if _, err := file.Write(append(payload, '\n')); err != nil {
-			_ = file.Close()
-			_ = os.Remove(tmp)
-			return err
-		}
-		sequence++
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, j.path); err != nil {
-		_ = os.Remove(tmp)
+	if err := writeJournalEntries(j.path, cloned); err != nil {
 		return err
 	}
 	j.entries = cloned
-	j.next = sequence
+	j.next = uint64(len(cloned)) + 1
 	return nil
 }
 
@@ -367,42 +337,46 @@ func (e Entry) Event() (graphchange.CommittedEvent, error) {
 	return event, nil
 }
 
-func (j *Journal) rewriteLocked(entries []Entry) error {
-	tmp := j.path + ".tmp"
+func writeJournalEntries(path string, entries []Entry) error {
+	tmp := path + ".tmp"
 	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fsperm.PrivateFile)
 	if err != nil {
 		return err
 	}
-	sequence := uint64(1)
-	for _, entry := range entries {
-		payload, err := json.Marshal(record{Version: journalVersion, Sequence: sequence, Entry: cloneEntry(entry)})
-		if err != nil {
-			_ = file.Close()
-			_ = os.Remove(tmp)
-			return err
-		}
-		if _, err := file.Write(append(payload, '\n')); err != nil {
-			_ = file.Close()
-			_ = os.Remove(tmp)
-			return err
-		}
-		sequence++
-	}
-	if err := file.Sync(); err != nil {
+	cleanup := func(err error) error {
 		_ = file.Close()
 		_ = os.Remove(tmp)
 		return err
+	}
+	for sequence, entry := range entries {
+		payload, err := json.Marshal(record{Version: journalVersion, Sequence: uint64(sequence) + 1, Entry: cloneEntry(entry)})
+		if err != nil {
+			return cleanup(err)
+		}
+		if _, err := file.Write(append(payload, '\n')); err != nil {
+			return cleanup(err)
+		}
+	}
+	if err := file.Sync(); err != nil {
+		return cleanup(err)
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, j.path); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
+	return nil
+}
+
+func (j *Journal) rewriteLocked(entries []Entry) error {
+	if err := writeJournalEntries(j.path, entries); err != nil {
+		return err
+	}
 	j.entries = append([]Entry(nil), entries...)
-	j.next = sequence
+	j.next = uint64(len(entries)) + 1
 	return nil
 }
 

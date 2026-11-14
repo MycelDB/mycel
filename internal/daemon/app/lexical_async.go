@@ -373,42 +373,18 @@ func replayAsyncLexicalLeadershipScopes(ctx context.Context, logger *slog.Logger
 }
 
 func scheduleAsyncLexicalLeadershipScopes(ctx context.Context, notifications *graphnotification.Module, schedule func(graphchange.Scope), statuses []consensus.GroupStatus, partitionCount uint32, seen map[uint32]uint64) (map[uint32]uint64, error) {
-	owned := map[uint32]uint64{}
-	pending := map[uint32]bool{}
-	for _, status := range statuses {
-		if status.PartitionID == nil || status.NodeID == 0 || status.Leader != status.NodeID || status.Term == 0 {
-			continue
-		}
-		partitionID := *status.PartitionID
-		owned[partitionID] = status.Term
-		if seen[partitionID] != status.Term {
-			pending[partitionID] = true
-		}
-	}
-	if len(pending) == 0 {
-		return owned, nil
-	}
-	scopes, err := notifications.StoredScopes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, scope := range scopes {
-		spaceID, err := uuid.Parse(scope.SpaceID)
-		if err != nil {
-			return nil, fmt.Errorf("invalid graph-change scope space ID: %w", err)
-		}
-		partitionID, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), partitionCount)
-		if err != nil {
-			return nil, err
-		}
-		if pending[uint32(partitionID)] {
-			schedule(scope)
-		}
-	}
-	return owned, nil
+	return scheduleAsyncLexicalLeadershipScopeSet(ctx, func(ctx context.Context) ([]graphchange.Scope, error) {
+		return notifications.StoredScopes(ctx)
+	}, schedule, statuses, partitionCount, seen)
 }
 
 func scheduleAsyncLexicalLeadershipJournalScopes(ctx context.Context, journal asyncLexicalJournalReader, schedule func(graphchange.Scope), statuses []consensus.GroupStatus, partitionCount uint32, seen map[uint32]uint64) (map[uint32]uint64, error) {
+	return scheduleAsyncLexicalLeadershipScopeSet(ctx, func(ctx context.Context) ([]graphchange.Scope, error) {
+		return journal.GraphChangeJournalScopes(ctx, partitionCount)
+	}, schedule, statuses, partitionCount, seen)
+}
+
+func scheduleAsyncLexicalLeadershipScopeSet(ctx context.Context, listScopes func(context.Context) ([]graphchange.Scope, error), schedule func(graphchange.Scope), statuses []consensus.GroupStatus, partitionCount uint32, seen map[uint32]uint64) (map[uint32]uint64, error) {
 	owned := map[uint32]uint64{}
 	pending := map[uint32]bool{}
 	for _, status := range statuses {
@@ -424,7 +400,7 @@ func scheduleAsyncLexicalLeadershipJournalScopes(ctx context.Context, journal as
 	if len(pending) == 0 {
 		return owned, nil
 	}
-	scopes, err := journal.GraphChangeJournalScopes(ctx, partitionCount)
+	scopes, err := listScopes(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -568,21 +544,11 @@ func replayAsyncLexicalJournalScope(ctx context.Context, logger *slog.Logger, le
 		}
 		collector.events = append(collector.events, event)
 	}
-	if reset || (status.State == lexicalservice.StateUnavailable && latestRevision == 0) {
-		if reset && logger != nil {
-			logger.Warn("rebuilding lexical index with cursor ahead of domain revision", "space_id", scope.SpaceID, "domain_id", scope.DomainID, "indexed_revision", status.IndexedGraphRevision, "domain_revision", latestRevision)
-		}
-		if err := lexical.RebuildWithoutPublication(ctx, scope.SpaceID, scope.DomainID, nil, 0); err != nil {
-			return fmt.Errorf("initialize lexical index before authoritative replay: %w", err)
-		}
+	if err := initializeAsyncLexicalReplay(ctx, logger, lexical, scope, status, latestRevision, reset, "initialize lexical index before authoritative replay"); err != nil {
+		return err
 	}
-	for _, event := range collector.events {
-		if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
-			return err
-		}
-		if err := consumer.HandleGraphChangeForReplay(ctx, event); err != nil {
-			return fmt.Errorf("apply authoritative lexical graph change at revision %d: %w", eventRevision(event), err)
-		}
+	if err := applyAsyncLexicalReplayEvents(ctx, revisions, scope.SpaceID, collector.events, consumer.HandleGraphChangeForReplay, "apply authoritative lexical graph change"); err != nil {
+		return err
 	}
 	if err := lexical.RefreshCommonProjection(ctx, scope.SpaceID, scope.DomainID, latestRevision); err != nil {
 		return fmt.Errorf("publish common lexical projection after authoritative replay: %w", err)
@@ -737,28 +703,13 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
 		return err
 	}
-	initializeEmpty := status.State == lexicalservice.StateUnavailable && latestRevision == 0
-	if reset || initializeEmpty {
-		if reset && logger != nil {
-			logger.Warn("rebuilding lexical index with cursor ahead of domain revision", "space_id", scope.SpaceID, "domain_id", scope.DomainID, "indexed_revision", status.IndexedGraphRevision, "domain_revision", latestRevision)
-		}
-		if err := lexical.RebuildWithoutPublication(ctx, scope.SpaceID, scope.DomainID, nil, 0); err != nil {
-			return fmt.Errorf("initialize lexical index before replay: %w", err)
-		}
+	if err := initializeAsyncLexicalReplay(ctx, logger, lexical, scope, status, latestRevision, reset, "initialize lexical index before replay"); err != nil {
+		return err
 	}
-	for _, event := range collector.events {
-		if err := requireAsyncLexicalLocalOwner(ctx, revisions, scope.SpaceID); err != nil {
-			return err
-		}
-		var err error
-		if replayConsumer, ok := consumer.(asyncLexicalReplayConsumer); ok {
-			err = replayConsumer.HandleGraphChangeForReplay(ctx, event)
-		} else {
-			err = consumer.HandleGraphChange(ctx, event)
-		}
-		if err != nil {
-			return fmt.Errorf("apply replayed graph change at revision %d: %w", eventRevision(event), err)
-		}
+	if err := applyAsyncLexicalReplayEvents(ctx, revisions, scope.SpaceID, collector.events, func(ctx context.Context, event graphchange.CommittedEvent) error {
+		return replayAsyncLexicalEvent(ctx, consumer, event)
+	}, "apply replayed graph change"); err != nil {
+		return err
 	}
 	if err := lexical.RefreshCommonProjection(ctx, scope.SpaceID, scope.DomainID, latestRevision); err != nil {
 		return fmt.Errorf("publish common lexical projection after replay: %w", err)
@@ -768,6 +719,38 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		return fmt.Errorf("lexical replay ended at revision %d with state %s; want fresh revision %d", finalStatus.IndexedGraphRevision, finalStatus.State, latestRevision)
 	}
 	return nil
+}
+
+func initializeAsyncLexicalReplay(ctx context.Context, logger *slog.Logger, lexical asyncLexicalReplayProjection, scope graphchange.Scope, status lexicalservice.Status, latestRevision uint64, reset bool, errorContext string) error {
+	if !reset && !(status.State == lexicalservice.StateUnavailable && latestRevision == 0) {
+		return nil
+	}
+	if reset && logger != nil {
+		logger.Warn("rebuilding lexical index with cursor ahead of domain revision", "space_id", scope.SpaceID, "domain_id", scope.DomainID, "indexed_revision", status.IndexedGraphRevision, "domain_revision", latestRevision)
+	}
+	if err := lexical.RebuildWithoutPublication(ctx, scope.SpaceID, scope.DomainID, nil, 0); err != nil {
+		return fmt.Errorf("%s: %w", errorContext, err)
+	}
+	return nil
+}
+
+func applyAsyncLexicalReplayEvents(ctx context.Context, revisions asyncLexicalDomainRevisionReader, spaceID string, events []graphchange.CommittedEvent, handle func(context.Context, graphchange.CommittedEvent) error, errorContext string) error {
+	for _, event := range events {
+		if err := requireAsyncLexicalLocalOwner(ctx, revisions, spaceID); err != nil {
+			return err
+		}
+		if err := handle(ctx, event); err != nil {
+			return fmt.Errorf("%s at revision %d: %w", errorContext, eventRevision(event), err)
+		}
+	}
+	return nil
+}
+
+func replayAsyncLexicalEvent(ctx context.Context, consumer graphnotification.Consumer, event graphchange.CommittedEvent) error {
+	if replayConsumer, ok := consumer.(asyncLexicalReplayConsumer); ok {
+		return replayConsumer.HandleGraphChangeForReplay(ctx, event)
+	}
+	return consumer.HandleGraphChange(ctx, event)
 }
 
 func requireAsyncLexicalLocalOwner(ctx context.Context, revisions asyncLexicalDomainRevisionReader, spaceID string) error {
