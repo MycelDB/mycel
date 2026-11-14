@@ -100,6 +100,47 @@ func TestStartMultiGroupDefersPartitionsUntilSystemMetadata(t *testing.T) {
 	}
 }
 
+func TestStartPartitionGroupsDoesNotHoldMultiGroupLockWhileStartingStateMachine(t *testing.T) {
+	transport := newMemoryTransport()
+	var mg *MultiGroup
+	factory := StateMachineFactoryFunc{
+		System: func() StateMachine { return NewSystemStateMachine() },
+		Partition: func(uint32) StateMachine {
+			if _, ok := mg.Group(SystemGroupID); !ok {
+				panic("system group is unavailable")
+			}
+			return &MemoryStateMachine{}
+		},
+	}
+	var err error
+	mg, err = StartMultiGroup(context.Background(), MultiGroupOptions{NodeID: 1, PeerNodeIDs: []NodeID{1, 2, 3}, PartitionCount: 1, Transport: transport, StateMachines: factory, ElectionTick: 5, HeartbeatTick: 1, DeferPartitionGroups: true})
+	if err != nil {
+		t.Fatalf("StartMultiGroup() error = %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			return
+		}
+		mg.Stop()
+	}()
+	meta, err := buildBootstrapMetadata(BootstrapMetadataPayload{ClusterID: "cluster_00000000-0000-0000-0000-000000000098", NodeCount: 3, PartitionCount: 1, ReplicaFactor: 3, Nodes: []SystemNode{{NodeID: "node_1", RaftNodeID: 1, NodeName: "node-a"}, {NodeID: "node_2", RaftNodeID: 2, NodeName: "node-b"}, {NodeID: "node_3", RaftNodeID: 3, NodeName: "node-c"}}})
+	if err != nil {
+		t.Fatalf("buildBootstrapMetadata() error = %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- mg.StartPartitionGroups(context.Background(), meta) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("StartPartitionGroups() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartPartitionGroups() held the multi-group lock while creating a state machine")
+	}
+	stopped = true
+}
+
 func TestStartPartitionGroupsCreatesPersistentPartitionStorage(t *testing.T) {
 	transport := newMemoryTransport()
 	factory := StateMachineFactoryFunc{System: func() StateMachine { return NewSystemStateMachine() }, Partition: func(partitionID uint32) StateMachine { return &MemoryStateMachine{} }}
