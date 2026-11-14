@@ -6,6 +6,100 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.4] - 2026-11-14
+
+### Fixed
+
+- Made graph-change handoff durable through an authoritative source-partition
+  Raft journal, so committed graph mutations remain recoverable when local
+  notification delivery is lost (#337).
+- Added idempotent semantic and lexical journal replay with revision-pinned
+  graph reads, contiguous-history validation, durable consumer cursors, and
+  fail-closed `rebuild_required` fencing for replay gaps.
+- Preserved the lexical historical replay final-frontier publication invariant
+  while recovering retained graph history after restart.
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains
+  compatible with the `mycel-api` v0.22.0 contract pinned in
+  `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Graph journal and projection metadata are Raft-authoritative. Local semantic
+  and lexical artifacts remain rebuildable and are not part of the public
+  compatibility contract.
+
+### Validation
+
+- Full daemon tests, documentation checks, and SonarCloud quality gates passed.
+- Destructive Compose graph-change handoff-loss and lexical replay frontier
+  qualifications passed with cleanup and redaction evidence.
+
+## [v0.22.3] - 2026-11-13
+
+### Fixed
+
+- Fixed clustered lexical historical replay so intermediate materializations do
+  not publish lower projection frontiers after a newer frontier has already been
+  observed. Replay now publishes one final frontier only after the complete
+  cursor is materialized, preventing fresh multi-node startup failures caused by
+  rejected frontier regressions (#330).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains
+  compatible with the `mycel-api` v0.22.0 contract pinned in
+  `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Live lexical graph changes retain their existing publish-after-materialization
+  behavior. Historical replay publication suppression affects only intermediate
+  replay progress; local artifacts remain rebuildable from authoritative graph
+  history and projection metadata.
+
+### Validation
+
+- Targeted lexical replay, clustered lexical, and full daemon tests passed.
+- Mycel Lab Compose lexical replay guardrail passed against both the released
+  `v0.22.2` image and the fixed local image, with cleanup and redaction checks.
+
+## [v0.22.2] - 2026-11-12
+
+### Fixed
+
+- Added a common projection/materialization lifecycle for graph checkpoints,
+  lexical indexes, and semantic indexes, with source-partition Raft control
+  metadata, opaque frontiers, fenced ownership, atomic checkpoint publication,
+  rebuildable local artifacts, and fail-closed readiness after restart or
+  leadership changes (#330).
+- Added deterministic projection backup catalogs and artifact evidence with
+  restore validation for missing, stale, corrupt, incompatible, or mismatched
+  derived state; invalid local artifacts cannot certify a restored checkpoint
+  (#330).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains
+  compatible with the `mycel-api` v0.22.0 contract pinned in
+  `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Projection artifacts are rebuildable and graph/Raft state remains
+  authoritative. Operators should follow the projection materialization
+  recovery procedure after a fail-closed readiness result.
+
+### Validation
+
+- `go test ./...` passed for the daemon and Mycel Lab.
+- Hermetic Compose/k3d release qualification passed with cleanup and redaction
+  evidence; bundle SHA-256:
+  `e90b547b8147e5b8db6df0b4cb17ac76878edca149fa1d7279a17e741124b92e`.
+
+## [v0.22.1] - 2026-11-10
+
+### Fixed
+
+- Made the built-in `mycel-file` vector store identity deterministic across daemon nodes, migrated a compatible legacy default catalog entry, and resolved legacy rule bindings through the local backend so clustered semantic indexing and search remain stable after rollout (#326).
+
+### Compatibility
+
+- Daemon-only patch release. No protobuf/API, SDK, Console, or Lab release is required. The daemon remains pinned to the `mycel-api` v0.22.0 contract in `.release/mycel-api-ref`.
+
 ## [v0.22.0] - 2026-11-09
 
 ### Added
