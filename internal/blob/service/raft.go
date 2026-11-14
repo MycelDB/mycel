@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -43,7 +44,14 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if s.Module == nil {
 		return nil
 	}
-	return s.Module.applyBlobRaftCommand(ctx, cmd, s.PartitionCount)
+	err := s.Module.applyBlobRaftCommand(ctx, cmd, s.PartitionCount)
+	if err == nil || consensus.IsFatalApplyError(err) {
+		return err
+	}
+	if errors.Is(err, ErrReferenced) {
+		return consensus.NewCommandRejection(err)
+	}
+	return consensus.NewFatalApplyError(err)
 }
 
 func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionCount uint32) {
