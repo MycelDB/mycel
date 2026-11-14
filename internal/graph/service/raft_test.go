@@ -18,6 +18,7 @@ import (
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	domainspace "github.com/myceldb/mycel/internal/space/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -388,6 +389,72 @@ func TestExecuteLocalRaftGraphReadChildrenAndParent(t *testing.T) {
 	}
 	if countRes.Count != 1 {
 		t.Fatalf("blob ref count=%d want 1", countRes.Count)
+	}
+}
+
+func TestGraphRaftChangeJournalSurvivesSinkFailureAndRestart(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	spaceID := uuid.NewString()
+	domainID := uuid.New()
+	nodeID := uuid.New()
+	m := newTestGraphRaftModule(t, ctx, dataDir)
+	m.SetRaftApplyChangeSink(graphchange.SinkFunc(func(context.Context, graphchange.CommittedEvent) error {
+		return errors.New("derived sink unavailable")
+	}))
+	record := graphCommitRecord{SpaceID: spaceID, DomainID: domainID.String(), PutNodes: []domaingraph.Node{{ID: nodeID, DomainID: domainID, Content: "journaled"}}, OperationCount: 1}
+	cmd, err := m.buildGraphCommitRaftCommand(record, 64, "journaled-command")
+	if err != nil {
+		t.Fatalf("buildGraphCommitRaftCommand() error = %v", err)
+	}
+	if err := applyGraphRaftCommand(ctx, m, 1, cmd); err != nil {
+		t.Fatalf("ApplyCommand() error = %v", err)
+	}
+	entries, err := m.graphChangeJournalEntries(ctx, cmd.PartitionID)
+	if err != nil {
+		t.Fatalf("graphChangeJournalEntries() error = %v", err)
+	}
+	if len(entries) != 1 || entries[0].Revision != 1 || entries[0].DomainID != domainID.String() {
+		t.Fatalf("journal entries = %+v", entries)
+	}
+
+	restarted := newTestGraphRaftModule(t, ctx, dataDir)
+	entries, err = restarted.graphChangeJournalEntries(ctx, cmd.PartitionID)
+	if err != nil {
+		t.Fatalf("reopened graphChangeJournalEntries() error = %v", err)
+	}
+	if len(entries) != 1 || entries[0].Revision != 1 {
+		t.Fatalf("reopened journal entries = %+v", entries)
+	}
+}
+
+func TestGraphRaftJournalCursorApplyIsMonotonic(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphRaftModule(t, ctx, t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	scope := graphchange.Scope{SpaceID: spaceID, DomainID: domainID}
+	makeCommand := func(revision uint64, commandID string) consensus.RaftCommand {
+		payload, err := json.Marshal(graphChangeJournalCursorRecord{Consumer: "semantic-dirty-events", SpaceID: spaceID, DomainID: domainID, Revision: revision})
+		if err != nil {
+			t.Fatalf("marshal cursor: %v", err)
+		}
+		cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(uuid.MustParse(spaceID)), 64, recordTypeGraphJournalCursor, payload, commandID)
+		if err != nil {
+			t.Fatalf("NewSpaceCommand() error = %v", err)
+		}
+		return cmd
+	}
+	if err := applyGraphRaftCommand(ctx, m, 1, makeCommand(7, "cursor-7")); err != nil {
+		t.Fatalf("apply cursor 7: %v", err)
+	}
+	if err := applyGraphRaftCommand(ctx, m, 2, makeCommand(3, "cursor-3")); err != nil {
+		t.Fatalf("apply cursor 3: %v", err)
+	}
+	key := "semantic-dirty-events\x00" + scope.SpaceID + "\x00" + scope.DomainID
+	cursor, ok := m.graphJournalCursors[key]
+	if !ok || cursor.Revision != 7 {
+		t.Fatalf("cursor = %+v, ok=%v; want revision 7", cursor, ok)
 	}
 }
 

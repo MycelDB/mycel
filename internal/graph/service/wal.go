@@ -15,7 +15,17 @@ import (
 	"github.com/myceldb/mycel/internal/wal"
 )
 
-const recordTypeGraphCommit wal.RecordType = "graph.commit.v1"
+const (
+	recordTypeGraphCommit        wal.RecordType = "graph.commit.v1"
+	recordTypeGraphJournalCursor wal.RecordType = "graph.change_journal_cursor.v1"
+)
+
+type graphChangeJournalCursorRecord struct {
+	Consumer string `json:"consumer"`
+	SpaceID  string `json:"space_id"`
+	DomainID string `json:"domain_id"`
+	Revision uint64 `json:"revision"`
+}
 
 type graphCommitRecord struct {
 	SpaceID                   string                           `json:"space_id"`

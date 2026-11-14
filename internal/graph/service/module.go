@@ -27,8 +27,10 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	"github.com/myceldb/mycel/internal/encryption"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
+	graphjournal "github.com/myceldb/mycel/internal/graph/journal"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphquery "github.com/myceldb/mycel/internal/graph/query"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
@@ -43,9 +45,12 @@ import (
 )
 
 const (
-	childOrderStep      = 1000
-	nodePageTokenPrefix = "nodes-v1:"
+	childOrderStep             = 1000
+	nodePageTokenPrefix        = "nodes-v1:"
+	graphJournalRetentionLimit = 4096
 )
+
+var graphJournalConsumerNames = [...]string{"semantic-dirty-events", "lexical-indexing"}
 
 type nodePageCursor struct {
 	TransactionID string `json:"transaction_id"`
@@ -65,6 +70,9 @@ type nodeOverlayPage struct {
 type Module struct {
 	mu                               sync.Mutex
 	dataDir                          string
+	graphChangeJournalDir            string
+	graphChangeJournals              map[uint32]*graphjournal.Journal
+	graphJournalCursors              map[string]graphChangeJournalCursorRecord
 	stores                           map[domainStoreKey]*graphstorage.LocalStore
 	overlays                         map[string]*overlay
 	transactionMutationLocks         map[string]*transactionMutationLock
@@ -125,7 +133,7 @@ type overlay struct {
 
 func NewModule() *Module {
 	return &Module{
-		stores: map[domainStoreKey]*graphstorage.LocalStore{}, overlays: map[string]*overlay{},
+		stores: map[domainStoreKey]*graphstorage.LocalStore{}, graphChangeJournals: map[uint32]*graphjournal.Journal{}, graphJournalCursors: map[string]graphChangeJournalCursorRecord{}, overlays: map[string]*overlay{},
 		transactionMutationLocks: map[string]*transactionMutationLock{}, activeMutationScopes: map[string]*mutationScope{}, finalizedTransactions: map[string]transactionFinalization{},
 		checkpointStates: map[domainStoreKey]checkpointRuntimeState{}, gate: quiesce.NewGate(ModuleName),
 	}
@@ -178,6 +186,180 @@ func (m *Module) LastGraphChangeSinkError() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastGraphChangeSinkErr
+}
+
+func (m *Module) graphChangeJournal(ctx context.Context, partitionID uint32) (*graphjournal.Journal, error) {
+	m.mu.Lock()
+	if journal := m.graphChangeJournals[partitionID]; journal != nil {
+		m.mu.Unlock()
+		return journal, nil
+	}
+	root := m.graphChangeJournalDir
+	m.mu.Unlock()
+	journal, err := graphjournal.Open(root, partitionID)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.graphChangeJournals[partitionID]; existing != nil {
+		return existing, nil
+	}
+	m.graphChangeJournals[partitionID] = journal
+	return journal, nil
+}
+
+func (m *Module) appendGraphChangeJournal(ctx context.Context, partitionID uint32, event graphchange.CommittedEvent) error {
+	journal, err := m.graphChangeJournal(ctx, partitionID)
+	if err != nil {
+		return err
+	}
+	return journal.Append(ctx, event)
+}
+
+func (m *Module) compactGraphChangeJournalIfEligible(ctx context.Context, partitionID uint32, journal *graphjournal.Journal) error {
+	entries := journal.Entries()
+	byScope := map[string][]graphjournal.Entry{}
+	for _, entry := range entries {
+		key := entry.SpaceID + "\x00" + entry.DomainID
+		byScope[key] = append(byScope[key], entry)
+	}
+	m.mu.Lock()
+	cursors := make([]graphChangeJournalCursorRecord, 0, len(m.graphJournalCursors))
+	for _, cursor := range m.graphJournalCursors {
+		cursors = append(cursors, cursor)
+	}
+	partitionCount := m.raftPartitionCount
+	m.mu.Unlock()
+	if partitionCount == 0 {
+		return nil
+	}
+	cursorsByScope := map[string]map[string]uint64{}
+	for _, cursor := range cursors {
+		spaceID, err := uuid.Parse(cursor.SpaceID)
+		if err != nil {
+			continue
+		}
+		pid, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), partitionCount)
+		if err != nil || uint32(pid) != partitionID {
+			continue
+		}
+		key := cursor.SpaceID + "\x00" + cursor.DomainID
+		if cursorsByScope[key] == nil {
+			cursorsByScope[key] = map[string]uint64{}
+		}
+		if current, ok := cursorsByScope[key][cursor.Consumer]; !ok || cursor.Revision > current {
+			cursorsByScope[key][cursor.Consumer] = cursor.Revision
+		}
+	}
+	fences := make([]graphjournal.CompactionFence, 0)
+	for key, scoped := range byScope {
+		if len(scoped) <= graphJournalRetentionLimit {
+			continue
+		}
+		consumerCursors := cursorsByScope[key]
+		cutoff := uint64(^uint64(0))
+		covered := true
+		for _, consumer := range graphJournalConsumerNames {
+			revision, ok := consumerCursors[consumer]
+			if !ok {
+				covered = false
+				break
+			}
+			if revision < cutoff {
+				cutoff = revision
+			}
+		}
+		if !covered {
+			continue
+		}
+		target := scoped[len(scoped)-graphJournalRetentionLimit].Revision
+		if cutoff < target {
+			continue
+		}
+		parts := strings.SplitN(key, "\x00", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		fences = append(fences, graphjournal.CompactionFence{Scope: graphchange.Scope{SpaceID: parts[0], DomainID: parts[1]}, Through: target})
+	}
+	if len(fences) == 0 {
+		return nil
+	}
+	_, err := journal.Compact(ctx, fences)
+	return err
+}
+
+func (m *Module) graphChangeJournalEntries(ctx context.Context, partitionID uint32) ([]graphjournal.Entry, error) {
+	journal, err := m.graphChangeJournal(ctx, partitionID)
+	if err != nil {
+		return nil, err
+	}
+	return journal.Entries(), nil
+}
+
+// GraphChangeJournalEntriesAfter returns authoritative graph-change entries for
+// a source partition. Consumers must treat the returned entries as durable
+// handoff metadata and read graph truth separately before materialization.
+func (m *Module) GraphChangeJournalEntriesAfter(ctx context.Context, partitionID uint32, scope graphchange.Scope, after uint64) ([]graphjournal.Entry, error) {
+	journal, err := m.graphChangeJournal(ctx, partitionID)
+	if err != nil {
+		return nil, err
+	}
+	return journal.EntriesAfter(ctx, scope, after)
+}
+
+// CompactGraphChangeJournal applies the durable source-partition cursor fence
+// to the local journal. It is conservative: scopes without acknowledgements
+// from every registered consumer are retained.
+func (m *Module) CompactGraphChangeJournal(ctx context.Context, partitionID uint32) error {
+	journal, err := m.graphChangeJournal(ctx, partitionID)
+	if err != nil {
+		return err
+	}
+	return m.compactGraphChangeJournalIfEligible(ctx, partitionID, journal)
+}
+
+// GraphChangeJournalScopes enumerates scopes represented in the local copies of
+// the source-partition journals. It is used to bootstrap durable consumers
+// without consulting the bounded notification history.
+func (m *Module) GraphChangeJournalScopes(ctx context.Context, partitionCount uint32) ([]graphchange.Scope, error) {
+	if partitionCount == 0 {
+		return nil, fmt.Errorf("graph change journal partition count is required")
+	}
+	seen := map[string]graphchange.Scope{}
+	for partitionID := uint32(0); partitionID < partitionCount; partitionID++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entries, err := m.graphChangeJournalEntries(ctx, partitionID)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			key := entry.SpaceID + "\x00" + entry.DomainID
+			seen[key] = graphchange.Scope{SpaceID: entry.SpaceID, DomainID: entry.DomainID}
+		}
+	}
+	out := make([]graphchange.Scope, 0, len(seen))
+	for _, scope := range seen {
+		out = append(out, scope)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SpaceID == out[j].SpaceID {
+			return out[i].DomainID < out[j].DomainID
+		}
+		return out[i].SpaceID < out[j].SpaceID
+	})
+	return out, nil
+}
+
+func (m *Module) restoreGraphChangeJournal(ctx context.Context, partitionID uint32, entries []graphjournal.Entry) error {
+	journal, err := m.graphChangeJournal(ctx, partitionID)
+	if err != nil {
+		return err
+	}
+	return journal.Restore(ctx, entries)
 }
 
 type BlobReferenceChecker interface {
@@ -342,11 +524,18 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	m.logger = host.Log()
 	m.writeTrace = writetrace.FromEnv()
 	m.dataDir = filepath.Join(host.DataDir(), "graphs")
+	m.graphChangeJournalDir = filepath.Join(host.DataDir(), "graph-change-outbox")
 	if err := os.MkdirAll(m.dataDir, fsperm.PrivateDir); err != nil {
+		return runtime.Abort(ModuleName, "storage", "create graph data directory", err)
+	}
+	if err := os.MkdirAll(m.graphChangeJournalDir, fsperm.PrivateDir); err != nil {
 		return runtime.Abort(ModuleName, "storage", "create graph data directory", err)
 	}
 	if m.stores == nil {
 		m.stores = map[domainStoreKey]*graphstorage.LocalStore{}
+	}
+	if m.graphChangeJournals == nil {
+		m.graphChangeJournals = map[uint32]*graphjournal.Journal{}
 	}
 	if m.overlays == nil {
 		m.overlays = map[string]*overlay{}

@@ -71,6 +71,25 @@ func TestServiceRebuildProducesSearchableIndex(t *testing.T) {
 	}
 }
 
+func TestServiceRebuildRequiredMarkerIsClearedByCompleteRebuild(t *testing.T) {
+	svc := New(t.TempDir(), "space-1", "domain-1")
+	if err := svc.UpsertDocument(testDoc("node-a", "journal gap"), 1); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	svc.MarkRebuildRequired("authoritative journal gap")
+	status := svc.Status(1)
+	if status.State != StateUnavailable || status.LastError != "authoritative journal gap" {
+		t.Fatalf("status after rebuild marker = %#v", status)
+	}
+	if err := svc.Rebuild([]index.IndexedDocument{{Document: testDoc("node-a", "rebuilt"), GraphRevision: 2}}, 2); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	status = svc.Status(2)
+	if status.State != StateFresh || status.LastError != "" {
+		t.Fatalf("status after rebuild = %#v", status)
+	}
+}
+
 func TestServiceTombstoneHeavyRebuildDoesNotResurrectDeletedDocuments(t *testing.T) {
 	svc := New(t.TempDir(), "space-1", "domain-1")
 	for i := 0; i < 32; i++ {

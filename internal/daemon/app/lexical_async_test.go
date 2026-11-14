@@ -20,6 +20,7 @@ import (
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
+	graphjournal "github.com/myceldb/mycel/internal/graph/journal"
 	graph "github.com/myceldb/mycel/internal/graph/model"
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
@@ -35,6 +36,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 )
+
+func TestValidateAsyncLexicalJournalEntriesRejectsGap(t *testing.T) {
+	err := validateAsyncLexicalJournalEntries([]graphjournal.Entry{{Version: 1, Revision: 2}}, 0, 2)
+	if !errors.Is(err, graphnotification.ErrOutOfRange) {
+		t.Fatalf("validateAsyncLexicalJournalEntries() error = %v, want out-of-range", err)
+	}
+}
 
 func TestAsyncLexicalConsumerIndexesGraphChange(t *testing.T) {
 	ctx := context.Background()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	graphstorage "github.com/myceldb/mycel/internal/graph/storage"
@@ -33,7 +34,7 @@ type RaftStateMachine struct {
 func (s RaftStateMachine) RaftStateMachineName() string { return "graph" }
 
 func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope, recordType wal.RecordType) bool {
-	return scope == consensus.CommandScopeSpacePartition && recordType == recordTypeGraphCommit
+	return scope == consensus.CommandScopeSpacePartition && (recordType == recordTypeGraphCommit || recordType == recordTypeGraphJournalCursor)
 }
 
 func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand) error {
@@ -180,6 +181,43 @@ func (m *Module) EnableProjectionLifecycle(groups *consensus.MultiGroup, localNo
 	m.raftPartitionCount = partitionCount
 }
 
+// AcknowledgeGraphChangeJournal advances a durable derived-consumer cursor in
+// the source graph partition. It is intentionally separate from materializer
+// metadata so journal compaction can fence every consumer at the source.
+func (m *Module) AcknowledgeGraphChangeJournal(ctx context.Context, consumer string, scope graphchange.Scope, revision uint64) error {
+	consumer = strings.TrimSpace(consumer)
+	scope.SpaceID = strings.TrimSpace(scope.SpaceID)
+	scope.DomainID = strings.TrimSpace(scope.DomainID)
+	if consumer == "" || scope.SpaceID == "" || scope.DomainID == "" || revision == 0 {
+		return fmt.Errorf("graph journal cursor requires consumer, scope, and revision")
+	}
+	spaceID, err := uuid.Parse(scope.SpaceID)
+	if err != nil || spaceID == uuid.Nil {
+		return fmt.Errorf("graph journal cursor space_id is invalid")
+	}
+	partitionID, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(spaceID), m.raftPartitionCount)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(graphChangeJournalCursorRecord{Consumer: consumer, SpaceID: scope.SpaceID, DomainID: scope.DomainID, Revision: revision})
+	if err != nil {
+		return err
+	}
+	commandID := graphJournalCursorCommandID(consumer, scope, revision)
+	cmd, err := consensus.NewSpaceCommand(domainspace.SpaceID(spaceID), m.raftPartitionCount, recordTypeGraphJournalCursor, payload, commandID)
+	if err != nil {
+		return err
+	}
+	cmd.PartitionID = uint32(partitionID)
+	_, err = m.proposeGraphRaftCommand(ctx, cmd)
+	return err
+}
+
+func graphJournalCursorCommandID(consumer string, scope graphchange.Scope, revision uint64) string {
+	sum := sha256.Sum256([]byte(consumer + "\x00" + scope.SpaceID + "\x00" + scope.DomainID + fmt.Sprintf("\x00%d", revision)))
+	return "graph-journal-cursor-v1-" + hex.EncodeToString(sum[:])
+}
+
 func (m *Module) proposeGraphRaftCommand(ctx context.Context, cmd consensus.RaftCommand) (consensus.ProposalResult, error) {
 	if m.raftGroups == nil {
 		return consensus.ProposalResult{}, fmt.Errorf("raft groups are not configured")
@@ -238,9 +276,49 @@ func (m *Module) buildGraphCommitRaftCommand(record graphCommitRecord, partition
 	return consensus.NewSpaceCommand(domainspace.SpaceID(spaceID), partitionCount, recordTypeGraphCommit, payload, commandID)
 }
 
+func (m *Module) applyGraphJournalCursorCommand(ctx context.Context, cmd consensus.RaftCommand) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if _, ok := m.raftAppliedCommands[cmd.CommandID]; ok {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+	var record graphChangeJournalCursorRecord
+	if err := json.Unmarshal(cmd.Payload, &record); err != nil {
+		return err
+	}
+	if strings.TrimSpace(record.SpaceID) != strings.TrimSpace(cmd.SpaceID) || strings.TrimSpace(record.Consumer) == "" || strings.TrimSpace(record.DomainID) == "" || record.Revision == 0 {
+		return fmt.Errorf("invalid graph journal cursor record")
+	}
+	key := record.Consumer + "\x00" + record.SpaceID + "\x00" + record.DomainID
+	m.mu.Lock()
+	if m.graphJournalCursors == nil {
+		m.graphJournalCursors = map[string]graphChangeJournalCursorRecord{}
+	}
+	current := m.graphJournalCursors[key]
+	if record.Revision > current.Revision {
+		m.graphJournalCursors[key] = record
+	}
+	m.mu.Unlock()
+	journal, err := m.graphChangeJournal(ctx, cmd.PartitionID)
+	if err != nil {
+		return err
+	}
+	if err := m.compactGraphChangeJournalIfEligible(ctx, cmd.PartitionID, journal); err != nil {
+		return err
+	}
+	return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
+}
+
 func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.ApplyContext, cmd consensus.RaftCommand, partitionCount uint32) error {
 	if err := cmd.Validate(partitionCount); err != nil {
 		return err
+	}
+	if cmd.RecordType == recordTypeGraphJournalCursor {
+		return m.applyGraphJournalCursorCommand(ctx, cmd)
 	}
 	if cmd.RecordType != recordTypeGraphCommit {
 		return fmt.Errorf("unsupported graph raft record type %s", cmd.RecordType)
@@ -278,6 +356,15 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	if err != nil {
 		return err
 	}
+	journalEvent := func(revision uint64) error {
+		event.Changes = changes
+		if event.Empty() {
+			return nil
+		}
+		event.GraphRevision = revision
+		event.Revision = revision
+		return m.appendGraphChangeJournal(context.WithoutCancel(ctx), cmd.PartitionID, event)
+	}
 	revision, _, info, err := m.applyGraphCommitRecord(ctx, record)
 	if err != nil {
 		if record.Idempotency != nil && (errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrIdempotencyCapacity)) {
@@ -297,6 +384,13 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 				return verifyErr
 			}
 			if alreadyApplied {
+				store, storeErr := m.store(ctx, record.SpaceID, event.DomainID.String())
+				if storeErr != nil {
+					return storeErr
+				}
+				if journalErr := journalEvent(store.Revision()); journalErr != nil {
+					return journalErr
+				}
 				return m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID)
 			}
 			if apply.Replay {
@@ -309,6 +403,9 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 				}
 			}
 		}
+		return err
+	}
+	if err := journalEvent(uint64(revision)); err != nil {
 		return err
 	}
 	if err := m.rememberRaftAppliedCommand(context.WithoutCancel(ctx), cmd.CommandID); err != nil {
@@ -325,7 +422,6 @@ func (m *Module) applyGraphRaftCommand(ctx context.Context, apply consensus.Appl
 	if info.IdempotentReplay {
 		return nil
 	}
-	event.Changes = changes
 	m.notifyRaftApplyChangeSink(ctx, graphstorage.CommitInfo{TxnID: event.TxnID, NextRevision: uint64(revision)}, event)
 	return nil
 }

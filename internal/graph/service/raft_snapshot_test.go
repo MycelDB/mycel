@@ -16,6 +16,66 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func TestGraphRaftSnapshotPreservesGraphChangeJournal(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	m := newTestGraphRaftModule(t, ctx, dataDir)
+	spaceID := uuid.NewString()
+	domainID := uuid.New()
+	record := graphCommitRecord{SpaceID: spaceID, DomainID: domainID.String(), PutNodes: []domaingraph.Node{{ID: uuid.New(), DomainID: domainID, Content: "snapshot journal"}}, OperationCount: 1}
+	cmd, err := m.buildGraphCommitRaftCommand(record, 64, "snapshot-journal-command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyGraphRaftCommand(ctx, m, 1, cmd); err != nil {
+		t.Fatalf("ApplyCommand() error = %v", err)
+	}
+	pid, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(uuid.MustParse(spaceID)), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := (RaftStateMachine{Module: m, PartitionID: pid.Uint32(), PartitionCount: 64}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := newTestGraphRaftModule(t, ctx, t.TempDir())
+	if err := (RaftStateMachine{Module: restored, PartitionID: pid.Uint32(), PartitionCount: 64}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := restored.graphChangeJournalEntries(ctx, pid.Uint32())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Revision != 1 {
+		t.Fatalf("restored journal entries = %+v", entries)
+	}
+}
+
+func TestGraphRaftSnapshotPreservesGraphJournalCursor(t *testing.T) {
+	ctx := context.Background()
+	m := newTestGraphRaftModule(t, ctx, t.TempDir())
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	key := "semantic-dirty-events\x00" + spaceID + "\x00" + domainID
+	m.graphJournalCursors[key] = graphChangeJournalCursorRecord{Consumer: "semantic-dirty-events", SpaceID: spaceID, DomainID: domainID, Revision: 7}
+	pid, err := partitioning.PartitionForSpaceID(domainspace.SpaceID(uuid.MustParse(spaceID)), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := (RaftStateMachine{Module: m, PartitionID: pid.Uint32(), PartitionCount: 64}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := newTestGraphRaftModule(t, ctx, t.TempDir())
+	if err := (RaftStateMachine{Module: restored, PartitionID: pid.Uint32(), PartitionCount: 64}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	cursor, ok := restored.graphJournalCursors[key]
+	if !ok || cursor.Revision != 7 {
+		t.Fatalf("restored graph journal cursor = %+v, ok=%v", cursor, ok)
+	}
+}
+
 func TestGraphRaftSnapshotPreservesDeliveredAndPromotedIdempotencyState(t *testing.T) {
 	ctx := context.Background()
 	m := NewModule()
