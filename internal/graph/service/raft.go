@@ -41,7 +41,25 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if s.Module == nil {
 		return nil
 	}
-	return s.Module.applyGraphRaftCommand(ctx, apply, cmd, s.PartitionCount)
+	err := s.Module.applyGraphRaftCommand(ctx, apply, cmd, s.PartitionCount)
+	if err == nil || consensus.IsFatalApplyError(err) {
+		return err
+	}
+	if isGraphCommandRejection(err) {
+		return consensus.NewCommandRejection(err)
+	}
+	return consensus.NewFatalApplyError(err)
+}
+
+func isGraphCommandRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrConflict) ||
+		errors.Is(err, ErrRevisionFenceConflict) ||
+		errors.Is(err, ErrIdempotencyConflict) ||
+		errors.Is(err, ErrIdempotencyCapacity) ||
+		status.Code(err) == codes.FailedPrecondition
 }
 
 func (m *Module) graphChangeEventFromRaftRecord(ctx context.Context, record graphCommitRecord, commandID string) (graphchange.CommittedEvent, []graphchange.Change, error) {

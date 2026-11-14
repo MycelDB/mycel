@@ -53,10 +53,13 @@ func (s AuthorizationRaftStateMachine) ApplyCommand(ctx context.Context, _ conse
 		} else {
 			err = s.Module.applyInferenceUsage(ctx, record)
 		}
-		if err != nil && status.Code(err) != codes.FailedPrecondition {
-			return consensus.NewFatalApplyError(err)
+		if err == nil {
+			return nil
 		}
-		return err
+		if status.Code(err) == codes.FailedPrecondition {
+			return consensus.NewCommandRejection(err)
+		}
+		return consensus.NewFatalApplyError(err)
 	case recordTypeInferenceGlobalAuthorizationAssert:
 		var assertion globalAuthorizationAssertion
 		if err := json.Unmarshal(cmd.Payload, &assertion); err != nil {
@@ -74,7 +77,7 @@ func (s AuthorizationRaftStateMachine) ApplyCommand(ctx context.Context, _ conse
 			return err
 		}
 		if current != assertion.ExpectedRevision {
-			return status.Error(codes.FailedPrecondition, "global inference authorization revision changed")
+			return consensus.NewCommandRejection(status.Error(codes.FailedPrecondition, "global inference authorization revision changed"))
 		}
 		return nil
 	default:
