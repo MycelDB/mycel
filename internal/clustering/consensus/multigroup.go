@@ -131,16 +131,24 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 		return fmt.Errorf("multi group is required")
 	}
 	peers := raftNodeIDsFromSystemMetadata(meta)
+	m.mu.RLock()
+	fallbackPeers := append([]NodeID(nil), m.peerNodeIDs...)
+	configuredPartitionCount := m.partitionCount
+	nodeID := m.nodeID
+	storageDir := m.storageDir
+	encryption := m.encryption
+	stateMachines := m.stateMachines
+	transport := m.transport
+	electionTick := m.electionTick
+	heartbeatTick := m.heartbeatTick
+	recoverEmptyStorageRejoin := m.recoverEmptyStorageRejoin
+	m.mu.RUnlock()
 	if len(peers) == 0 {
-		m.mu.RLock()
-		peers = append([]NodeID(nil), m.peerNodeIDs...)
-		m.mu.RUnlock()
+		peers = fallbackPeers
 	}
 	partitionCount := uint32(meta.PartitionCount)
 	if partitionCount == 0 {
-		m.mu.RLock()
-		partitionCount = m.partitionCount
-		m.mu.RUnlock()
+		partitionCount = configuredPartitionCount
 	}
 	if partitionCount == 0 {
 		return fmt.Errorf("partition count is required")
@@ -148,10 +156,17 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 	if len(peers) == 0 {
 		return fmt.Errorf("raft peers are required")
 	}
+
+	type pendingPartitionGroup struct {
+		partitionID uint32
+		groupID     GroupID
+		replicas    []NodeID
+		preferred   NodeID
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.peerNodeIDs = append([]NodeID(nil), peers...)
 	m.partitionCount = partitionCount
+	pending := make([]pendingPartitionGroup, 0, partitionCount)
 	for p := uint32(0); p < partitionCount; p++ {
 		gid := PartitionGroupID(p)
 		if _, exists := m.groups[gid]; exists {
@@ -159,9 +174,9 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 		}
 		replicas := replicaNodeIDsForPartition(meta, p)
 		if len(replicas) == 0 {
-			replicas = peers
+			replicas = append([]NodeID(nil), peers...)
 		}
-		if !containsNodeID(replicas, m.nodeID) {
+		if !containsNodeID(replicas, nodeID) {
 			continue
 		}
 		preferred := preferredLeaderFromSystemMetadata(meta, p)
@@ -169,20 +184,55 @@ func (m *MultiGroup) StartPartitionGroups(ctx context.Context, meta SystemMetada
 			var err error
 			preferred, err = PreferredLeaderNode(p, replicas)
 			if err != nil {
+				m.mu.Unlock()
 				return err
 			}
 		}
-		storage, err := partitionGroupStorage(m.storageDir, gid, m.encryption)
+		pending = append(pending, pendingPartitionGroup{partitionID: p, groupID: gid, replicas: replicas, preferred: preferred})
+	}
+	m.mu.Unlock()
+
+	started := make([]struct {
+		id GroupID
+		g  *Group
+	}, 0, len(pending))
+	cleanupStarted := func() {
+		for _, item := range started {
+			m.mu.Lock()
+			if current, ok := m.groups[item.id]; ok && current == item.g {
+				delete(m.groups, item.id)
+				delete(m.preferred, item.id)
+			}
+			m.mu.Unlock()
+			item.g.Stop()
+		}
+	}
+	for _, item := range pending {
+		storage, err := partitionGroupStorage(storageDir, item.groupID, encryption)
 		if err != nil {
+			cleanupStarted()
 			return err
 		}
-		joinExisting := m.recoverEmptyStorageRejoin && storage != nil && !hasPersistentRaftState(storage)
-		g, err := StartGroup(ctx, GroupOptions{ID: gid, NodeID: m.nodeID, Peers: replicas, PartitionCount: partitionCount, StateMachine: m.stateMachines.PartitionStateMachine(p), Transport: m.transport, ElectionTick: m.electionTick, HeartbeatTick: m.heartbeatTick, Storage: storage, ReplayCommittedEntries: storage != nil, JoinExisting: joinExisting})
+		joinExisting := recoverEmptyStorageRejoin && storage != nil && !hasPersistentRaftState(storage)
+		g, err := StartGroup(ctx, GroupOptions{ID: item.groupID, NodeID: nodeID, Peers: item.replicas, PartitionCount: partitionCount, StateMachine: stateMachines.PartitionStateMachine(item.partitionID), Transport: transport, ElectionTick: electionTick, HeartbeatTick: heartbeatTick, Storage: storage, ReplayCommittedEntries: storage != nil, JoinExisting: joinExisting})
 		if err != nil {
+			cleanupStarted()
 			return err
 		}
-		m.groups[gid] = g
-		m.preferred[gid] = preferred
+		m.mu.Lock()
+		_, exists := m.groups[item.groupID]
+		if !exists {
+			m.groups[item.groupID] = g
+			m.preferred[item.groupID] = item.preferred
+			started = append(started, struct {
+				id GroupID
+				g  *Group
+			}{id: item.groupID, g: g})
+		}
+		m.mu.Unlock()
+		if exists {
+			g.Stop()
+		}
 	}
 	return nil
 }
