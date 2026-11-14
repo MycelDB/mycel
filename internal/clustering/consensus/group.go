@@ -27,11 +27,38 @@ func NewFatalApplyError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if IsFatalApplyError(err) {
+		return err
+	}
 	return &FatalApplyError{Err: err}
 }
 
 func IsFatalApplyError(err error) bool {
 	var target *FatalApplyError
+	return errors.As(err, &target)
+}
+
+// CommandRejectionError marks a deterministic command-level rejection. A
+// rejected command is still a committed Raft entry: replicas may advance past
+// it after recording the rejection result, while infrastructure and
+// state-machine failures must stop application and remain replayable.
+type CommandRejectionError struct{ Err error }
+
+func (e *CommandRejectionError) Error() string { return e.Err.Error() }
+func (e *CommandRejectionError) Unwrap() error { return e.Err }
+
+func NewCommandRejection(err error) error {
+	if err == nil {
+		return nil
+	}
+	if IsCommandRejection(err) {
+		return err
+	}
+	return &CommandRejectionError{Err: err}
+}
+
+func IsCommandRejection(err error) bool {
+	var target *CommandRejectionError
 	return errors.As(err, &target)
 }
 
@@ -104,6 +131,7 @@ type Group struct {
 	readSeq              uint64
 	readWaiters          map[string]chan readIndexOutcome
 	readDiagnostics      ReadDiagnostics
+	applyFailure         error
 	proposalTimings      map[string]*ProposalTiming
 	joinExisting         bool
 	catchupRecoveryOnce  sync.Once
@@ -257,8 +285,8 @@ func restoreSnapshotAndReplayCommittedEntries(ctx context.Context, storage raftS
 			if err := cmd.Validate(partitionCount); err != nil {
 				return applied, err
 			}
-			if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term, Replay: true}, cmd); IsFatalApplyError(err) {
-				return applied, err
+			if err := sm.ApplyCommand(ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term, Replay: true}, cmd); err != nil && !IsCommandRejection(err) {
+				return applied, NewFatalApplyError(err)
 			}
 		}
 		if entry.Index > applied {
@@ -297,6 +325,9 @@ func (g *Group) Stop() {
 func (g *Group) Tick() { g.node.Tick() }
 
 func (g *Group) Step(ctx context.Context, msg raftpb.Message) error {
+	if err := g.ApplyFailure(); err != nil {
+		return err
+	}
 	if g.storage != nil {
 		last, err := g.storage.LastIndex()
 		if err == nil {
@@ -415,6 +446,18 @@ func (g *Group) Leader() NodeID {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.leader
+}
+
+// ApplyFailure reports the terminal local failure that stopped this group's
+// apply loop. A failed group intentionally reports no leader until it is
+// restarted from durable Raft state and the committed entry can be replayed.
+func (g *Group) ApplyFailure() error {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.applyFailure
 }
 
 func (g *Group) Progress() (term uint64, commitIndex uint64, appliedIndex uint64) {
@@ -609,17 +652,30 @@ func (g *Group) WaitApplied(ctx context.Context, index uint64) error {
 	if index == 0 {
 		return nil
 	}
-	return WaitUntil(ctx, time.Millisecond, func() bool {
+	var failure error
+	err := WaitUntil(ctx, time.Millisecond, func() bool {
 		g.mu.Lock()
 		defer g.mu.Unlock()
+		if g.applyFailure != nil {
+			failure = g.applyFailure
+			return true
+		}
 		return g.appliedIndex >= index
 	})
+	if failure != nil {
+		return failure
+	}
+	return err
 }
 
 func (g *Group) beginReadIndex(ctx context.Context) (string, chan readIndexOutcome, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.readDiagnostics.ReadIndexAttempts++
+	if g.applyFailure != nil {
+		g.recordReadFailureLocked(g.applyFailure)
+		return "", nil, g.applyFailure
+	}
 	if g.leader == 0 {
 		g.recordReadFailureLocked(ErrNoLeader)
 		slog.Default().Warn("raft read-index failed", "group_id", string(g.id), "local_node_id", uint64(g.nodeID), "leader_node_id", uint64(g.leader), "reason", g.readDiagnostics.LastFailureReason)
@@ -638,9 +694,21 @@ func (g *Group) beginReadIndex(ctx context.Context) (string, chan readIndexOutco
 	return readCtx, ch, nil
 }
 
-func (g *Group) Campaign(ctx context.Context) error { return g.node.Campaign(ctx) }
+func (g *Group) Campaign(ctx context.Context) error {
+	if err := g.ApplyFailure(); err != nil {
+		return err
+	}
+	return g.node.Campaign(ctx)
+}
 
 func (g *Group) Propose(ctx context.Context, cmd RaftCommand) (ProposalResult, error) {
+	g.mu.Lock()
+	if g.applyFailure != nil {
+		err := g.applyFailure
+		g.mu.Unlock()
+		return ProposalResult{}, err
+	}
+	g.mu.Unlock()
 	timing := &ProposalTiming{}
 	stepStart := time.Now()
 	if err := cmd.Validate(g.partitionCount); err != nil {
@@ -716,18 +784,33 @@ func (g *Group) processReady(rd raft.Ready) bool {
 	}
 	if !raft.IsEmptySnap(rd.Snapshot) {
 		if err := g.storage.ApplySnapshot(rd.Snapshot); err != nil {
-			g.failWaiters(fmt.Errorf("apply raft snapshot: %w", err))
+			g.fail(err)
 			return false
 		}
 		if err := restoreStateMachineSnapshot(g.sm, rd.Snapshot); err != nil {
-			g.failWaiters(err)
+			g.fail(err)
 			return false
 		}
 		g.markApplied(rd.Snapshot.Metadata.Index)
 	}
+	// Persist entries before HardState. If appending fails, writing a commit
+	// index first would leave durable metadata referring to entries that are not
+	// durable and can make restart panic or skip the failed command.
+	entryCommandIDs := commandIDsFromEntries(rd.Entries)
+	if len(rd.Entries) > 0 {
+		stepStart := time.Now()
+		if err := g.storage.Append(rd.Entries); err != nil {
+			g.fail(fmt.Errorf("persist raft entries: %w", err))
+			return false
+		}
+		g.recordReadyBatchTiming(entryCommandIDs, func(t *ProposalTiming) {
+			t.StorageAppend = time.Since(stepStart)
+			t.ReadyEntries = len(rd.Entries)
+		})
+	}
 	if !raft.IsEmptyHardState(rd.HardState) {
 		if err := g.storage.SetHardState(rd.HardState); err != nil {
-			g.failWaiters(fmt.Errorf("persist raft hard state: %w", err))
+			g.fail(fmt.Errorf("persist raft hard state: %w", err))
 			return false
 		}
 		g.mu.Lock()
@@ -739,18 +822,6 @@ func (g *Group) processReady(rd raft.Ready) bool {
 		}
 		g.mu.Unlock()
 	}
-	entryCommandIDs := commandIDsFromEntries(rd.Entries)
-	if len(rd.Entries) > 0 {
-		stepStart := time.Now()
-		if err := g.storage.Append(rd.Entries); err != nil {
-			g.failWaiters(fmt.Errorf("persist raft entries: %w", err))
-			return false
-		}
-		g.recordReadyBatchTiming(entryCommandIDs, func(t *ProposalTiming) {
-			t.StorageAppend = time.Since(stepStart)
-			t.ReadyEntries = len(rd.Entries)
-		})
-	}
 	stepStart := time.Now()
 	g.transport.Send(g.ctx, g.id, g.nodeID, rd.Messages)
 	if len(rd.Messages) > 0 {
@@ -761,7 +832,7 @@ func (g *Group) processReady(rd raft.Ready) bool {
 	}
 	for _, entry := range rd.CommittedEntries {
 		if err := g.applyEntry(entry); err != nil {
-			g.failWaiters(err)
+			g.fail(err)
 			return false
 		}
 	}
@@ -850,6 +921,11 @@ func (g *Group) applyEntry(entry raftpb.Entry) error {
 		err = g.sm.ApplyCommand(g.ctx, ApplyContext{RaftIndex: entry.Index, RaftTerm: entry.Term}, cmd)
 		applyDuration = time.Since(stepStart)
 		g.recordProposalTiming(cmd.CommandID, func(t *ProposalTiming) { t.StateMachineApply = applyDuration })
+	} else {
+		err = NewFatalApplyError(err)
+	}
+	if err != nil && !IsCommandRejection(err) && !IsFatalApplyError(err) {
+		err = NewFatalApplyError(err)
 	}
 	if err != nil {
 		g.failReadWaiters(err)
@@ -896,6 +972,21 @@ func (g *Group) completeWaiter(commandID string, out proposalOutcome) {
 }
 
 func (g *Group) forgetWaiter(commandID string, out proposalOutcome) { g.completeWaiter(commandID, out) }
+
+func (g *Group) fail(err error) {
+	if err == nil {
+		err = errors.New("raft group stopped after an unknown apply failure")
+	}
+	g.mu.Lock()
+	if g.applyFailure == nil {
+		g.applyFailure = err
+	}
+	g.leader = 0
+	failure := g.applyFailure
+	g.mu.Unlock()
+	slog.Default().Error("raft group apply stopped", "group_id", string(g.id), "node_id", uint64(g.nodeID), "error", failure)
+	g.failWaiters(failure)
+}
 
 func (g *Group) failWaiters(err error) {
 	g.mu.Lock()

@@ -155,15 +155,19 @@ func (m *Module) applyPrincipalRaftCommand(ctx context.Context, apply consensus.
 	if err != nil {
 		if isRecordableRaftApplicationError(err) {
 			if rememberErr := m.rememberRaftCommandOutcome(ctx, apply, cmd, raftCommandStatusApplicationError, err); rememberErr != nil {
-				return rememberErr
+				return consensus.NewFatalApplyError(rememberErr)
 			}
 			if apply.Replay {
 				return nil
 			}
+			return consensus.NewCommandRejection(err)
 		}
-		return err
+		return consensus.NewFatalApplyError(err)
 	}
-	return m.rememberRaftCommandOutcome(ctx, apply, cmd, raftCommandStatusApplied, nil)
+	if err := m.rememberRaftCommandOutcome(ctx, apply, cmd, raftCommandStatusApplied, nil); err != nil {
+		return consensus.NewFatalApplyError(err)
+	}
+	return nil
 }
 
 func (m *Module) applySessionPut(ctx context.Context, payload []byte) error {
