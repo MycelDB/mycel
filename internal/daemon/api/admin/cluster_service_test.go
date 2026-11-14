@@ -300,12 +300,12 @@ func containsSubstring(values []string, want string) bool {
 
 func TestRaftGroupStatusToProtoIncludesStorageDiagnostics(t *testing.T) {
 	partitionID := uint32(7)
-	out := raftGroupStatusToProto(consensus.GroupStatus{GroupID: consensus.PartitionGroupID(partitionID), NodeID: 2, Leader: 0, PreferredLeader: 1, PartitionID: &partitionID, Term: 5, CommitIndex: 11, AppliedIndex: 8, LastIndex: 13, SnapshotIndex: 3, ReadDiagnostics: consensus.ReadDiagnostics{ReadIndexAttempts: 4, ReadIndexSuccesses: 2, ReadIndexFailures: 1, ReadIndexTimeouts: 1, ReadIndexNoLeader: 1, LastFailureAt: time.Date(2026, 7, 31, 18, 0, 0, 0, time.UTC), LastFailureReason: "no_leader", LastReadIndex: 12, LastAppliedWaitSuccess: 12, LastAppliedWaitDuration: 25 * time.Millisecond}}, []uint64{1, 2, 3})
+	out := raftGroupStatusToProto(consensus.GroupStatus{GroupID: consensus.PartitionGroupID(partitionID), NodeID: 2, Leader: 0, PreferredLeader: 1, PartitionID: &partitionID, Term: 5, CommitIndex: 11, AppliedIndex: 8, LastIndex: 13, SnapshotIndex: 3, ApplyFailure: true, ReadDiagnostics: consensus.ReadDiagnostics{ReadIndexAttempts: 4, ReadIndexSuccesses: 2, ReadIndexFailures: 1, ReadIndexTimeouts: 1, ReadIndexNoLeader: 1, LastFailureAt: time.Date(2026, 7, 31, 18, 0, 0, 0, time.UTC), LastFailureReason: "no_leader", LastReadIndex: 12, LastAppliedWaitSuccess: 12, LastAppliedWaitDuration: 25 * time.Millisecond}}, []uint64{1, 2, 3})
 	if out.GetKind() != adminv1.RaftGroupKind_RAFT_GROUP_KIND_PARTITION || out.GetPartitionId() != partitionID {
 		t.Fatalf("unexpected group kind/partition: %#v", out)
 	}
-	if out.GetHealth() != adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_NO_LEADER || out.GetHealthReason() == "" {
-		t.Fatalf("expected no-leader health reason, got %#v", out)
+	if out.GetHealth() != adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_NO_LEADER || out.GetHealthReason() != "raft apply stopped; committed entry requires replay" {
+		t.Fatalf("expected apply-stop health reason, got %#v", out)
 	}
 	if out.GetApplyLag() != 3 || out.GetLastIndex() != 13 || out.GetSnapshotIndex() != 3 {
 		t.Fatalf("unexpected raft diagnostics: %#v", out)

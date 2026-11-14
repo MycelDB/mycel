@@ -6,6 +6,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Fixed
+
+- Raft apply and replay now distinguish deterministic command rejections from infrastructure/state-machine failures. Failed applications fence the local group, leave the applied index unchanged, fail closed in status/readiness, and replay the committed entry after recovery instead of skipping it (#340).
+
 ## [v0.22.0] - 2026-11-09
 
 ### Added

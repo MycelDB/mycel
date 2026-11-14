@@ -671,6 +671,9 @@ func raftGroupStatusToProto(st consensus.GroupStatus, replicas []uint64) *adminv
 	if st.Leader == 0 {
 		health = adminv1.RaftGroupHealth_RAFT_GROUP_HEALTH_NO_LEADER
 		healthReason = "raft group has no leader"
+		if st.ApplyFailure {
+			healthReason = "raft apply stopped; committed entry requires replay"
+		}
 	}
 	applyLag := uint64(0)
 	if st.CommitIndex > st.AppliedIndex {

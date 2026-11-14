@@ -39,10 +39,13 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 		return nil
 	}
 	err := s.Module.applySemanticRaftCommand(ctx, cmd, s.PartitionCount)
-	if err != nil && !isSemanticCommandRejection(err) {
-		return consensus.NewFatalApplyError(err)
+	if err == nil {
+		return nil
 	}
-	return err
+	if isSemanticCommandRejection(err) {
+		return consensus.NewCommandRejection(err)
+	}
+	return consensus.NewFatalApplyError(err)
 }
 
 func (m *Module) EnableExperimentalRaft(groups *consensus.MultiGroup, partitionCount uint32) {
