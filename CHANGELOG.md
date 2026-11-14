@@ -9,6 +9,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 ### Fixed
 
 - Raft apply and replay now distinguish deterministic command rejections from infrastructure/state-machine failures. Failed applications fence the local group, leave the applied index unchanged, fail closed in status/readiness, and replay the committed entry after recovery instead of skipping it (#340).
+- Partition-group startup no longer holds the multi-group registry lock while replaying state machines, preventing recovery requests from deadlocking during committed-entry replay (#340).
 
 ## [v0.22.0] - 2026-11-09
 
