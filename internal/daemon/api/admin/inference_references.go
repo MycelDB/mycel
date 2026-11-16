@@ -379,7 +379,7 @@ func (s *AdminInferenceService) profileReferences(ctx context.Context, profile d
 			for _, rule := range rules {
 				for _, binding := range rule.Embeddings {
 					bindingProfile := strings.ToLower(strings.TrimSpace(binding.IntelligenceProfile))
-					if binding.IntelligenceProfileID.String() == idText || (key != "" && bindingProfile == strings.ToLower(key)) {
+					if binding.IntelligenceProfileID.String() == idText || (binding.IntelligenceProfileID == uuid.Nil && key != "" && bindingProfile == strings.ToLower(key)) {
 						refs = append(refs, "semantic_rule:"+rule.ID.String()+":binding:"+binding.Key)
 					}
 				}

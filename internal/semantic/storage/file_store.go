@@ -973,6 +973,9 @@ func (m *spaceManager) UpsertSemanticRule(ctx context.Context, rule domainsemant
 		return domainsemantic.SemanticGenerationRule{}, err
 	}
 	m.rules = latest
+	if err := validateSemanticRuleProfileDependencies(validation.Rule, m.profiles.Profiles); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
 	now := time.Now().UTC()
 	if rule.ID == uuid.Nil {
 		rule.ID = newID()
@@ -1057,6 +1060,9 @@ func (m *spaceManager) SetSemanticRuleEnabled(ctx context.Context, expected doma
 		return domainsemantic.SemanticGenerationRule{}, err
 	}
 	m.rules = latest
+	if err := validateSemanticRuleProfileDependencies(desired, m.profiles.Profiles); err != nil {
+		return domainsemantic.SemanticGenerationRule{}, err
+	}
 	for i, rule := range m.rules.Rules {
 		if rule.ID != expected.ID {
 			continue
@@ -1307,13 +1313,40 @@ func (m *spaceManager) UpsertIntelligenceProfile(ctx context.Context, profile do
 		}
 	}
 	if match >= 0 {
-		profile.ID = m.profiles.Profiles[match].ID
-		profile.CreatedAt = m.profiles.Profiles[match].CreatedAt
-		m.profiles.Profiles[match] = profile
-		return profile, persistJSON(m.path(intelligenceProfilesFileName), m.profiles)
+		previous := m.profiles.Profiles[match]
+		profile.ID = previous.ID
+		profile.CreatedAt = previous.CreatedAt
+		var latestRules semanticRulesState
+		if err := loadJSON(m.path(semanticRulesFileName), &latestRules, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+			return domainsemantic.IntelligenceProfile{}, err
+		}
+		if err := ValidateSemanticRuleCatalog(latestRules.Rules); err != nil {
+			return domainsemantic.IntelligenceProfile{}, err
+		}
+		m.rules = latestRules
+		nextProfiles := intelligenceProfilesState{Profiles: append([]domainsemantic.IntelligenceProfile(nil), m.profiles.Profiles...)}
+		nextProfiles.Profiles[match] = profile
+		for _, rule := range latestRules.Rules {
+			if !semanticRuleReferencesProfile(rule, previous) && !semanticRuleReferencesProfile(rule, profile) {
+				continue
+			}
+			if err := validateSemanticRuleProfileDependencies(rule, nextProfiles.Profiles); err != nil {
+				return domainsemantic.IntelligenceProfile{}, err
+			}
+		}
+		if err := persistJSON(m.path(intelligenceProfilesFileName), nextProfiles); err != nil {
+			return domainsemantic.IntelligenceProfile{}, err
+		}
+		m.profiles = nextProfiles
+		return profile, nil
 	}
-	m.profiles.Profiles = append(m.profiles.Profiles, profile)
-	return profile, persistJSON(m.path(intelligenceProfilesFileName), m.profiles)
+	next := intelligenceProfilesState{Profiles: append([]domainsemantic.IntelligenceProfile(nil), m.profiles.Profiles...)}
+	next.Profiles = append(next.Profiles, profile)
+	if err := persistJSON(m.path(intelligenceProfilesFileName), next); err != nil {
+		return domainsemantic.IntelligenceProfile{}, err
+	}
+	m.profiles = next
+	return profile, nil
 }
 
 func (m *spaceManager) ListIntelligenceProfiles(ctx context.Context) ([]domainsemantic.IntelligenceProfile, error) {
@@ -1334,13 +1367,44 @@ func (m *spaceManager) DeleteIntelligenceProfile(ctx context.Context, id domains
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var profile domainsemantic.IntelligenceProfile
+	profileIndex := -1
 	for i, item := range m.profiles.Profiles {
 		if item.ID == id {
-			m.profiles.Profiles = append(m.profiles.Profiles[:i], m.profiles.Profiles[i+1:]...)
-			return persistJSON(m.path(intelligenceProfilesFileName), m.profiles)
+			profile = item
+			profileIndex = i
+			break
 		}
 	}
-	return ErrNotFound
+	if profileIndex < 0 {
+		return ErrNotFound
+	}
+	var latestRules semanticRulesState
+	if err := loadJSON(m.path(semanticRulesFileName), &latestRules, semanticRulesState{Rules: []domainsemantic.SemanticGenerationRule{}}); err != nil {
+		return err
+	}
+	if err := ValidateSemanticRuleCatalog(latestRules.Rules); err != nil {
+		return err
+	}
+	m.rules = latestRules
+	for _, rule := range latestRules.Rules {
+		if !semanticRuleReferencesProfile(rule, profile) {
+			continue
+		}
+		for _, binding := range rule.Embeddings {
+			binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+			if (binding.IntelligenceProfileID != uuid.Nil && binding.IntelligenceProfileID == profile.ID) || (binding.IntelligenceProfileID == uuid.Nil && strings.EqualFold(binding.IntelligenceProfile, profile.Key)) {
+				return semanticProfileDeleteDependencyError(rule, profile, binding)
+			}
+		}
+	}
+	next := intelligenceProfilesState{Profiles: append([]domainsemantic.IntelligenceProfile(nil), m.profiles.Profiles...)}
+	next.Profiles = append(next.Profiles[:profileIndex], next.Profiles[profileIndex+1:]...)
+	if err := persistJSON(m.path(intelligenceProfilesFileName), next); err != nil {
+		return err
+	}
+	m.profiles = next
+	return nil
 }
 
 func (m *spaceManager) UpsertCredentialGrant(ctx context.Context, grant domainsemantic.CredentialGrant) (domainsemantic.CredentialGrant, error) {
@@ -2720,6 +2784,36 @@ func validateIntelligenceProfile(ctx context.Context, spaceID domainspace.SpaceI
 		return fmt.Errorf("%w: profile operation is required", ErrInvalidInput)
 	}
 	return nil
+}
+
+func validateSemanticRuleProfileDependencies(rule domainsemantic.SemanticGenerationRule, profiles []domainsemantic.IntelligenceProfile) error {
+	diagnostics := domainsemantic.ValidateSemanticRuleProfileDependencies(rule, profiles)
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrConflict, domainsemantic.FormatSemanticRuleProfileDependencyDiagnostics(diagnostics))
+}
+
+func semanticRuleReferencesProfile(rule domainsemantic.SemanticGenerationRule, profile domainsemantic.IntelligenceProfile) bool {
+	profile = domainsemantic.NormalizeIntelligenceProfile(profile)
+	for _, binding := range rule.Embeddings {
+		binding = domainsemantic.NormalizeSemanticEmbeddingBinding(binding)
+		if binding.IntelligenceProfileID != uuid.Nil && binding.IntelligenceProfileID == profile.ID {
+			return true
+		}
+		if binding.IntelligenceProfileID == uuid.Nil && binding.IntelligenceProfile != "" && strings.EqualFold(binding.IntelligenceProfile, profile.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticProfileDeleteDependencyError(rule domainsemantic.SemanticGenerationRule, profile domainsemantic.IntelligenceProfile, binding domainsemantic.SemanticEmbeddingBinding) error {
+	ref := profile.Key
+	if binding.IntelligenceProfileID != uuid.Nil {
+		ref = binding.IntelligenceProfileID.String()
+	}
+	return fmt.Errorf("%w: semantic rule %s binding %q references intelligence profile %q", ErrConflict, rule.ID, binding.Key, ref)
 }
 
 func validateGrant(ctx context.Context, spaceID domainspace.SpaceID, grant domainsemantic.CredentialGrant) error {

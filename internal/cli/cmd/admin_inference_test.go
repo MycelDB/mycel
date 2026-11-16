@@ -86,6 +86,10 @@ model_endpoint_capabilities:
 	if err != nil {
 		t.Fatalf("admin domain get failed: %v\n%s", err, out)
 	}
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "profile", "create", "test/text-embedding", "--space-id", spaceID, "--domain", "default", "--operation", "embeddings")
+	if err != nil {
+		t.Fatalf("inference profile create failed: %v\n%s", err, out)
+	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "rule", "create", "pkg-notes", "--space-id", spaceID, "--domain", "default", "--source", "self", "--profile", "test/text-embedding", "--vector-store", "mycel-file")
 	if err != nil {
 		t.Fatalf("semantic rule create with inference keys failed: %v\n%s", err, out)
@@ -142,7 +146,7 @@ model_endpoint_capabilities:
 		t.Fatalf("profile enable failed: %v\n%s", err, out)
 	}
 	listedProfiles, err := profileClient.ListInferenceProfiles(authCtx, &adminv1.AdminInferenceProfileServiceListInferenceProfilesRequest{SpaceId: spaceID})
-	if err != nil || len(listedProfiles.GetInferenceProfiles()) != 1 {
+	if err != nil || len(listedProfiles.GetInferenceProfiles()) != 2 {
 		t.Fatalf("list inference profiles failed: profiles=%#v err=%v", listedProfiles.GetInferenceProfiles(), err)
 	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "credential", "rotate", "test-openai-key", "--secret-value", "sk-rotated")
