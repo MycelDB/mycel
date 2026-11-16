@@ -324,6 +324,9 @@ func newSearchEnv(t *testing.T) *searchEnv {
 	if err := spaceMgr.Init(ctx, filepath.Join(root, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
 		t.Fatalf("space init failed: %v", err)
 	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "semantic-profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("profile upsert failed: %v", err)
+	}
 	now := time.Now().UTC()
 	endpoint := domainsemantic.ModelEndpoint{ID: uuid.New(), Key: "endpoint", Name: "Endpoint", ConnectorType: domainsemantic.ConnectorOpenAICompatible, EndpointURL: "http://example.invalid/v1", NetworkClass: domainsemantic.NetworkClassExternalHTTPS, PrivacyClass: domainsemantic.PrivacyClassThirdParty, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	model := domainsemantic.InferenceModel{ID: uuid.New(), Key: "model", Kind: domainsemantic.ModelKindEmbedding, ModelName: "model", Dimensions: 3, VectorSpaceKey: "test/model", CreatedAt: now, UpdatedAt: now}

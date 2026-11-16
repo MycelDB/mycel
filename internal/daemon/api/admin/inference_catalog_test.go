@@ -149,11 +149,15 @@ func TestApplyInferencePackageEnforcesVectorStoreIdentityAndKeepsRuleReferenceAc
 	if err != nil {
 		t.Fatalf("space manager: %v", err)
 	}
+	profileID := domainsemantic.IntelligenceProfileID(uuid.New())
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: profileID, SpaceID: spaceID, Key: "rename-profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("create intelligence profile: %v", err)
+	}
 	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rename-safe", Enabled: false,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
 		Source:     domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf},
-		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()), VectorStoreID: domainsemantic.VectorStoreID(uuid.MustParse(storeID)), Enabled: true}},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: profileID, VectorStoreID: domainsemantic.VectorStoreID(uuid.MustParse(storeID)), Enabled: true}},
 	}); err != nil {
 		t.Fatalf("create semantic rule: %v", err)
 	}

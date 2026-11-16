@@ -581,6 +581,8 @@ func mapAdminSemanticMaintenanceError(err error, action string) error {
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(lower, "unresolved intelligence-profile dependencies"):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case strings.Contains(lower, "not found"):
 		return status.Error(codes.NotFound, "semantic maintenance resource not found")
 	case strings.Contains(lower, "required") || strings.Contains(lower, "invalid"):

@@ -17,6 +17,20 @@ import (
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 )
 
+func mustCreateEmbeddingProfile(t *testing.T, mgr SpaceManager, spaceID domainspace.SpaceID, key string) domainsemantic.IntelligenceProfile {
+	t.Helper()
+	profile, err := mgr.UpsertIntelligenceProfile(context.Background(), domainsemantic.IntelligenceProfile{
+		SpaceID:   spaceID,
+		Key:       key,
+		Operation: domainsemantic.OperationEmbeddings,
+		Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("create intelligence profile %q: %v", key, err)
+	}
+	return profile
+}
+
 func TestGlobalManagerInitCreatesFilesAndDefaultVectorStore(t *testing.T) {
 	ctx := context.Background()
 	metaDir := t.TempDir()
@@ -569,6 +583,57 @@ func TestSpaceManagerUpsertsScopedSemanticResources(t *testing.T) {
 	}
 }
 
+func TestSpaceManagerSemanticRuleProfileDependenciesAreAtomic(t *testing.T) {
+	ctx := context.Background()
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	manager := NewSpaceManager()
+	if err := manager.Init(ctx, t.TempDir(), spaceID); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "embeddings", Operation: domainsemantic.OperationEmbeddings, DomainIDs: []string{domainID.String()}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: domainID, Key: "documents", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfileID: profile.ID, VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}
+	created, err := manager.UpsertSemanticRule(ctx, rule)
+	if err != nil {
+		t.Fatalf("create valid rule: %v", err)
+	}
+	missing := rule
+	missing.Key = "missing-profile"
+	missing.Embeddings = append([]domainsemantic.SemanticEmbeddingBinding(nil), rule.Embeddings...)
+	missing.Embeddings[0].IntelligenceProfileID = domainsemantic.IntelligenceProfileID(uuid.New())
+	if _, err := manager.UpsertSemanticRule(ctx, missing); !errors.Is(err, ErrConflict) {
+		t.Fatalf("missing profile error=%v, want ErrConflict", err)
+	}
+	rules, err := manager.ListSemanticRules(ctx)
+	if err != nil || len(rules) != 1 || rules[0].ID != created.ID {
+		t.Fatalf("missing-profile mutation was persisted: rules=%+v err=%v", rules, err)
+	}
+	disabled := profile
+	disabled.Enabled = false
+	if _, err := manager.UpsertIntelligenceProfile(ctx, disabled); !errors.Is(err, ErrConflict) {
+		t.Fatalf("disable referenced profile error=%v, want ErrConflict", err)
+	}
+	profiles, err := manager.ListIntelligenceProfiles(ctx)
+	if err != nil || len(profiles) != 1 || !profiles[0].Enabled {
+		t.Fatalf("disabled profile mutation was persisted: profiles=%+v err=%v", profiles, err)
+	}
+	if err := manager.DeleteIntelligenceProfile(ctx, profile.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete referenced profile error=%v, want ErrConflict", err)
+	}
+	profiles, err = manager.ListIntelligenceProfiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].ID != profile.ID {
+		t.Fatalf("referenced profile was deleted: profiles=%+v err=%v", profiles, err)
+	}
+	wrongDomain := profile
+	wrongDomain.DomainIDs = []string{uuid.NewString()}
+	if _, err := manager.UpsertIntelligenceProfile(ctx, wrongDomain); !errors.Is(err, ErrConflict) {
+		t.Fatalf("domain narrowing error=%v, want ErrConflict", err)
+	}
+}
+
 func TestSpaceManagerNormalizesLegacySearchPurpose(t *testing.T) {
 	ctx := context.Background()
 	spaceID := domainspace.SpaceID(uuid.New())
@@ -1079,6 +1144,7 @@ func TestSpaceManagerSemanticRulesPersistAndNormalize(t *testing.T) {
 	if err := mgr.Init(ctx, dir, spaceID); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
+	mustCreateEmbeddingProfile(t, mgr, spaceID, "embeddings-default")
 
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID:     spaceID,
@@ -1149,6 +1215,7 @@ func TestSpaceManagerSemanticRuleDisplayNamesAreUniqueWithinDomain(t *testing.T)
 	if err := first.Init(ctx, dir, spaceID); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateEmbeddingProfile(t, first, spaceID, "profile")
 	stale := NewSpaceManager()
 	if err := stale.Init(ctx, dir, spaceID); err != nil {
 		t.Fatal(err)
@@ -1233,6 +1300,7 @@ func TestSpaceManagerSetSemanticRuleEnabledIsConditionalAndIdempotent(t *testing
 	if err := mgr.Init(ctx, dir, spaceID); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateEmbeddingProfile(t, mgr, spaceID, "profile")
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "conditional-rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -1286,6 +1354,7 @@ func TestSpaceManagerConditionalTransitionFinalizeAndDeleteRejectStaleRule(t *te
 	if err := mgr.Init(ctx, t.TempDir(), spaceID); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateEmbeddingProfile(t, mgr, spaceID, "profile")
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "transition-cas", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}})
 	if err != nil {
 		t.Fatal(err)
@@ -1326,6 +1395,7 @@ func TestConditionalDeleteKeepsJournalUntilEveryDependentFilePersists(t *testing
 			if err := manager.Init(ctx, dir, spaceID); err != nil {
 				t.Fatal(err)
 			}
+			mustCreateEmbeddingProfile(t, manager, spaceID, "profile")
 			created, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-delete", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionDelete, ProviderBudgetTransitionPurgeVectors: true})
 			if err != nil {
 				t.Fatal(err)
@@ -1370,6 +1440,7 @@ func TestSpaceManagerSetSemanticRuleEnabledRejectsSameTimestampConcurrentUpdate(
 	if err := writer.Init(ctx, dir, spaceID); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateEmbeddingProfile(t, writer, spaceID, "profile")
 	created, err := writer.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "same-timestamp-rule", DisplayName: "before", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -1412,6 +1483,7 @@ func TestSpaceManagerSetSemanticRuleEnabledReloadsAcrossManagers(t *testing.T) {
 	if err := first.Init(ctx, dir, spaceID); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateEmbeddingProfile(t, first, spaceID, "profile")
 	created, err := first.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "replacement-rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},

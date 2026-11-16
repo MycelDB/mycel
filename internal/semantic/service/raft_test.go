@@ -768,6 +768,9 @@ func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -854,6 +857,9 @@ func TestSemanticRuleEnabledWALRejectionDoesNotBlockLaterMutation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -923,6 +929,9 @@ func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -947,6 +956,131 @@ func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
 	if err := m.SetSemanticRuleEnabled(ctx, SemanticRuleEnabledInput{Rule: created, ExpectedUpdatedAt: created.UpdatedAt, Enabled: true, UpdatedAt: updatedAt.Add(time.Second)}); !errors.Is(err, storesemantic.ErrConflict) {
 		t.Fatalf("stale SetSemanticRuleEnabled() error=%v, want ErrConflict", err)
 	}
+}
+
+func TestSemanticRaftInvalidProfileDependenciesReplayWithoutMutatingRetainedState(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	newModule := func() *Module {
+		module := NewModule()
+		if result := module.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.Default()}); !result.OK {
+			t.Fatalf("init failed: %v", result.Error)
+		}
+		module.raftPartitionCount = 64
+		return module
+	}
+
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graphmodel.DomainID(uuid.New())
+	profile := domainsemantic.IntelligenceProfile{
+		ID:        domainsemantic.IntelligenceProfileID(uuid.New()),
+		SpaceID:   spaceID,
+		Key:       "semantic-embeddings",
+		Operation: domainsemantic.OperationEmbeddings,
+		DomainIDs: []string{domainID.String()},
+		Enabled:   true,
+	}
+	rule := domainsemantic.SemanticGenerationRule{
+		ID:       domainsemantic.SemanticRuleID(uuid.New()),
+		SpaceID:  spaceID,
+		DomainID: domainID,
+		Key:      "retained-rule",
+		Enabled:  true,
+		Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
+		Source:   domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf},
+		Embeddings: []domainsemantic.SemanticEmbeddingBinding{{
+			Key:                   "search",
+			Purpose:               "semantic_search",
+			IntelligenceProfileID: profile.ID,
+			VectorStoreID:         domainsemantic.VectorStoreID(uuid.New()),
+			Enabled:               true,
+		}},
+	}
+	module := newModule()
+	buildCommand := func(kind string, value any, commandID string) consensus.RaftCommand {
+		t.Helper()
+		record := semanticMutationRecord{Kind: kind, SpaceID: spaceID, Payload: raw(value)}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command, err := module.buildSemanticSpaceRaftCommand(record, payload, commandID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return command
+	}
+	profileCommand := buildCommand("intelligence_profile.upsert", profile, "semantic-profile-retained-create")
+	ruleCommand := buildCommand("semantic_rule.upsert", rule, "semantic-rule-retained-create")
+	missingProfileRule := rule
+	missingProfileRule.ID = domainsemantic.SemanticRuleID(uuid.New())
+	missingProfileRule.Key = "missing-profile"
+	missingProfileRule.Embeddings = []domainsemantic.SemanticEmbeddingBinding{{
+		Key:                   "search",
+		Purpose:               "semantic_search",
+		IntelligenceProfileID: domainsemantic.IntelligenceProfileID(uuid.New()),
+		VectorStoreID:         domainsemantic.VectorStoreID(uuid.New()),
+		Enabled:               true,
+	}}
+	missingProfileCommand := buildCommand("semantic_rule.upsert", missingProfileRule, "semantic-rule-retained-missing-profile")
+	disabledProfile := profile
+	disabledProfile.Enabled = false
+	disabledProfile.UpdatedAt = profile.UpdatedAt.Add(time.Second)
+	disabledProfileCommand := buildCommand("intelligence_profile.upsert", disabledProfile, "semantic-profile-retained-disable")
+	incompatibleProfile := profile
+	incompatibleProfile.Operation = domainsemantic.OperationChat
+	incompatibleProfile.UpdatedAt = profile.UpdatedAt.Add(2 * time.Second)
+	incompatibleProfileCommand := buildCommand("intelligence_profile.upsert", incompatibleProfile, "semantic-profile-retained-incompatible")
+
+	sm := RaftStateMachine{Module: module, PartitionCount: 64}
+	for index, command := range []consensus.RaftCommand{profileCommand, ruleCommand} {
+		if err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: uint64(index + 1), RaftTerm: 1}, command); err != nil {
+			t.Fatalf("apply retained command %d: %v", index+1, err)
+		}
+	}
+	rejected := []struct {
+		name    string
+		command consensus.RaftCommand
+		index   uint64
+	}{
+		{name: "missing profile rule", command: missingProfileCommand, index: 3},
+		{name: "disabled referenced profile", command: disabledProfileCommand, index: 4},
+		{name: "incompatible referenced profile", command: incompatibleProfileCommand, index: 5},
+	}
+	for _, test := range rejected {
+		t.Run(test.name, func(t *testing.T) {
+			err := sm.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: test.index, RaftTerm: 1}, test.command)
+			if !consensus.IsCommandRejection(err) || !errors.Is(err, storesemantic.ErrConflict) || consensus.IsFatalApplyError(err) {
+				t.Fatalf("ApplyCommand() error=%v, want nonfatal ErrConflict command rejection", err)
+			}
+		})
+	}
+
+	assertRetained := func(label string, m *Module) {
+		t.Helper()
+		manager, err := m.baseSpaceManager(ctx, spaceID)
+		if err != nil {
+			t.Fatalf("%s: space manager: %v", label, err)
+		}
+		profiles, err := manager.ListIntelligenceProfiles(ctx)
+		if err != nil || len(profiles) != 1 || profiles[0].ID != profile.ID || !profiles[0].Enabled || profiles[0].Operation != domainsemantic.OperationEmbeddings {
+			t.Fatalf("%s: retained profiles=%+v err=%v", label, profiles, err)
+		}
+		rules, err := manager.ListSemanticRules(ctx)
+		if err != nil || len(rules) != 1 || rules[0].ID != rule.ID || rules[0].Key != rule.Key {
+			t.Fatalf("%s: retained rules=%+v err=%v", label, rules, err)
+		}
+	}
+	assertRetained("before restart", module)
+
+	restarted := newModule()
+	replay := RaftStateMachine{Module: restarted, PartitionCount: 64}
+	for index, command := range []consensus.RaftCommand{profileCommand, ruleCommand, missingProfileCommand, disabledProfileCommand, incompatibleProfileCommand} {
+		if err := replay.ApplyCommand(ctx, consensus.ApplyContext{RaftIndex: uint64(index + 1), RaftTerm: 2, Replay: true}, command); err != nil {
+			t.Fatalf("replay command %d: %v", index+1, err)
+		}
+	}
+	assertRetained("after restart replay", restarted)
 }
 
 func TestSemanticGlobalRaftFailsClosedWithoutSystemLeader(t *testing.T) {
@@ -1345,6 +1479,22 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true})
+	if err != nil {
+		t.Fatalf("UpsertIntelligenceProfile() error = %v", err)
+	}
+	for nodeID, module := range modules {
+		if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+			checkManager, err := module.SpaceManager(ctx, spaceID)
+			if err != nil {
+				return false
+			}
+			profiles, err := checkManager.ListIntelligenceProfiles(ctx)
+			return err == nil && len(profiles) == 1 && profiles[0].ID == profile.ID
+		}); err != nil {
+			t.Fatalf("node %d did not apply intelligence profile: %v", nodeID, err)
+		}
+	}
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "clustered-rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -1362,6 +1512,34 @@ func TestSemanticRaftSpaceMutationReplicatesAcrossThreeNodes(t *testing.T) {
 		t.Fatalf("stored semantic rules=%+v err=%v", storedRules, err)
 	}
 	created = storedRules[0]
+	invalidRule := created
+	invalidRule.ID = domainsemantic.SemanticRuleID(uuid.New())
+	invalidRule.Key = "missing-profile-rule"
+	invalidRule.DisplayName = "Missing profile rule"
+	invalidRule.Embeddings = []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "missing-profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}
+	if _, err := mgr.UpsertSemanticRule(ctx, invalidRule); !errors.Is(err, storesemantic.ErrConflict) {
+		t.Fatalf("missing profile rule error=%v, want ErrConflict", err)
+	}
+	disabledProfile := profile
+	disabledProfile.Enabled = false
+	disabledProfile.UpdatedAt = profile.UpdatedAt.Add(time.Second)
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, disabledProfile); !errors.Is(err, storesemantic.ErrConflict) {
+		t.Fatalf("disable referenced profile error=%v, want ErrConflict", err)
+	}
+	for nodeID, module := range modules {
+		checkManager, err := module.baseSpaceManager(ctx, spaceID)
+		if err != nil {
+			t.Fatalf("node %d space manager: %v", nodeID, err)
+		}
+		checkRules, err := checkManager.ListSemanticRules(ctx)
+		if err != nil || len(checkRules) != 1 || checkRules[0].ID != created.ID {
+			t.Fatalf("node %d rules after rejected mutations=%+v err=%v", nodeID, checkRules, err)
+		}
+		checkProfiles, err := checkManager.ListIntelligenceProfiles(ctx)
+		if err != nil || len(checkProfiles) != 1 || checkProfiles[0].ID != profile.ID || !checkProfiles[0].Enabled {
+			t.Fatalf("node %d profiles after rejected mutations=%+v err=%v", nodeID, checkProfiles, err)
+		}
+	}
 	updatedAt := created.UpdatedAt.Add(time.Second)
 	unsupportedNode := consensus.NodeID(1)
 	if unsupportedNode == leaderNode {
@@ -1656,6 +1834,9 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 		}
 	}
 	ruleID := domainsemantic.SemanticRuleID(idx.ID)
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("upsert failover intelligence profile: %v", err)
+	}
 	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: idx.DomainID, Key: "failover-rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: idx.VectorStoreID, Enabled: true}}}
 	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
 		t.Fatalf("upsert failover rule: %v", err)

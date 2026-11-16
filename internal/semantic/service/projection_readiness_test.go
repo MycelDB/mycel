@@ -124,6 +124,9 @@ func TestProjectionReadinessMissingBaselineRemainsFencedAndDoesNotWriteLease(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "missing-baseline", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}
 	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
 		t.Fatal(err)
@@ -177,6 +180,9 @@ func TestProjectionReadinessReportsBlockedRebuild(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
 			rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "blocked-rebuild", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}
 			if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
 				t.Fatal(err)
@@ -213,6 +219,9 @@ func TestProjectionRecoveryReplaysRetainedRecordsAndFencesRepeatedTerms(t *testi
 	}
 	mgr, err := module.SpaceManager(ctx, spaceID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "retained-rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}}

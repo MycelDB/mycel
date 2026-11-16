@@ -170,6 +170,9 @@ func TestRunnerBackfillsThroughStandaloneInferenceProfile(t *testing.T) {
 	fake := &inferenceconnectors.FakeConnector{Vector: []float64{0.2, 0.8, 0}}
 	inference.SetConnector(domaininference.ConnectorOpenAICompatible, fake)
 	profileID := uuid.New()
+	if _, err := env.spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: domainsemantic.IntelligenceProfileID(profileID), SpaceID: env.spaceID, Key: "standalone-profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("semantic profile upsert failed: %v", err)
+	}
 	rule, err := env.spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(env.index.ID), SpaceID: env.spaceID, DomainID: env.domainID, Key: "standalone-rule", DisplayName: "Standalone Rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorExplicit, NodeIDs: []graph.NodeID{root.ID}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfileID: domainsemantic.IntelligenceProfileID(profileID), VectorStoreID: env.index.VectorStoreID, Enabled: true}}, OwnerPrincipalID: env.userID})
 	if err != nil {
 		t.Fatalf("rule upsert failed: %v", err)
@@ -305,6 +308,9 @@ func newBackfillTestEnv(t *testing.T) *backfillTestEnv {
 	index, err := spaceMgr.UpsertSemanticIndex(ctx, domainsemantic.SemanticIndex{SpaceID: spaceID, DomainID: domainID, Key: "notes", Name: "Notes", Purpose: domainsemantic.SemanticIndexPurposeSearch, SourcePolicy: domainsemantic.SemanticSourcePolicy{RecordTypes: []string{"note"}, Extraction: domainsemantic.SourceExtractionSubtree}, ModelEndpointID: endpointID, ModelID: modelID, ModelEndpointCapabilityID: capID, VectorStoreID: storeID, Enabled: true, Metadata: map[string]any{"inference_profile": "semantic-profile"}})
 	if err != nil {
 		t.Fatalf("index upsert failed: %v", err)
+	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "semantic-profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("profile upsert failed: %v", err)
 	}
 	grant, err := spaceMgr.UpsertCredentialGrant(ctx, domainsemantic.CredentialGrant{CredentialID: credentialID, Scope: domainsemantic.ProcessingScope{SpaceID: spaceID, DomainID: domainID}, Operations: []domainsemantic.Operation{domainsemantic.OperationEmbeddings}, ModelEndpointID: &endpointID, ModelID: &modelID, AllowBackgroundUse: true, CreatedAt: now})
 	if err != nil {

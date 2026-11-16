@@ -29,6 +29,10 @@ func TestAdminSemanticRuleCreateUsesDaemonGRPC(t *testing.T) {
 	ids := seedDaemonSemanticGlobals(t, dataDir)
 	spaceID := createdSpace.GetSpace().GetSpaceId()
 	domainID := createdSpace.GetDefaultDomainId()
+	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "inference", "profile", "create", "admin-test-profile", "--space-id", spaceID, "--domain", domainID, "--operation", "embeddings")
+	if err != nil {
+		t.Fatalf("inference profile create failed: %v\n%s", err, out)
+	}
 	out, err = runCLI(t, "--daemon-addr", addr, "-u", "admin", "-p", adminPassword, "--output", "json", "semantic", "rule", "create", "admin-notes", "--space-id", spaceID, "--domain", domainID, "--source", "self", "--profile", "admin-test-profile", "--vector-store", ids.vectorStoreID.String())
 	if err != nil {
 		t.Fatalf("semantic rule create failed: %v\n%s", err, out)
