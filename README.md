@@ -105,6 +105,13 @@ MYCELD_DATA_DIR=~/mycel_data
 MYCELD_GRPC_ADDR=127.0.0.1:9091
 ```
 
+Daemon logs are written to `MYCELD_DATA_DIR/log/myceld.log` and use size-based
+rotation. The default maximum active-file size is 100 MiB, with seven numeric
+rotated files retained as `myceld.log.1` through `myceld.log.7`. Configure the
+limits with `MYCELD_LOG_MAX_BYTES` and `MYCELD_LOG_MAX_FILES`. Rotation occurs
+before a write would exceed the active-file limit and also runs at startup when
+the existing active file is oversized.
+
 Stop it with:
 
 ```sh
@@ -203,7 +210,7 @@ bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin b
 
 Backups quiesce daemon work before snapshotting. New non-exempt RPCs during quiesce, including reads unless explicitly exempted/proven safe, may fail transiently with gRPC `codes.Unavailable`; applications should retry with bounded backoff. Users are not logged out by default.
 
-Scheduled backups are disabled by default. Policies support interval, daily, and weekly schedules; daily/weekly schedules use wall-clock `time_of_day` plus an IANA timezone. Supported archive formats are `zip`, `tar`, `tar.gz`, and `tar.zst` through the `archive_format` policy/CLI flag. Key daemon settings include `MYCELD_BACKUP_ENABLED`, `MYCELD_BACKUP_DIR`, `MYCELD_BACKUP_INTERVAL`, `MYCELD_BACKUP_RETENTION_COUNT`, `MYCELD_BACKUP_INCLUDE_LOGS`, and the legacy archive-format seed `MYCELD_BACKUP_COMPRESSION`. The backup directory must be outside `MYCELD_DATA_DIR`. Restore is offline-only in the MVP: stop `myceld`, verify and extract the archive into an empty/restored data directory, then start `myceld` against that directory.
+Scheduled backups are disabled by default. Policies support interval, daily, and weekly schedules; daily/weekly schedules use wall-clock `time_of_day` plus an IANA timezone. Supported archive formats are `zip`, `tar`, `tar.gz`, and `tar.zst` through the `archive_format` policy/CLI flag. Key daemon settings include `MYCELD_BACKUP_ENABLED`, `MYCELD_BACKUP_DIR`, `MYCELD_BACKUP_INTERVAL`, `MYCELD_BACKUP_RETENTION_COUNT`, `MYCELD_BACKUP_INCLUDE_LOGS`, and the legacy archive-format seed `MYCELD_BACKUP_COMPRESSION`. When `MYCELD_BACKUP_INCLUDE_LOGS=true`, backups include the active log and all retained numeric rotated logs; when false, the entire log directory remains excluded. The backup directory must be outside `MYCELD_DATA_DIR`. Restore is offline-only in the MVP: stop `myceld`, verify and extract the archive into an empty/restored data directory, then start `myceld` against that directory.
 
 See [`docs/design/admin/backup.md`](docs/design/admin/backup.md) and [`docs/design/backup-restore/quiesce-and-backup.md`](docs/design/backup-restore/quiesce-and-backup.md).
 
