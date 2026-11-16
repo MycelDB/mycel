@@ -101,6 +101,9 @@ func newSemanticRuleServiceTest(t *testing.T) (context.Context, domainspace.Spac
 	if err := space.Init(ctx, t.TempDir(), spaceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := space.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	created, err := space.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID:  spaceID,
 		DomainID: graph.DomainID(uuid.New()),

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	graph "github.com/myceldb/mycel/internal/graph/model"
 	"github.com/myceldb/mycel/internal/query/gql"
 	"github.com/myceldb/mycel/internal/query/gql/analysis"
 	planmodel "github.com/myceldb/mycel/internal/query/gql/planning/model"
@@ -36,6 +37,80 @@ type ValidationResult struct {
 	Valid       bool                   `json:"valid"`
 	Diagnostics []ValidationDiagnostic `json:"diagnostics,omitempty"`
 	Rule        SemanticGenerationRule `json:"normalized_rule"`
+}
+
+// ValidateSemanticRuleProfileDependencies checks the durable profile
+// references used by enabled embedding bindings. It is deliberately separate
+// from structural rule validation because profile state is space-owned and is
+// only available at the storage boundary.
+func ValidateSemanticRuleProfileDependencies(rule SemanticGenerationRule, profiles []IntelligenceProfile) []ValidationDiagnostic {
+	rule = NormalizeSemanticGenerationRule(rule)
+	diagnostics := make([]ValidationDiagnostic, 0)
+	for i, binding := range rule.Embeddings {
+		if !binding.Enabled {
+			continue
+		}
+		ref := strings.TrimSpace(binding.IntelligenceProfile)
+		refText := ref
+		if binding.IntelligenceProfileID != uuid.Nil {
+			refText = binding.IntelligenceProfileID.String()
+		}
+		path := fmt.Sprintf("embeddings[%d].intelligence_profile", i)
+		var profile *IntelligenceProfile
+		if binding.IntelligenceProfileID != uuid.Nil {
+			for j := range profiles {
+				if profiles[j].ID == binding.IntelligenceProfileID {
+					profile = &profiles[j]
+					break
+				}
+			}
+		} else {
+			key := strings.ToLower(ref)
+			for j := range profiles {
+				if strings.ToLower(strings.TrimSpace(profiles[j].Key)) == key {
+					profile = &profiles[j]
+					break
+				}
+			}
+		}
+		if profile == nil {
+			diagnostics = append(diagnostics, ValidationDiagnostic{Severity: ValidationSeverityError, Path: path, Message: fmt.Sprintf("enabled embedding binding %q references intelligence profile %q, but that profile does not exist in space %s", binding.Key, refText, rule.SpaceID)})
+			continue
+		}
+		if profile.SpaceID != rule.SpaceID {
+			diagnostics = append(diagnostics, ValidationDiagnostic{Severity: ValidationSeverityError, Path: path, Message: fmt.Sprintf("enabled embedding binding %q references intelligence profile %q from another space", binding.Key, refText)})
+			continue
+		}
+		if !profile.Enabled {
+			diagnostics = append(diagnostics, ValidationDiagnostic{Severity: ValidationSeverityError, Path: path, Message: fmt.Sprintf("enabled embedding binding %q references disabled intelligence profile %q", binding.Key, refText)})
+			continue
+		}
+		if profile.Operation != OperationEmbeddings {
+			diagnostics = append(diagnostics, ValidationDiagnostic{Severity: ValidationSeverityError, Path: path, Message: fmt.Sprintf("enabled embedding binding %q requires an embeddings intelligence profile; %q has operation %q", binding.Key, refText, profile.Operation)})
+			continue
+		}
+		if len(profile.DomainIDs) > 0 && !semanticProfileAllowsDomain(profile, rule.DomainID) {
+			diagnostics = append(diagnostics, ValidationDiagnostic{Severity: ValidationSeverityError, Path: path, Message: fmt.Sprintf("intelligence profile %q is not configured for domain %s", refText, rule.DomainID)})
+		}
+	}
+	return diagnostics
+}
+
+func semanticProfileAllowsDomain(profile *IntelligenceProfile, domainID graph.DomainID) bool {
+	for _, allowed := range profile.DomainIDs {
+		if strings.EqualFold(strings.TrimSpace(allowed), domainID.String()) {
+			return true
+		}
+	}
+	return false
+}
+
+func FormatSemanticRuleProfileDependencyDiagnostics(diagnostics []ValidationDiagnostic) string {
+	parts := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		parts = append(parts, diagnostic.Path+": "+diagnostic.Message)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func ValidateSemanticGenerationRule(rule SemanticGenerationRule) ValidationResult {

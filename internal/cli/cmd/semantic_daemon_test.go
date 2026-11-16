@@ -84,6 +84,9 @@ func seedDaemonSemanticRule(t *testing.T, dataDir string, spaceIDText string, do
 	if err := spaceMgr.Init(ctx, filepath.Join(dataDir, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
 		t.Fatalf("init space semantic manager: %v", err)
 	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "test-profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert intelligence profile: %v", err)
+	}
 	_ = capability
 	rule, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{SpaceID: spaceID, DomainID: domainID, Key: "notes-search", DisplayName: "Notes Search", Enabled: true, Trigger: domainsemantic.SemanticTriggerPolicy{Events: []string{domainsemantic.DefaultSemanticTriggerEventChanged}, Labels: []string{"Note"}}, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Note"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: string(domainsemantic.SemanticIndexPurposeSearch), IntelligenceProfile: "test-profile", VectorStoreID: vectorStore.ID, Enabled: true}}, Storage: domainsemantic.SemanticStoragePolicy{Searchable: true, PhysicalIndex: domainsemantic.SemanticPhysicalIndexExact}, CreatedAt: now, UpdatedAt: now})
 	if err != nil {

@@ -267,6 +267,9 @@ func TestWorkerDeleteRemovesRuleBindingsIncludingKeyOnlyStore(t *testing.T) {
 	if err := spaceMgr.Init(ctx, filepath.Join(root, "graphs", spaceID.String(), "semantic"), spaceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	bindings := []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStore: "mycel-file", Enabled: true}, {Key: "summary", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: storeID, Enabled: true}}
 	if _, err := spaceMgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSubtree}, Embeddings: bindings}); err != nil {
 		t.Fatal(err)
