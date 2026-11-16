@@ -6,6 +6,21 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.7] - 2026-11-16
+
+### Added
+
+- Added size-based daemon log rotation with configurable active-file and numeric retention limits. Rotated logs remain available to backups when `MYCELD_BACKUP_INCLUDE_LOGS=true` (#349).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains compatible with the `mycel-api` v0.22.0 contract pinned in `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Existing deployments continue using `MYCELD_DATA_DIR/log/myceld.log` as the active log path. Rotated files use numeric sibling names and are local operational artifacts.
+
+### Validation
+
+- Daemon CI, targeted log rotation/backup tests, race tests, documentation checks, and public-surface checks passed.
+
 ## [v0.22.6] - 2026-11-16
 
 ### Fixed

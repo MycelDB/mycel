@@ -177,8 +177,10 @@ func TestManagerCreatesArchiveManifestAndChecksum(t *testing.T) {
 	if !entries["meta/spaces.json"] || !entries["graphs/space/nodes.json"] {
 		t.Fatalf("archive missing expected entries: %#v", entries)
 	}
-	if entries["log/myceld.log"] {
-		t.Fatalf("archive included log despite IncludeLogs=false: %#v", entries)
+	for _, name := range []string{"log/myceld.log", "log/myceld.log.1", "log/myceld.log.7"} {
+		if entries[name] {
+			t.Fatalf("archive included %s despite IncludeLogs=false: %#v", name, entries)
+		}
 	}
 }
 
@@ -265,7 +267,7 @@ func TestManagerCreatesConfiguredArchiveFormats(t *testing.T) {
 	}
 }
 
-func TestManagerIncludesLogsWhenConfigured(t *testing.T) {
+func TestManagerIncludesAllLogFilesWhenConfigured(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: t.TempDir(), IncludeLogs: true}})
 	res, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"})
@@ -273,8 +275,10 @@ func TestManagerIncludesLogsWhenConfigured(t *testing.T) {
 		t.Fatalf("Trigger() error = %v", err)
 	}
 	entries := zipEntries(t, res.ArchivePath)
-	if !entries["log/myceld.log"] {
-		t.Fatalf("archive did not include logs with IncludeLogs=true: %#v", entries)
+	for _, name := range []string{"log/myceld.log", "log/myceld.log.1", "log/myceld.log.7"} {
+		if !entries[name] {
+			t.Fatalf("archive did not include %s with IncludeLogs=true: %#v", name, entries)
+		}
 	}
 }
 
@@ -411,6 +415,8 @@ func fixtureDataDir(t *testing.T) string {
 	writeFile(t, filepath.Join(dataDir, "meta", "spaces.json"), `[{"id":"space"}]`)
 	writeFile(t, filepath.Join(dataDir, "graphs", "space", "nodes.json"), `[{"id":"node"}]`)
 	writeFile(t, filepath.Join(dataDir, "log", "myceld.log"), "log line")
+	writeFile(t, filepath.Join(dataDir, "log", "myceld.log.1"), "rotated log line 1")
+	writeFile(t, filepath.Join(dataDir, "log", "myceld.log.7"), "rotated log line 7")
 	return dataDir
 }
 
