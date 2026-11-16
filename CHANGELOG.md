@@ -6,6 +6,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Added size-based daemon log rotation with configurable active-file and numeric retention limits. Rotated logs remain available to backups when `MYCELD_BACKUP_INCLUDE_LOGS=true` (#349).
+
 ### Fixed
 
 - Raft apply and replay now distinguish deterministic command rejections from infrastructure/state-machine failures. Failed applications fence the local group, leave the applied index unchanged, fail closed in status/readiness, and replay the committed entry after recovery instead of skipping it (#340).

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	daemonlogging "github.com/myceldb/mycel/internal/daemon/logging"
 	"github.com/myceldb/mycel/internal/encryption"
 )
 
@@ -17,6 +18,8 @@ const (
 	DefaultMode                             = "standalone"
 	DefaultLogLevel                         = "info"
 	DefaultLogFormat                        = "text"
+	DefaultLogMaxBytes                      = daemonlogging.DefaultMaxBytes
+	DefaultLogMaxFiles                      = daemonlogging.DefaultMaxFiles
 	DefaultGRPCAddr                         = "127.0.0.1:9091"
 	DefaultBootstrapAdminUsername           = "admin"
 	DefaultSemanticDirtyCooldown            = 120 * time.Second
@@ -175,6 +178,8 @@ type Config struct {
 	Mode                         string
 	LogLevel                     string
 	LogFormat                    string
+	LogMaxBytes                  int64
+	LogMaxFiles                  int
 	GRPCAddr                     string
 	NodeName                     string
 	Encryption                   encryption.Config
@@ -211,12 +216,14 @@ func LoadFromEnv() (Config, error) {
 		}
 	}
 	cfg := Config{
-		DataDir:   dataDir,
-		Mode:      valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
-		LogLevel:  valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
-		LogFormat: valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
-		GRPCAddr:  valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
-		NodeName:  strings.TrimSpace(os.Getenv("MYCELD_NODE_NAME")),
+		DataDir:     dataDir,
+		Mode:        valueOrDefault(os.Getenv("MYCELD_MODE"), DefaultMode),
+		LogLevel:    valueOrDefault(os.Getenv("MYCELD_LOG_LEVEL"), DefaultLogLevel),
+		LogFormat:   valueOrDefault(os.Getenv("MYCELD_LOG_FORMAT"), DefaultLogFormat),
+		LogMaxBytes: int64(parseIntEnv(os.Getenv("MYCELD_LOG_MAX_BYTES"), int(DefaultLogMaxBytes))),
+		LogMaxFiles: parseIntEnv(os.Getenv("MYCELD_LOG_MAX_FILES"), DefaultLogMaxFiles),
+		GRPCAddr:    valueOrDefault(os.Getenv("MYCELD_GRPC_ADDR"), DefaultGRPCAddr),
+		NodeName:    strings.TrimSpace(os.Getenv("MYCELD_NODE_NAME")),
 		Encryption: encryption.Config{
 			AtRest:        valueOrDefault(os.Getenv("MYCELD_ENCRYPTION_AT_REST"), DefaultEncryptionAtRest),
 			KEKProvider:   strings.TrimSpace(os.Getenv("MYCELD_ENCRYPTION_KEK_PROVIDER")),
@@ -327,6 +334,12 @@ func LoadFromEnv() (Config, error) {
 			},
 		},
 	}
+	if strings.TrimSpace(os.Getenv("MYCELD_LOG_MAX_BYTES")) != "" && cfg.LogMaxBytes <= 0 {
+		return Config{}, fmt.Errorf("MYCELD_LOG_MAX_BYTES must be positive")
+	}
+	if strings.TrimSpace(os.Getenv("MYCELD_LOG_MAX_FILES")) != "" && cfg.LogMaxFiles <= 0 {
+		return Config{}, fmt.Errorf("MYCELD_LOG_MAX_FILES must be positive")
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -346,6 +359,12 @@ func (c Config) Normalize() Config {
 	c.DataDir = strings.TrimSpace(c.DataDir)
 	if strings.TrimSpace(c.AccessTokenSigningSecretB64) == "" && strings.TrimSpace(c.AccessTokenSigningSecretFile) == "" && c.DataDir != "" {
 		c.AccessTokenSigningSecretFile = DefaultAccessTokenSigningSecretFile(c.DataDir)
+	}
+	if c.LogMaxBytes == 0 {
+		c.LogMaxBytes = DefaultLogMaxBytes
+	}
+	if c.LogMaxFiles == 0 {
+		c.LogMaxFiles = DefaultLogMaxFiles
 	}
 	if c.Search.HybridRRFK == 0 {
 		c.Search.HybridRRFK = DefaultSearchHybridRRFK
@@ -384,6 +403,12 @@ func (c Config) Validate() error {
 	case "text", "json":
 	default:
 		return fmt.Errorf("MYCELD_LOG_FORMAT must be text or json")
+	}
+	if c.LogMaxBytes <= 0 {
+		return fmt.Errorf("MYCELD_LOG_MAX_BYTES must be positive")
+	}
+	if c.LogMaxFiles <= 0 {
+		return fmt.Errorf("MYCELD_LOG_MAX_FILES must be positive")
 	}
 	if strings.TrimSpace(c.GRPCAddr) == "" {
 		return fmt.Errorf("MYCELD_GRPC_ADDR must not be empty")

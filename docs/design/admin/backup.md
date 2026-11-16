@@ -77,7 +77,7 @@ MYCELD_BACKUP_STATUS_HISTORY_LIMIT
 MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP
 ```
 
-`MYCELD_BACKUP_COMPRESSION` is the legacy startup seed for archive format and maps to `archive_format`; persisted Admin policy uses both fields during the compatibility window. Calendar schedule fields are configured through the Admin API/CLI.
+`MYCELD_BACKUP_COMPRESSION` is the legacy startup seed for archive format and maps to `archive_format`; persisted Admin policy uses both fields during the compatibility window. When `MYCELD_BACKUP_INCLUDE_LOGS=true`, the archive includes `log/myceld.log` and all retained numeric rotations (`log/myceld.log.1`, `log/myceld.log.2`, and so on). When it is false, the complete log directory is excluded. Calendar schedule fields are configured through the Admin API/CLI.
 
 ## CLI
 
