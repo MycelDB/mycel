@@ -236,7 +236,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		return nil, fmt.Errorf("ensure log directory: %w", err)
 	}
 	logPath := filepath.Join(logDir, LogFilename)
-	configuredLogger, err := logging.Configure(logging.Config{Level: cfg.LogLevel, Format: cfg.LogFormat, Path: logPath})
+	configuredLogger, err := logging.Configure(logging.Config{Level: cfg.LogLevel, Format: cfg.LogFormat, Path: logPath, MaxBytes: cfg.LogMaxBytes, MaxFiles: cfg.LogMaxFiles})
 	if err != nil {
 		return nil, err
 	}
@@ -572,6 +572,7 @@ func graphCommitSinkPolicyForConfig(cfg config.Config) graphCommitSinkPolicy {
 }
 
 func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath string, grpcAddr string) {
+	cfg = cfg.Normalize()
 	logger.Info("daemon runtime configuration",
 		"data_dir", cfg.DataDir,
 		"mode", cfg.Mode,
@@ -579,6 +580,8 @@ func logRuntimeConfiguration(logger *slog.Logger, cfg config.Config, logPath str
 		"log_path", logPath,
 		"log_level", cfg.LogLevel,
 		"log_format", cfg.LogFormat,
+		"log_max_bytes", cfg.LogMaxBytes,
+		"log_max_files", cfg.LogMaxFiles,
 		"tls_enabled", cfg.TLSCertFile != "",
 		"mtls_required", cfg.TLSRequireClientCert,
 		"access_token_ttl", cfg.AccessTokenTTL,

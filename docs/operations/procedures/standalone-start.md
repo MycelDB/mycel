@@ -44,6 +44,18 @@ Inspect the daemon log for the generated bootstrap credential:
 grep -n "default standalone principal created" "$MYCELD_DATA_DIR/log/myceld.log"
 ```
 
+Daemon logs use size-based rotation. `myceld.log` is the active file;
+`myceld.log.1` through `myceld.log.7` are retained by default. Configure the
+maximum active-file size and rotated-file count before startup when needed:
+
+```sh
+export MYCELD_LOG_MAX_BYTES=$((100 * 1024 * 1024))
+export MYCELD_LOG_MAX_FILES=7
+```
+
+Rotation is serialized with log writes, and an oversized active file is rotated
+before a restart appends new records.
+
 The log entry includes:
 
 - `username`, usually `admin`;

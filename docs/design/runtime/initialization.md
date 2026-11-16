@@ -51,6 +51,8 @@ Initial environment variables:
 | `MYCELD_MODE` | Daemon mode. Current relevant values: `standalone`, `mesh`. |
 | `MYCELD_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, or `error`. |
 | `MYCELD_LOG_FORMAT` | Log format: `text` or `json`. |
+| `MYCELD_LOG_MAX_BYTES` | Maximum active log-file size before rotation. Defaults to 100 MiB. |
+| `MYCELD_LOG_MAX_FILES` | Number of numeric rotated files retained (`.1` through `.7` by default). Defaults to 7. |
 | `MYCELD_GRPC_ADDR` | gRPC listener address. Defaults to `127.0.0.1:9091`. |
 | `MYCELD_ACCESS_TOKEN_TTL` | Access-token lifetime. Defaults to 15 minutes. |
 | `MYCELD_ACCESS_TOKEN_SIGNING_SECRET_FILE` | Base64-encoded HMAC signing secret file for daemon access tokens. Defaults to `<MYCELD_DATA_DIR>/secrets/access-token-signing-secret.b64`; created with mode `0600` when missing. |
@@ -79,10 +81,14 @@ Within the data directory, the current initialization design creates the followi
     sessions/
 ```
 
-`log/` stores daemon log files. `secrets/access-token-signing-secret.b64`
-stores the daemon access-token HMAC signing secret when no explicit inline
-secret or alternate secret file is configured. Keeping this file stable across
-restarts allows unexpired access tokens to remain valid after the daemon restarts.
+`log/` stores daemon log files. The active file is `myceld.log`; when the
+active file would exceed `MYCELD_LOG_MAX_BYTES`, it is rotated to
+`myceld.log.1`, with older numeric siblings shifted up to the configured
+retention limit. An oversized active file is rotated during startup before new
+records are appended. `secrets/access-token-signing-secret.b64` stores the
+daemon access-token HMAC signing secret when no explicit inline secret or
+alternate secret file is configured. Keeping this file stable across restarts
+allows unexpired access tokens to remain valid after the daemon restarts.
 Multi-node deployments that route client requests across nodes should configure
 or mount the same signing secret on every node so any node can verify tokens
 minted by another node.
@@ -103,6 +109,7 @@ Initialization should ensure:
 4. startup and shutdown events are recorded
 5. filesystem initialization/reinitialization actions are recorded
 6. identity initialization actions are recorded
+7. log rotation settings are recorded in the runtime configuration event
 
 Expected log events include:
 

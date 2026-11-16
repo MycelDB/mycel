@@ -15,6 +15,8 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	t.Setenv("MYCELD_MODE", "")
 	t.Setenv("MYCELD_LOG_LEVEL", "")
 	t.Setenv("MYCELD_LOG_FORMAT", "")
+	t.Setenv("MYCELD_LOG_MAX_BYTES", "")
+	t.Setenv("MYCELD_LOG_MAX_FILES", "")
 	t.Setenv("MYCELD_GRPC_ADDR", "")
 	t.Setenv("MYCELD_BOOTSTRAP_ADMIN_USERNAME", "")
 	t.Setenv("MYCELD_BOOTSTRAP_ADMIN_PASSWORD", "")
@@ -30,7 +32,7 @@ func TestLoadFromEnvDefaults(t *testing.T) {
 	if filepath.Base(cfg.DataDir) != "mycel_data" {
 		t.Fatalf("expected default data dir to end in mycel_data, got %q", cfg.DataDir)
 	}
-	if cfg.Mode != DefaultMode || cfg.LogLevel != DefaultLogLevel || cfg.LogFormat != DefaultLogFormat || cfg.GRPCAddr != DefaultGRPCAddr {
+	if cfg.Mode != DefaultMode || cfg.LogLevel != DefaultLogLevel || cfg.LogFormat != DefaultLogFormat || cfg.LogMaxBytes != DefaultLogMaxBytes || cfg.LogMaxFiles != DefaultLogMaxFiles || cfg.GRPCAddr != DefaultGRPCAddr {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if !cfg.SemanticMaintenance.Enabled || cfg.SemanticMaintenance.DirtyCooldown != DefaultSemanticDirtyCooldown || cfg.SemanticMaintenance.WorkerCount != DefaultSemanticWorkerCount || cfg.SemanticMaintenance.MaxBatchSize != DefaultSemanticMaxBatchSize {
@@ -90,6 +92,32 @@ func TestClusterConfigRaftRuntimeConfigured(t *testing.T) {
 				t.Fatalf("RaftRuntimeConfigured() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadFromEnvLogRotationOverrides(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_LOG_MAX_BYTES", "4096")
+	t.Setenv("MYCELD_LOG_MAX_FILES", "9")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.LogMaxBytes != 4096 || cfg.LogMaxFiles != 9 {
+		t.Fatalf("unexpected log rotation config: bytes=%d files=%d", cfg.LogMaxBytes, cfg.LogMaxFiles)
+	}
+}
+
+func TestLoadFromEnvLogRotationValidation(t *testing.T) {
+	t.Setenv("MYCELD_DATA_DIR", t.TempDir())
+	t.Setenv("MYCELD_LOG_MAX_BYTES", "0")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "MYCELD_LOG_MAX_BYTES") {
+		t.Fatalf("LoadFromEnv() error = %v, want max-bytes validation", err)
+	}
+	t.Setenv("MYCELD_LOG_MAX_BYTES", "100")
+	t.Setenv("MYCELD_LOG_MAX_FILES", "0")
+	if _, err := LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "MYCELD_LOG_MAX_FILES") {
+		t.Fatalf("LoadFromEnv() error = %v, want max-files validation", err)
 	}
 }
 
@@ -415,6 +443,8 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "xml", GRPCAddr: DefaultGRPCAddr},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: ""},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, BootstrapAdminUsername: "admin"},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", LogMaxBytes: -1, GRPCAddr: DefaultGRPCAddr},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", LogMaxFiles: -1, GRPCAddr: DefaultGRPCAddr},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSCertFile: "cert.pem"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSKeyFile: "key.pem"},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, TLSClientCAFile: "ca.pem"},
