@@ -6,6 +6,22 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.6] - 2026-11-16
+
+### Fixed
+
+- Semantic rules now reject enabled embedding bindings that reference missing, disabled, non-embeddings, cross-space, or domain-incompatible intelligence profiles. Profile updates and deletion are rejected atomically when they would invalidate referenced rules (#345).
+- Semantic maintenance and reliability diagnostics now fail closed with precise unresolved intelligence-profile dependency details (#345).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains compatible with the `mycel-api` v0.22.0 contract pinned in `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Intelligence profile IDs are authoritative for semantic bindings. Key fallback remains supported only when a binding does not carry a profile ID.
+
+### Validation
+
+- Targeted semantic, admin API, and CLI tests passed.
+
 ## [v0.22.5] - 2026-11-14
 
 ### Fixed

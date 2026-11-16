@@ -386,6 +386,9 @@ func newAnalyzerManagers(t *testing.T, ctx context.Context, spaceID domainspace.
 	if err := spaceMgr.Init(ctx, filepath.Join(root, "semantic"), spaceID); err != nil {
 		t.Fatalf("space manager init failed: %v", err)
 	}
+	if _, err := spaceMgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "default-embeddings", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
+		t.Fatalf("profile upsert failed: %v", err)
+	}
 	maintenanceMgr := storesemantic.NewMaintenanceManager()
 	if err := maintenanceMgr.Init(ctx, filepath.Join(root, "semantic", "maintenance"), spaceID); err != nil {
 		t.Fatalf("maintenance manager init failed: %v", err)

@@ -134,6 +134,13 @@ func (r Runner) runRuleBackfill(ctx context.Context, in Input, rules []domainsem
 	if len(bindings) == 0 {
 		return Result{}, fmt.Errorf("semantic rule %s has no enabled embedding binding matching %q", rule.ID, in.EmbeddingBindingKey)
 	}
+	profiles, err := r.SpaceManager.ListIntelligenceProfiles(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("list intelligence profiles for semantic rule %s: %w", rule.ID, err)
+	}
+	if diagnostics := domainsemantic.ValidateSemanticRuleProfileDependencies(*rule, profiles); len(diagnostics) > 0 {
+		return Result{}, fmt.Errorf("semantic rule %s has unresolved intelligence-profile dependencies: %s", rule.ID, domainsemantic.FormatSemanticRuleProfileDependencyDiagnostics(diagnostics))
+	}
 	nodes, err := r.GraphReader.ListNodes(ctx, rule.DomainID)
 	if err != nil {
 		if !isMissingGraphData(err) {

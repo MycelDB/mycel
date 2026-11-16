@@ -326,6 +326,13 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	if err != nil {
 		return ReliabilityStatus{}, err
 	}
+	profiles, err := spaceMgr.ListIntelligenceProfiles(ctx)
+	if err != nil {
+		return ReliabilityStatus{}, err
+	}
+	if diagnostics := domainsemantic.ValidateSemanticRuleProfileDependencies(rule, profiles); len(diagnostics) > 0 {
+		return ReliabilityStatus{}, fmt.Errorf("semantic rule %s has unresolved intelligence-profile dependencies: %s", rule.ID, domainsemantic.FormatSemanticRuleProfileDependencyDiagnostics(diagnostics))
+	}
 	maintenanceMgr, err := m.MaintenanceManager(ctx, in.SpaceID)
 	if err != nil {
 		return ReliabilityStatus{}, err
