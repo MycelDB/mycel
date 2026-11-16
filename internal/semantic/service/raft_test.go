@@ -768,9 +768,7 @@ func TestSemanticRuleEnabledRejectedWALRecordCompletesOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, mgr, spaceID)
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -857,9 +855,7 @@ func TestSemanticRuleEnabledWALRejectionDoesNotBlockLaterMutation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, mgr, spaceID)
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -929,9 +925,7 @@ func TestSemanticRuleEnabledMutationUsesSpaceRaft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, mgr, spaceID)
 	created, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{
 		SpaceID: spaceID, DomainID: graphmodel.DomainID(uuid.New()), Key: "rule", Enabled: true,
 		Selector:   domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}},
@@ -1834,9 +1828,7 @@ func TestSemanticRaftDerivedOperationsForwardToPartitionLeader(t *testing.T) {
 		}
 	}
 	ruleID := domainsemantic.SemanticRuleID(idx.ID)
-	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatalf("upsert failover intelligence profile: %v", err)
-	}
+	seedTestIntelligenceProfile(t, ctx, mgr, spaceID)
 	rule := domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: idx.DomainID, Key: "failover-rule", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: idx.VectorStoreID, Enabled: true}}}
 	if _, err := mgr.UpsertSemanticRule(ctx, rule); err != nil {
 		t.Fatalf("upsert failover rule: %v", err)
@@ -2146,9 +2138,7 @@ func TestRebuildInferenceProjectionBackfillsSpaceAuthorizationRevision(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{ID: uuid.New(), SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfileWithConfig(t, ctx, manager, domainsemantic.IntelligenceProfile{ID: uuid.New(), SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true})
 	sink := &recordingAuthorizationRevisionSink{}
 	m.WithAuthorizationRevisionSink(sink)
 	if err := m.rebuildInferenceProjection(ctx); err != nil {
