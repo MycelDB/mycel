@@ -151,9 +151,7 @@ func TestReconcileProviderBudgetPrepareToleratesPrunedOldScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, manager, spaceID)
 	scopeID := domaininference.BudgetScopeID("pre-crash-ambiguous-scope")
 	rule, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-prepare", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionPrepare, ProviderBudgetTransitionScopeIDs: []string{string(scopeID)}})
 	if err != nil {
@@ -186,9 +184,7 @@ func TestReconcileProviderBudgetDeleteRollsForwardDurablePurgeIntent(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, manager, spaceID)
 	if _, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: graph.DomainID(uuid.New()), Key: "pending-delete", Enabled: true, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionDelete, ProviderBudgetTransitionID: "delete-a", ProviderBudgetTransitionPurgeVectors: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,9 +213,7 @@ func TestReconcileProviderBudgetTransitionRollsForwardDurableJournal(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, manager, spaceID)
 	rule, err := manager.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: domainsemantic.SemanticRuleID(uuid.New()), SpaceID: spaceID, DomainID: domainID, Key: "pending-budget-transition", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}, Storage: domainsemantic.DefaultSemanticStoragePolicy(), ProviderBudgetTransition: domainsemantic.SemanticProviderBudgetTransitionComplete})
 	if err != nil {
 		t.Fatal(err)
@@ -248,9 +242,7 @@ func TestReconcileReliabilityTransitionIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, manager, spaceID)
 	ruleID := domainsemantic.SemanticRuleID(uuid.New())
 	if _, err := manager.UpsertSemanticRuleState(ctx, domainsemantic.SemanticRuleState{SemanticRuleID: ruleID, State: "active", ReliabilityByBinding: map[string]domainsemantic.SemanticReliabilityState{"search": {EmbeddingBindingKey: "search", SemanticGeneration: 4}}}); err != nil {
 		t.Fatal(err)
@@ -627,9 +619,7 @@ func TestListRulesIncludesDisabledRulesForClientPreconditionMapping(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.UpsertIntelligenceProfile(ctx, domainsemantic.IntelligenceProfile{SpaceID: spaceID, Key: "profile", Operation: domainsemantic.OperationEmbeddings, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
+	seedTestIntelligenceProfile(t, ctx, mgr, spaceID)
 	if _, err := mgr.UpsertSemanticRule(ctx, domainsemantic.SemanticGenerationRule{ID: ruleID, SpaceID: spaceID, DomainID: domainID, Key: "disabled-rule", Enabled: false, Selector: domainsemantic.SemanticTargetSelector{Mode: domainsemantic.SemanticTargetSelectorNodeType, Labels: []string{"Document"}}, Source: domainsemantic.SemanticSourceAssemblyPolicy{Mode: domainsemantic.SemanticSourceSelf}, Embeddings: []domainsemantic.SemanticEmbeddingBinding{{Key: "search", Purpose: "semantic_search", IntelligenceProfile: "profile", VectorStoreID: domainsemantic.VectorStoreID(uuid.New()), Enabled: true}}}); err != nil {
 		t.Fatal(err)
 	}
