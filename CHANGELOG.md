@@ -6,6 +6,24 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.23.0] - 2026-11-17
+
+### Added
+
+- Added request-level semantic projection consistency policies for SearchService, including strict freshness, read-your-writes, bounded-stale last-good snapshot serving, and best-effort semantic-channel degradation (#357).
+- Added per-channel lexical and semantic freshness diagnostics on search responses so callers can inspect served revision, latest known revision, lag, state, and skip/staleness reasons (#357).
+
+### Compatibility
+
+- Requires the coordinated `mycel-api`, Go SDK, and Rust SDK v0.23.0 contracts for the new semantic consistency request and response fields.
+- Strict semantic projection freshness remains the default. Relaxed semantic freshness never bypasses tenant, domain, read, deletion, or AI-processing policy enforcement; current graph authorization and visibility checks remain fail-closed.
+- v0.23 clients and daemons must be updated together for semantic consistency behavior; no legacy semantic-search compatibility bridge is provided.
+
+### Validation
+
+- Daemon CI passed for the semantic consistency implementation and release synchronization PRs.
+- Targeted client/semantic tests, affected package race tests, build, docs check, daemon-only check, and public-surface check were run for the implementation branch.
+
 ## [v0.22.8] - 2026-11-17
 
 ### Fixed
