@@ -137,19 +137,7 @@ func TestAsyncLexicalReplayUsesIndexedRevisionCursor(t *testing.T) {
 }
 
 func TestAsyncLexicalReplayAutomaticallyRebuildsUnavailableIndexFromGraphSnapshot(t *testing.T) {
-	ctx := context.Background()
-	lexical := newTestLexicalModule(t)
-	notifications := newTestGraphNotifications(t)
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
-	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
-	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
-		t.Fatalf("OnGraphCommitted(first) error = %v", err)
-	}
-	if err := notifications.OnGraphCommitted(ctx, second); err != nil {
-		t.Fatalf("OnGraphCommitted(second) error = %v", err)
-	}
+	ctx, lexical, notifications, spaceID, domainID, first, second := newAsyncLexicalReplayFixture(t, true)
 	if err := lexical.Rebuild(ctx, spaceID.String(), domainID.String(), nil, 2); err != nil {
 		t.Fatalf("seed lexical artifact: %v", err)
 	}
@@ -333,16 +321,7 @@ func TestValidateAsyncLexicalReplayRejectsHolesAndOutOfOrderEvents(t *testing.T)
 }
 
 func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
-	ctx := context.Background()
-	lexical := newTestLexicalModule(t)
-	notifications := newTestGraphNotifications(t)
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
-	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
-	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
-		t.Fatalf("OnGraphCommitted(first) error = %v", err)
-	}
+	ctx, lexical, notifications, spaceID, domainID, _, second := newAsyncLexicalReplayFixture(t, false)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registration, coordinator, err := registerAsyncLexicalConsumer(ctx, logger, notifications, lexical, nil)
 	if err != nil {
@@ -384,16 +363,7 @@ func TestAsyncLexicalCatchupPrecedesRegisteredLiveDelivery(t *testing.T) {
 }
 
 func TestAsyncLexicalTerminalMismatchPendingWakeupIsNotLost(t *testing.T) {
-	ctx := context.Background()
-	lexical := newTestLexicalModule(t)
-	notifications := newTestGraphNotifications(t)
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
-	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
-	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
-		t.Fatalf("OnGraphCommitted(first) error = %v", err)
-	}
+	ctx, lexical, notifications, spaceID, domainID, first, second := newAsyncLexicalReplayFixture(t, false)
 	consumer := &asyncLexicalConsumer{lexical: lexical, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if err := consumer.HandleGraphChange(ctx, first); err != nil {
 		t.Fatalf("HandleGraphChange(first) error = %v", err)
@@ -448,19 +418,7 @@ func TestAsyncLexicalTerminalMismatchPendingWakeupIsNotLost(t *testing.T) {
 }
 
 func TestAsyncLexicalReplayRepairsCursorAheadOfDomainRevision(t *testing.T) {
-	ctx := context.Background()
-	lexical := newTestLexicalModule(t)
-	notifications := newTestGraphNotifications(t)
-	spaceID := domainspace.SpaceID(uuid.New())
-	domainID := graph.DomainID(uuid.New())
-	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
-	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
-	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
-		t.Fatalf("OnGraphCommitted(first) error = %v", err)
-	}
-	if err := notifications.OnGraphCommitted(ctx, second); err != nil {
-		t.Fatalf("OnGraphCommitted(second) error = %v", err)
-	}
+	ctx, lexical, notifications, spaceID, domainID, _, _ := newAsyncLexicalReplayFixture(t, true)
 	if err := lexical.Rebuild(ctx, spaceID.String(), domainID.String(), nil, 9); err != nil {
 		t.Fatalf("seed poisoned lexical cursor: %v", err)
 	}
@@ -769,6 +727,26 @@ func (c *recordingAsyncLexicalReplayConsumer) materialize(event graphchange.Comm
 
 func (*recordingAsyncLexicalReplayConsumer) HandleGraphChangeGap(_ context.Context, _ graphchange.Gap) error {
 	return errors.New("unexpected graph-change replay gap")
+}
+
+func newAsyncLexicalReplayFixture(t *testing.T, commitSecond bool) (context.Context, *lexicalservice.Module, *graphnotification.Module, domainspace.SpaceID, graph.DomainID, graphchange.CommittedEvent, graphchange.CommittedEvent) {
+	t.Helper()
+	ctx := context.Background()
+	lexical := newTestLexicalModule(t)
+	notifications := newTestGraphNotifications(t)
+	spaceID := domainspace.SpaceID(uuid.New())
+	domainID := graph.DomainID(uuid.New())
+	first := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 1, "alpha raft")
+	second := lexicalNodeEvent(spaceID, domainID, graph.NodeID(uuid.New()), 2, "beta raft")
+	if err := notifications.OnGraphCommitted(ctx, first); err != nil {
+		t.Fatalf("OnGraphCommitted(first) error = %v", err)
+	}
+	if commitSecond {
+		if err := notifications.OnGraphCommitted(ctx, second); err != nil {
+			t.Fatalf("OnGraphCommitted(second) error = %v", err)
+		}
+	}
+	return ctx, lexical, notifications, spaceID, domainID, first, second
 }
 
 type lexicalRevisionReaderForTest struct {
