@@ -18,7 +18,7 @@ Search responses return node IDs and scoring/freshness metadata. They do not ret
 ## Operational model
 
 - Index files are derived local daemon state under `search/lexical/<space-id>/<domain-id>/` in the daemon data directory.
-- Graph data remains authoritative. Missing, corrupt, or incompatible index files should be handled by rebuild rather than graph data recovery.
+- Graph data remains authoritative. Missing index files and replay-marked `rebuild_required` artifacts are automatically rebuilt from a revision-pinned graph snapshot when the local graph owner can read one; the index remains fenced while recovery runs. Other corruption or incompatibility still requires an explicit rebuild.
 - Full source text is not stored in the lexical index, but index files contain token/posting derivatives of user-authored text and must be treated as sensitive local data.
 - Backups do not need to include lexical index files. Restored data can rebuild indexes from graph state.
 - Automatic compaction is deferred in v1. Tombstones are retained until a rebuild or future compaction workflow rewrites the physical index.
@@ -99,13 +99,13 @@ The authoritative owner for the space/domain builds the lexical index and advanc
 
 Normal graph commits initialize a new domain's lexical index through asynchronous, ordered graph-change replay; an operator rebuild is not required for the first committed documents. A lifecycle-managed observer checks local Raft partition leadership every 250 ms and schedules persisted scopes when the local node becomes leader or its leadership term changes. This also recovers a promoted follower that persisted notifications but never received a leader-only live indexing wake-up. Unchanged leadership does not repeatedly enumerate scopes or replay indexes.
 
-Replay rechecks local ownership and validates contiguous history through the current domain revision before advancing the index. Until catch-up completes, unavailable/stale search remains fenced under the existing freshness policy. Missing retained history still requires an explicit authorized rebuild; leadership recovery does not skip gaps, discard PVCs, reset diagnostics, or weaken authorization or domain policy.
+Replay rechecks local ownership and validates contiguous history through the current domain revision before advancing the index. Until catch-up completes, unavailable/stale search remains fenced under the existing freshness policy. A replay gap marks the artifact rebuild-required and schedules a complete graph-snapshot rebuild when possible; if graph snapshot reads or local ownership are unavailable, an explicit authorized rebuild may still be required. Leadership recovery does not skip gaps, discard PVCs, reset diagnostics, or weaken authorization or domain policy.
 
 ## Troubleshooting
 
 | Symptom | Action |
 | --- | --- |
-| Search returns unavailable/building | Check status; wait for catch-up or rebuild if stuck. |
+| Search returns unavailable/building | Check status; wait for automatic catch-up/rebuild, or run an authorized rebuild if graph-snapshot recovery cannot proceed. |
 | Search returns stale-index error | Retry later, or use `--allow-stale` only if stale reads are acceptable. |
 | Invalid query syntax | Remove unsupported wildcard/fuzzy/range/fielded syntax. |
 | Unexpected empty results | Verify the domain is searchable, node text is in payload/properties, and status revision has caught up. |
