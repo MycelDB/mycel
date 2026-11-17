@@ -14,6 +14,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 - Raft apply and replay now distinguish deterministic command rejections from infrastructure/state-machine failures. Failed applications fence the local group, leave the applied index unchanged, fail closed in status/readiness, and replay the committed entry after recovery instead of skipping it (#340).
 - Partition-group startup no longer holds the multi-group registry lock while replaying state machines, preventing recovery requests from deadlocking during committed-entry replay (#340).
+- Lexical replay now automatically rebuilds unavailable or rebuild-required local indexes from an authoritative graph snapshot, keeping search fenced during recovery while avoiding indefinite first-run `rebuild_required` states (#352).
 
 ## [v0.22.0] - 2026-11-09
 

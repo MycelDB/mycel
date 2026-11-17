@@ -17,6 +17,7 @@ import (
 	graphnotification "github.com/myceldb/mycel/internal/graph/notification"
 	graphservice "github.com/myceldb/mycel/internal/graph/service"
 	coreruntime "github.com/myceldb/mycel/internal/runtime"
+	lexicalanalyzer "github.com/myceldb/mycel/internal/search/lexical/analyzer"
 	lexicalindex "github.com/myceldb/mycel/internal/search/lexical/index"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
@@ -52,6 +53,14 @@ type asyncLexicalJournalAcknowledger interface {
 
 type asyncLexicalGraphReader interface {
 	GetNode(context.Context, sessionmodel.GraphTransaction, string) (graph.Node, error)
+}
+
+type asyncLexicalGraphSnapshotReader interface {
+	ListNodes(context.Context, sessionmodel.GraphTransaction, int, string) ([]graph.Node, string, error)
+}
+
+type asyncLexicalSnapshotProjection interface {
+	RebuildFromSnapshot(context.Context, string, string, lexicalservice.RebuildSnapshot) error
 }
 
 type asyncLexicalReplayProjection interface {
@@ -104,9 +113,11 @@ type asyncLexicalCoordinator struct {
 func startAsyncLexicalConsumer(ctx context.Context, logger *slog.Logger, notifications *graphnotification.Module, lexical *lexicalservice.Module, revisions asyncLexicalDomainRevisionReader, groups *consensus.MultiGroup, partitionCount uint32) (*asyncLexicalRuntimeService, error) {
 	var journal asyncLexicalJournalReader
 	var graphReader asyncLexicalGraphReader
+	if revisions != nil {
+		graphReader, _ = revisions.(asyncLexicalGraphReader)
+	}
 	if groups != nil {
 		journal, _ = revisions.(asyncLexicalJournalReader)
-		graphReader, _ = revisions.(asyncLexicalGraphReader)
 	}
 	registration, coordinator, err := registerAsyncLexicalConsumerWithJournal(ctx, logger, notifications, lexical, revisions, journal, graphReader, partitionCount)
 	if err != nil || coordinator == nil {
@@ -291,7 +302,8 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 			return
 		}
 		if errors.Is(err, graphnotification.ErrOutOfRange) || errors.Is(err, errAsyncLexicalNotLocalOwner) {
-			if errors.Is(err, graphnotification.ErrOutOfRange) && c.journal != nil {
+			autoRebuilt := false
+			if errors.Is(err, graphnotification.ErrOutOfRange) {
 				if latest, latestErr := asyncLexicalGraphRevision(c.ctx, c.revisions, worker.scope); latestErr == nil {
 					if marker, ok := any(c.lexical).(interface {
 						MarkRebuildRequired(context.Context, string, string, string, uint64) error
@@ -299,6 +311,15 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 						if markErr := marker.MarkRebuildRequired(c.ctx, worker.scope.SpaceID, worker.scope.DomainID, "authoritative graph-change journal gap", latest); markErr != nil && c.logger != nil {
 							c.logger.Error("failed to publish lexical rebuild_required state", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", markErr)
 						}
+					}
+				}
+				if c.consumer != nil {
+					var rebuildErr error
+					attempted, err := rebuildAsyncLexicalFromGraphSnapshot(c.ctx, c.lexical, c.revisions, c.consumer.graph, worker.scope)
+					autoRebuilt = attempted && err == nil
+					rebuildErr = err
+					if rebuildErr != nil && c.logger != nil {
+						c.logger.Error("automatic lexical snapshot rebuild failed after replay gap", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", rebuildErr)
 					}
 				}
 			}
@@ -312,7 +333,7 @@ func (c *asyncLexicalCoordinator) runScope(key string, worker *asyncLexicalScope
 				delete(c.workers, key)
 			}
 			c.mu.Unlock()
-			if c.logger != nil && errors.Is(err, graphnotification.ErrOutOfRange) {
+			if c.logger != nil && errors.Is(err, graphnotification.ErrOutOfRange) && !autoRebuilt {
 				c.logger.Error("async lexical durable replay requires operator rebuild", "space_id", worker.scope.SpaceID, "domain_id", worker.scope.DomainID, "error", err)
 			}
 			return
@@ -510,6 +531,26 @@ func replayAsyncLexicalJournalScope(ctx context.Context, logger *slog.Logger, le
 		return err
 	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
+	forceRebuild := status.State == lexicalservice.StateUnavailable && status.LastError != ""
+	if status.State == lexicalservice.StateUnavailable {
+		rebuilt, rebuildErr := rebuildAsyncLexicalFromGraphSnapshot(ctx, lexical, revisions, consumer.graph, scope)
+		if rebuildErr != nil {
+			return rebuildErr
+		}
+		if rebuilt {
+			latestRevision, err = asyncLexicalGraphRevision(ctx, revisions, scope)
+			if err != nil {
+				return err
+			}
+			status = lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
+			if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
+				if err := acknowledgeAsyncLexicalJournal(ctx, journal, scope, latestRevision); err != nil {
+					return err
+				}
+				return nil
+			}
+		}
+	}
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
 		if err := acknowledgeAsyncLexicalJournal(ctx, journal, scope, latestRevision); err != nil {
 			return err
@@ -517,7 +558,7 @@ func replayAsyncLexicalJournalScope(ctx context.Context, logger *slog.Logger, le
 		return nil
 	}
 	afterRevision := status.IndexedGraphRevision
-	reset := afterRevision > latestRevision
+	reset := forceRebuild || afterRevision > latestRevision
 	if reset {
 		afterRevision = 0
 	}
@@ -589,6 +630,52 @@ func asyncLexicalGraphRevision(ctx context.Context, revisions asyncLexicalDomain
 		return 0, fmt.Errorf("graph domain revision is negative: %d", revision)
 	}
 	return uint64(revision), nil
+}
+
+// rebuildAsyncLexicalFromGraphSnapshot repairs an unavailable local artifact
+// from the authoritative graph instead of requiring an operator to invoke the
+// maintenance API. A complete snapshot is deliberately preferred to replaying
+// from the current lexical cursor: rebuild_required may have been set after a
+// journal gap, so the existing artifact cannot be treated as authoritative.
+func rebuildAsyncLexicalFromGraphSnapshot(ctx context.Context, lexical asyncLexicalReplayProjection, revisions asyncLexicalDomainRevisionReader, graphReader asyncLexicalGraphReader, scope graphchange.Scope) (bool, error) {
+	rebuilder, ok := lexical.(asyncLexicalSnapshotProjection)
+	if !ok || graphReader == nil {
+		return false, nil
+	}
+	snapshotReader, ok := graphReader.(asyncLexicalGraphSnapshotReader)
+	if !ok {
+		return false, nil
+	}
+	if revisions == nil {
+		return false, nil
+	}
+	if err := rebuilder.RebuildFromSnapshot(ctx, scope.SpaceID, scope.DomainID, func() ([]lexicalindex.IndexedDocument, uint64, error) {
+		latestRevision, err := asyncLexicalGraphRevision(ctx, revisions, scope)
+		if err != nil {
+			return nil, 0, err
+		}
+		tx := sessionmodel.GraphTransaction{ID: "lexical-auto-rebuild-" + uuid.NewString(), SpaceID: scope.SpaceID, DomainID: scope.DomainID, Mode: sessionmodel.TransactionModeReadOnly, State: sessionmodel.TransactionStateActive, BaseRevision: int64(latestRevision), CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Minute)}
+		var docs []lexicalindex.IndexedDocument
+		pageToken := ""
+		for {
+			nodes, next, err := snapshotReader.ListNodes(ctx, tx, 500, pageToken)
+			if err != nil {
+				return nil, 0, err
+			}
+			for _, node := range nodes {
+				docs = append(docs, lexicalindex.IndexedDocument{Document: lexicalanalyzer.ExtractNodeDocument(node), GraphRevision: latestRevision})
+			}
+			if next == "" {
+				break
+			}
+			pageToken = next
+		}
+		lexicalservice.SortDocumentsByNodeID(docs)
+		return docs, latestRevision, nil
+	}); err != nil {
+		return true, fmt.Errorf("automatically rebuild unavailable lexical index from graph snapshot: %w", err)
+	}
+	return true, nil
 }
 
 func validateAsyncLexicalJournalEntries(entries []graphjournal.Entry, afterRevision uint64, latestRevision uint64) error {
@@ -667,6 +754,27 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 		return err
 	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
+	forceRebuild := status.State == lexicalservice.StateUnavailable && status.LastError != ""
+	if status.State == lexicalservice.StateUnavailable {
+		graphReader := asyncLexicalGraphReader(nil)
+		if replayConsumer, ok := consumer.(*asyncLexicalConsumer); ok {
+			graphReader = replayConsumer.graph
+		}
+		rebuilt, rebuildErr := rebuildAsyncLexicalFromGraphSnapshot(ctx, lexical, revisions, graphReader, scope)
+		if rebuildErr != nil {
+			return rebuildErr
+		}
+		if rebuilt {
+			notificationRevision, latestRevision, err = asyncLexicalRevisions(ctx, notifications, revisions, scope)
+			if err != nil {
+				return err
+			}
+			status = lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
+			if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
+				return nil
+			}
+		}
+	}
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
 		return nil
 	}
@@ -682,7 +790,7 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	}
 
 	afterRevision := status.IndexedGraphRevision
-	reset := afterRevision > latestRevision
+	reset := forceRebuild || afterRevision > latestRevision
 	if reset {
 		afterRevision = 0
 	}
