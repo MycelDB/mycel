@@ -172,7 +172,14 @@ func (m *Module) publishCommonSemanticProjection(ctx context.Context, rule domai
 	replica := projection.ReplicaStatus{ProjectionID: projectionID, NodeID: nodeID, State: state, Reasons: reasons, Required: desired.Required, Published: published, ConfigurationEpoch: generation, MaterializerVersion: semanticProjectionMaterializerVersion, FencingEpoch: term, ArtifactGeneration: artifactGeneration}
 	if current, exists := reader.ReplicaStatus(projectionID, nodeID); !exists || !semanticReplicaStatusEqual(current, replica) {
 		if err := m.proposeCommonProjectionRecord(ctx, rule.SpaceID, projection.NewReplicaStatusRecord(replica)); err != nil {
-			return err
+			if !consensus.IsCommandRejection(err) || !exists {
+				return err
+			}
+			latest, latestExists := reader.ReplicaStatus(projectionID, nodeID)
+			if !latestExists || !semanticReplicaStatusDominates(latest, replica) {
+				return err
+			}
+			return nil
 		}
 	}
 	if state != projection.StateReady {
@@ -246,6 +253,19 @@ func (m *Module) validateCommonSemanticProjection(ctx context.Context, rule doma
 
 func semanticReplicaStatusEqual(a, b projection.ReplicaStatus) bool {
 	return a.ProjectionID == b.ProjectionID && a.NodeID == b.NodeID && a.State == b.State && reflect.DeepEqual(a.Reasons, b.Reasons) && a.Required == b.Required && a.Published == b.Published && a.ConfigurationEpoch == b.ConfigurationEpoch && a.MaterializerVersion == b.MaterializerVersion && a.FencingEpoch == b.FencingEpoch && a.ArtifactGeneration == b.ArtifactGeneration
+}
+
+func semanticReplicaStatusDominates(current, proposed projection.ReplicaStatus) bool {
+	if current.ConfigurationEpoch != proposed.ConfigurationEpoch {
+		return current.ConfigurationEpoch > proposed.ConfigurationEpoch
+	}
+	if current.FencingEpoch != proposed.FencingEpoch {
+		return current.FencingEpoch > proposed.FencingEpoch
+	}
+	if current.Published.Revision != proposed.Published.Revision {
+		return current.Published.Revision > proposed.Published.Revision
+	}
+	return current.Published.Cursor == proposed.Published.Cursor
 }
 
 func (m *Module) proposeCommonProjectionRecord(ctx context.Context, spaceID domainspace.SpaceID, record projection.Record) error {

@@ -3,6 +3,7 @@ package projection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -79,7 +80,14 @@ func (s RaftStateMachine) ApplyCommand(ctx context.Context, apply consensus.Appl
 	if spaceID != strings.TrimSpace(cmd.SpaceID) {
 		return fmt.Errorf("projection registry command space_id mismatch: command=%s payload=%s", cmd.SpaceID, spaceID)
 	}
-	return s.Registry.Apply(ctx, cmd.CommandID, cmd.CommandHash, record)
+	err = s.Registry.Apply(ctx, cmd.CommandID, cmd.CommandHash, record)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrReplicaStatusConflict) {
+		return consensus.NewCommandRejection(err)
+	}
+	return consensus.NewFatalApplyError(err)
 }
 
 func (s RaftStateMachine) Snapshot() ([]byte, error) {
