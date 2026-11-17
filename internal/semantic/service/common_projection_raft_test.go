@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -198,5 +199,31 @@ func TestCommonSemanticProjectionFencesPromotedLeaderUntilItPublishes(t *testing
 	}
 	if err := modules[promoted].validateCommonSemanticProjection(ctx, rule, rule.Embeddings[0], status, promoted, newTerm); err != nil {
 		t.Fatalf("promoted leader remained fenced after publication: %v", err)
+	}
+
+	reader, ok := managers[promoted].Reader(partitionID)
+	if !ok {
+		t.Fatalf("promoted leader registry unavailable after publication")
+	}
+	currentReplica, ok := reader.ReplicaStatus(projectionID, strconv.FormatUint(uint64(promoted), 10))
+	if !ok {
+		t.Fatalf("promoted leader replica status unavailable after publication")
+	}
+	if currentReplica.FencingEpoch == 0 {
+		t.Fatalf("promoted leader replica status has no fencing epoch: %+v", currentReplica)
+	}
+	staleReplica := currentReplica
+	staleReplica.FencingEpoch--
+	if _, err := projection.ProposePartitionRecord(ctx, groups[promoted], spaceID, partitionCount, projection.NewReplicaStatusRecord(staleReplica), "stale-promoted-replica-status"); !consensus.IsCommandRejection(err) {
+		t.Fatalf("stale promoted replica status error=%v, want command rejection", err)
+	}
+	for nodeID, group := range groups {
+		partitionGroup, ok := group.Group(consensus.PartitionGroupID(partitionID))
+		if !ok {
+			t.Fatalf("node %d partition group unavailable after stale status", nodeID)
+		}
+		if err := partitionGroup.ApplyFailure(); err != nil {
+			t.Fatalf("node %d fenced after stale replica status: %v", nodeID, err)
+		}
 	}
 }
