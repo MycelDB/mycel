@@ -532,24 +532,9 @@ func replayAsyncLexicalJournalScope(ctx context.Context, logger *slog.Logger, le
 	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	forceRebuild := status.State == lexicalservice.StateUnavailable && status.LastError != ""
-	if status.State == lexicalservice.StateUnavailable {
-		rebuilt, rebuildErr := rebuildAsyncLexicalFromGraphSnapshot(ctx, lexical, revisions, consumer.graph, scope)
-		if rebuildErr != nil {
-			return rebuildErr
-		}
-		if rebuilt {
-			latestRevision, err = asyncLexicalGraphRevision(ctx, revisions, scope)
-			if err != nil {
-				return err
-			}
-			status = lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
-			if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
-				if err := acknowledgeAsyncLexicalJournal(ctx, journal, scope, latestRevision); err != nil {
-					return err
-				}
-				return nil
-			}
-		}
+	status, latestRevision, _, err = maybeRebuildUnavailableAsyncLexical(ctx, lexical, revisions, consumer.graph, scope, status, latestRevision)
+	if err != nil {
+		return err
 	}
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
 		if err := acknowledgeAsyncLexicalJournal(ctx, journal, scope, latestRevision); err != nil {
@@ -632,11 +617,27 @@ func asyncLexicalGraphRevision(ctx context.Context, revisions asyncLexicalDomain
 	return uint64(revision), nil
 }
 
-// rebuildAsyncLexicalFromGraphSnapshot repairs an unavailable local artifact
+// maybeRebuildUnavailableAsyncLexical repairs an unavailable local artifact
 // from the authoritative graph instead of requiring an operator to invoke the
-// maintenance API. A complete snapshot is deliberately preferred to replaying
-// from the current lexical cursor: rebuild_required may have been set after a
-// journal gap, so the existing artifact cannot be treated as authoritative.
+// maintenance API. A complete snapshot is preferred when the artifact is
+// unavailable because its existing cursor cannot be trusted.
+func maybeRebuildUnavailableAsyncLexical(ctx context.Context, lexical asyncLexicalReplayProjection, revisions asyncLexicalDomainRevisionReader, graphReader asyncLexicalGraphReader, scope graphchange.Scope, status lexicalservice.Status, latestRevision uint64) (lexicalservice.Status, uint64, bool, error) {
+	if status.State != lexicalservice.StateUnavailable {
+		return status, latestRevision, false, nil
+	}
+	rebuilt, err := rebuildAsyncLexicalFromGraphSnapshot(ctx, lexical, revisions, graphReader, scope)
+	if err != nil || !rebuilt {
+		return status, latestRevision, rebuilt, err
+	}
+	latestRevision, err = asyncLexicalGraphRevision(ctx, revisions, scope)
+	if err != nil {
+		return status, latestRevision, true, err
+	}
+	return lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision), latestRevision, true, nil
+}
+
+// rebuildAsyncLexicalFromGraphSnapshot rebuilds the unavailable artifact from
+// an authoritative, revision-pinned graph snapshot.
 func rebuildAsyncLexicalFromGraphSnapshot(ctx context.Context, lexical asyncLexicalReplayProjection, revisions asyncLexicalDomainRevisionReader, graphReader asyncLexicalGraphReader, scope graphchange.Scope) (bool, error) {
 	rebuilder, ok := lexical.(asyncLexicalSnapshotProjection)
 	if !ok || graphReader == nil {
@@ -755,24 +756,23 @@ func replayAsyncLexicalScope(ctx context.Context, logger *slog.Logger, notificat
 	}
 	status := lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
 	forceRebuild := status.State == lexicalservice.StateUnavailable && status.LastError != ""
-	if status.State == lexicalservice.StateUnavailable {
-		graphReader := asyncLexicalGraphReader(nil)
-		if replayConsumer, ok := consumer.(*asyncLexicalConsumer); ok {
-			graphReader = replayConsumer.graph
+	graphReader := asyncLexicalGraphReader(nil)
+	if replayConsumer, ok := consumer.(*asyncLexicalConsumer); ok {
+		graphReader = replayConsumer.graph
+	}
+	var rebuilt bool
+	status, latestRevision, rebuilt, err = maybeRebuildUnavailableAsyncLexical(ctx, lexical, revisions, graphReader, scope, status, latestRevision)
+	if err != nil {
+		return err
+	}
+	if rebuilt {
+		notificationRevision, latestRevision, err = asyncLexicalRevisions(ctx, notifications, revisions, scope)
+		if err != nil {
+			return err
 		}
-		rebuilt, rebuildErr := rebuildAsyncLexicalFromGraphSnapshot(ctx, lexical, revisions, graphReader, scope)
-		if rebuildErr != nil {
-			return rebuildErr
-		}
-		if rebuilt {
-			notificationRevision, latestRevision, err = asyncLexicalRevisions(ctx, notifications, revisions, scope)
-			if err != nil {
-				return err
-			}
-			status = lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
-			if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
-				return nil
-			}
+		status = lexical.Status(ctx, scope.SpaceID, scope.DomainID, latestRevision)
+		if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
+			return nil
 		}
 	}
 	if status.IndexedGraphRevision == latestRevision && status.State == lexicalservice.StateFresh {
