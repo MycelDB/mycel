@@ -16,6 +16,7 @@ import (
 	lexicalindex "github.com/myceldb/mycel/internal/search/lexical/index"
 	lexicalparser "github.com/myceldb/mycel/internal/search/lexical/parser"
 	lexicalservice "github.com/myceldb/mycel/internal/search/lexical/service"
+	semanticsearch "github.com/myceldb/mycel/internal/semantic/search"
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	domainspace "github.com/myceldb/mycel/internal/space/model"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
@@ -93,6 +94,10 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	if pageSize > lexicalMaxPageSize {
 		return nil, status.Errorf(codes.ResourceExhausted, "page_size must be <= %d", lexicalMaxPageSize)
 	}
+	semanticConsistency, err := semanticConsistencyPolicyFromProto(req.GetSemanticConsistency())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	freshness, err := s.lexicalStatus(ctx, spaceID, domainID)
 	if err != nil {
 		return nil, mapGraphError(err, "read graph revision for lexical search")
@@ -105,7 +110,7 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if mode == clientv1.SearchMode_SEARCH_MODE_HYBRID {
-		return s.hybridSearch(ctx, principal, spaceID, domainID, pageSize, freshness, filters, req)
+		return s.hybridSearch(ctx, principal, spaceID, domainID, pageSize, freshness, filters, semanticConsistency, req)
 	}
 	query := effectiveLexicalSearchQuery(req)
 	if query == "" {
@@ -114,7 +119,7 @@ func (s *SearchService) Search(ctx context.Context, req *clientv1.SearchRequest)
 	return s.lexicalSearch(ctx, principal, spaceID, domainID, query, pageSize, freshness, filters, req)
 }
 
-func (s *SearchService) hybridSearch(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, pageSize int, freshness lexicalservice.Status, filters hybridsearch.Filters, req *clientv1.SearchRequest) (*clientv1.SearchResponse, error) {
+func (s *SearchService) hybridSearch(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, pageSize int, freshness lexicalservice.Status, filters hybridsearch.Filters, semanticConsistency daemonsemantic.SearchConsistencyPolicy, req *clientv1.SearchRequest) (*clientv1.SearchResponse, error) {
 	offset, err := searchPageOffset(req, searchCursorModeHybrid, freshness)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -161,13 +166,18 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	if freshness.State == lexicalservice.StateStale {
 		warnings = append(warnings, "lexical index is stale")
 	}
+	var semanticFreshness *semanticsearch.ProjectionFreshness
 	if opts.Weights.Semantic > 0 || opts.RequireBoth {
 		semanticRequired := opts.RequireBoth || opts.Weights.Lexical == 0
-		semanticCandidatesOut, semanticWarnings, err := s.semanticHybridCandidates(ctx, principal, spaceID, domainID, semanticQuery, semanticCandidates, req.GetSemantic(), semanticRequired)
+		semanticCandidatesOut, semanticWarnings, freshness, err := s.semanticHybridCandidates(ctx, principal, spaceID, domainID, semanticQuery, semanticCandidates, req.GetSemantic(), semanticRequired, semanticConsistency)
 		if err != nil {
 			return nil, err
 		}
+		semanticFreshness = freshness
 		warnings = append(warnings, semanticWarnings...)
+		if semanticFreshness != nil && semanticFreshness.State == "stale" {
+			warnings = append(warnings, "semantic projection is stale; serving a last-good snapshot")
+		}
 		if hybridsearch.HasFilters(filters) && len(semanticCandidatesOut) == hybridMaxCandidateCount {
 			warnings = append(warnings, fmt.Sprintf("hybrid semantic candidate scan reached the bounded maximum of %d; additional filtered matches may exist", hybridMaxCandidateCount))
 		}
@@ -212,7 +222,7 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	if err != nil {
 		return nil, err
 	}
-	out := &clientv1.SearchResponse{Freshness: mapSearchFreshness(freshness), Warnings: warnings}
+	out := &clientv1.SearchResponse{Freshness: mapSearchFreshness(freshness), Warnings: warnings, ChannelDiagnostics: &clientv1.SearchChannelDiagnostics{Lexical: mapLexicalChannelStatus(freshness), Semantic: mapSemanticChannelStatus(semanticFreshness)}}
 	for _, item := range eligible[offset:end] {
 		result := &clientv1.SearchResult{SpaceId: spaceID.String(), DomainId: domainID.String(), NodeId: item.NodeID, Score: item.Score, ScoreKind: clientv1.SearchScoreKind_SEARCH_SCORE_KIND_HYBRID_FUSED}
 		if lexicalItem, ok := lexicalByNode[item.NodeID]; ok {
@@ -241,44 +251,56 @@ func (s *SearchService) hybridSearch(ctx context.Context, principal principalUse
 	return out, nil
 }
 
-func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, limit int, opts *clientv1.SemanticSearchOptions, requireBoth bool) ([]hybridsearch.Candidate, []string, error) {
+func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal principalUser, spaceID domainspace.SpaceID, domainID graph.DomainID, query string, limit int, opts *clientv1.SemanticSearchOptions, requireBoth bool, consistency daemonsemantic.SearchConsistencyPolicy) ([]hybridsearch.Candidate, []string, *semanticsearch.ProjectionFreshness, error) {
 	if s.semantic == nil {
-		if requireBoth {
-			return nil, nil, status.Error(codes.FailedPrecondition, "semantic search service is not configured")
+		if consistency.AllowsSkip() {
+			return nil, []string{"semantic search service is not configured; returning lexical-only hybrid results"}, unavailableSemanticFreshness("semantic_service_unavailable"), nil
 		}
-		return nil, []string{"semantic search service is not configured; returning lexical-only hybrid results"}, nil
+		if requireBoth {
+			return nil, nil, nil, status.Error(codes.FailedPrecondition, "semantic search service is not configured")
+		}
+		return nil, []string{"semantic search service is not configured; returning lexical-only hybrid results"}, unavailableSemanticFreshness("semantic_service_unavailable"), nil
 	}
 	if ok, err := s.semanticSearchEnabled(ctx, principal, spaceID, domainID); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	} else if !ok {
-		if requireBoth {
-			return nil, nil, status.Error(codes.FailedPrecondition, "domain is excluded from semantic search and indexing")
+		if consistency.AllowsSkip() {
+			return nil, []string{"domain is excluded from semantic search and indexing; returning lexical-only hybrid results"}, unavailableSemanticFreshness("domain_semantic_search_disabled"), nil
 		}
-		return nil, []string{"domain is excluded from semantic search and indexing; returning lexical-only hybrid results"}, nil
+		if requireBoth {
+			return nil, nil, nil, status.Error(codes.FailedPrecondition, "domain is excluded from semantic search and indexing")
+		}
+		return nil, []string{"domain is excluded from semantic search and indexing; returning lexical-only hybrid results"}, unavailableSemanticFreshness("domain_semantic_search_disabled"), nil
 	}
 	bindingKey := strings.TrimSpace(opts.GetEmbeddingBindingKey())
 	if bindingKey != "" && strings.TrimSpace(opts.GetSemanticRuleId()) == "" {
-		return nil, nil, status.Error(codes.InvalidArgument, "embedding_binding_key requires semantic_rule_id")
+		return nil, nil, nil, status.Error(codes.InvalidArgument, "embedding_binding_key requires semantic_rule_id")
 	}
 	resolver := NewSemanticService(s.semantic, s.spaces, s.graphs)
 	selectedRuleIDs, err := resolver.resolveSearchRules(ctx, spaceID, domainID, opts.GetSemanticRuleId())
 	if err != nil {
-		if isNoSemanticSearchAvailable(err) && !requireBoth {
-			return nil, []string{"no enabled semantic search rule is available for the domain; returning lexical-only hybrid results"}, nil
+		if consistency.AllowsSkip() && isSemanticChannelUnavailable(err) {
+			return nil, []string{"semantic projection is unavailable; returning lexical-only hybrid results"}, unavailableSemanticFreshness("semantic_projection_unavailable"), nil
 		}
-		return nil, nil, err
+		if isNoSemanticSearchAvailable(err) && !requireBoth {
+			return nil, []string{"no enabled semantic search rule is available for the domain; returning lexical-only hybrid results"}, unavailableSemanticFreshness("no_enabled_semantic_rule"), nil
+		}
+		return nil, nil, nil, err
 	}
 	actorID, err := parseIdentityPrincipalID(principal.PrincipalID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	minScore := 0.0
 	if opts != nil && opts.MinScore != nil {
 		minScore = opts.GetMinScore()
 	}
-	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID)})
+	result, err := s.semantic.Search(ctx, daemonsemantic.SearchInput{SpaceID: spaceID, DomainID: domainID, SemanticRuleIDs: selectedRuleIDs, EmbeddingBindingKey: bindingKey, Text: query, Limit: limit, MinScore: minScore, ActorPrincipalID: identity.PrincipalID(actorID), Consistency: consistency})
 	if err != nil {
-		return nil, nil, mapSemanticError(err, "hybrid semantic search")
+		if consistency.AllowsSkip() && isSemanticChannelUnavailable(err) {
+			return nil, []string{"semantic projection is unavailable; returning lexical-only hybrid results"}, unavailableSemanticFreshness("semantic_projection_unavailable"), nil
+		}
+		return nil, nil, nil, mapSemanticError(err, "hybrid semantic search")
 	}
 	results := result.Results
 	if len(results) > limit {
@@ -291,7 +313,7 @@ func (s *SearchService) semanticHybridCandidates(ctx context.Context, principal 
 		}
 		candidates = append(candidates, hybridsearch.Candidate{NodeID: item.NodeID.String(), Semantic: &hybridsearch.Source{RawScore: item.Score, Rank: i + 1}})
 	}
-	return candidates, append([]string(nil), result.Warnings...), nil
+	return candidates, append([]string(nil), result.Warnings...), result.SemanticFreshness, nil
 }
 
 func effectiveLexicalSearchQuery(req *clientv1.SearchRequest) string {
@@ -544,7 +566,7 @@ func validateFreshnessPolicy(freshness lexicalservice.Status, allowStale bool, m
 }
 
 func mapSearchResponse(in lexicalindex.SearchResponse, freshness lexicalservice.Status, includeDiagnostics bool) *clientv1.SearchResponse {
-	out := &clientv1.SearchResponse{NextPageToken: in.NextPageToken, Freshness: mapSearchFreshness(freshness)}
+	out := &clientv1.SearchResponse{NextPageToken: in.NextPageToken, Freshness: mapSearchFreshness(freshness), ChannelDiagnostics: &clientv1.SearchChannelDiagnostics{Lexical: mapLexicalChannelStatus(freshness)}}
 	for _, item := range in.Results {
 		result := &clientv1.SearchResult{SpaceId: freshness.SpaceID, DomainId: freshness.DomainID, NodeId: item.NodeID, Score: item.Score, ScoreKind: clientv1.SearchScoreKind_SEARCH_SCORE_KIND_BM25, IndexedGraphRevision: int64(item.IndexedGraphRevision)}
 		if includeDiagnostics {

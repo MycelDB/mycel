@@ -353,6 +353,16 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 	if err != nil {
 		return ReliabilityStatus{}, err
 	}
+	indexStates, err := spaceMgr.ListSearchIndexStates(ctx)
+	if err != nil {
+		return ReliabilityStatus{}, err
+	}
+	lastGoodProjectionAt := time.Time{}
+	for _, indexState := range indexStates {
+		if indexState.SemanticRuleID == rule.ID && strings.TrimSpace(indexState.EmbeddingBindingKey) == binding.Key && strings.EqualFold(strings.TrimSpace(indexState.State), "ready") && indexState.UpdatedAt.After(lastGoodProjectionAt) {
+			lastGoodProjectionAt = indexState.UpdatedAt
+		}
+	}
 	reliability := domainsemantic.SemanticReliabilityState{EmbeddingBindingKey: binding.Key}
 	var ruleState domainsemantic.SemanticRuleState
 	for _, state := range states {
@@ -512,7 +522,7 @@ func (m *Module) GetReliabilityStatus(ctx context.Context, in ReliabilityStatusI
 		UnresolvedGapCount: gapCount, OldestUnresolvedGraphRevision: oldestGap, ConfiguredFrontierLimit: semanticReliabilityFrontierLimit,
 		ConfiguredGapIntervalLimit: semanticReliabilityGapIntervalLimit, ConfiguredRevisionSpanLimit: semanticReliabilityRevisionSpanLimit, ConfiguredSerializedByteLimit: semanticReliabilitySerializedByteLimit,
 		RetainedWorkItemCount: retained, RetainedGapIntervalCount: uint64(len(unresolved)), RetainedRevisionSpan: span, RetainedSerializedBytes: serializedBytes, SemanticGeneration: generation, CapacityState: capacityState, Degraded: degraded,
-		DegradedReason: degradedReason, RebuildRequired: checkpoint.RebuildRequired || gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running", Rebuild: reliability,
+		DegradedReason: degradedReason, RebuildRequired: checkpoint.RebuildRequired || gapCount > 0 || reliability.RebuildState == "failed" || reliability.RebuildState == "required" || reliability.RebuildState == "running", LastGoodProjectionAt: lastGoodProjectionAt, Rebuild: reliability,
 	}
 	if err := m.publishCommonSemanticProjection(ctx, rule, binding, result, false); err != nil {
 		return ReliabilityStatus{}, err
