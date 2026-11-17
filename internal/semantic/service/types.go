@@ -210,6 +210,7 @@ type ReliabilityStatus struct {
 	Degraded                           bool
 	DegradedReason                     string
 	RebuildRequired                    bool
+	LastGoodProjectionAt               time.Time
 	Rebuild                            domainsemantic.SemanticReliabilityState
 }
 
@@ -277,4 +278,5 @@ type SearchInput struct {
 	Limit               int
 	MinScore            float64
 	ActorPrincipalID    identity.PrincipalID
+	Consistency         SearchConsistencyPolicy
 }
