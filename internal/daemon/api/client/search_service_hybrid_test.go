@@ -114,7 +114,7 @@ func TestSemanticHybridCandidatesAppliesMinScoreBeforeFusion(t *testing.T) {
 		spaces:   fakeHybridSpaceManager{domain: graph.Domain{ID: domainID, SpaceID: spaceID, SemanticMode: graph.DomainSemanticModeNormal}},
 	}
 	minScore := 0.5
-	candidates, warnings, err := service.semanticHybridCandidates(ctx, principalUser{PrincipalID: uuid.NewString()}, spaceID, domainID, "team recovery", 10, &clientv1.SemanticSearchOptions{MinScore: &minScore}, false)
+	candidates, warnings, _, err := service.semanticHybridCandidates(ctx, principalUser{PrincipalID: uuid.NewString()}, spaceID, domainID, "team recovery", 10, &clientv1.SemanticSearchOptions{MinScore: &minScore}, false, daemonsemantic.SearchConsistencyPolicy{})
 	if err != nil {
 		t.Fatalf("semanticHybridCandidates() error = %v", err)
 	}

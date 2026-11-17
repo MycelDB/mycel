@@ -1483,8 +1483,18 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	}
 	trace.SetStage("validate-projection-before-search")
 	projectionSnapshot, err := m.validateLocalProjectionForSearchWithRebuildBlock(ctx, in, true, nil)
+	staleProjection := false
+	var staleFreshness *semanticsearch.ProjectionFreshness
 	if err != nil {
-		return semanticsearch.Result{}, err
+		if in.Consistency.AllowsLastGood() {
+			staleFreshness, staleProjection, err = m.staleProjectionFallback(ctx, in, err)
+			if err != nil {
+				return semanticsearch.Result{}, err
+			}
+		}
+		if !staleProjection {
+			return semanticsearch.Result{}, err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
@@ -1516,7 +1526,7 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 		return result, err
 	}
 	trace.SetStage("validate-projection-after-search")
-	if projectionSnapshot != nil {
+	if projectionSnapshot != nil && !staleProjection {
 		searchedBindings := make(map[semanticProjectionBindingKey]semanticProjectionObservation, len(result.ProjectionSearchBindings))
 		for _, binding := range result.ProjectionSearchBindings {
 			key := semanticProjectionBindingKey{ruleID: binding.SemanticRuleID, bindingKey: binding.EmbeddingBindingKey}
@@ -1539,6 +1549,13 @@ func (m *Module) searchLocal(ctx context.Context, in SearchInput) (semanticsearc
 	}
 	if err := ctx.Err(); err != nil {
 		return semanticsearch.Result{}, err
+	}
+	if staleFreshness != nil {
+		result.SemanticFreshness = staleFreshness
+	} else if freshness, freshnessErr := m.semanticSearchFreshness(ctx, in, result); freshnessErr != nil {
+		return semanticsearch.Result{}, freshnessErr
+	} else {
+		result.SemanticFreshness = freshness
 	}
 	trace.SetStage("complete")
 	return result, nil

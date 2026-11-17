@@ -45,11 +45,23 @@ type Result struct {
 	WarningDetails           []Warning                 `json:"warning_details,omitempty"`
 	Groups                   []GroupSummary            `json:"groups,omitempty"`
 	ProjectionSearchBindings []ProjectionSearchBinding `json:"-"`
+	SemanticFreshness        *ProjectionFreshness      `json:"semantic_freshness,omitempty"`
 }
 
 type ProjectionSearchBinding struct {
 	SemanticRuleID      domainsemantic.SemanticRuleID
 	EmbeddingBindingKey string
+}
+
+// ProjectionFreshness is kept in the semantic search package so API adapters
+// can expose channel diagnostics without depending on semantic service types.
+type ProjectionFreshness struct {
+	State                    string `json:"state"`
+	ServedGraphRevision      uint64 `json:"served_graph_revision"`
+	LatestKnownGraphRevision uint64 `json:"latest_known_graph_revision"`
+	RevisionLag              uint64 `json:"revision_lag"`
+	Reason                   string `json:"reason,omitempty"`
+	Retryable                bool   `json:"retryable,omitempty"`
 }
 
 type Warning struct {

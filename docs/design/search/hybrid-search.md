@@ -322,9 +322,11 @@ Hybrid search combines eventually consistent subsystems. The response should rep
 Recommended behavior:
 
 - `SearchResponse.freshness` should continue to represent lexical index freshness for compatibility.
-- Hybrid-specific diagnostics should report semantic index/rule warnings in `warnings` and `diagnostics.query_plan` when requested.
+- `SearchRequest.semantic_consistency` selects strict, read-your-writes, bounded-stale, or best-effort semantic retrieval. Omitted/unspecified policy remains strict.
+- Bounded-stale requests may serve a last-good semantic projection when the requested revision/time bounds are satisfied; best-effort requests may skip the semantic channel and return lexical results with a warning.
+- Hybrid responses include per-channel usage and freshness diagnostics, including served revision, latest known revision, lag, state, and an optional machine-readable reason.
 - If lexical freshness violates `allow_stale=false` or `max_revision_lag`, fail closed as existing lexical search intends.
-- If semantic state is stale/degraded, include warnings. A stricter semantic freshness gate can be added later if semantic APIs define revision-based freshness.
+- Semantic freshness relaxation applies only to retrieval artifacts. Graph authorization, domain authority, visibility, deletion, and policy enforcement remain strict.
 
 Search results remain discovery candidates. Clients requiring current truth should re-read returned node IDs through graph APIs.
 
