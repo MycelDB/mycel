@@ -9,7 +9,10 @@ import (
 	"sync"
 )
 
-var ErrCheckpointConflict = errors.New("projection checkpoint compare-and-swap conflict")
+var (
+	ErrCheckpointConflict    = errors.New("projection checkpoint compare-and-swap conflict")
+	ErrReplicaStatusConflict = errors.New("projection replica status conflict")
+)
 
 // Registry is the authoritative in-memory view applied by a source-partition
 // state machine. It contains control metadata only; physical projection
@@ -58,6 +61,12 @@ func (r *Registry) Apply(ctx context.Context, commandID string, commandHash []by
 		return nil
 	}
 	if err := r.applyRecordLocked(record); err != nil {
+		// A stale replica-status command is a deterministic no-op at the
+		// authoritative registry boundary. Remember its hash so replay does not
+		// reevaluate the rejected command against later state.
+		if errors.Is(err, ErrReplicaStatusConflict) {
+			r.appliedCommands[commandID] = hash
+		}
 		return err
 	}
 	r.appliedCommands[commandID] = hash
@@ -160,10 +169,10 @@ func (r *Registry) applyRecordLocked(record Record) error {
 		}
 		if existing, ok := r.replicas[status.ProjectionID][status.NodeID]; ok {
 			if status.ConfigurationEpoch < existing.ConfigurationEpoch || status.FencingEpoch < existing.FencingEpoch || (status.FencingEpoch == existing.FencingEpoch && status.Published.Revision < existing.Published.Revision) {
-				return fmt.Errorf("projection replica %q on node %q regressed in configuration, fencing, or source frontier", status.ProjectionID, status.NodeID)
+				return fmt.Errorf("%w: projection replica %q on node %q regressed in configuration, fencing, or source frontier", ErrReplicaStatusConflict, status.ProjectionID, status.NodeID)
 			}
 			if status.FencingEpoch == existing.FencingEpoch && status.Published.Revision == existing.Published.Revision && status.Published.Cursor != existing.Published.Cursor {
-				return fmt.Errorf("projection replica %q on node %q has a conflicting cursor at the same source revision", status.ProjectionID, status.NodeID)
+				return fmt.Errorf("%w: projection replica %q on node %q has a conflicting cursor at the same source revision", ErrReplicaStatusConflict, status.ProjectionID, status.NodeID)
 			}
 		}
 		r.replicas[status.ProjectionID][status.NodeID] = cloneReplicaStatus(status)

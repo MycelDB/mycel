@@ -6,6 +6,22 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.22.8] - 2026-11-17
+
+### Fixed
+
+- Lexical replay now automatically rebuilds unavailable or rebuild-required local indexes from an authoritative graph snapshot, keeping search fenced during recovery while avoiding indefinite first-run `rebuild_required` states (#352).
+- Stale semantic projection replica-status updates are rejected as deterministic Raft command outcomes without regressing configuration, fencing, or source-frontier metadata; replay and leadership-change handling preserve partition-group availability and projection readiness fences (#354).
+
+### Compatibility
+
+- Daemon-only patch release. The public protobuf/API contract remains compatible with the `mycel-api` v0.22.0 contract pinned in `.release/mycel-api-ref`; no SDK, Console, or Lab release is required.
+- Projection control metadata remains Raft-authoritative. Rejected stale replica-status commands do not weaken readiness or exact-domain access fences.
+
+### Validation
+
+- Targeted projection, semantic service, and consensus tests passed, including race tests and `go vet` for the affected packages.
+
 ## [v0.22.7] - 2026-11-16
 
 ### Added
