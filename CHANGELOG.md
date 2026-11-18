@@ -6,6 +6,14 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Documented delegated principal auth-session lifecycle, stale-session recovery guidance, and stable `google.rpc.ErrorInfo` reasons for long-running service clients (#363).
+
+### Changed
+
+- Protected RPCs now validate that an access token's durable auth session is still active before service handlers run, so revoked or expired delegated sessions fail with `codes.Unauthenticated` and a stable auth-session reason (#363).
+
 ## [v0.23.0] - 2026-11-17
 
 ### Added

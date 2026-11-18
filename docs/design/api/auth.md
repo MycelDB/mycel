@@ -46,7 +46,7 @@ Mycel daemon mode uses two different session concepts:
 - role/capability management
 - graph sessions or graph transaction lifecycle
 
-Administrative identity management belongs to `mycel.admin.v1.AdminPrincipalService`.
+Administrative identity management belongs to `mycel.admin.v1.AdminPrincipalService`. Delegated principal sessions created by that admin service follow the same auth-session lifecycle and stale-session error contract described in [`../identity/delegated-principal-sessions.md`](../identity/delegated-principal-sessions.md).
 
 ## Service definition
 
@@ -84,6 +84,7 @@ Authorization for admin and data-plane operations is performed by the target ser
 ## Security requirements
 
 - Access tokens should be short-lived.
+- Protected RPCs should reject access tokens whose embedded durable auth session is no longer active.
 - Refresh tokens should be rotated on refresh.
 - Refresh token plaintext must not be persisted.
 - Stored refresh token values must be hashes.

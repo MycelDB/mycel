@@ -11,7 +11,9 @@ import (
 	"github.com/myceldb/mycel/internal/daemon/config"
 	daemonruntime "github.com/myceldb/mycel/internal/daemon/runtime"
 	commonv1 "github.com/myceldb/mycel/internal/gen/mycel/common/v1"
+	domainauth "github.com/myceldb/mycel/internal/identity/auth"
 	principalservice "github.com/myceldb/mycel/internal/identity/service/principal"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -56,8 +58,10 @@ func TestAuthServiceLoginWhoAmIRefreshAndLogout(t *testing.T) {
 	if refresh.GetRefreshToken() == "" || refresh.GetRefreshToken() == login.GetRefreshToken() || refresh.GetPrincipal().GetUsername() != "alice" {
 		t.Fatalf("unexpected refresh response: %#v", refresh)
 	}
-	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: login.RefreshToken}); status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("expected old refresh token reuse to fail, got %v", err)
+	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: login.RefreshToken}); err != nil {
+		requireAuthErrorReason(t, err, daemonauth.ReasonRefreshSessionInvalid)
+	} else {
+		t.Fatal("expected old refresh token reuse to fail")
 	}
 	refreshedPrincipal, err := tokens.Verify(refresh.GetAccessToken())
 	if err != nil {
@@ -66,8 +70,28 @@ func TestAuthServiceLoginWhoAmIRefreshAndLogout(t *testing.T) {
 	if _, err := svc.Logout(daemonauth.ContextWithPrincipal(context.Background(), refreshedPrincipal), &commonv1.LogoutRequest{}); err != nil {
 		t.Fatalf("Logout() error = %v", err)
 	}
-	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: refresh.RefreshToken}); status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("expected logged-out refresh token to fail, got %v", err)
+	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: refresh.RefreshToken}); err != nil {
+		requireAuthErrorReason(t, err, daemonauth.ReasonAuthSessionRevoked)
+	} else {
+		t.Fatal("expected logged-out refresh token to fail")
+	}
+}
+
+func TestAuthServiceRefreshExpiredSessionReturnsStableReason(t *testing.T) {
+	module := initAuthTestUserModule(t)
+	user, err := module.CreatePrincipal(context.Background(), principalservice.CreatePrincipalInput{Username: "expired", Password: "expired-pass", LoginEnabled: true})
+	if err != nil {
+		t.Fatalf("CreatePrincipal() error = %v", err)
+	}
+	refreshToken, _, err := module.CreateAuthSession(context.Background(), user, domainauth.RefreshSessionMetadata{ClientName: "test"}, 32, -time.Hour, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateAuthSession() error = %v", err)
+	}
+	svc := NewAuthService(module, daemonauth.NewTokenManager([]byte("01234567890123456789012345678901"), time.Minute))
+	if _, err := svc.Refresh(context.Background(), &commonv1.RefreshRequest{RefreshToken: stringPtr(string(refreshToken))}); err != nil {
+		requireAuthErrorReason(t, err, daemonauth.ReasonAuthSessionExpired)
+	} else {
+		t.Fatal("expected expired refresh session to fail")
 	}
 }
 
@@ -170,6 +194,24 @@ func hasString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func requireAuthErrorReason(t *testing.T, err error, want string) {
+	t.Helper()
+	st := status.Convert(err)
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("status code = %s, want Unauthenticated (err=%v)", st.Code(), err)
+	}
+	for _, detail := range st.Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok {
+			continue
+		}
+		if info.GetDomain() == daemonauth.ErrorInfoDomain && info.GetReason() == want {
+			return
+		}
+	}
+	t.Fatalf("error details = %#v, want mycel auth reason %q", st.Details(), want)
 }
 
 func initAuthTestUserModule(t *testing.T) *principalservice.Module {

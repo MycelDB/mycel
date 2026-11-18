@@ -349,6 +349,18 @@ func mapAuthError(err error, action string) error {
 	if st, ok := status.FromError(err); ok && st.Code() != codes.Unknown {
 		return err
 	}
+	if errors.Is(err, principalservice.ErrAuthSessionRevoked) {
+		return daemonauth.UnauthenticatedError(daemonauth.ReasonAuthSessionRevoked, "auth session is revoked", nil)
+	}
+	if errors.Is(err, principalservice.ErrAuthSessionExpired) {
+		return daemonauth.UnauthenticatedError(daemonauth.ReasonAuthSessionExpired, "auth session is expired", nil)
+	}
+	if errors.Is(err, principalservice.ErrRefreshSessionInvalid) {
+		return daemonauth.UnauthenticatedError(daemonauth.ReasonRefreshSessionInvalid, "refresh session is invalid", nil)
+	}
+	if errors.Is(err, principalservice.ErrAuthSessionInvalid) {
+		return daemonauth.UnauthenticatedError(daemonauth.ReasonAuthSessionInvalid, "auth session is invalid", nil)
+	}
 	if errors.Is(err, principalservice.ErrInvalidCredentials) {
 		return status.Error(codes.Unauthenticated, "invalid credentials")
 	}
