@@ -14,11 +14,10 @@ This is distinct from the Admin API operator login. Operators authenticate to ma
 - Disabled and deleted users cannot log in.
 - `Refresh` rotates a durable refresh session and returns a new access token plus replacement refresh token.
 - Access tokens are short-lived daemon HMAC tokens with user principals.
-- Refresh sessions are durable records stored under:
+- Refresh sessions are durable records in the identity/session store.
+- Protected RPCs validate that the access token's durable auth session is still active before service handlers run.
 
-```text
-<MYCELD_DATA_DIR>/users/sessions/refresh_sessions.json
-```
+Delegated service-client sessions created by `AdminPrincipalService.CreatePrincipalSession` use the same auth-session lifecycle. See [Delegated principal session lifecycle](delegated-principal-sessions.md) for TTLs, revocation behavior, stale-session error reasons, and cache guidance.
 
 ## RPCs
 

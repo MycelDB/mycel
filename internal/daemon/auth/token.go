@@ -204,9 +204,9 @@ func (m *TokenManager) PrincipalFromIncomingContext(ctx context.Context) (Princi
 	principal, err := m.Verify(strings.TrimSpace(token))
 	if err != nil {
 		if errors.Is(err, ErrExpiredToken) {
-			return Principal{}, status.Error(codes.Unauthenticated, "authorization token is expired")
+			return Principal{}, UnauthenticatedError(ReasonAuthorizationTokenExpired, "authorization token is expired", nil)
 		}
-		return Principal{}, status.Error(codes.Unauthenticated, "authorization token is invalid")
+		return Principal{}, UnauthenticatedError(ReasonAuthorizationTokenInvalid, "authorization token is invalid", nil)
 	}
 	return principal, nil
 }

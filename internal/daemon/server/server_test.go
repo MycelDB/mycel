@@ -85,7 +85,8 @@ func (fakePrincipalManager) RefreshAuthSession(context.Context, domainauth.Refre
 	return principalservice.PrincipalSummary{}, "refresh", domainauth.RefreshSession{}, nil
 }
 func (fakePrincipalManager) ListPrincipalSessions(context.Context, string) ([]domainauth.RefreshSession, error) {
-	return nil, nil
+	id := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+	return []domainauth.RefreshSession{{ID: id, PrincipalID: identity.PrincipalID("00000000-0000-0000-0000-000000000001"), Status: domainauth.RefreshSessionStatusActive, CreatedAt: time.Now(), LastUsedAt: time.Now(), IdleExpiresAt: time.Now().Add(time.Hour), AbsoluteExpiresAt: time.Now().Add(time.Hour)}}, nil
 }
 func (fakePrincipalManager) RevokePrincipalSession(context.Context, string, string) error { return nil }
 func (fakePrincipalManager) RevokePrincipalSessions(context.Context, string) (int, error) {
