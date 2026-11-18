@@ -364,22 +364,28 @@ func (m *Module) CreateAuthSession(ctx context.Context, principal PrincipalSumma
 func (m *Module) RefreshAuthSession(ctx context.Context, refreshToken domainauth.RefreshToken, metadata domainauth.RefreshSessionMetadata, tokenBytes int, idleTTL time.Duration) (PrincipalSummary, domainauth.RefreshToken, domainauth.RefreshSession, error) {
 	presentedHash, err := domainauth.HashRefreshToken(refreshToken)
 	if err != nil {
-		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrInvalidCredentials
+		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrRefreshSessionInvalid
 	}
 	rec, err := m.sessions.FindByTokenHash(ctx, presentedHash)
 	if err != nil {
 		if reused, reusedErr := m.sessions.FindByConsumedTokenHash(ctx, presentedHash); reusedErr == nil {
 			_, _ = m.sessions.RevokeFamily(ctx, reused.TokenFamilyID, time.Now().UTC(), "refresh token reuse detected")
 		}
-		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrInvalidCredentials
+		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrRefreshSessionInvalid
 	}
 	now := time.Now().UTC()
-	if rec.Status != domainauth.RefreshSessionStatusActive || (!rec.AbsoluteExpiresAt.IsZero() && !rec.AbsoluteExpiresAt.After(now)) || (!rec.IdleExpiresAt.IsZero() && !rec.IdleExpiresAt.After(now)) {
-		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrInvalidCredentials
+	if rec.Status == domainauth.RefreshSessionStatusRevoked {
+		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrAuthSessionRevoked
+	}
+	if rec.Status == domainauth.RefreshSessionStatusExpired || (!rec.AbsoluteExpiresAt.IsZero() && !rec.AbsoluteExpiresAt.After(now)) || (!rec.IdleExpiresAt.IsZero() && !rec.IdleExpiresAt.After(now)) {
+		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrAuthSessionExpired
+	}
+	if rec.Status != domainauth.RefreshSessionStatusActive {
+		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrAuthSessionInvalid
 	}
 	p, err := m.store.GetPrincipal(ctx, string(rec.PrincipalID))
 	if err != nil || p.State != PrincipalStateActive || !p.LoginEnabled {
-		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrInvalidCredentials
+		return PrincipalSummary{}, "", domainauth.RefreshSession{}, ErrAuthSessionInvalid
 	}
 	rotated, err := domainauth.NewRefreshToken(tokenBytes)
 	if err != nil {

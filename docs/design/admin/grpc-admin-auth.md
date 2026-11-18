@@ -27,6 +27,8 @@ This means:
 - system administration is a property of a principal's roles/capabilities, not a separate operator identity species;
 - delegated session creation and session management for other principals belongs to `AdminPrincipalService`.
 
+Delegated session lifecycle, revocation behavior, stale-session gRPC error reasons, and long-running service-client cache guidance are documented in [`../identity/delegated-principal-sessions.md`](../identity/delegated-principal-sessions.md).
+
 ## Public/quiesce behavior
 
 `AuthService.Login` and `AuthService.Refresh` are public at the access-token layer because they validate primary credentials or refresh-token credentials. `AuthService.WhoAmI` is quiesce-exempt for diagnostics but still requires authentication.

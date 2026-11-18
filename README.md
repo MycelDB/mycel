@@ -195,7 +195,7 @@ Key daemon setting:
 MYCELD_ACCESS_TOKEN_TTL=15m
 ```
 
-Keep access-token TTLs short; prefer refresh sessions over increasing the TTL for long-running services. Admin auth details are documented in [`docs/design/admin/grpc-admin-auth.md`](docs/design/admin/grpc-admin-auth.md), with release notes in [`docs/design/identity/auth-refresh-release-notes.md`](docs/design/identity/auth-refresh-release-notes.md).
+Keep access-token TTLs short; prefer refresh sessions over increasing the TTL for long-running services. Delegated principal session lifecycle, stale-session error reasons, and cache-eviction guidance are documented in [`docs/design/identity/delegated-principal-sessions.md`](docs/design/identity/delegated-principal-sessions.md). Admin auth details are documented in [`docs/design/admin/grpc-admin-auth.md`](docs/design/admin/grpc-admin-auth.md), with release notes in [`docs/design/identity/auth-refresh-release-notes.md`](docs/design/identity/auth-refresh-release-notes.md).
 
 ## Backups
 
