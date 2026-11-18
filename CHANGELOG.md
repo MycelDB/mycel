@@ -6,6 +6,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.23.1] - 2026-11-18
+
 ### Added
 
 - Documented delegated principal auth-session lifecycle, stale-session recovery guidance, and stable `google.rpc.ErrorInfo` reasons for long-running service clients (#363).
@@ -13,6 +15,15 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 ### Changed
 
 - Protected RPCs now validate that an access token's durable auth session is still active before service handlers run, so revoked or expired delegated sessions fail with `codes.Unauthenticated` and a stable auth-session reason (#363).
+
+### Compatibility
+
+- Daemon patch release. The public protobuf/API contract remains compatible with the `mycel-api v0.23.0` contract pinned in `.release/mycel-api-ref`; no Console, MCP, or Lab release is required.
+- Companion Go and Rust SDK patch releases expose convenience helpers over the same standard gRPC `Unauthenticated` plus `google.rpc.ErrorInfo` contract.
+
+### Validation
+
+- Affected auth/session packages, docs checks, daemon-only checks, public-surface checks, and PR CI passed for the implementation and promotion PRs.
 
 ## [v0.23.0] - 2026-11-17
 
