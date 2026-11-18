@@ -136,8 +136,8 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		}
 	}
 	baseOptions := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(clusterBackendUnaryAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.UnaryInterceptor(publicMethods), quiesceUnaryInterceptor(cfg.IngressGate, quiesceExempt, quiesceReadOnly)),
-		grpc.ChainStreamInterceptor(clusterBackendStreamAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.StreamInterceptor(publicMethods), quiesceStreamInterceptor(cfg.IngressGate, quiesceExempt, quiesceReadOnly)),
+		grpc.ChainUnaryInterceptor(clusterBackendUnaryAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.UnaryInterceptor(publicMethods), authSessionUnaryInterceptor(cfg.PrincipalManager, publicMethods), quiesceUnaryInterceptor(cfg.IngressGate, quiesceExempt, quiesceReadOnly)),
+		grpc.ChainStreamInterceptor(clusterBackendStreamAuthInterceptor(cfg.ClusterBackendAuthToken), cfg.TokenManager.StreamInterceptor(publicMethods), authSessionStreamInterceptor(cfg.PrincipalManager, publicMethods), quiesceStreamInterceptor(cfg.IngressGate, quiesceExempt, quiesceReadOnly)),
 	}
 	if cfg.TLSConfig != nil {
 		baseOptions = append(baseOptions, grpc.Creds(credentials.NewTLS(cfg.TLSConfig)))

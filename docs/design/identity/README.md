@@ -6,6 +6,7 @@ access-control concepts.
 - [Access control](access-control.md)
 - [Unified principal identity and access-control model](unified-principal-access-control.md)
 - [Client auth API](grpc-client-auth.md)
+- [Delegated principal session lifecycle](delegated-principal-sessions.md)
 - [Auth refresh release notes](auth-refresh-release-notes.md)
 - [Admin user API](../admin/user.md)
 - [Admin operator API](../admin/operator.md)
