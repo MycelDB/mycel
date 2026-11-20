@@ -477,6 +477,15 @@ func validateRawPolicy(policy Policy) error {
 	if policy.StatusHistoryLimit < 0 {
 		return fmt.Errorf("status_history_limit must not be negative")
 	}
+	if policy.Retention.KeepLastSuccessful < 0 {
+		return fmt.Errorf("retention.keep_last_successful must not be negative")
+	}
+	if policy.Retention.KeepFor < 0 {
+		return fmt.Errorf("retention.keep_for must not be negative")
+	}
+	if policy.Retention.DeleteIncompleteAfter < 0 {
+		return fmt.Errorf("retention.delete_incomplete_after must not be negative")
+	}
 	return nil
 }
 
@@ -504,6 +513,33 @@ func validatePolicy(dataDir string, policy Policy) error {
 	}
 	if err := ValidateSchedule(policy); err != nil {
 		return err
+	}
+	switch policy.CaptureProvider {
+	case "", DefaultProductionCaptureProvider, "filesystem_immutable_copy", "csi_volume_snapshot", "aws_ebs_snapshot":
+	default:
+		return fmt.Errorf("unsupported capture_provider %q", policy.CaptureProvider)
+	}
+	switch policy.QuiesceReadProfile {
+	case "", DefaultProductionQuiesceReadProfile, "strict_read_only":
+	default:
+		return fmt.Errorf("unsupported quiesce_read_profile %q", policy.QuiesceReadProfile)
+	}
+	seenDerived := map[string]bool{}
+	for _, row := range policy.DerivedSubsystems {
+		switch row.Subsystem {
+		case "semantic_vector_search", "lexical_search", "graph_checkpoint", "persistent_graph_query_index", "metadata_adjacency_memory_index":
+		default:
+			return fmt.Errorf("unsupported derived subsystem %q", row.Subsystem)
+		}
+		if seenDerived[row.Subsystem] {
+			return fmt.Errorf("duplicate derived subsystem policy %q", row.Subsystem)
+		}
+		seenDerived[row.Subsystem] = true
+		switch row.Mode {
+		case "include_required", "include_optional", "rebuild_allowed", "discard":
+		default:
+			return fmt.Errorf("unsupported derived subsystem policy mode %q", row.Mode)
+		}
 	}
 	_, _, err := validateBackupDir(dataDir, policy.BackupDir)
 	return err

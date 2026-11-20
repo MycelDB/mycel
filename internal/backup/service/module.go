@@ -49,6 +49,8 @@ type Module struct {
 	clusterBackupCancels  map[string]context.CancelFunc
 	clusterBackupLeases   map[string]*quiesce.CompositeLease
 	clusterBackupFreeze   map[string]*clusterBackupFreezeLease
+	repositories          map[string]BackupRepository
+	repositoryValidator   backupRepositoryValidator
 	clusterBackendClient  backendClient
 	clusterNodeAddrs      []string
 	clusterLocalRaftNode  consensus.NodeID
@@ -89,6 +91,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.quiesce = quiesceCoordinator
 	m.dataDir = host.DataDir()
+	if err := m.loadBackupRepositoryCatalog(); err != nil {
+		return runtime.Abort(ModuleName, "repository", "load backup repository catalog", err)
+	}
 	if provider, ok := host.(runtime.LocalRouteIdentityProvider); ok {
 		m.localIdentity = provider.LocalRouteIdentity()
 	}
@@ -114,6 +119,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			}
 			if err := registry.Register(recordTypeBackupDelete, wal.ApplierFunc(m.applyBackupDelete)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register backup delete WAL applier", err)
+			}
+			for typ, applier := range m.backupRepositoryWALAppliers() {
+				if err := registry.Register(typ, applier); err != nil {
+					return runtime.Abort(ModuleName, "wal", "register backup repository WAL applier", err)
+				}
 			}
 			for typ, applier := range m.clusterBackupWALAppliers() {
 				if err := registry.Register(typ, applier); err != nil {

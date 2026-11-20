@@ -32,6 +32,15 @@ type Manager interface {
 	Trigger(context.Context, backupcore.TriggerInput) (backupcore.TriggerResult, error)
 }
 
+type BackupRepositoryManager interface {
+	ListBackupRepositories() []BackupRepository
+	GetBackupRepository(string) (BackupRepository, error)
+	CreateBackupRepository(context.Context, BackupRepository) (BackupRepository, error)
+	UpdateBackupRepository(context.Context, BackupRepository) (BackupRepository, error)
+	ValidateBackupRepository(context.Context, string) (BackupRepositoryValidationSummary, error)
+	DeleteBackupRepository(context.Context, string) error
+}
+
 type ClusterBackupManager interface {
 	StartClusterBackup(context.Context, StartClusterBackupInput) (ClusterBackupRunStatus, error)
 	CancelClusterBackup(context.Context, string, string) (ClusterBackupRunStatus, error)

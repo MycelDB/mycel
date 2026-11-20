@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -483,27 +486,131 @@ func clusterBackupStatusFromRun(run clusterBackupRun) ClusterBackupRunStatus {
 	return ClusterBackupRunStatus{BackupSetID: run.BackupSetID, ClusterID: run.ClusterID, Reason: run.Reason, Phase: string(run.Phase), CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, CompletedAt: completed, Expected: expected, Barriers: cloneStringUint64Map(run.Barriers), Nodes: nodes, ManifestURI: manifestURI, FailurePhase: failurePhase, Error: msg, Blockers: append([]ClusterBackupBlocker(nil), run.Blockers...), Cancel: run.Cancel}
 }
 
+type ClusterBackupSetValidationResult struct {
+	Manifest           clusterbackup.Manifest
+	ProductionManifest *clusterbackup.BackupSetManifestV1
+	ProductionMarker   *clusterbackup.CompleteMarkerV1
+	ProductionReport   *clusterbackup.BackupSetValidationReport
+}
+
 func ValidateClusterBackupSet(ctx context.Context, path string) (clusterbackup.Manifest, error) {
+	result, err := ValidateClusterBackupSetDetailed(ctx, path)
+	return result.Manifest, err
+}
+
+func ValidateClusterBackupSetDetailed(ctx context.Context, path string) (ClusterBackupSetValidationResult, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return clusterbackup.Manifest{}, fmt.Errorf("backup_set_path is required")
+		return ClusterBackupSetValidationResult{}, fmt.Errorf("backup_set_path is required")
 	}
-	manifestPath := path
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		manifestPath = filepath.Join(path, "backup-set.json")
+	manifestPath, err := clusterBackupSetManifestPath(path)
+	if err != nil {
+		return ClusterBackupSetValidationResult{}, err
 	}
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return clusterbackup.Manifest{}, err
+		return ClusterBackupSetValidationResult{}, err
+	}
+	var header struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(raw, &header); err == nil && header.Schema == clusterbackup.ProductionBackupSetSchema {
+		doc, marker, report, err := clusterbackup.ValidateBackupSetPath(ctx, path, clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: true, ValidateLocalArtifactBytes: true})
+		if err != nil {
+			return ClusterBackupSetValidationResult{}, err
+		}
+		summary := productionBackupSetManifestSummary(doc.Manifest)
+		result := ClusterBackupSetValidationResult{Manifest: summary, ProductionManifest: &doc.Manifest, ProductionMarker: marker, ProductionReport: &report}
+		if err := report.Error(); err != nil {
+			return result, err
+		}
+		return result, nil
 	}
 	manifest, err := clusterbackup.Parse(raw)
 	if err != nil {
-		return clusterbackup.Manifest{}, err
+		return ClusterBackupSetValidationResult{}, err
 	}
 	if err := clusterbackup.ValidateArchiveFiles(ctx, manifest); err != nil {
-		return clusterbackup.Manifest{}, err
+		return ClusterBackupSetValidationResult{Manifest: manifest}, err
 	}
-	return manifest, nil
+	return ClusterBackupSetValidationResult{Manifest: manifest}, nil
+}
+
+func clusterBackupSetManifestPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if strings.HasPrefix(path, "file://") {
+		u, err := url.Parse(path)
+		if err != nil || u.Path == "" {
+			return "", fmt.Errorf("invalid file backup-set URI %q", path)
+		}
+		path = u.Path
+	} else if strings.Contains(path, "://") {
+		return "", fmt.Errorf("backup-set must be a local path or file:// URI")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return filepath.Join(path, clusterbackup.BackupSetManifestName), nil
+	}
+	return path, nil
+}
+
+func productionBackupSetManifestSummary(manifest clusterbackup.BackupSetManifestV1) clusterbackup.Manifest {
+	out := clusterbackup.Manifest{Version: clusterbackup.ManifestVersion, BackupSetID: manifest.BackupSetID, CreatedAt: manifest.CreatedAt, CompletedAt: manifest.CompletedAt, ClusterID: manifest.Source.ClusterID, Complete: manifest.Complete, State: strings.ToLower(manifest.State), Reason: manifest.Operation.Reason, ManifestURI: joinURI(manifest.Repository.URI, clusterbackup.BackupSetManifestName), ExpectedNodes: manifest.Source.Topology.NodeCount, Image: manifest.Source.Image, Namespace: manifest.Source.Namespace, StatefulSet: manifest.Source.StatefulSet, DataDir: manifest.Source.DataDir, ArchiveFormat: archiveFormatFromProductionManifest(manifest.Artifacts.ArchiveFormat)}
+	for _, node := range manifest.Artifacts.Nodes {
+		out.Nodes = append(out.Nodes, clusterbackup.NodeArtifact{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: decimalStringToUint64(node.RaftNodeID), ArchiveName: node.ArchiveName, ArchiveURI: node.ArchiveURI, ManifestName: node.ManifestName, ManifestURI: node.ManifestURI, SizeBytes: decimalStringToInt64(node.SizeBytes), ChecksumSHA256: node.ChecksumSHA256, AppliedIndexes: decimalMapToUint64(node.AppliedIndexes)})
+	}
+	return out
+}
+
+func archiveFormatFromProductionManifest(value string) backupcore.ArchiveFormat {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "ZIP":
+		return backupcore.ArchiveFormatZip
+	case "TAR":
+		return backupcore.ArchiveFormatTar
+	case "TAR_GZIP", "TAR_GZ":
+		return backupcore.ArchiveFormatTarGz
+	case "TAR_ZSTD", "TAR_ZST", "TAR_ZST_BYTE_STREAM":
+		return backupcore.ArchiveFormatTarZst
+	default:
+		return backupcore.ArchiveFormat(strings.ToLower(strings.TrimSpace(value)))
+	}
+}
+
+func decimalMapToUint64(in map[string]string) map[string]uint64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(in))
+	for key, value := range in {
+		out[key] = decimalStringToUint64(value)
+	}
+	return out
+}
+
+func decimalStringToUint64(value string) uint64 {
+	parsed, _ := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	return parsed
+}
+
+func decimalStringToInt64(value string) int64 {
+	parsed := decimalStringToUint64(value)
+	if parsed > uint64(^uint64(0)>>1) {
+		return int64(^uint64(0) >> 1)
+	}
+	return int64(parsed)
+}
+
+func joinURI(base, name string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	name = strings.TrimLeft(strings.TrimSpace(name), "/")
+	if base == "" {
+		return name
+	}
+	return base + "/" + name
 }
 
 func normalizeClusterBackupNodes(in []ClusterBackupNode) []ClusterBackupNode {

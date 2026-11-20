@@ -23,6 +23,9 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 	}
 	switch recordType {
 	case recordTypeBackupPolicyUpdate, recordTypeBackupDelete,
+		recordTypeBackupRepositoryUpsert,
+		recordTypeBackupRepositoryDelete,
+		recordTypeBackupRepositoryValidate,
 		recordTypeClusterBackupRequest,
 		recordTypeClusterBackupPhase,
 		recordTypeClusterBackupBarrier,
@@ -90,6 +93,12 @@ func (m *Module) applyBackupRaftCommand(ctx context.Context, cmd consensus.RaftC
 		return m.applyBackupPolicyUpdate(ctx, rec)
 	case recordTypeBackupDelete:
 		return m.applyBackupDelete(ctx, rec)
+	case recordTypeBackupRepositoryUpsert:
+		return m.applyBackupRepositoryUpsert(ctx, rec)
+	case recordTypeBackupRepositoryDelete:
+		return m.applyBackupRepositoryDelete(ctx, rec)
+	case recordTypeBackupRepositoryValidate:
+		return m.applyBackupRepositoryValidation(ctx, rec)
 	case recordTypeClusterBackupRequest:
 		return m.applyClusterBackupRequest(ctx, rec)
 	case recordTypeClusterBackupPhase:

@@ -6,6 +6,12 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+### Added
+
+- Added the daemon foundation for repository-backed production backups: backup repository CRUD admin RPC handlers, persisted repository catalog state, structured credential-reference/encryption validation, sanitized validation evidence, development-only env/file credential gating, Kubernetes/ExternalSecret projected-file credential resolution, TLS CA reference support, and S3-compatible sentinel write/head/read/list probes.
+- Added production `backup-set.json` schema v1 and `COMPLETE` marker validators with checkpoint-barrier, artifact inventory, derived-subsystem, external-dependency, compatibility, deterministic tree checksum, raw-secret scan, and capacity checks for fail-closed restore readiness.
+- Extended backup policy persistence to retain repository-backed backup/restore contract fields such as default repository, capture provider, quiesce read profile, derived-subsystem policy, retention policy, and validation options.
+
 ## [v0.23.1] - 2026-11-18
 
 ### Added
