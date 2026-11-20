@@ -8,7 +8,10 @@ import (
 	"time"
 
 	domainauth "github.com/myceldb/mycel/internal/identity/auth"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	"github.com/myceldb/mycel/internal/runtime/runtimetest"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func newTestModule(t *testing.T) (*Module, context.Context) {
@@ -20,6 +23,22 @@ func newTestModule(t *testing.T) (*Module, context.Context) {
 		t.Fatalf("Init() failed: %v", res.Error)
 	}
 	return m, ctx
+}
+
+func TestCreatePrincipalQuiesceReturnsStableBackupReason(t *testing.T) {
+	m, ctx := newTestModule(t)
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Mode: quiesce.ModeBackup, Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = m.CreatePrincipal(ctx, CreatePrincipalInput{Username: "blocked", Password: "blocked-pass", LoginEnabled: true})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("CreatePrincipal() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+	if reason, ok := quiesce.ErrorInfoReason(err); !ok || reason != quiesce.ReasonClusterQuiesced {
+		t.Fatalf("CreatePrincipal quiesce reason = %q, %v; want %q, true", reason, ok, quiesce.ReasonClusterQuiesced)
+	}
 }
 
 func TestAuthorizationRevisionChangesWhenGrantStateChanges(t *testing.T) {

@@ -10,6 +10,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 - Added the daemon foundation for repository-backed production backups: backup repository CRUD admin RPC handlers, persisted repository catalog state, structured credential-reference/encryption validation, sanitized validation evidence, development-only env/file credential gating, Kubernetes/ExternalSecret projected-file credential resolution, TLS CA reference support, and S3-compatible sentinel write/head/read/list probes.
 - Added production `backup-set.json` schema v1 and `COMPLETE` marker validators with checkpoint-barrier, artifact inventory, derived-subsystem, external-dependency, compatibility, deterministic tree checksum, raw-secret scan, and capacity checks for fail-closed restore readiness.
+- Added explicit backup quiesce participant evidence for active read/write counts, read allowlist profile, admission state, and deadline, plus stable `google.rpc.ErrorInfo` reasons for `cluster_quiesced` and `transaction_aborted_by_quiesce`.
+- Hardened gRPC quiesce read allowance to use only explicitly registered read-only methods; method-name prefixes such as `Get*`/`List*` no longer admit work during backup quiesce.
 - Extended backup policy persistence to retain repository-backed backup/restore contract fields such as default repository, capture provider, quiesce read profile, derived-subsystem policy, retention policy, and validation options.
 
 ## [v0.23.1] - 2026-11-18

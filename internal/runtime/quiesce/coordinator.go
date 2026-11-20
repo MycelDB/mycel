@@ -17,6 +17,16 @@ const (
 	ModeBackup Mode = "backup"
 )
 
+const (
+	// ReadAllowlistProfileControlOnly admits only quiesce-exempt control-plane
+	// methods during backup quiesce. Ordinary client reads and all writes remain
+	// blocked.
+	ReadAllowlistProfileControlOnly = "control_only"
+	// ReadAllowlistProfileStrictReadOnly admits only methods that were explicitly
+	// reviewed and registered as read-only by the daemon server.
+	ReadAllowlistProfileStrictReadOnly = "strict_read_only"
+)
+
 // Request describes a daemon quiesce operation.
 type Request struct {
 	Reason string
@@ -26,6 +36,13 @@ type Request struct {
 	// drains and blocks writes. Participants that do not distinguish reads from
 	// writes ignore this field and remain fully closed while quiesced.
 	AllowReadsDuringBackup bool
+	// ReadAllowlistProfile identifies the explicit daemon-reviewed read allowlist
+	// used when AllowReadsDuringBackup is true. The default is control_only,
+	// which keeps ordinary client reads blocked.
+	ReadAllowlistProfile string
+	// Deadline is optional diagnostic evidence for drain/deadline reporting. It is
+	// not used as a secret or authority boundary.
+	Deadline time.Time
 }
 
 // Lease reopens or resumes a participant that was quiesced.
@@ -53,14 +70,20 @@ type Participant interface {
 
 // ParticipantStatus is a non-sensitive participant status snapshot.
 type ParticipantStatus struct {
-	Name      string
-	Quiesced  bool
-	Active    int
-	Reason    string
-	Mode      Mode
-	Source    string
-	Since     time.Time
-	LastError string
+	Name                 string
+	Quiesced             bool
+	Active               int
+	ActiveReadOnly       int
+	ActiveWrites         int
+	Reason               string
+	Mode                 Mode
+	Source               string
+	Since                time.Time
+	LastError            string
+	ReadAllowlistProfile string
+	Deadline             time.Time
+	AcceptingReadOnly    bool
+	AcceptingWrites      bool
 }
 
 // Status is a non-sensitive coordinator status snapshot.

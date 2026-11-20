@@ -374,7 +374,11 @@ func (m *Manager) createArchiveWithPolicy(ctx context.Context, backupID string, 
 		if policy.QuiesceDrainTimeout > 0 {
 			quiesceCtx, quiesceCancel = context.WithTimeout(runCtx, policy.QuiesceDrainTimeout)
 		}
-		lease, err = m.quiesce.QuiesceAll(quiesceCtx, quiesce.Request{Reason: firstNonEmpty(input.Reason, "backup"), Mode: quiesce.ModeBackup, Source: firstNonEmpty(input.Source, "backup-manager"), AllowReadsDuringBackup: policy.AllowReadsDuringBackup})
+		deadline := time.Time{}
+		if d, ok := quiesceCtx.Deadline(); ok {
+			deadline = d
+		}
+		lease, err = m.quiesce.QuiesceAll(quiesceCtx, quiesce.Request{Reason: firstNonEmpty(input.Reason, "backup"), Mode: quiesce.ModeBackup, Source: firstNonEmpty(input.Source, "backup-manager"), AllowReadsDuringBackup: policy.AllowReadOnlyDuringQuiesce || policy.AllowReadsDuringBackup, ReadAllowlistProfile: policy.QuiesceReadProfile, Deadline: deadline})
 		quiesceCancel()
 		if err != nil {
 			return TriggerResult{}, err

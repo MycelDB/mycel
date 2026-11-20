@@ -83,7 +83,11 @@ func TestQuiesceUnaryInterceptorRejectsWriteDuringReadAdmittingBackup(t *testing
 func quiescedUnaryInterceptor(t *testing.T, allowReads bool) (grpc.UnaryServerInterceptor, func()) {
 	t.Helper()
 	gate := quiesce.NewGate("api-ingress")
-	lease, err := gate.Quiesce(context.Background(), quiesce.Request{Reason: "backup", Mode: quiesce.ModeBackup, AllowReadsDuringBackup: allowReads})
+	profile := quiesce.ReadAllowlistProfileControlOnly
+	if allowReads {
+		profile = quiesce.ReadAllowlistProfileStrictReadOnly
+	}
+	lease, err := gate.Quiesce(context.Background(), quiesce.Request{Reason: "backup", Mode: quiesce.ModeBackup, AllowReadsDuringBackup: allowReads, ReadAllowlistProfile: profile})
 	if err != nil {
 		t.Fatalf("Quiesce() error = %v", err)
 	}
@@ -100,19 +104,22 @@ func callUnaryInterceptor(interceptor grpc.UnaryServerInterceptor, method string
 	return called, res, err
 }
 
-func TestDefaultQuiesceReadOnlyMethodsIncludesQueriesButNotMutations(t *testing.T) {
+func TestDefaultQuiesceReadOnlyMethodsUseExplicitReviewedAllowlist(t *testing.T) {
 	readOnly := defaultQuiesceReadOnlyMethods()
 	if !isQuiesceReadOnlyMethod(clientv1.QueryService_ExecuteQuery_FullMethodName, readOnly) {
-		t.Fatalf("ExecuteQuery should be read-only during backup")
+		t.Fatalf("ExecuteQuery should be read-only because it is explicitly registered")
 	}
-	if !isQuiesceReadOnlyMethod(clientv1.GraphService_GetNode_FullMethodName, readOnly) {
-		t.Fatalf("GetNode should be read-only by naming convention")
+	if isQuiesceReadOnlyMethod(clientv1.GraphService_GetNode_FullMethodName, readOnly) {
+		t.Fatalf("GetNode must not be admitted merely because it is Get-prefixed")
 	}
 	if isQuiesceReadOnlyMethod(clientv1.GraphService_UpdateNode_FullMethodName, readOnly) {
 		t.Fatalf("UpdateNode should not be read-only during backup")
 	}
 	if isQuiesceReadOnlyMethod(clientv1.TransactionService_CommitTransaction_FullMethodName, readOnly) {
 		t.Fatalf("CommitTransaction should not be read-only during backup")
+	}
+	if isQuiesceReadOnlyMethod("/svc/GetNotReviewed", readOnly) {
+		t.Fatalf("unreviewed Get-prefixed methods must not be admitted by naming convention")
 	}
 }
 

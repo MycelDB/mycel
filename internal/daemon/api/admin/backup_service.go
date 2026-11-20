@@ -1178,7 +1178,7 @@ func archiveFormatFromProto(format adminv1.BackupArchiveFormat) backupcore.Archi
 }
 
 func mapQuiesceParticipant(in quiesce.ParticipantStatus) *adminv1.QuiesceParticipantStatus {
-	return &adminv1.QuiesceParticipantStatus{Name: in.Name, Quiesced: in.Quiesced, Active: int32(in.Active), Reason: in.Reason, Mode: string(in.Mode), Source: in.Source, Since: formatBackupTime(in.Since), LastError: in.LastError}
+	return &adminv1.QuiesceParticipantStatus{Name: in.Name, Quiesced: in.Quiesced, Active: int32(in.Active), Reason: in.Reason, Mode: string(in.Mode), Source: in.Source, Since: formatBackupTime(in.Since), LastError: in.LastError, ActiveReadOnly: int32(in.ActiveReadOnly), ActiveWrites: int32(in.ActiveWrites), ReadAllowlistProfile: in.ReadAllowlistProfile, Deadline: formatBackupTime(in.Deadline), AcceptingReadOnly: in.AcceptingReadOnly, AcceptingWrites: in.AcceptingWrites}
 }
 
 func formatBackupTime(value time.Time) string {

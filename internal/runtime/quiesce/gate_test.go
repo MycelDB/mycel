@@ -79,11 +79,12 @@ func TestGateAllowsReadsDuringBackupWhenRequested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnterRead() before quiesce error = %v", err)
 	}
-	lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup, AllowReadsDuringBackup: true})
+	deadline := time.Now().UTC().Add(time.Minute)
+	lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup, AllowReadsDuringBackup: true, ReadAllowlistProfile: ReadAllowlistProfileStrictReadOnly, Deadline: deadline})
 	if err != nil {
 		t.Fatalf("Quiesce() with active read error = %v", err)
 	}
-	if status := g.Status(); !status.Quiesced || status.Active != 1 {
+	if status := g.Status(); !status.Quiesced || status.Active != 1 || status.ActiveReadOnly != 1 || status.ActiveWrites != 0 || !status.AcceptingReadOnly || status.AcceptingWrites || status.ReadAllowlistProfile != ReadAllowlistProfileStrictReadOnly || !status.Deadline.Equal(deadline) {
 		t.Fatalf("unexpected status with active read: %#v", status)
 	}
 	if _, err := g.Enter(context.Background()); !errors.Is(err, ErrQuiesced) {
@@ -97,6 +98,21 @@ func TestGateAllowsReadsDuringBackupWhenRequested(t *testing.T) {
 	readRelease()
 	if err := lease.Release(context.Background()); err != nil {
 		t.Fatalf("Release() error = %v", err)
+	}
+}
+
+func TestGateControlOnlyProfileRejectsOrdinaryReadOnlyIngress(t *testing.T) {
+	g := NewGate("api-ingress")
+	lease, err := g.Quiesce(context.Background(), Request{Reason: "backup", Mode: ModeBackup, AllowReadsDuringBackup: true, ReadAllowlistProfile: ReadAllowlistProfileControlOnly})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(context.Background())
+	if _, err := g.EnterRead(context.Background()); !errors.Is(err, ErrQuiesced) {
+		t.Fatalf("EnterRead() error = %v, want ErrQuiesced", err)
+	}
+	if status := g.Status(); status.AcceptingReadOnly || status.ReadAllowlistProfile != ReadAllowlistProfileControlOnly {
+		t.Fatalf("unexpected control-only status: %#v", status)
 	}
 }
 
