@@ -30,6 +30,7 @@ then use the component indexes below for detail.
 | [Security](security/README.md) | Encryption at rest, key handling, and defense-in-depth controls. |
 | [Activity events](activity/README.md) | Durable operator-facing event stream for daemon lifecycle, identity/access, spaces/domains, backup, cluster, semantic, automation, and external pod events. |
 | [Persistence](persistence/README.md) | WAL and persistence-oriented design. |
+| [Production readiness](production-readiness/README.md) | Mandatory CommonFolio production launch gates for backup/restore, usage accounting, capacity, observability, upgrades, security, performance, and scaling. |
 
 ## Historical planning
 
