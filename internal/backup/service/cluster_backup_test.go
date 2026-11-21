@@ -406,6 +406,41 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	if pvcOp.State != "SUCCEEDED" || pvcOp.Progress.VerifiedNodes != 1 {
 		t.Fatalf("PVC-mapped restore operation = %#v, want succeeded with verified node", pvcOp)
 	}
+
+	purePVCTarget := ClusterRestoreTarget{ExpectedNodeCount: 1, Namespace: "restore-ns", StatefulSet: "myceld", Nodes: []ClusterRestoreNodeMapping{{Ordinal: 0, SourcePodName: "myceld-0", SourceNodeID: "node-1", TargetPodName: "myceld-0", TargetPVCName: "data-myceld-helper-0"}}}
+	purePVCPlan, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: purePVCTarget})
+	if err != nil || !purePVCPlan.Restorable {
+		t.Fatalf("PlanClusterRestore(pure PVC mapping)=(%#v,%v), want restorable", purePVCPlan, err)
+	}
+	purePVCBlocked, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RestorePlanID: purePVCPlan.RestorePlanID, RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: purePVCTarget, Preconditions: ClusterRestorePreconditionEvidence{CleanTarget: ClusterRestoreCleanTargetProof{TargetEmpty: true}, SourceFencing: ClusterRestoreSourceFencingEvidence{SourceClusterFenced: true}}})
+	if err != nil {
+		t.Fatalf("StartClusterRestore(pure PVC without helper) error = %v", err)
+	}
+	if purePVCBlocked.State != clusterRestoreStateFailedRequiresOp || !hasBlockerReason(purePVCBlocked.Blockers, "target_pvc_restore_requires_mounted_data_dir") {
+		t.Fatalf("pure PVC without helper = %#v, want mounted-data-dir/helper blocker", purePVCBlocked)
+	}
+
+	helperTargetDir := filepath.Join(t.TempDir(), "helper-pvc")
+	m.WithClusterRestorePVCHelper(fakePVCRestoreHelper{targetDirs: map[string]string{"data-myceld-helper-0": helperTargetDir}})
+	helperOp, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RestorePlanID: purePVCPlan.RestorePlanID, RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: purePVCTarget, Preconditions: ClusterRestorePreconditionEvidence{CleanTarget: ClusterRestoreCleanTargetProof{TargetEmpty: true}, SourceFencing: ClusterRestoreSourceFencingEvidence{SourceClusterFenced: true}}})
+	if err != nil {
+		t.Fatalf("StartClusterRestore(pure PVC with helper) error = %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for helperOp.State != "SUCCEEDED" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		var statusErr error
+		helperOp, statusErr = m.ClusterRestoreStatus(helperOp.RestoreOperationID)
+		if statusErr != nil {
+			t.Fatalf("ClusterRestoreStatus(pure PVC helper) error = %v", statusErr)
+		}
+	}
+	if helperOp.State != "SUCCEEDED" || helperOp.Progress.VerifiedNodes != 1 || helperOp.Progress.StagedNodes != 1 || helperOp.Progress.BytesCompleted == 0 {
+		t.Fatalf("pure PVC helper restore operation = %#v, want succeeded with progress", helperOp)
+	}
+	if _, err := os.Stat(filepath.Join(helperTargetDir, "meta", "clustering", "node.json")); err != nil {
+		t.Fatalf("helper restored node identity missing: %v", err)
+	}
 }
 
 func TestClusterRestoreStartReconcilesInterruptedOperation(t *testing.T) {
@@ -499,6 +534,44 @@ func validPrecheckInput() ClusterBackupPrecheckInput {
 			{PodName: "myceld-1", Path: "/mnt/backups/myceld-1", Writable: true, OutsideDataDir: true},
 		},
 	}
+}
+
+func hasBlockerReason(blockers []ValidationBlocker, reason string) bool {
+	for _, blocker := range blockers {
+		if blocker.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+type fakePVCRestoreHelper struct {
+	targetDirs map[string]string
+}
+
+func (h fakePVCRestoreHelper) RestoreRepositoryBackupNodeToPVC(ctx context.Context, req ClusterRestorePVCHelperRequest) (ClusterRestorePVCHelperResult, error) {
+	if req.store == nil {
+		return ClusterRestorePVCHelperResult{}, fmt.Errorf("repository object store is required")
+	}
+	pvcName := strings.TrimSpace(req.Node.TargetPVCName)
+	targetDir := strings.TrimSpace(h.targetDirs[pvcName])
+	if targetDir == "" {
+		return ClusterRestorePVCHelperResult{}, fmt.Errorf("target dir for pvc %s is not configured", pvcName)
+	}
+	archiveKey, err := repositoryKeyFromS3URI(req.Repository, req.Artifact.ArchiveURI)
+	if err != nil {
+		return ClusterRestorePVCHelperResult{}, err
+	}
+	archivePath := filepath.Join(os.TempDir(), repositorySafePathComponent(req.RestoreOperationID)+"-"+req.Artifact.ArchiveName)
+	defer os.Remove(archivePath)
+	info, err := req.store.GetFile(ctx, archiveKey, archivePath)
+	if err != nil {
+		return ClusterRestorePVCHelperResult{}, err
+	}
+	if err := applyRestoreArchiveToMountedDataDir(ctx, req.ArchiveFormat, archivePath, targetDir); err != nil {
+		return ClusterRestorePVCHelperResult{}, err
+	}
+	return ClusterRestorePVCHelperResult{TargetPVCName: pvcName, TargetDataDir: targetDir, Verified: true, BytesCompleted: info.SizeBytes}, nil
 }
 
 type memoryRepositoryObjectStore struct {

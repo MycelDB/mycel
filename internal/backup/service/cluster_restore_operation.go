@@ -49,7 +49,7 @@ func (m *Module) StartClusterRestore(ctx context.Context, input StartClusterRest
 		return ClusterRestoreOperation{}, err
 	}
 	op := ClusterRestoreOperation{RestoreOperationID: restoreOperationID(plan, input.IdempotencyKey, createdAt), RestorePlanID: plan.RestorePlanID, RepositoryID: plan.RepositoryID, BackupSetID: plan.BackupSetID, State: clusterRestoreStatePending, TargetMode: plan.TargetMode, IdentityMode: plan.IdentityMode, AuthSessionPolicy: plan.AuthSessionPolicy, CreatedAt: createdAt, UpdatedAt: createdAt, Target: plan.Target, Staging: plan.Staging, Preconditions: input.Preconditions, IdempotencyKey: input.IdempotencyKey}
-	blockers := restoreExecutionBlockers(plan, input)
+	blockers := m.restoreExecutionBlockers(plan, input)
 	if len(blockers) > 0 {
 		op.State = clusterRestoreStateFailedRequiresOp
 		op.Blockers = blockers
@@ -124,25 +124,30 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 	if err != nil {
 		return op, err
 	}
-	stagingPath, err := localRestoreStagingPath(plan.Staging.StagingURI)
-	if err != nil {
-		op.State = clusterRestoreStateFailedRequiresOp
-		op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_staging_not_local", Detail: err.Error(), FieldPath: "staging.staging_uri"})
-		op.Error = err.Error()
-		op.CompletedAt = time.Now().UTC()
-		op.UpdatedAt = op.CompletedAt
-		return op, nil
-	}
-	stagingPath = restoreOperationStagingPath(stagingPath, op.RestoreOperationID)
-	if plan.Staging.CleanBeforeUse {
-		if err := os.RemoveAll(stagingPath); err != nil {
-			return op, fmt.Errorf("clean restore staging path: %w", err)
+	localStagingRequired := restorePlanRequiresLocalStaging(plan.Target.Nodes)
+	stagingPath := ""
+	if localStagingRequired {
+		var stagingErr error
+		stagingPath, stagingErr = localRestoreStagingPath(plan.Staging.StagingURI)
+		if stagingErr != nil {
+			op.State = clusterRestoreStateFailedRequiresOp
+			op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_staging_not_local", Detail: stagingErr.Error(), FieldPath: "staging.staging_uri"})
+			op.Error = stagingErr.Error()
+			op.CompletedAt = time.Now().UTC()
+			op.UpdatedAt = op.CompletedAt
+			return op, nil
 		}
+		stagingPath = restoreOperationStagingPath(stagingPath, op.RestoreOperationID)
+		if plan.Staging.CleanBeforeUse {
+			if err := os.RemoveAll(stagingPath); err != nil {
+				return op, fmt.Errorf("clean restore staging path: %w", err)
+			}
+		}
+		if err := os.MkdirAll(stagingPath, 0o700); err != nil {
+			return op, fmt.Errorf("prepare restore staging path: %w", err)
+		}
+		op.CleanupTasks = append(op.CleanupTasks, CleanupTask{TaskID: "staging-directory", ResourceKind: "local_directory", ResourceURI: stagingPath, State: "created"})
 	}
-	if err := os.MkdirAll(stagingPath, 0o700); err != nil {
-		return op, fmt.Errorf("prepare restore staging path: %w", err)
-	}
-	op.CleanupTasks = append(op.CleanupTasks, CleanupTask{TaskID: "staging-directory", ResourceKind: "local_directory", ResourceURI: stagingPath, State: "created"})
 	manifest := plan.ProductionManifest
 	if manifest == nil {
 		return op, fmt.Errorf("restore plan is missing production manifest")
@@ -176,6 +181,13 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		op.Progress.Nodes = append(op.Progress.Nodes, progress)
 		op.UpdatedAt = time.Now().UTC()
 		update(op)
+		if restoreNodeUsesPVCHelper(mapping) {
+			op.Progress.Nodes[len(op.Progress.Nodes)-1].State = "ready_for_pvc_helper"
+			op.Progress.StagedNodes++
+			op.UpdatedAt = time.Now().UTC()
+			update(op)
+			continue
+		}
 		archiveKey, err := repositoryKeyFromS3URI(repo, artifact.ArchiveURI)
 		if err != nil {
 			op.Progress.Nodes[len(op.Progress.Nodes)-1].State = "failed"
@@ -217,12 +229,61 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 			return op, err
 		}
 		artifact := artifacts[mapping.Ordinal]
-		archivePath := filepath.Join(stagingPath, fmt.Sprintf("ordinal-%d", mapping.Ordinal), artifact.ArchiveName)
 		dataDir := strings.TrimSpace(mapping.TargetDataDir)
 		op.Progress.CurrentNode = fmt.Sprintf("ordinal-%d", mapping.Ordinal)
 		op.Progress.Nodes[i].State = "applying"
 		op.UpdatedAt = time.Now().UTC()
 		update(op)
+		if restoreNodeUsesPVCHelper(mapping) {
+			if m.clusterRestorePVCHelper == nil {
+				applyErr := fmt.Errorf("daemon PVC restore helper is not configured")
+				op.Progress.Nodes[i].State = "failed"
+				op.Progress.Nodes[i].LastError = applyErr.Error()
+				return op, fmt.Errorf("apply ordinal %d archive: %w", mapping.Ordinal, applyErr)
+			}
+			marker := clusterbackup.CompleteMarkerV1{}
+			if plan.ProductionMarker != nil {
+				marker = *plan.ProductionMarker
+			}
+			backupSetPrefix := repositoryBackupSetPrefix(repo, plan.BackupSetID)
+			if strings.TrimSpace(marker.ManifestURI) != "" {
+				if key, keyErr := repositoryKeyFromS3URI(repo, marker.ManifestURI); keyErr == nil {
+					backupSetPrefix = strings.TrimSuffix(key, "/"+clusterbackup.BackupSetManifestName)
+				}
+			}
+			result, helperErr := m.clusterRestorePVCHelper.RestoreRepositoryBackupNodeToPVC(ctx, ClusterRestorePVCHelperRequest{RestoreOperationID: op.RestoreOperationID, Repository: repo, BackupSetID: plan.BackupSetID, BackupSetPrefix: backupSetPrefix, Manifest: *manifest, CompleteMarker: marker, Artifact: artifact, Target: plan.Target, Node: mapping, ArchiveFormat: format, store: store})
+			op.CleanupTasks = append(op.CleanupTasks, result.CleanupTasks...)
+			if helperErr != nil {
+				op.Progress.Nodes[i].State = "failed"
+				op.Progress.Nodes[i].LastError = helperErr.Error()
+				return op, fmt.Errorf("apply ordinal %d archive with PVC helper: %w", mapping.Ordinal, helperErr)
+			}
+			if !result.Verified {
+				applyErr := fmt.Errorf("PVC restore helper did not return verified=true")
+				op.Progress.Nodes[i].State = "failed"
+				op.Progress.Nodes[i].LastError = applyErr.Error()
+				return op, fmt.Errorf("apply ordinal %d archive with PVC helper: %w", mapping.Ordinal, applyErr)
+			}
+			completed := result.BytesCompleted
+			if completed <= 0 {
+				completed = parseSignedDecimalStringLocal(artifact.SizeBytes)
+			}
+			op.Progress.Nodes[i].BytesCompleted = completed
+			op.Progress.BytesCompleted += completed
+			op.Progress.Nodes[i].StagingURI = "pvc://" + strings.TrimSpace(mapping.TargetPVCName)
+			op.Progress.AppliedNodes++
+			op.State = clusterRestoreStatePostRestoreValidate
+			op.Progress.CurrentPhase = "post_restore_validating"
+			op.Progress.Nodes[i].State = "verifying"
+			op.UpdatedAt = time.Now().UTC()
+			update(op)
+			op.Progress.VerifiedNodes++
+			op.Progress.Nodes[i].State = "verified"
+			op.UpdatedAt = time.Now().UTC()
+			update(op)
+			continue
+		}
+		archivePath := filepath.Join(stagingPath, fmt.Sprintf("ordinal-%d", mapping.Ordinal), artifact.ArchiveName)
 		var applyErr error
 		if strings.TrimSpace(mapping.TargetPVCName) != "" {
 			applyErr = applyRestoreArchiveToMountedDataDir(ctx, format, archivePath, dataDir)

@@ -92,6 +92,32 @@ type StartClusterRestoreInput struct {
 	PlanFreshnessToken      string
 }
 
+type ClusterRestorePVCHelper interface {
+	RestoreRepositoryBackupNodeToPVC(context.Context, ClusterRestorePVCHelperRequest) (ClusterRestorePVCHelperResult, error)
+}
+
+type ClusterRestorePVCHelperRequest struct {
+	RestoreOperationID string
+	Repository         BackupRepository
+	BackupSetID        string
+	BackupSetPrefix    string
+	Manifest           clusterbackup.BackupSetManifestV1
+	CompleteMarker     clusterbackup.CompleteMarkerV1
+	Artifact           clusterbackup.BackupSetNodeArtifact
+	Target             ClusterRestoreTarget
+	Node               ClusterRestoreNodeMapping
+	ArchiveFormat      backupcore.ArchiveFormat
+	store              backupRepositoryObjectStore
+}
+
+type ClusterRestorePVCHelperResult struct {
+	TargetPVCName  string
+	TargetDataDir  string
+	Verified       bool
+	BytesCompleted int64
+	CleanupTasks   []CleanupTask
+}
+
 type ClusterRestoreOperation struct {
 	RestoreOperationID string
 	RestorePlanID      string
@@ -295,7 +321,15 @@ func restoreDerivedActions(manifest clusterbackup.BackupSetManifestV1) []backupc
 	return out
 }
 
+func (m *Module) restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestoreInput) []ValidationBlocker {
+	return restoreExecutionBlockersWithPVCHelper(plan, input, m != nil && m.clusterRestorePVCHelper != nil)
+}
+
 func restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestoreInput) []ValidationBlocker {
+	return restoreExecutionBlockersWithPVCHelper(plan, input, false)
+}
+
+func restoreExecutionBlockersWithPVCHelper(plan ClusterRestorePlan, input StartClusterRestoreInput, pvcHelperAvailable bool) []ValidationBlocker {
 	blockers := append([]ValidationBlocker(nil), plan.Blockers...)
 	providedPlanID := strings.TrimSpace(input.RestorePlanID)
 	providedFreshnessToken := strings.TrimSpace(input.PlanFreshnessToken)
@@ -322,7 +356,9 @@ func restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestore
 		pvcName := strings.TrimSpace(node.TargetPVCName)
 		if dataDir == "" {
 			if pvcName != "" {
-				blockers = append(blockers, ValidationBlocker{Reason: "target_pvc_restore_requires_mounted_data_dir", Detail: "PVC restore execution requires a helper/controller to mount the target PVC and provide target_data_dir for that mount", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
+				if !pvcHelperAvailable {
+					blockers = append(blockers, ValidationBlocker{Reason: "target_pvc_restore_requires_mounted_data_dir", Detail: "PVC restore execution requires either target_data_dir for a mounted PVC or a configured daemon PVC restore helper/controller", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
+				}
 			} else {
 				blockers = append(blockers, ValidationBlocker{Reason: "target_data_dir_required", Detail: "restore execution requires target_data_dir for every node mapping", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
 			}
@@ -334,14 +370,17 @@ func restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestore
 			blockers = append(blockers, ValidationBlocker{Reason: "target_data_dir_unsafe", Detail: "restore execution refuses to target the filesystem root", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
 		}
 	}
-	if strings.TrimSpace(plan.Staging.StagingURI) == "" {
-		blockers = append(blockers, ValidationBlocker{Reason: "staging_location_required", Detail: "restore execution requires a local staging URI", FieldPath: "staging.staging_uri"})
-	} else if _, err := localRestoreStagingPath(plan.Staging.StagingURI); err != nil {
-		blockers = append(blockers, ValidationBlocker{Reason: "staging_location_unsupported", Detail: err.Error(), FieldPath: "staging.staging_uri"})
+	if restorePlanRequiresLocalStaging(plan.Target.Nodes) {
+		if strings.TrimSpace(plan.Staging.StagingURI) == "" {
+			blockers = append(blockers, ValidationBlocker{Reason: "staging_location_required", Detail: "restore execution requires a local staging URI for mappings applied by the daemon", FieldPath: "staging.staging_uri"})
+		} else if _, err := localRestoreStagingPath(plan.Staging.StagingURI); err != nil {
+			blockers = append(blockers, ValidationBlocker{Reason: "staging_location_unsupported", Detail: err.Error(), FieldPath: "staging.staging_uri"})
+		}
 	}
 	if !input.Preconditions.CleanTarget.TargetEmpty {
 		blockers = append(blockers, ValidationBlocker{Reason: "clean_target_proof_required", Detail: "restore execution requires clean_target.target_empty=true and rechecks target data dirs before apply", FieldPath: "preconditions.clean_target.target_empty"})
 	}
+	blockers = append(blockers, restoreCleanTargetProofMappingBlockers(plan.Target, input.Preconditions.CleanTarget)...)
 	if plan.IdentityMode == ClusterRestoreIdentityModePreserveBackupID && !input.Preconditions.SourceFencing.SourceClusterFenced {
 		blockers = append(blockers, ValidationBlocker{Reason: "source_fencing_required", Detail: "PRESERVE_BACKUP_ID restore execution requires source_fencing.source_cluster_fenced=true", FieldPath: "preconditions.source_fencing.source_cluster_fenced"})
 	}
@@ -349,6 +388,47 @@ func restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestore
 	blockers = append(blockers, input.Preconditions.CleanTarget.Blockers...)
 	blockers = append(blockers, input.Preconditions.SourceFencing.Blockers...)
 	return blockers
+}
+
+func restoreCleanTargetProofMappingBlockers(target ClusterRestoreTarget, proof ClusterRestoreCleanTargetProof) []ValidationBlocker {
+	if len(proof.CheckedNodes) == 0 {
+		return nil
+	}
+	checkedByOrdinal := map[int]ClusterRestoreNodeMapping{}
+	for _, checked := range proof.CheckedNodes {
+		checkedByOrdinal[checked.Ordinal] = checked
+	}
+	var blockers []ValidationBlocker
+	for i, node := range target.Nodes {
+		checked, ok := checkedByOrdinal[node.Ordinal]
+		if !ok {
+			blockers = append(blockers, ValidationBlocker{Reason: "clean_target_proof_incomplete", Detail: fmt.Sprintf("clean target proof did not check target ordinal %d", node.Ordinal), FieldPath: fmt.Sprintf("preconditions.clean_target.checked_nodes[%d]", i)})
+			continue
+		}
+		if strings.TrimSpace(node.TargetPVCName) != "" && strings.TrimSpace(checked.TargetPVCName) != "" && strings.TrimSpace(node.TargetPVCName) != strings.TrimSpace(checked.TargetPVCName) {
+			blockers = append(blockers, ValidationBlocker{Reason: "clean_target_proof_mismatch", Detail: fmt.Sprintf("clean target proof checked PVC %q for ordinal %d but restore targets PVC %q", checked.TargetPVCName, node.Ordinal, node.TargetPVCName), FieldPath: fmt.Sprintf("preconditions.clean_target.checked_nodes[%d].target_pvc_name", i)})
+		}
+		if strings.TrimSpace(node.TargetDataDir) != "" && strings.TrimSpace(checked.TargetDataDir) != "" && filepath.Clean(strings.TrimSpace(node.TargetDataDir)) != filepath.Clean(strings.TrimSpace(checked.TargetDataDir)) {
+			blockers = append(blockers, ValidationBlocker{Reason: "clean_target_proof_mismatch", Detail: fmt.Sprintf("clean target proof checked data dir %q for ordinal %d but restore targets %q", checked.TargetDataDir, node.Ordinal, node.TargetDataDir), FieldPath: fmt.Sprintf("preconditions.clean_target.checked_nodes[%d].target_data_dir", i)})
+		}
+	}
+	return blockers
+}
+
+func restoreNodeUsesPVCHelper(node ClusterRestoreNodeMapping) bool {
+	return strings.TrimSpace(node.TargetPVCName) != "" && strings.TrimSpace(node.TargetDataDir) == ""
+}
+
+func restorePlanRequiresLocalStaging(nodes []ClusterRestoreNodeMapping) bool {
+	if len(nodes) == 0 {
+		return true
+	}
+	for _, node := range nodes {
+		if !restoreNodeUsesPVCHelper(node) {
+			return true
+		}
+	}
+	return false
 }
 
 func localRestoreStagingPath(raw string) (string, error) {

@@ -55,6 +55,7 @@ type Module struct {
 	repositories                 map[string]BackupRepository
 	repositoryValidator          backupRepositoryValidator
 	repositoryObjectStoreFactory backupRepositoryObjectStoreFactory
+	clusterRestorePVCHelper      ClusterRestorePVCHelper
 	clusterBackendClient         backendClient
 	clusterNodeAddrs             []string
 	clusterLocalRaftNode         consensus.NodeID
@@ -80,6 +81,11 @@ func (m *Module) WithProjectionRegistryManager(manager *projection.RegistryManag
 
 func (m *Module) WithProjectionArtifactProvider(provider func(context.Context) ([]projection.ArtifactManifest, error)) *Module {
 	m.projectionArtifacts = provider
+	return m
+}
+
+func (m *Module) WithClusterRestorePVCHelper(helper ClusterRestorePVCHelper) *Module {
+	m.clusterRestorePVCHelper = helper
 	return m
 }
 
