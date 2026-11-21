@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,7 @@ import (
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
+	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -284,11 +286,20 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 			continue
 		}
 		archivePath := filepath.Join(stagingPath, fmt.Sprintf("ordinal-%d", mapping.Ordinal), artifact.ArchiveName)
+		extractPath, cleanupExtractPath, prepareErr := m.restoreArchiveExtractionPath(ctx, format, artifact, archivePath)
+		if cleanupExtractPath != nil {
+			defer cleanupExtractPath()
+		}
+		if prepareErr != nil {
+			op.Progress.Nodes[i].State = "failed"
+			op.Progress.Nodes[i].LastError = prepareErr.Error()
+			return op, fmt.Errorf("prepare ordinal %d archive for extraction: %w", mapping.Ordinal, prepareErr)
+		}
 		var applyErr error
 		if strings.TrimSpace(mapping.TargetPVCName) != "" {
-			applyErr = applyRestoreArchiveToMountedDataDir(ctx, format, archivePath, dataDir)
+			applyErr = applyRestoreArchiveToMountedDataDir(ctx, format, extractPath, dataDir)
 		} else {
-			applyErr = applyRestoreArchiveToDataDir(ctx, format, archivePath, dataDir, op.RestoreOperationID, mapping.Ordinal)
+			applyErr = applyRestoreArchiveToDataDir(ctx, format, extractPath, dataDir, op.RestoreOperationID, mapping.Ordinal)
 		}
 		if applyErr != nil {
 			op.Progress.Nodes[i].State = "failed"
@@ -329,6 +340,70 @@ func restoreOperationStagingPath(root, operationID string) string {
 		return root
 	}
 	return filepath.Join(root, component)
+}
+
+func (m *Module) restoreArchiveExtractionPath(ctx context.Context, format backupcore.ArchiveFormat, artifact clusterbackup.BackupSetNodeArtifact, archivePath string) (string, func(), error) {
+	isEnvelope, err := restoreArchiveLooksEncrypted(archivePath)
+	if err != nil {
+		return "", nil, err
+	}
+	if !isEnvelope {
+		return archivePath, nil, nil
+	}
+	if m == nil || m.encryption == nil || !m.encryption.Enabled() {
+		return "", nil, fmt.Errorf("archive %s is encrypted but no restore encryption service is configured", artifact.ArchiveName)
+	}
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		return "", nil, err
+	}
+	aad, err := encryptedBackupArchiveAAD(format, artifact.ArchiveName)
+	if err != nil {
+		return "", nil, err
+	}
+	plain, err := m.encryption.DecryptRecord(ctx, raw, aad)
+	if err != nil {
+		return "", nil, fmt.Errorf("decrypt encrypted backup archive: %w", err)
+	}
+	plainPath := archivePath + ".decrypted"
+	if err := os.WriteFile(plainPath, plain, 0o600); err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.Remove(plainPath) }
+	return plainPath, cleanup, nil
+}
+
+func restoreArchiveLooksEncrypted(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	buf := make([]byte, len("MYCELENC"))
+	n, err := io.ReadFull(file, buf)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return encryption.IsEnvelope(buf[:n]), nil
+}
+
+func encryptedBackupArchiveAAD(format backupcore.ArchiveFormat, archiveName string) ([]byte, error) {
+	ext, err := backupcore.ArchiveExtension(format)
+	if err != nil {
+		return nil, err
+	}
+	archiveName = strings.TrimSpace(archiveName)
+	if archiveName == "" {
+		return nil, fmt.Errorf("archive name is required")
+	}
+	if !strings.HasSuffix(archiveName, ext) {
+		return nil, fmt.Errorf("archive name %q does not match archive format %q", archiveName, format)
+	}
+	backupID := strings.TrimSuffix(archiveName, ext)
+	return []byte("backup-archive:v1:id=" + backupID + ":name=" + archiveName), nil
 }
 
 func applyRestoreArchiveToDataDir(ctx context.Context, format backupcore.ArchiveFormat, archivePath, dataDir, operationID string, ordinal int) error {
