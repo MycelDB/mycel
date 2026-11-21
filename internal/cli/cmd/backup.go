@@ -20,7 +20,7 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
 	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
-	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
 	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
@@ -439,6 +439,28 @@ func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
 	cmd.Flags().Int32Var(&pageSize, "page-size", 0, "page size")
 	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
 	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID to list repository-truth backup sets")
+	return cmd
+}
+
+func NewAdminBackupClusterDeleteCommand(a *app.App) *cobra.Command {
+	var repositoryID, reason string
+	cmd := &cobra.Command{Use: "delete BACKUP_SET_ID", Aliases: []string{"rm"}, Short: "Delete a repository-backed cluster backup set", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(repositoryID) == "" {
+			return fmt.Errorf("--repository-id is required")
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.DeleteClusterBackupSet(authCtx, &adminv1.DeleteClusterBackupSetRequest{RepositoryId: repositoryID, BackupSetId: args[0], Reason: reason})
+		if err != nil {
+			return backupCLIError("delete cluster backup set", err)
+		}
+		return a.Print(res, fmt.Sprintf("cluster backup set deleted: %s\nrepository: %s\nstate: %s\n", res.GetBackupSetId(), res.GetRepositoryId(), res.GetState()))
+	}}
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID containing the backup set")
+	cmd.Flags().StringVar(&reason, "reason", "", "operator reason for deletion")
 	return cmd
 }
 
