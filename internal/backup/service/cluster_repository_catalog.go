@@ -16,6 +16,7 @@ type RepositoryClusterBackupSetManager interface {
 	ListRepositoryClusterBackupSets(context.Context, string) ([]ClusterBackupSetValidationResult, error)
 	GetRepositoryClusterBackupSet(context.Context, string, string) (ClusterBackupSetValidationResult, error)
 	ValidateRepositoryClusterBackupSet(context.Context, string, string, clusterbackup.BackupSetValidationOptions) (ClusterBackupSetValidationResult, error)
+	DeleteRepositoryClusterBackupSet(context.Context, string, string) (int, error)
 }
 
 func (m *Module) ListRepositoryClusterBackupSets(ctx context.Context, repositoryID string) ([]ClusterBackupSetValidationResult, error) {
@@ -75,6 +76,37 @@ func (m *Module) ValidateRepositoryClusterBackupSet(ctx context.Context, reposit
 	return m.readRepositoryClusterBackupSet(ctx, repo, store, backupSetID, options)
 }
 
+func (m *Module) DeleteRepositoryClusterBackupSet(ctx context.Context, repositoryID, backupSetID string) (int, error) {
+	repo, store, err := m.repositoryCatalogStore(ctx, repositoryID)
+	if err != nil {
+		return 0, err
+	}
+	backupSetID = strings.TrimSpace(backupSetID)
+	if backupSetID == "" {
+		return 0, fmt.Errorf("backup_set_id is required")
+	}
+	if active, _ := m.clusterBackupSnapshot(); active == backupSetID {
+		return 0, fmt.Errorf("backup set %s has an active backup operation", backupSetID)
+	}
+	for _, restore := range m.ListClusterRestores() {
+		if restore.BackupSetID == backupSetID && !clusterRestoreTerminalState(restore.State) {
+			return 0, fmt.Errorf("backup set %s has an active restore operation", backupSetID)
+		}
+	}
+	if _, err := m.readRepositoryClusterBackupSet(ctx, repo, store, backupSetID, clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: true, AllowS3ArtifactURIs: true}); err != nil {
+		return 0, err
+	}
+	prefix := repositoryBackupSetPrefix(repo, backupSetID)
+	deleted, err := store.DeletePrefix(ctx, prefix)
+	if err != nil {
+		return deleted, err
+	}
+	if deleted == 0 {
+		return 0, fmt.Errorf("backup set %s not found", backupSetID)
+	}
+	return deleted, nil
+}
+
 func (m *Module) repositoryCatalogStore(ctx context.Context, repositoryID string) (BackupRepository, backupRepositoryObjectStore, error) {
 	repo, err := m.GetBackupRepository(repositoryID)
 	if err != nil {
@@ -125,6 +157,15 @@ func (m *Module) readRepositoryClusterBackupSet(ctx context.Context, repo Backup
 		return result, err
 	}
 	return result, nil
+}
+
+func clusterRestoreTerminalState(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case clusterRestoreStateSucceeded, clusterRestoreStateFailedRequiresOp, clusterRestoreStateCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateRepositoryCompleteMarkerBytes(marker clusterbackup.CompleteMarkerV1, markerRaw, manifestRaw []byte) error {

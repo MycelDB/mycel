@@ -441,6 +441,20 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(helperTargetDir, "meta", "clustering", "node.json")); err != nil {
 		t.Fatalf("helper restored node identity missing: %v", err)
 	}
+	deleted, err := m.DeleteRepositoryClusterBackupSet(ctx, repo.RepositoryID, backupSetID)
+	if err != nil {
+		t.Fatalf("DeleteRepositoryClusterBackupSet() error = %v", err)
+	}
+	if deleted == 0 {
+		t.Fatalf("DeleteRepositoryClusterBackupSet deleted zero objects")
+	}
+	listedAfterDelete, err := m.ListRepositoryClusterBackupSets(ctx, repo.RepositoryID)
+	if err != nil {
+		t.Fatalf("ListRepositoryClusterBackupSets(after delete) error = %v", err)
+	}
+	if len(listedAfterDelete) != 0 {
+		t.Fatalf("listed repository backup sets after delete = %#v, want none", listedAfterDelete)
+	}
 }
 
 func TestRepositoryClusterBackupCleansIncompletePrefixWhenCompleteUploadFails(t *testing.T) {

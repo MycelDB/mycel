@@ -472,7 +472,20 @@ func (s *AdminBackupService) DeleteClusterBackupSet(ctx context.Context, req *ad
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "repository-backed backup-set deletion is not implemented")
+	repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "repository backup-set catalog is not configured")
+	}
+	if strings.TrimSpace(req.GetRepositoryId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "repository_id is required")
+	}
+	if strings.TrimSpace(req.GetBackupSetId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "backup_set_id is required")
+	}
+	if _, err := repositoryManager.DeleteRepositoryClusterBackupSet(ctx, req.GetRepositoryId(), req.GetBackupSetId()); err != nil {
+		return nil, mapBackupError(err, "delete repository backup set")
+	}
+	return &adminv1.DeleteClusterBackupSetResponse{RepositoryId: req.GetRepositoryId(), BackupSetId: req.GetBackupSetId(), State: adminv1.BackupDeletionState_BACKUP_DELETION_STATE_DELETED}, nil
 }
 
 func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv1.PlanClusterRestoreRequest) (*adminv1.PlanClusterRestoreResponse, error) {
