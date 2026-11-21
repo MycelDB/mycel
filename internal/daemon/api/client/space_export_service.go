@@ -190,15 +190,22 @@ func (s *ImportExportService) CreateSpaceExport(ctx context.Context, req *client
 	if opts.GetSpaceId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "space_id is required")
 	}
+	release, err := s.enterImportExportWrite(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := s.spaces.GetVisibleSpace(ctx, principal.PrincipalID, opts.GetSpaceId()); err != nil {
+		release()
 		return nil, mapSpaceError(err, "space export authorize space")
 	}
 	if len(opts.GetDomainIds()) > 0 {
 		for _, domainID := range opts.GetDomainIds() {
 			if strings.TrimSpace(domainID) == "" {
+				release()
 				return nil, status.Error(codes.InvalidArgument, "domain_ids must not contain empty values")
 			}
 			if _, err := s.spaces.GetVisibleDomain(ctx, principal.PrincipalID, opts.GetSpaceId(), domainID, ""); err != nil {
+				release()
 				return nil, mapDomainError(err, "space export authorize domain")
 			}
 		}
@@ -213,7 +220,7 @@ func (s *ImportExportService) CreateSpaceExport(ctx context.Context, req *client
 	s.spaceJobs[job.ExportID] = job
 	initial := mapSpaceExportJob(cloneSpaceJob(job))
 	s.spaceMu.Unlock()
-	go s.runSpaceExportJob(job)
+	go s.runSpaceExportJob(job, release)
 	return &clientv1.CreateSpaceExportResponse{Job: initial}, nil
 }
 
@@ -306,6 +313,11 @@ func (s *ImportExportService) DeleteSpaceExport(ctx context.Context, req *client
 	if err != nil {
 		return nil, err
 	}
+	release, err := s.enterImportExportWrite(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	s.spaceMu.Lock()
 	defer s.spaceMu.Unlock()
 	s.expireSpaceJobsLocked(time.Now().UTC())
@@ -342,7 +354,10 @@ func (s *ImportExportService) expireSpaceJobsLocked(now time.Time) {
 	}
 }
 
-func (s *ImportExportService) runSpaceExportJob(job *spaceExportJobRecord) {
+func (s *ImportExportService) runSpaceExportJob(job *spaceExportJobRecord, release func()) {
+	if release != nil {
+		defer release()
+	}
 	s.updateSpaceJob(job.ExportID, func(current *spaceExportJobRecord) {
 		current.Status = clientv1.SpaceExportStatus_SPACE_EXPORT_STATUS_RUNNING
 		current.Progress = 5

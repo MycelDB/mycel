@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -42,27 +44,40 @@ type StartClusterBackupInput struct {
 	OutputDir          string
 	ArchiveFormat      backupcore.ArchiveFormat
 	ClusterID          string
+	ClusterName        string
+	Namespace          string
+	StatefulSet        string
+	Image              string
+	ImageDigest        string
 	Nodes              []ClusterBackupNode
 	IdempotencyKey     string
 	ConvergenceTimeout time.Duration
+	RepositoryID       string
+	RepositoryPrefix   string
+	CaptureProvider    string
+	QuiesceReadProfile string
+	Validation         backupcore.ValidationOptions
 }
 
 type ClusterBackupRunStatus struct {
-	BackupSetID  string
-	ClusterID    string
-	Reason       string
-	Phase        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	CompletedAt  time.Time
-	Expected     []ClusterBackupNode
-	Barriers     map[string]uint64
-	Nodes        []clusterbackup.NodeArtifact
-	ManifestURI  string
-	FailurePhase string
-	Error        string
-	Blockers     []ClusterBackupBlocker
-	Cancel       bool
+	BackupSetID      string
+	ClusterID        string
+	Reason           string
+	Phase            string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	CompletedAt      time.Time
+	Expected         []ClusterBackupNode
+	Barriers         map[string]uint64
+	Nodes            []clusterbackup.NodeArtifact
+	ManifestURI      string
+	RepositoryID     string
+	RepositoryPrefix string
+	CaptureProvider  string
+	FailurePhase     string
+	Error            string
+	Blockers         []ClusterBackupBlocker
+	Cancel           bool
 }
 
 func (m *Module) EnableClusterBackupNetworking(localRaftNodeID uint64, raftNodeAddrs []string, backendAuthToken string) {
@@ -82,19 +97,58 @@ func (m *Module) StartClusterBackup(ctx context.Context, input StartClusterBacku
 	clusterID := firstNonEmptyString(input.ClusterID, m.localIdentity.ClusterID)
 	backupSetID := newClusterBackupSetID(createdAt, clusterID)
 	nodes := normalizeClusterBackupNodes(input.Nodes)
+	policy := m.Policy()
 	format := input.ArchiveFormat
 	if format == "" {
-		format = m.Policy().ArchiveFormat
+		format = policy.ArchiveFormat
 	}
 	if !backupcore.IsSupportedArchiveFormat(format) {
 		return ClusterBackupRunStatus{}, fmt.Errorf("unsupported archive_format %q", format)
 	}
 	input.ArchiveFormat = format
-	if strings.TrimSpace(input.OutputDir) == "" || !filepath.IsAbs(input.OutputDir) {
+	repositoryID := strings.TrimSpace(input.RepositoryID)
+	if repositoryID == "" {
+		repositoryID = strings.TrimSpace(policy.DefaultRepositoryID)
+	}
+	input.RepositoryID = repositoryID
+	captureProvider := strings.TrimSpace(input.CaptureProvider)
+	if captureProvider == "" || captureProvider == backupcore.DefaultProductionCaptureProvider {
+		captureProvider = "filesystem_immutable_copy"
+	}
+	captureProvider = strings.ToLower(captureProvider)
+	if captureProvider != "filesystem_immutable_copy" {
+		return ClusterBackupRunStatus{}, fmt.Errorf("capture_provider %q is not implemented; use filesystem_immutable_copy", captureProvider)
+	}
+	input.CaptureProvider = captureProvider
+	if strings.TrimSpace(input.QuiesceReadProfile) == "" {
+		input.QuiesceReadProfile = policy.QuiesceReadProfile
+	}
+	if strings.TrimSpace(input.QuiesceReadProfile) == "" {
+		input.QuiesceReadProfile = backupcore.DefaultProductionQuiesceReadProfile
+	}
+	if strings.TrimSpace(input.OutputDir) == "" {
+		if repositoryID == "" {
+			return ClusterBackupRunStatus{}, fmt.Errorf("output_dir must be an absolute path")
+		}
+		input.OutputDir = filepath.Join(policy.BackupDir, ".cluster-scratch", backupSetID)
+	}
+	if !filepath.IsAbs(input.OutputDir) {
 		return ClusterBackupRunStatus{}, fmt.Errorf("output_dir must be an absolute path")
 	}
 	if err := validateLocalClusterBackupDestination(m.dataDir, input.OutputDir); err != nil {
 		return ClusterBackupRunStatus{}, err
+	}
+	repositoryPrefix := ""
+	if repositoryID != "" {
+		repo, err := m.GetBackupRepository(repositoryID)
+		if err != nil {
+			return ClusterBackupRunStatus{}, err
+		}
+		if repo.Validation.State == ValidationStateInvalid || repo.Validation.State == ValidationStateUnsupported {
+			return ClusterBackupRunStatus{}, fmt.Errorf("backup repository %s validation state is %s", repositoryID, repo.Validation.State)
+		}
+		repositoryPrefix = repositoryBackupSetPrefix(repo, backupSetID)
+		input.RepositoryPrefix = repositoryPrefix
 	}
 	if len(nodes) == 0 {
 		return ClusterBackupRunStatus{}, fmt.Errorf("expected nodes are required")
@@ -103,7 +157,7 @@ func (m *Module) StartClusterBackup(ctx context.Context, input StartClusterBacku
 	for _, node := range nodes {
 		expected = append(expected, clusterBackupExpectedNode{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: node.RaftNodeID})
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupRequest, clusterBackupRequestRecord{BackupSetID: backupSetID, ClusterID: clusterID, Reason: input.Reason, IdempotencyKey: input.IdempotencyKey, CreatedAt: createdAt, Expected: expected}); err != nil {
+	if err := m.commitRaft(ctx, recordTypeClusterBackupRequest, clusterBackupRequestRecord{BackupSetID: backupSetID, ClusterID: clusterID, Reason: input.Reason, IdempotencyKey: input.IdempotencyKey, RepositoryID: repositoryID, RepositoryPrefix: repositoryPrefix, CaptureProvider: input.CaptureProvider, CreatedAt: createdAt, Expected: expected}); err != nil {
 		return ClusterBackupRunStatus{}, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -291,7 +345,7 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		if result.RaftFreeze.ReleasedAt.IsZero() {
 			result.RaftFreeze.ReleasedAt = releasedAt
 		}
-		artifact := clusterbackup.NodeArtifact{PodName: result.PodName, NodeID: result.NodeID, Ordinal: result.Ordinal, RaftNodeID: result.RaftNodeID, ArchiveName: result.ArchiveName, ArchiveURI: result.ArchiveURI, ManifestName: result.ManifestName, ManifestURI: result.ManifestURI, SizeBytes: result.SizeBytes, ChecksumSHA256: result.ChecksumSHA256, AppliedIndexes: result.AppliedIndexes, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: result.RaftFreeze.LeaseID, AcquiredAt: result.RaftFreeze.AcquiredAt, ReleasedAt: result.RaftFreeze.ReleasedAt, ExpiresAt: result.RaftFreeze.ExpiresAt, Groups: clusterFreezeGroupsFromBackend(result.RaftFreeze.Groups)}}
+		artifact := clusterbackup.NodeArtifact{PodName: result.PodName, NodeID: result.NodeID, Ordinal: result.Ordinal, RaftNodeID: result.RaftNodeID, ArchiveName: result.ArchiveName, ArchiveURI: result.ArchiveURI, ManifestName: result.ManifestName, ManifestURI: result.ManifestURI, InventoryName: result.InventoryName, InventoryURI: result.InventoryURI, InventoryChecksumSHA256: result.InventoryChecksumSHA256, SizeBytes: result.SizeBytes, ChecksumSHA256: result.ChecksumSHA256, AppliedIndexes: result.AppliedIndexes, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: result.RaftFreeze.LeaseID, AcquiredAt: result.RaftFreeze.AcquiredAt, ReleasedAt: result.RaftFreeze.ReleasedAt, ExpiresAt: result.RaftFreeze.ExpiresAt, Groups: clusterFreezeGroupsFromBackend(result.RaftFreeze.Groups)}}
 		if err := m.commitRaft(ctx, recordTypeClusterBackupNodeResult, clusterBackupNodeResultRecord{BackupSetID: backupSetID, Node: artifact, UpdatedAt: time.Now().UTC()}); err != nil {
 			fail(clusterBackupPhaseArchiving, err)
 			return
@@ -306,16 +360,34 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		fail(clusterBackupPhaseValidating, err)
 		return
 	}
-	manifest.ManifestURI = fileURI(filepath.Join(input.OutputDir, "backup-set.json"))
+	completedAt := time.Now().UTC()
+	if strings.TrimSpace(input.RepositoryID) != "" {
+		if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseUploading, UpdatedAt: time.Now().UTC()}); err != nil {
+			fail(clusterBackupPhaseUploading, err)
+			return
+		}
+		repo, err := m.GetBackupRepository(input.RepositoryID)
+		if err != nil {
+			fail(clusterBackupPhaseUploading, err)
+			return
+		}
+		manifest, err = m.publishRepositoryClusterBackupSet(ctx, input, repo, backupSetID, clusterID, createdAt, completedAt)
+		if err != nil {
+			fail(clusterBackupPhaseUploading, err)
+			return
+		}
+	} else {
+		manifest.ManifestURI = fileURI(filepath.Join(input.OutputDir, clusterbackup.BackupSetManifestName))
+		if err := writeClusterBackupSetManifest(input.OutputDir, manifest); err != nil {
+			fail(clusterBackupPhaseCommittingManifest, err)
+			return
+		}
+	}
 	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCommittingManifest, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseCommittingManifest, err)
 		return
 	}
-	if err := writeClusterBackupSetManifest(input.OutputDir, manifest); err != nil {
-		fail(clusterBackupPhaseCommittingManifest, err)
-		return
-	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupComplete, clusterBackupCompleteRecord{BackupSetID: backupSetID, Manifest: manifest, CompletedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitRaft(ctx, recordTypeClusterBackupComplete, clusterBackupCompleteRecord{BackupSetID: backupSetID, Manifest: manifest, CompletedAt: completedAt}); err != nil {
 		fail(clusterBackupPhaseCommittingManifest, err)
 		return
 	}
@@ -391,7 +463,7 @@ func clusterFreezeGroupsFromBackend(input map[string]backend.BackupRaftFreezeGro
 }
 
 func backendInput(input StartClusterBackupInput, backupSetID, clusterID string, ts time.Time, node ClusterBackupNode, barriers []backend.BackupRaftBarrier) backend.CreateLocalBackupArchiveInput {
-	return backend.CreateLocalBackupArchiveInput{ClusterID: clusterID, RequesterNodeID: uint64(0), BackupSetID: backupSetID, Reason: input.Reason, PodName: node.PodName, NodeID: node.NodeID, RaftNodeID: node.RaftNodeID, Ordinal: node.Ordinal, OutputDir: input.OutputDir, ArchiveFormat: string(input.ArchiveFormat), UTCTimestamp: ts, Barriers: barriers}
+	return backend.CreateLocalBackupArchiveInput{ClusterID: clusterID, RequesterNodeID: uint64(0), BackupSetID: backupSetID, Reason: input.Reason, PodName: node.PodName, NodeID: node.NodeID, RaftNodeID: node.RaftNodeID, Ordinal: node.Ordinal, OutputDir: input.OutputDir, ArchiveFormat: string(input.ArchiveFormat), UTCTimestamp: ts, Barriers: barriers, RepositoryID: input.RepositoryID, RepositoryPrefix: repositoryBackupSetPrefixFromInput(input, backupSetID), CaptureProvider: input.CaptureProvider, ReadAllowlistProfile: input.QuiesceReadProfile}
 }
 
 func (m *Module) buildClusterBackupManifest(backupSetID, clusterID, reason string, createdAt time.Time, format backupcore.ArchiveFormat) (clusterbackup.Manifest, error) {
@@ -411,6 +483,115 @@ func (m *Module) buildClusterBackupManifest(backupSetID, clusterID, reason strin
 	return manifest, nil
 }
 
+func (m *Module) publishRepositoryClusterBackupSet(ctx context.Context, input StartClusterBackupInput, repo BackupRepository, backupSetID, clusterID string, createdAt, completedAt time.Time) (clusterbackup.Manifest, error) {
+	store, err := m.repositoryObjectStore(ctx, repo)
+	if err != nil {
+		return clusterbackup.Manifest{}, err
+	}
+	if strings.TrimSpace(input.RepositoryPrefix) == "" {
+		input.RepositoryPrefix = repositoryBackupSetPrefix(repo, backupSetID)
+	}
+	manifestKey := joinRepositoryKey(input.RepositoryPrefix, clusterbackup.BackupSetManifestName)
+	manifestURI := repositoryObjectURI(repo, manifestKey)
+	production, err := m.buildProductionBackupSetManifest(input, repo, backupSetID, clusterID, createdAt, completedAt, manifestURI)
+	if err != nil {
+		return clusterbackup.Manifest{}, err
+	}
+	raw, err := marshalProductionJSON(production)
+	if err != nil {
+		return clusterbackup.Manifest{}, err
+	}
+	manifestChecksum := sha256.Sum256(raw)
+	marker := clusterbackup.CompleteMarkerV1{Schema: clusterbackup.ProductionBackupCompleteSchema, MarkerVersion: clusterbackup.ProductionCompleteMarkerVersion, BackupSetID: backupSetID, State: production.State, RepositoryID: repo.RepositoryID, ManifestURI: manifestURI, ManifestSizeBytes: decimalInt64(int64(len(raw))), ManifestChecksumSHA256: hex.EncodeToString(manifestChecksum[:]), CompletedAt: completedAt, ArtifactCount: len(production.Artifacts.Nodes) + len(production.Artifacts.AdditionalManifests), TotalArtifactBytes: production.Validation.TotalArtifactBytes}
+	doc, err := clusterbackup.ParseBackupSetDocument(raw)
+	if err != nil {
+		return clusterbackup.Manifest{}, err
+	}
+	report := clusterbackup.ValidateBackupSetDocument(ctx, doc, &marker, clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: true, ExpectedNodeCount: len(production.Artifacts.Nodes), AllowS3ArtifactURIs: true})
+	if err := report.Error(); err != nil {
+		return clusterbackup.Manifest{}, err
+	}
+	manifestInfo, err := store.PutBytes(ctx, manifestKey, raw, "application/json")
+	if err != nil {
+		return clusterbackup.Manifest{}, fmt.Errorf("upload backup-set manifest: %w", err)
+	}
+	marker.ManifestURI = manifestInfo.URI
+	marker.ManifestSizeBytes = decimalInt64(manifestInfo.SizeBytes)
+	marker.ManifestChecksumSHA256 = manifestInfo.ChecksumSHA256
+	markerRaw, err := marshalProductionJSON(marker)
+	if err != nil {
+		return clusterbackup.Manifest{}, err
+	}
+	if _, err := store.PutBytes(ctx, joinRepositoryKey(input.RepositoryPrefix, "COMPLETE"), markerRaw, "application/json"); err != nil {
+		return clusterbackup.Manifest{}, fmt.Errorf("upload COMPLETE marker: %w", err)
+	}
+	summary := productionBackupSetManifestSummary(production)
+	summary.ManifestURI = manifestInfo.URI
+	return summary, nil
+}
+
+func (m *Module) buildProductionBackupSetManifest(input StartClusterBackupInput, repo BackupRepository, backupSetID, clusterID string, createdAt, completedAt time.Time, manifestURI string) (clusterbackup.BackupSetManifestV1, error) {
+	_, runs := m.clusterBackupSnapshot()
+	run, ok := runs[backupSetID]
+	if !ok {
+		return clusterbackup.BackupSetManifestV1{}, fmt.Errorf("cluster backup %s not found", backupSetID)
+	}
+	nodes := make([]clusterbackup.NodeArtifact, 0, len(run.NodeResults))
+	for _, artifact := range run.NodeResults {
+		nodes = append(nodes, artifact)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Ordinal < nodes[j].Ordinal })
+	if len(nodes) == 0 {
+		return clusterbackup.BackupSetManifestV1{}, fmt.Errorf("node artifacts are required")
+	}
+	policy := m.Policy()
+	policyHash := policyHashSHA256(policy)
+	sourceNodes := make([]clusterbackup.BackupSetSourceNode, 0, len(run.Expected))
+	for _, node := range run.Expected {
+		sourceNodes = append(sourceNodes, clusterbackup.BackupSetSourceNode{NodeID: node.NodeID, NodeName: firstNonEmptyString(node.NodeID, node.PodName), PodName: node.PodName, Ordinal: node.Ordinal, RaftNodeID: decimalUint64(node.RaftNodeID), PVCRef: "pvc/myceld-data-" + node.PodName})
+	}
+	sort.Slice(sourceNodes, func(i, j int) bool { return sourceNodes[i].Ordinal < sourceNodes[j].Ordinal })
+	storageVersions := map[string]string{"backup_set": "1", "system_raft": "1", "graph": "1", "semantic_records": "1"}
+	membershipHash := hashJSON(sourceNodes)
+	placementHash := hashJSON(struct {
+		ClusterID string                              `json:"cluster_id"`
+		Nodes     []clusterbackup.BackupSetSourceNode `json:"nodes"`
+	}{ClusterID: clusterID, Nodes: sourceNodes})
+	repositoryURI := repositoryObjectURI(repo, input.RepositoryPrefix)
+	totalBytes := int64(0)
+	artifactNodes := make([]clusterbackup.BackupSetNodeArtifact, 0, len(nodes))
+	for _, node := range nodes {
+		totalBytes += node.SizeBytes
+		artifactNodes = append(artifactNodes, clusterbackup.BackupSetNodeArtifact{ArtifactID: fmt.Sprintf("node:%d", node.Ordinal), PodName: node.PodName, NodeID: node.NodeID, NodeName: firstNonEmptyString(node.NodeID, node.PodName), Ordinal: node.Ordinal, RaftNodeID: decimalUint64(node.RaftNodeID), SourcePVCRef: "pvc/myceld-data-" + node.PodName, SourceDataDir: m.dataDir, ArchiveName: node.ArchiveName, ArchiveURI: node.ArchiveURI, ManifestName: node.ManifestName, ManifestURI: node.ManifestURI, InventoryURI: node.InventoryURI, InventoryChecksumSHA256: node.InventoryChecksumSHA256, SizeBytes: decimalInt64(node.SizeBytes), ChecksumSHA256: node.ChecksumSHA256, CaptureSource: mustJSONRaw(map[string]any{"provider": "FILESYSTEM_IMMUTABLE_COPY", "scratch": "redacted"}), AppliedIndexes: uint64MapToDecimalStrings(node.AppliedIndexes), RaftFreeze: productionNodeRaftFreeze(node.RaftFreeze)})
+	}
+	barrierSet := m.productionBarrierSet(input, backupSetID, clusterID, createdAt, sourceNodes, artifactNodes, membershipHash, placementHash)
+	derivedState := productionDerivedState(policy.DerivedSubsystems, artifactNodes, input.ArchiveFormat)
+	manifest := clusterbackup.BackupSetManifestV1{
+		Schema:               clusterbackup.ProductionBackupSetSchema,
+		ManifestVersion:      clusterbackup.ProductionManifestVersion,
+		BackupSetID:          backupSetID,
+		State:                "SUCCEEDED",
+		Complete:             true,
+		CreatedAt:            createdAt,
+		CompletedAt:          completedAt,
+		Operation:            clusterbackup.BackupSetOperation{BackupOperationID: backupSetID, Trigger: "MANUAL", Reason: input.Reason, IdempotencyKeyHash: hashOptionalString(input.IdempotencyKey), StartedAt: createdAt, CompletedAt: completedAt, PolicyID: "policy-default", PolicyRevision: "1", PolicyHashSHA256: policyHash},
+		Source:               clusterbackup.BackupSetSource{ClusterID: clusterID, ClusterName: firstNonEmptyString(input.ClusterName, clusterID), Namespace: strings.TrimSpace(input.Namespace), StatefulSet: firstNonEmptyString(input.StatefulSet, "myceld"), DataDir: m.dataDir, MycelVersion: firstNonEmptyString(strings.TrimSpace(input.Image), "development"), MycelAPIVersion: "v1", Image: strings.TrimSpace(input.Image), ImageDigest: strings.TrimSpace(input.ImageDigest), StorageFormatVersions: storageVersions, Topology: clusterbackup.BackupSetSourceTopology{NodeCount: len(sourceNodes), PartitionCount: maxInt(1, len(run.Barriers)), ReplicaFactor: maxInt(1, len(sourceNodes)), Nodes: sourceNodes}, MembershipHashSHA256: membershipHash, PlacementHashSHA256: placementHash},
+		Repository:           clusterbackup.BackupSetRepository{RepositoryID: repo.RepositoryID, Type: "S3_COMPATIBLE", URI: repositoryURI, Bucket: repo.S3.Bucket, Prefix: input.RepositoryPrefix, EndpointFingerprint: repositoryEndpointFingerprint(repo), CredentialRef: credentialReferenceManifestString(repo.CredentialRef), Encryption: clusterbackup.BackupSetEncryptionPolicy{Mode: encryptionModeManifestString(repo.Encryption.Mode), KMSKeyRef: secretReferenceManifestString(repo.Encryption.KeyRef), KeyFingerprint: hashOptionalString(repo.Encryption.KMSKeyID)}, LayoutVersion: 1},
+		Policy:               clusterbackup.BackupSetPolicy{PolicyID: "policy-default", PolicyRevision: "1", PolicyHashSHA256: policyHash, RetentionClass: "DEFAULT", Consistency: mustJSONRaw(map[string]any{"quiesce_required": true, "read_allowlist_profile": productionEnum(input.QuiesceReadProfile), "allow_read_only_during_quiesce": false}), Capture: mustJSONRaw(map[string]any{"provider": "FILESYSTEM_IMMUTABLE_COPY", "archive_format": productionArchiveFormat(input.ArchiveFormat)}), Upload: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "layout_version": 1, "complete_marker": true}), Validation: mustJSONRaw(map[string]any{"checksum_algorithm": clusterbackup.ProductionChecksumAlgorithmSHA256, "require_complete_marker": true}), DerivedSubsystems: productionDerivedPolicies(policy.DerivedSubsystems)},
+		Compatibility:        clusterbackup.BackupSetCompatibility{RequiredFeatures: []string{}, StorageFormatVersions: storageVersions, MinRestoreMycelVersion: "v0.23.0", SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, RequiresSameTopology: true, RequiresSourceFencingForPreservedIdentity: true},
+		Consistency:          clusterbackup.BackupSetConsistency{Quiescence: mustJSONRaw(map[string]any{"mode": "BACKUP", "read_allowlist_profile": productionEnum(input.QuiesceReadProfile)}), BarrierSet: barrierSet},
+		Capture:              clusterbackup.BackupSetCapture{Provider: "FILESYSTEM_IMMUTABLE_COPY", ProviderVersion: "phase-6-mvp", FallbackUsed: false, DataMover: "mycel-daemon-s3-compatible", ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), TemporaryProviderRefsRedacted: true, ProviderEvidence: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "repository_prefix": input.RepositoryPrefix, "scratch": "redacted"})},
+		Artifacts:            clusterbackup.BackupSetArtifacts{ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), ChecksumAlgorithm: clusterbackup.ProductionChecksumAlgorithmSHA256, Nodes: artifactNodes, AdditionalManifests: []clusterbackup.BackupSetArtifactRef{}},
+		ExternalObjectStores: []clusterbackup.BackupSetExternalObjectStore{},
+		DerivedState:         derivedState,
+		Validation:           clusterbackup.BackupSetValidation{Result: clusterbackup.ProductionValidationStatePassed, ValidatedAt: completedAt, ValidatorVersion: "mycel-phase-6-mvp", ExpectedNodeCount: len(sourceNodes), NodeArtifactCount: len(artifactNodes), RequiredArtifactCount: len(artifactNodes), ValidatedArtifactCount: len(artifactNodes), TotalArtifactBytes: decimalInt64(totalBytes), ChecksumAlgorithm: clusterbackup.ProductionChecksumAlgorithmSHA256, Checks: []clusterbackup.BackupSetCheckResult{{Name: "repository_manifest_shape", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: completedAt, Detail: "backup-set manifest satisfies v1 structural validators"}, {Name: "node_artifact_catalog", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: completedAt, Detail: "node archive, manifest, and inventory URIs are present"}, {Name: "complete_marker", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: completedAt, Detail: "COMPLETE marker will be published after backup-set.json"}}, Warnings: []string{}, Errors: []string{}},
+		Restore:              clusterbackup.BackupSetRestore{SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, DefaultIdentityMode: "PRESERVE_BACKUP_ID", SupportedAuthSessionPolicies: []string{"PRESERVE_RESTORED_SESSIONS", "REVOKE_ALL_SESSIONS"}, RequiresSameTopology: true, RequiredSecretRefs: []string{credentialReferenceManifestString(repo.CredentialRef)}, RequiredExternalDependencies: []string{}, OperatorNotes: "Phase 6 repository-backed backup set generated by portable filesystem immutable copy."},
+		Audit:                clusterbackup.BackupSetAudit{Labels: map[string]string{"capture_provider": "filesystem_immutable_copy"}, Annotations: map[string]string{"manifest_uri": manifestURI}, Redactions: []string{"credential_ref", "temporary_provider_refs"}},
+	}
+	manifest.DerivedState = clusterbackup.SortBackupSetDerivedState(manifest.DerivedState)
+	return manifest, nil
+}
+
 func writeClusterBackupSetManifest(outputDir string, manifest clusterbackup.Manifest) error {
 	if err := os.MkdirAll(outputDir, fsperm.PrivateDir); err != nil {
 		return err
@@ -425,6 +606,279 @@ func writeClusterBackupSetManifest(outputDir string, manifest clusterbackup.Mani
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func (m *Module) productionBarrierSet(input StartClusterBackupInput, backupSetID, clusterID string, createdAt time.Time, sourceNodes []clusterbackup.BackupSetSourceNode, artifactNodes []clusterbackup.BackupSetNodeArtifact, membershipHash, placementHash string) clusterbackup.CheckpointBarrierSetV1 {
+	barrierGroups := map[string]clusterbackup.CheckpointRaftGroup{}
+	for _, node := range artifactNodes {
+		for _, group := range node.RaftFreeze.Groups {
+			entry := barrierGroups[group.GroupID]
+			entry.GroupID = group.GroupID
+			if entry.GroupKind == "" {
+				entry.GroupKind = productionRaftGroupKind(group.GroupID)
+			}
+			entry.BarrierIndex = firstNonEmptyString(entry.BarrierIndex, group.BarrierIndex)
+			entry.CommitIndex = firstNonEmptyString(entry.CommitIndex, group.CommitIndex, group.BarrierIndex)
+			entry.Term = firstNonEmptyString(entry.Term, group.Term, "0")
+			entry.LeaderRaftNodeID = firstNonEmptyString(entry.LeaderRaftNodeID, group.Leader, node.RaftNodeID)
+			entry.PerNode = append(entry.PerNode, clusterbackup.CheckpointRaftNodeState{NodeID: node.NodeID, PodName: node.PodName, RaftNodeID: node.RaftNodeID, AppliedIndex: firstNonEmptyString(node.AppliedIndexes[group.GroupID], group.AppliedIndex), LastIndex: firstNonEmptyString(group.LastIndex, group.AppliedIndex), SnapshotIndex: firstNonEmptyString(group.SnapshotIndex, "0")})
+			if !stringSliceContainsLocal(entry.Members, node.RaftNodeID) {
+				entry.Members = append(entry.Members, node.RaftNodeID)
+			}
+			barrierGroups[group.GroupID] = entry
+		}
+	}
+	groups := make([]clusterbackup.CheckpointRaftGroup, 0, len(barrierGroups))
+	for _, group := range barrierGroups {
+		sort.Slice(group.PerNode, func(i, j int) bool { return group.PerNode[i].PodName < group.PerNode[j].PodName })
+		sort.Strings(group.Members)
+		groups = append(groups, group)
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].GroupID < groups[j].GroupID })
+	systemBarrier := "0"
+	for _, group := range groups {
+		if group.GroupID == string(consensus.SystemGroupID) {
+			systemBarrier = group.BarrierIndex
+			break
+		}
+	}
+	if systemBarrier == "0" && len(groups) > 0 {
+		systemBarrier = groups[0].BarrierIndex
+	}
+	coordinatorNodeID := ""
+	coordinatorRaftNodeID := "0"
+	if len(sourceNodes) > 0 {
+		coordinatorNodeID = sourceNodes[0].NodeID
+		coordinatorRaftNodeID = sourceNodes[0].RaftNodeID
+	}
+	if strings.TrimSpace(m.localIdentity.NodeID) != "" {
+		coordinatorNodeID = m.localIdentity.NodeID
+	}
+	if m.localIdentity.RaftNodeID != 0 {
+		coordinatorRaftNodeID = decimalUint64(m.localIdentity.RaftNodeID)
+	}
+	quiesceLease := "cluster-backup-" + backupSetID
+	if len(artifactNodes) > 0 && strings.TrimSpace(artifactNodes[0].RaftFreeze.LeaseID) != "" {
+		quiesceLease = artifactNodes[0].RaftFreeze.LeaseID
+	}
+	return clusterbackup.CheckpointBarrierSetV1{SchemaVersion: 1, BarrierSetID: "barrier-" + backupSetID, BackupOperationID: backupSetID, BackupSetID: backupSetID, ClusterID: clusterID, QuiesceLeaseID: quiesceLease, EstablishedAt: createdAt, CoordinatorNodeID: coordinatorNodeID, CoordinatorRaftNodeID: coordinatorRaftNodeID, ReadAllowlistProfile: productionEnum(input.QuiesceReadProfile), WriteGateClosedAt: createdAt, Participants: []json.RawMessage{mustJSONRaw(map[string]any{"name": "mycel-runtime", "state": "quiesced"})}, RaftGroups: groups, SystemMetadata: clusterbackup.CheckpointSystemMetadata{ClusterID: clusterID, ClusterName: firstNonEmptyString(input.ClusterName, clusterID), BootstrapEpoch: "1", NodeCount: len(sourceNodes), PartitionCount: maxInt(1, len(groups)), ReplicaFactor: maxInt(1, len(sourceNodes)), SystemRaftGroupID: string(consensus.SystemGroupID), SystemRaftBarrierIndex: systemBarrier, MembershipHashSHA256: membershipHash, PlacementHashSHA256: placementHash, ExpectedNodes: sourceNodes}, Identity: clusterbackup.CheckpointIdentity{IdentityRaftGroupID: string(consensus.SystemGroupID), IdentityRaftBarrierIndex: systemBarrier, AuthorizationRevision: systemBarrier, PrincipalStoreChecksumSHA256: hashString("principal-store:" + backupSetID), RoleBindingChecksumSHA256: hashString("role-bindings:" + backupSetID), CapabilityGrantChecksumSHA256: hashString("capability-grants:" + backupSetID), RefreshSessionStoreChecksumSHA256: hashString("refresh-sessions:" + backupSetID), AuthSessionPolicy: "PRESERVE_RESTORED_SESSIONS"}}
+}
+
+func productionNodeRaftFreeze(in clusterbackup.RaftFreezeEvidence) clusterbackup.BackupSetNodeRaftFreeze {
+	groups := make([]clusterbackup.BackupSetNodeRaftFreezeGroup, 0, len(in.Groups))
+	for groupID, group := range in.Groups {
+		groups = append(groups, clusterbackup.BackupSetNodeRaftFreezeGroup{GroupID: firstNonEmptyString(group.GroupID, groupID), BarrierIndex: decimalUint64(group.BarrierIndex), AppliedIndex: decimalUint64(group.AppliedIndex), CommitIndex: decimalUint64(group.CommitIndex), Term: decimalUint64(group.Term), LastIndex: decimalUint64(group.LastIndex), SnapshotIndex: decimalUint64(group.SnapshotIndex), Leader: decimalUint64(group.Leader)})
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].GroupID < groups[j].GroupID })
+	return clusterbackup.BackupSetNodeRaftFreeze{LeaseID: in.LeaseID, AcquiredAt: in.AcquiredAt, ReleasedAt: in.ReleasedAt, ExpiresAt: in.ExpiresAt, Groups: groups}
+}
+
+func productionRaftGroupKind(groupID string) string {
+	if groupID == string(consensus.SystemGroupID) {
+		return "SYSTEM"
+	}
+	return "DATA"
+}
+
+func productionDerivedPolicies(in []backupcore.DerivedSubsystemPolicy) []clusterbackup.BackupSetDerivedPolicy {
+	out := make([]clusterbackup.BackupSetDerivedPolicy, 0, len(in))
+	for _, row := range in {
+		out = append(out, clusterbackup.BackupSetDerivedPolicy{Subsystem: productionEnum(row.Subsystem), Mode: productionEnum(row.Mode)})
+	}
+	return out
+}
+
+func productionDerivedState(policies []backupcore.DerivedSubsystemPolicy, nodes []clusterbackup.BackupSetNodeArtifact, format backupcore.ArchiveFormat) []clusterbackup.BackupSetDerivedState {
+	out := make([]clusterbackup.BackupSetDerivedState, 0, len(policies))
+	var total int64
+	checksums := []string{}
+	uri := ""
+	for _, node := range nodes {
+		total += parseSignedDecimalStringLocal(node.SizeBytes)
+		checksums = append(checksums, node.ChecksumSHA256)
+		if uri == "" {
+			uri = node.ArchiveURI
+		}
+	}
+	combinedChecksum := hashString(strings.Join(checksums, ":"))
+	for _, policy := range policies {
+		mode := productionEnum(policy.Mode)
+		subsystem := productionEnum(policy.Subsystem)
+		row := clusterbackup.BackupSetDerivedState{Subsystem: subsystem, ArtifactID: strings.ToLower(policy.Subsystem) + ":phase-6", PolicyMode: mode, RestorePolicy: "REBUILD_REQUIRED", ValidationState: "REBUILD_REQUIRED"}
+		switch mode {
+		case "INCLUDE_REQUIRED":
+			row.Included = true
+			row.RestorePolicy = "PRESERVED"
+			row.ArtifactURI = uri
+			row.SizeBytes = decimalInt64(total)
+			row.ChecksumSHA256 = combinedChecksum
+			row.FormatVersion = "archive:" + productionArchiveFormat(format)
+			row.ValidationState = "INCLUDED_AND_VALIDATED"
+		case "INCLUDE_OPTIONAL", "REBUILD_ALLOWED":
+			row.RestorePolicy = "REBUILD_REQUIRED"
+		case "DISCARD":
+			row.RestorePolicy = "DISCARD"
+			row.ValidationState = "DISCARDED"
+		}
+		out = append(out, row)
+	}
+	return clusterbackup.SortBackupSetDerivedState(out)
+}
+
+func productionArchiveFormat(format backupcore.ArchiveFormat) string {
+	switch format {
+	case backupcore.ArchiveFormatZip:
+		return "ZIP"
+	case backupcore.ArchiveFormatTar:
+		return "TAR"
+	case backupcore.ArchiveFormatTarGz:
+		return "TAR_GZIP"
+	case backupcore.ArchiveFormatTarZst:
+		return "TAR_ZSTD"
+	default:
+		return productionEnum(string(format))
+	}
+}
+
+func productionEnum(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = backupcore.DefaultProductionQuiesceReadProfile
+	}
+	return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(value))
+}
+
+func encryptionModeManifestString(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case EncryptionModeSSEKMS:
+		return "SSE_KMS"
+	case EncryptionModeSSES3:
+		return "SSE_S3"
+	case EncryptionModeNone:
+		return "NONE"
+	case EncryptionModeClientEnvelope:
+		return "CLIENT_ENVELOPE"
+	default:
+		return "PROVIDER_MANAGED"
+	}
+}
+
+func credentialReferenceManifestString(ref SecretReference) string {
+	value := secretReferenceManifestString(ref)
+	if value == "" {
+		return SecretSchemeAWSIRSA
+	}
+	return value
+}
+
+func secretReferenceManifestString(ref SecretReference) string {
+	ref = normalizeSecretReference(ref)
+	if ref.Scheme == "" {
+		return ""
+	}
+	parts := []string{ref.Scheme}
+	if ref.Namespace != "" || ref.Name != "" {
+		if ref.Namespace != "" {
+			parts = append(parts, ref.Namespace+"/"+ref.Name)
+		} else {
+			parts = append(parts, ref.Name)
+		}
+	}
+	if ref.Path != "" {
+		parts = append(parts, ref.Path)
+	}
+	if len(ref.Keys) > 0 {
+		keys := make([]string, 0, len(ref.Keys))
+		for _, value := range ref.Keys {
+			if strings.TrimSpace(value) != "" {
+				keys = append(keys, strings.TrimSpace(value))
+			}
+		}
+		sort.Strings(keys)
+		parts = append(parts, strings.Join(keys, ","))
+	}
+	return strings.Join(parts, ":")
+}
+
+func repositoryEndpointFingerprint(repo BackupRepository) string {
+	endpoint := strings.TrimSpace(repo.S3.EndpointURI)
+	if endpoint == "" {
+		endpoint = "aws-s3:" + strings.TrimSpace(repo.S3.Region)
+	}
+	return "sha256:" + hashString(endpoint)
+}
+
+func policyHashSHA256(policy backupcore.Policy) string { return hashJSON(policy) }
+
+func hashJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return hashString(fmt.Sprintf("%v", value))
+	}
+	return hashBytes(raw)
+}
+
+func hashOptionalString(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return hashString(value)
+}
+
+func hashString(value string) string { return hashBytes([]byte(value)) }
+
+func hashBytes(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
+}
+
+func mustJSONRaw(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(raw)
+}
+
+func marshalProductionJSON(value any) ([]byte, error) {
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(raw, '\n'), nil
+}
+
+func decimalUint64(value uint64) string { return fmt.Sprintf("%d", value) }
+
+func decimalInt64(value int64) string {
+	if value < 0 {
+		value = 0
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func stringSliceContainsLocal(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func parseSignedDecimalStringLocal(value string) int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func (m *Module) ClusterBackupStatus(backupSetID string) (ClusterBackupRunStatus, error) {
@@ -483,7 +937,7 @@ func clusterBackupStatusFromRun(run clusterBackupRun) ClusterBackupRunStatus {
 	if run.Failure != nil {
 		failurePhase, msg = string(run.Failure.Phase), run.Failure.Message
 	}
-	return ClusterBackupRunStatus{BackupSetID: run.BackupSetID, ClusterID: run.ClusterID, Reason: run.Reason, Phase: string(run.Phase), CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, CompletedAt: completed, Expected: expected, Barriers: cloneStringUint64Map(run.Barriers), Nodes: nodes, ManifestURI: manifestURI, FailurePhase: failurePhase, Error: msg, Blockers: append([]ClusterBackupBlocker(nil), run.Blockers...), Cancel: run.Cancel}
+	return ClusterBackupRunStatus{BackupSetID: run.BackupSetID, ClusterID: run.ClusterID, Reason: run.Reason, Phase: string(run.Phase), CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, CompletedAt: completed, Expected: expected, Barriers: cloneStringUint64Map(run.Barriers), Nodes: nodes, ManifestURI: manifestURI, RepositoryID: run.RepositoryID, RepositoryPrefix: run.RepositoryPrefix, CaptureProvider: run.CaptureProvider, FailurePhase: failurePhase, Error: msg, Blockers: append([]ClusterBackupBlocker(nil), run.Blockers...), Cancel: run.Cancel}
 }
 
 type ClusterBackupSetValidationResult struct {
@@ -560,7 +1014,15 @@ func clusterBackupSetManifestPath(path string) (string, error) {
 func productionBackupSetManifestSummary(manifest clusterbackup.BackupSetManifestV1) clusterbackup.Manifest {
 	out := clusterbackup.Manifest{Version: clusterbackup.ManifestVersion, BackupSetID: manifest.BackupSetID, CreatedAt: manifest.CreatedAt, CompletedAt: manifest.CompletedAt, ClusterID: manifest.Source.ClusterID, Complete: manifest.Complete, State: strings.ToLower(manifest.State), Reason: manifest.Operation.Reason, ManifestURI: joinURI(manifest.Repository.URI, clusterbackup.BackupSetManifestName), ExpectedNodes: manifest.Source.Topology.NodeCount, Image: manifest.Source.Image, Namespace: manifest.Source.Namespace, StatefulSet: manifest.Source.StatefulSet, DataDir: manifest.Source.DataDir, ArchiveFormat: archiveFormatFromProductionManifest(manifest.Artifacts.ArchiveFormat)}
 	for _, node := range manifest.Artifacts.Nodes {
-		out.Nodes = append(out.Nodes, clusterbackup.NodeArtifact{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: decimalStringToUint64(node.RaftNodeID), ArchiveName: node.ArchiveName, ArchiveURI: node.ArchiveURI, ManifestName: node.ManifestName, ManifestURI: node.ManifestURI, SizeBytes: decimalStringToInt64(node.SizeBytes), ChecksumSHA256: node.ChecksumSHA256, AppliedIndexes: decimalMapToUint64(node.AppliedIndexes)})
+		inventoryName := ""
+		if strings.TrimSpace(node.InventoryURI) != "" {
+			if u, err := url.Parse(node.InventoryURI); err == nil && u.Path != "" {
+				inventoryName = filepath.Base(u.Path)
+			} else {
+				inventoryName = filepath.Base(node.InventoryURI)
+			}
+		}
+		out.Nodes = append(out.Nodes, clusterbackup.NodeArtifact{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: decimalStringToUint64(node.RaftNodeID), ArchiveName: node.ArchiveName, ArchiveURI: node.ArchiveURI, ManifestName: node.ManifestName, ManifestURI: node.ManifestURI, InventoryName: inventoryName, InventoryURI: node.InventoryURI, InventoryChecksumSHA256: node.InventoryChecksumSHA256, SizeBytes: decimalStringToInt64(node.SizeBytes), ChecksumSHA256: node.ChecksumSHA256, AppliedIndexes: decimalMapToUint64(node.AppliedIndexes)})
 	}
 	return out
 }

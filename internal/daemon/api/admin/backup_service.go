@@ -271,9 +271,6 @@ func (s *AdminBackupService) StartClusterBackup(ctx context.Context, req *adminv
 	if err != nil {
 		return nil, err
 	}
-	if requestsRepositoryBackedClusterBackup(req) {
-		return nil, status.Error(codes.Unimplemented, "repository-backed cluster backup execution is not implemented")
-	}
 	nodes, clusterID, err := s.clusterBackupNodes()
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -282,7 +279,7 @@ func (s *AdminBackupService) StartClusterBackup(ctx context.Context, req *adminv
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
 	}
-	input := daemonbackup.StartClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.PrincipalID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, Nodes: nodes, IdempotencyKey: req.GetIdempotencyKey()}
+	input := daemonbackup.StartClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.PrincipalID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, ClusterName: s.clusterConfig.Name, StatefulSet: "myceld", Nodes: nodes, IdempotencyKey: req.GetIdempotencyKey(), RepositoryID: req.GetRepositoryId(), CaptureProvider: captureProviderFromProto(req.GetCaptureProvider()), QuiesceReadProfile: quiesceReadProfileFromProto(req.GetQuiesceReadProfile()), Validation: validationOptionsFromProto(req.GetValidationOptions())}
 	if req.GetConvergenceTimeoutSeconds() > 0 {
 		input.ConvergenceTimeout = time.Duration(req.GetConvergenceTimeoutSeconds()) * time.Second
 	}
@@ -291,16 +288,6 @@ func (s *AdminBackupService) StartClusterBackup(ctx context.Context, req *adminv
 		return nil, mapBackupError(err, "start cluster backup")
 	}
 	return &adminv1.StartClusterBackupResponse{Status: mapClusterBackupStatus(st), BackupSet: mapClusterBackupSetSummary(st)}, nil
-}
-
-func requestsRepositoryBackedClusterBackup(req *adminv1.StartClusterBackupRequest) bool {
-	if req == nil {
-		return false
-	}
-	return strings.TrimSpace(req.GetRepositoryId()) != "" ||
-		req.GetCaptureProvider() != adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_UNSPECIFIED ||
-		req.GetValidationOptions() != nil ||
-		req.GetQuiesceReadProfile() != adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_UNSPECIFIED
 }
 
 func (s *AdminBackupService) GetClusterBackupStatus(ctx context.Context, req *adminv1.GetClusterBackupStatusRequest) (*adminv1.GetClusterBackupStatusResponse, error) {
@@ -404,7 +391,23 @@ func (s *AdminBackupService) ListClusterBackupSets(ctx context.Context, req *adm
 		return nil, err
 	}
 	if strings.TrimSpace(req.GetRepositoryId()) != "" {
-		return nil, status.Error(codes.Unimplemented, "repository-backed backup-set catalog listing is not implemented")
+		repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
+		if !ok {
+			return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
+		}
+		sets, err := repositoryManager.ListRepositoryClusterBackupSets(ctx, req.GetRepositoryId())
+		if err != nil {
+			return nil, mapBackupError(err, "list repository backup sets")
+		}
+		items := make([]*adminv1.ClusterBackupSetSummary, 0, len(sets))
+		for _, set := range sets {
+			summary := mapClusterManifestSummary(set.Manifest)
+			if set.ProductionManifest != nil {
+				applyProductionBackupSetSummary(summary, *set.ProductionManifest, set.ProductionMarker, set.ProductionReport)
+			}
+			items = append(items, summary)
+		}
+		return paginateClusterBackupSetSummaries(items, req.GetPageSize(), req.GetPageToken())
 	}
 	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
@@ -439,7 +442,19 @@ func (s *AdminBackupService) GetClusterBackupSet(ctx context.Context, req *admin
 		return nil, err
 	}
 	if strings.TrimSpace(req.GetRepositoryId()) != "" {
-		return nil, status.Error(codes.Unimplemented, "repository-backed backup-set lookup is not implemented")
+		repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
+		if !ok {
+			return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
+		}
+		set, err := repositoryManager.GetRepositoryClusterBackupSet(ctx, req.GetRepositoryId(), req.GetBackupSetId())
+		if err != nil {
+			return nil, mapBackupError(err, "get repository backup set")
+		}
+		summary := mapClusterManifestSummary(set.Manifest)
+		if set.ProductionManifest != nil {
+			applyProductionBackupSetSummary(summary, *set.ProductionManifest, set.ProductionMarker, set.ProductionReport)
+		}
+		return &adminv1.GetClusterBackupSetResponse{BackupSet: summary}, nil
 	}
 	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
@@ -464,7 +479,15 @@ func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "cluster restore planning is not implemented")
+	planner, ok := s.manager.(daemonbackup.ClusterRestorePlanner)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster restore planner is not configured")
+	}
+	plan, err := planner.PlanClusterRestore(ctx, daemonbackup.PlanClusterRestoreInput{RepositoryID: req.GetRepositoryId(), BackupSetID: req.GetBackupSetId(), TargetMode: restoreTargetModeFromProto(req.GetTargetMode()), IdentityMode: restoreIdentityModeFromProto(req.GetIdentityMode()), AuthSessionPolicy: restoreAuthSessionPolicyFromProto(req.GetAuthSessionPolicy()), ValidationOptions: validationOptionsForBackupSet(req.GetValidationOptions())})
+	if err != nil {
+		return nil, mapBackupError(err, "plan cluster restore")
+	}
+	return &adminv1.PlanClusterRestoreResponse{Plan: mapRestorePlanSummary(plan)}, nil
 }
 
 func (s *AdminBackupService) StartClusterRestore(ctx context.Context, req *adminv1.StartClusterRestoreRequest) (*adminv1.StartClusterRestoreResponse, error) {
@@ -499,10 +522,20 @@ func (s *AdminBackupService) ValidateClusterBackupSet(ctx context.Context, req *
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
+	var result daemonbackup.ClusterBackupSetValidationResult
+	var err error
 	if strings.TrimSpace(req.GetRepositoryId()) != "" || strings.TrimSpace(req.GetBackupSetId()) != "" {
-		return nil, status.Error(codes.Unimplemented, "repository-backed backup-set validation is not implemented")
+		if strings.TrimSpace(req.GetRepositoryId()) == "" || strings.TrimSpace(req.GetBackupSetId()) == "" {
+			return nil, status.Error(codes.InvalidArgument, "repository_id and backup_set_id are required together")
+		}
+		repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
+		if !ok {
+			return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
+		}
+		result, err = repositoryManager.ValidateRepositoryClusterBackupSet(ctx, req.GetRepositoryId(), req.GetBackupSetId(), validationOptionsForBackupSet(req.GetValidationOptions()))
+	} else {
+		result, err = daemonbackup.ValidateClusterBackupSetDetailed(ctx, req.GetBackupSetPath())
 	}
-	result, err := daemonbackup.ValidateClusterBackupSetDetailed(ctx, req.GetBackupSetPath())
 	res := &adminv1.ValidateClusterBackupSetResponse{Valid: err == nil}
 	if result.Manifest.BackupSetID != "" {
 		res.BackupSet = mapClusterManifestSummary(result.Manifest)
@@ -642,6 +675,33 @@ func mapValidationBlocker(blocker daemonbackup.ValidationBlocker) *adminv1.Valid
 	return &adminv1.ValidationBlocker{Reason: blocker.Reason, Detail: blocker.Detail, Retryable: blocker.Retryable, FieldPath: blocker.FieldPath}
 }
 
+func validationOptionsForBackupSet(options *adminv1.ValidationOptions) clusterbackup.BackupSetValidationOptions {
+	if options == nil {
+		return clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: true, AllowS3ArtifactURIs: true, AllowLocalArtifactURIs: true}
+	}
+	return clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: options.GetRequireCompleteMarker(), ValidateLocalArtifactBytes: options.GetIncludeArtifactChecks(), AllowS3ArtifactURIs: true, AllowLocalArtifactURIs: true}
+}
+
+func paginateClusterBackupSetSummaries(items []*adminv1.ClusterBackupSetSummary, pageSizeValue int32, pageToken string) (*adminv1.ListClusterBackupSetsResponse, error) {
+	pageSize := normalizePageSize(pageSizeValue)
+	offset, err := parsePageToken(pageToken)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if offset > len(items) {
+		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the cluster backup set list")
+	}
+	end := offset + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	next := ""
+	if end < len(items) {
+		next = strconv.Itoa(end)
+	}
+	return &adminv1.ListClusterBackupSetsResponse{BackupSets: items[offset:end], NextPageToken: next}, nil
+}
+
 func mapBackupSetValidationReport(report clusterbackup.BackupSetValidationReport) *adminv1.ValidationSummary {
 	state := adminv1.BackupValidationState_BACKUP_VALIDATION_STATE_VALID
 	if !report.Valid() {
@@ -654,6 +714,37 @@ func mapBackupSetValidationReport(report clusterbackup.BackupSetValidationReport
 	}
 	for _, issue := range report.Warnings {
 		out.Warnings = append(out.Warnings, issue.Detail)
+	}
+	return out
+}
+
+func mapRestorePlanSummary(plan daemonbackup.ClusterRestorePlan) *adminv1.RestorePlanSummary {
+	out := &adminv1.RestorePlanSummary{RestorePlanId: plan.RestorePlanID, RepositoryId: plan.RepositoryID, BackupSetId: plan.BackupSetID, TargetMode: restoreTargetModeToProto(plan.TargetMode), IdentityMode: restoreIdentityModeToProto(plan.IdentityMode), AuthSessionPolicy: restoreAuthSessionPolicyToProto(plan.AuthSessionPolicy), Restorable: plan.Restorable, PlannedAt: formatBackupTime(plan.PlannedAt)}
+	if plan.Validation != nil {
+		out.Validation = mapBackupSetValidationReport(*plan.Validation)
+		if plan.ProductionManifest != nil {
+			enrichValidationSummaryFromManifest(out.Validation, *plan.ProductionManifest)
+		}
+	}
+	out.Compatibility = &adminv1.CompatibilitySummary{State: adminv1.BackupValidationState_BACKUP_VALIDATION_STATE_VALID, RequiredFeatures: append([]string(nil), plan.Compatibility.RequiredFeatures...), StorageFormatVersions: copyStringMap(plan.Compatibility.StorageFormatVersions), MinRestoreMycelVersion: plan.Compatibility.MinRestoreMycelVersion, MaxRestoreMycelVersion: plan.Compatibility.MaxRestoreMycelVersion, SupportedRestoreTargetModes: append([]string(nil), plan.Compatibility.SupportedRestoreTargetModes...), SupportedIdentityModes: append([]string(nil), plan.Compatibility.SupportedIdentityModes...), RequiresSameTopology: plan.Compatibility.RequiresSameTopology, RequiresSourceFencingForPreservedIdentity: plan.Compatibility.RequiresSourceFencingForPreservedIdentity}
+	if plan.ProductionManifest != nil {
+		out.Compatibility.SourceVersion = plan.ProductionManifest.Source.MycelVersion
+	}
+	out.Capacity = &adminv1.CapacityEstimate{RequiredBytes: plan.Capacity.RequiredBytes, AvailableBytes: plan.Capacity.AvailableBytes}
+	for _, blocker := range plan.Blockers {
+		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
+	}
+	if len(out.Blockers) > 0 {
+		if out.Validation == nil {
+			out.Validation = &adminv1.ValidationSummary{State: adminv1.BackupValidationState_BACKUP_VALIDATION_STATE_INVALID, CheckedAt: formatBackupTime(plan.PlannedAt)}
+		}
+		out.Validation.Blockers = append(out.Validation.Blockers, out.Blockers...)
+		out.Compatibility.State = adminv1.BackupValidationState_BACKUP_VALIDATION_STATE_INVALID
+	} else if out.Validation == nil {
+		out.Validation = &adminv1.ValidationSummary{State: adminv1.BackupValidationState_BACKUP_VALIDATION_STATE_VALID, CheckedAt: formatBackupTime(plan.PlannedAt)}
+	}
+	for _, action := range plan.DerivedActions {
+		out.DerivedActions = append(out.DerivedActions, &adminv1.DerivedSubsystemPolicy{Subsystem: derivedSubsystemToProto(action.Subsystem), Mode: derivedPolicyModeToProto(action.Mode)})
 	}
 	return out
 }
@@ -892,6 +983,83 @@ func quiesceReadProfileFromProto(profile adminv1.BackupQuiesceReadProfile) strin
 	}
 }
 
+func validationOptionsFromProto(options *adminv1.ValidationOptions) backupcore.ValidationOptions {
+	if options == nil {
+		return backupcore.ValidationOptions{}
+	}
+	return backupcore.ValidationOptions{IncludeArtifactChecks: options.GetIncludeArtifactChecks(), IncludeExternalDependencyChecks: options.GetIncludeExternalDependencyChecks(), IncludeCapacityEstimates: options.GetIncludeCapacityEstimates(), RequireCompleteMarker: options.GetRequireCompleteMarker()}
+}
+
+func restoreTargetModeToProto(mode string) adminv1.ClusterRestoreTargetMode {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case daemonbackup.ClusterRestoreTargetModeNewClusterBootstrap:
+		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP
+	case daemonbackup.ClusterRestoreTargetModeExistingClusterReplace:
+		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE
+	default:
+		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_UNSPECIFIED
+	}
+}
+
+func restoreTargetModeFromProto(mode adminv1.ClusterRestoreTargetMode) string {
+	switch mode {
+	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP:
+		return daemonbackup.ClusterRestoreTargetModeNewClusterBootstrap
+	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE:
+		return daemonbackup.ClusterRestoreTargetModeExistingClusterReplace
+	default:
+		return ""
+	}
+}
+
+func restoreIdentityModeToProto(mode string) adminv1.ClusterRestoreIdentityMode {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case daemonbackup.ClusterRestoreIdentityModePreserveBackupID:
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID
+	case daemonbackup.ClusterRestoreIdentityModeAdoptTargetID:
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID
+	case daemonbackup.ClusterRestoreIdentityModeGenerateNewID:
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID
+	default:
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_UNSPECIFIED
+	}
+}
+
+func restoreIdentityModeFromProto(mode adminv1.ClusterRestoreIdentityMode) string {
+	switch mode {
+	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID:
+		return daemonbackup.ClusterRestoreIdentityModePreserveBackupID
+	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID:
+		return daemonbackup.ClusterRestoreIdentityModeAdoptTargetID
+	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID:
+		return daemonbackup.ClusterRestoreIdentityModeGenerateNewID
+	default:
+		return ""
+	}
+}
+
+func restoreAuthSessionPolicyToProto(policy string) adminv1.ClusterRestoreAuthSessionPolicy {
+	switch strings.ToUpper(strings.TrimSpace(policy)) {
+	case daemonbackup.ClusterRestoreAuthSessionPolicyPreserveRestoredSessions:
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS
+	case daemonbackup.ClusterRestoreAuthSessionPolicyRevokeAllSessions:
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS
+	default:
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
+	}
+}
+
+func restoreAuthSessionPolicyFromProto(policy adminv1.ClusterRestoreAuthSessionPolicy) string {
+	switch policy {
+	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS:
+		return daemonbackup.ClusterRestoreAuthSessionPolicyPreserveRestoredSessions
+	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS:
+		return daemonbackup.ClusterRestoreAuthSessionPolicyRevokeAllSessions
+	default:
+		return ""
+	}
+}
+
 func derivedSubsystemToProto(subsystem string) adminv1.BackupDerivedSubsystem {
 	switch subsystem {
 	case "semantic_vector_search":
@@ -1092,7 +1260,7 @@ func ordinalFromPodName(name string) int {
 }
 
 func mapClusterBackupStatus(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupStatus {
-	out := &adminv1.ClusterBackupStatus{BackupSetId: st.BackupSetID, State: st.Phase, StateCode: mapClusterBackupStateCode(st.Phase), ClusterId: st.ClusterID, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), FailedPhase: st.FailurePhase, Error: st.Error, RaftBarriers: st.Barriers, CancelRequested: st.Cancel, CurrentPhase: st.Phase, BackupOperationId: st.BackupSetID}
+	out := &adminv1.ClusterBackupStatus{BackupSetId: st.BackupSetID, State: st.Phase, StateCode: mapClusterBackupStateCode(st.Phase), ClusterId: st.ClusterID, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), FailedPhase: st.FailurePhase, Error: st.Error, RaftBarriers: st.Barriers, CancelRequested: st.Cancel, CurrentPhase: st.Phase, RepositoryId: st.RepositoryID, BackupOperationId: st.BackupSetID}
 	if st.Phase == "waiting_for_cluster_convergence" {
 		out.RetryAfterSeconds = 2
 	}
@@ -1112,7 +1280,7 @@ func mapClusterBackupStateCode(phase string) adminv1.ClusterBackupState {
 		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_READY
 	case "quiescing":
 		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_QUIESCING
-	case "capturing", "archiving", "barrier_wait", "committing_manifest":
+	case "capturing", "archiving", "barrier_wait", "uploading", "committing_manifest":
 		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CAPTURING
 	case "validating":
 		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_VALIDATING
@@ -1130,7 +1298,7 @@ func mapClusterBackupStateCode(phase string) adminv1.ClusterBackupState {
 }
 
 func mapClusterBackupSetSummary(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupSetSummary {
-	return &adminv1.ClusterBackupSetSummary{BackupSetId: st.BackupSetID, State: st.Phase, ClusterId: st.ClusterID, CreatedAt: formatBackupTime(st.CreatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes)}
+	return &adminv1.ClusterBackupSetSummary{BackupSetId: st.BackupSetID, State: st.Phase, ClusterId: st.ClusterID, CreatedAt: formatBackupTime(st.CreatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), RepositoryId: st.RepositoryID}
 }
 
 func mapClusterManifestSummary(manifest clusterbackup.Manifest) *adminv1.ClusterBackupSetSummary {

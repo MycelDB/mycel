@@ -39,17 +39,20 @@ func (c Client) CheckLocalBackupReadiness(ctx context.Context, addr string, in C
 	}
 	defer conn.Close()
 	res, err := clusterpb.NewClusterBackendServiceClient(conn).CheckLocalBackupReadiness(c.authContext(ctx), &clusterpb.CheckLocalBackupReadinessRequest{
-		ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1,
-		ClusterId:       in.ClusterID,
-		RequesterNodeId: in.RequesterNodeID,
-		BackupSetId:     in.BackupSetID,
-		Reason:          in.Reason,
-		PodName:         in.PodName,
-		NodeId:          in.NodeID,
-		RaftNodeId:      in.RaftNodeID,
-		Ordinal:         int32(in.Ordinal),
-		OutputDir:       in.OutputDir,
-		ArchiveFormat:   in.ArchiveFormat,
+		ProtocolVersion:  clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1,
+		ClusterId:        in.ClusterID,
+		RequesterNodeId:  in.RequesterNodeID,
+		BackupSetId:      in.BackupSetID,
+		Reason:           in.Reason,
+		PodName:          in.PodName,
+		NodeId:           in.NodeID,
+		RaftNodeId:       in.RaftNodeID,
+		Ordinal:          int32(in.Ordinal),
+		OutputDir:        in.OutputDir,
+		ArchiveFormat:    in.ArchiveFormat,
+		RepositoryId:     in.RepositoryID,
+		RepositoryPrefix: in.RepositoryPrefix,
+		CaptureProvider:  in.CaptureProvider,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -64,15 +67,16 @@ func (c Client) AcquireLocalBackupQuiesce(ctx context.Context, addr string, in C
 	}
 	defer conn.Close()
 	_, err = clusterpb.NewClusterBackendServiceClient(conn).AcquireLocalBackupQuiesce(c.authContext(ctx), &clusterpb.AcquireLocalBackupQuiesceRequest{
-		ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1,
-		ClusterId:       in.ClusterID,
-		RequesterNodeId: in.RequesterNodeID,
-		BackupSetId:     in.BackupSetID,
-		Reason:          in.Reason,
-		PodName:         in.PodName,
-		NodeId:          in.NodeID,
-		RaftNodeId:      in.RaftNodeID,
-		Ordinal:         int32(in.Ordinal),
+		ProtocolVersion:      clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1,
+		ClusterId:            in.ClusterID,
+		RequesterNodeId:      in.RequesterNodeID,
+		BackupSetId:          in.BackupSetID,
+		Reason:               in.Reason,
+		PodName:              in.PodName,
+		NodeId:               in.NodeID,
+		RaftNodeId:           in.RaftNodeID,
+		Ordinal:              int32(in.Ordinal),
+		ReadAllowlistProfile: in.ReadAllowlistProfile,
 	})
 	return err
 }
@@ -167,23 +171,29 @@ func (c Client) CreateLocalBackupArchive(ctx context.Context, addr string, in Cr
 		UtcTimestamp:      ts.Format("20060102T150405Z"),
 		Barriers:          barriers,
 		RaftFreezeLeaseId: in.FreezeLeaseID,
+		RepositoryId:      in.RepositoryID,
+		RepositoryPrefix:  in.RepositoryPrefix,
+		CaptureProvider:   in.CaptureProvider,
 	})
 	if err != nil {
 		return CreateLocalBackupArchiveResult{}, err
 	}
 	return CreateLocalBackupArchiveResult{
-		ClusterID:      res.GetClusterId(),
-		PodName:        res.GetPodName(),
-		NodeID:         res.GetNodeId(),
-		RaftNodeID:     res.GetRaftNodeId(),
-		Ordinal:        int(res.GetOrdinal()),
-		ArchiveName:    res.GetArchiveName(),
-		ArchiveURI:     res.GetArchiveUri(),
-		ManifestName:   res.GetManifestName(),
-		ManifestURI:    res.GetManifestUri(),
-		SizeBytes:      res.GetSizeBytes(),
-		ChecksumSHA256: res.GetChecksumSha256(),
-		AppliedIndexes: res.GetAppliedIndexes(),
-		RaftFreeze:     BackupRaftFreeze{LeaseID: res.GetRaftFreezeLeaseId(), AcquiredAt: parseBackendTime(res.GetRaftFreezeAcquiredAt()), ReleasedAt: parseBackendTime(res.GetRaftFreezeReleasedAt()), ExpiresAt: parseBackendTime(res.GetRaftFreezeExpiresAt()), Groups: protoFreezeGroupsToBackend(res.GetRaftFreezeGroups())},
+		ClusterID:               res.GetClusterId(),
+		PodName:                 res.GetPodName(),
+		NodeID:                  res.GetNodeId(),
+		RaftNodeID:              res.GetRaftNodeId(),
+		Ordinal:                 int(res.GetOrdinal()),
+		ArchiveName:             res.GetArchiveName(),
+		ArchiveURI:              res.GetArchiveUri(),
+		ManifestName:            res.GetManifestName(),
+		ManifestURI:             res.GetManifestUri(),
+		InventoryName:           res.GetInventoryName(),
+		InventoryURI:            res.GetInventoryUri(),
+		InventoryChecksumSHA256: res.GetInventoryChecksumSha256(),
+		SizeBytes:               res.GetSizeBytes(),
+		ChecksumSHA256:          res.GetChecksumSha256(),
+		AppliedIndexes:          res.GetAppliedIndexes(),
+		RaftFreeze:              BackupRaftFreeze{LeaseID: res.GetRaftFreezeLeaseId(), AcquiredAt: parseBackendTime(res.GetRaftFreezeAcquiredAt()), ReleasedAt: parseBackendTime(res.GetRaftFreezeReleasedAt()), ExpiresAt: parseBackendTime(res.GetRaftFreezeExpiresAt()), Groups: protoFreezeGroupsToBackend(res.GetRaftFreezeGroups())},
 	}, nil
 }

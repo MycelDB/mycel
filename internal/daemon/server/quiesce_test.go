@@ -211,11 +211,14 @@ func TestServerNewRegistersIngressGateWithCoordinator(t *testing.T) {
 	}
 	defer srv.Stop()
 	participants := coordinator.Participants()
-	if len(participants) != 1 {
-		t.Fatalf("len(participants) = %d, want 1", len(participants))
+	if len(participants) != 2 {
+		t.Fatalf("len(participants) = %d, want 2", len(participants))
 	}
 	if participants[0].Name() != "api-ingress" {
-		t.Fatalf("participant name = %q, want api-ingress", participants[0].Name())
+		t.Fatalf("participant[0] name = %q, want api-ingress", participants[0].Name())
+	}
+	if participants[1].Name() != "import_export" {
+		t.Fatalf("participant[1] name = %q, want import_export", participants[1].Name())
 	}
 }
 

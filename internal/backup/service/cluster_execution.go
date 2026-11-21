@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -53,7 +56,7 @@ func (m *Module) AcquireLocalClusterBackupQuiesce(ctx context.Context, in backen
 		return nil
 	}
 	m.mu.Unlock()
-	lease, err := m.acquireClusterBackupQuiesce(ctx, in.BackupSetID, in.Reason)
+	lease, err := m.acquireClusterBackupQuiesce(ctx, in.BackupSetID, in.Reason, in.ReadAllowlistProfile)
 	if err != nil {
 		return err
 	}
@@ -359,6 +362,10 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 	if err != nil {
 		return backend.CreateLocalBackupArchiveResult{}, err
 	}
+	inventoryName, err := clusterbackup.NewNodeInventoryName(archiveName)
+	if err != nil {
+		return backend.CreateLocalBackupArchiveResult{}, err
+	}
 	ext, err := backupcore.ArchiveExtension(format)
 	if err != nil {
 		return backend.CreateLocalBackupArchiveResult{}, err
@@ -376,7 +383,7 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 	heldLease := m.clusterBackupLeases[in.BackupSetID]
 	m.mu.Unlock()
 	if heldLease == nil {
-		lease, err := m.acquireClusterBackupQuiesce(ctx, in.BackupSetID, in.Reason)
+		lease, err := m.acquireClusterBackupQuiesce(ctx, in.BackupSetID, in.Reason, in.ReadAllowlistProfile)
 		if err != nil {
 			return backend.CreateLocalBackupArchiveResult{}, err
 		}
@@ -424,21 +431,125 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 	if err != nil {
 		return backend.CreateLocalBackupArchiveResult{}, err
 	}
-	return backend.CreateLocalBackupArchiveResult{
+	inventoryPath := filepath.Join(in.OutputDir, inventoryName)
+	inventoryChecksum, err := writeClusterNodeInventory(inventoryPath, clusterNodeInventory{
+		Schema:         "mycel.cluster_backup_node_inventory",
+		Version:        1,
+		BackupSetID:    strings.TrimSpace(in.BackupSetID),
 		ClusterID:      strings.TrimSpace(in.ClusterID),
 		PodName:        strings.TrimSpace(in.PodName),
 		NodeID:         strings.TrimSpace(in.NodeID),
 		RaftNodeID:     in.RaftNodeID,
 		Ordinal:        in.Ordinal,
 		ArchiveName:    archiveName,
-		ArchiveURI:     fileURI(result.ArchivePath),
 		ManifestName:   manifestName,
-		ManifestURI:    fileURI(result.ManifestPath),
 		SizeBytes:      result.Manifest.SizeBytes,
 		ChecksumSHA256: result.Manifest.ChecksumSHA256,
-		AppliedIndexes: applied,
-		RaftFreeze:     heldFreeze.freeze,
+		AppliedIndexes: uint64MapToDecimalStrings(applied),
+		CreatedAt:      time.Now().UTC(),
+	})
+	if err != nil {
+		return backend.CreateLocalBackupArchiveResult{}, err
+	}
+	archiveURI := fileURI(result.ArchivePath)
+	manifestURI := fileURI(result.ManifestPath)
+	inventoryURI := fileURI(inventoryPath)
+	if strings.TrimSpace(in.RepositoryID) != "" {
+		repo, err := m.GetBackupRepository(in.RepositoryID)
+		if err != nil {
+			return backend.CreateLocalBackupArchiveResult{}, err
+		}
+		store, err := m.repositoryObjectStore(ctx, repo)
+		if err != nil {
+			return backend.CreateLocalBackupArchiveResult{}, err
+		}
+		prefix := firstNonEmptyString(in.RepositoryPrefix, repositoryBackupSetPrefix(repo, in.BackupSetID))
+		nodePrefix := joinRepositoryKey(prefix, "nodes", repositorySafePathComponent(in.PodName))
+		archiveInfo, err := store.PutFile(ctx, joinRepositoryKey(nodePrefix, archiveName), result.ArchivePath)
+		if err != nil {
+			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("upload archive: %w", err)
+		}
+		manifestInfo, err := store.PutFile(ctx, joinRepositoryKey(nodePrefix, manifestName), result.ManifestPath)
+		if err != nil {
+			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("upload node manifest: %w", err)
+		}
+		inventoryInfo, err := store.PutFile(ctx, joinRepositoryKey(nodePrefix, inventoryName), inventoryPath)
+		if err != nil {
+			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("upload node inventory: %w", err)
+		}
+		archiveURI = archiveInfo.URI
+		manifestURI = manifestInfo.URI
+		inventoryURI = inventoryInfo.URI
+		inventoryChecksum = inventoryInfo.ChecksumSHA256
+	}
+	return backend.CreateLocalBackupArchiveResult{
+		ClusterID:               strings.TrimSpace(in.ClusterID),
+		PodName:                 strings.TrimSpace(in.PodName),
+		NodeID:                  strings.TrimSpace(in.NodeID),
+		RaftNodeID:              in.RaftNodeID,
+		Ordinal:                 in.Ordinal,
+		ArchiveName:             archiveName,
+		ArchiveURI:              archiveURI,
+		ManifestName:            manifestName,
+		ManifestURI:             manifestURI,
+		InventoryName:           inventoryName,
+		InventoryURI:            inventoryURI,
+		InventoryChecksumSHA256: inventoryChecksum,
+		SizeBytes:               result.Manifest.SizeBytes,
+		ChecksumSHA256:          result.Manifest.ChecksumSHA256,
+		AppliedIndexes:          applied,
+		RaftFreeze:              heldFreeze.freeze,
 	}, nil
+}
+
+type clusterNodeInventory struct {
+	Schema         string            `json:"schema"`
+	Version        int               `json:"version"`
+	BackupSetID    string            `json:"backup_set_id"`
+	ClusterID      string            `json:"cluster_id"`
+	PodName        string            `json:"pod_name"`
+	NodeID         string            `json:"node_id"`
+	RaftNodeID     uint64            `json:"raft_node_id"`
+	Ordinal        int               `json:"ordinal"`
+	ArchiveName    string            `json:"archive_name"`
+	ManifestName   string            `json:"manifest_name"`
+	SizeBytes      int64             `json:"size_bytes"`
+	ChecksumSHA256 string            `json:"checksum_sha256"`
+	AppliedIndexes map[string]string `json:"applied_indexes,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+}
+
+func writeClusterNodeInventory(path string, inventory clusterNodeInventory) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), fsperm.PrivateDir); err != nil {
+		return "", err
+	}
+	raw, err := json.MarshalIndent(inventory, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	raw = append(raw, '\n')
+	digest := sha256.Sum256(raw)
+	checksum := hex.EncodeToString(digest[:])
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, fsperm.PrivateFile); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return checksum, nil
+}
+
+func uint64MapToDecimalStrings(in map[string]uint64) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = fmt.Sprintf("%d", value)
+	}
+	return out
 }
 
 func clusterBackupBarriersFromInput(input []backend.BackupRaftBarrier) (map[string]uint64, error) {
@@ -532,11 +643,18 @@ func (m *Module) validateRecordedLocalClusterBackupRequestWithMode(in backend.Cr
 	return nil
 }
 
-func (m *Module) acquireClusterBackupQuiesce(ctx context.Context, backupSetID, reason string) (*quiesce.CompositeLease, error) {
+func (m *Module) acquireClusterBackupQuiesce(ctx context.Context, backupSetID, reason, readAllowlistProfile string) (*quiesce.CompositeLease, error) {
 	if m.quiesce == nil {
 		return nil, fmt.Errorf("quiesce coordinator is not configured")
 	}
-	lease, err := m.quiesce.QuiesceAll(ctx, quiesce.Request{Reason: firstNonEmptyString(reason, "cluster system backup"), Mode: quiesce.ModeBackup, Source: "cluster-backup:" + strings.TrimSpace(backupSetID)})
+	if strings.TrimSpace(readAllowlistProfile) == "" {
+		readAllowlistProfile = backupcore.DefaultProductionQuiesceReadProfile
+	}
+	deadline := time.Time{}
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
+	}
+	lease, err := m.quiesce.QuiesceAll(ctx, quiesce.Request{Reason: firstNonEmptyString(reason, "cluster system backup"), Mode: quiesce.ModeBackup, Source: "cluster-backup:" + strings.TrimSpace(backupSetID), ReadAllowlistProfile: strings.ToLower(strings.TrimSpace(readAllowlistProfile)), Deadline: deadline})
 	if err != nil {
 		return nil, fmt.Errorf("quiesce local runtime: %w", err)
 	}

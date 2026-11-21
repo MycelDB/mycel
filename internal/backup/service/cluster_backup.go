@@ -21,6 +21,7 @@ const (
 	clusterBackupPhaseBarrierWait              clusterBackupPhase = "barrier_wait"
 	clusterBackupPhaseArchiving                clusterBackupPhase = "capturing"
 	clusterBackupPhaseValidating               clusterBackupPhase = "validating"
+	clusterBackupPhaseUploading                clusterBackupPhase = "uploading"
 	clusterBackupPhaseCommittingManifest       clusterBackupPhase = "committing_manifest"
 	clusterBackupPhaseSucceeded                clusterBackupPhase = "succeeded"
 	clusterBackupPhaseFailed                   clusterBackupPhase = "failed"
@@ -67,29 +68,35 @@ type ClusterBackupBlocker struct {
 }
 
 type clusterBackupRun struct {
-	BackupSetID    string                                `json:"backup_set_id"`
-	ClusterID      string                                `json:"cluster_id,omitempty"`
-	Reason         string                                `json:"reason,omitempty"`
-	IdempotencyKey string                                `json:"idempotency_key,omitempty"`
-	Phase          clusterBackupPhase                    `json:"phase"`
-	CreatedAt      time.Time                             `json:"created_at"`
-	UpdatedAt      time.Time                             `json:"updated_at"`
-	Expected       []clusterBackupExpectedNode           `json:"expected_nodes,omitempty"`
-	Barriers       map[string]uint64                     `json:"barriers,omitempty"`
-	NodeResults    map[string]clusterbackup.NodeArtifact `json:"node_results,omitempty"`
-	Manifest       *clusterbackup.Manifest               `json:"manifest,omitempty"`
-	Failure        *clusterBackupFailure                 `json:"failure,omitempty"`
-	Blockers       []ClusterBackupBlocker                `json:"blockers,omitempty"`
-	Cancel         bool                                  `json:"cancel_requested,omitempty"`
+	BackupSetID      string                                `json:"backup_set_id"`
+	ClusterID        string                                `json:"cluster_id,omitempty"`
+	Reason           string                                `json:"reason,omitempty"`
+	IdempotencyKey   string                                `json:"idempotency_key,omitempty"`
+	RepositoryID     string                                `json:"repository_id,omitempty"`
+	RepositoryPrefix string                                `json:"repository_prefix,omitempty"`
+	CaptureProvider  string                                `json:"capture_provider,omitempty"`
+	Phase            clusterBackupPhase                    `json:"phase"`
+	CreatedAt        time.Time                             `json:"created_at"`
+	UpdatedAt        time.Time                             `json:"updated_at"`
+	Expected         []clusterBackupExpectedNode           `json:"expected_nodes,omitempty"`
+	Barriers         map[string]uint64                     `json:"barriers,omitempty"`
+	NodeResults      map[string]clusterbackup.NodeArtifact `json:"node_results,omitempty"`
+	Manifest         *clusterbackup.Manifest               `json:"manifest,omitempty"`
+	Failure          *clusterBackupFailure                 `json:"failure,omitempty"`
+	Blockers         []ClusterBackupBlocker                `json:"blockers,omitempty"`
+	Cancel           bool                                  `json:"cancel_requested,omitempty"`
 }
 
 type clusterBackupRequestRecord struct {
-	BackupSetID    string                      `json:"backup_set_id"`
-	ClusterID      string                      `json:"cluster_id,omitempty"`
-	Reason         string                      `json:"reason,omitempty"`
-	IdempotencyKey string                      `json:"idempotency_key,omitempty"`
-	CreatedAt      time.Time                   `json:"created_at"`
-	Expected       []clusterBackupExpectedNode `json:"expected_nodes,omitempty"`
+	BackupSetID      string                      `json:"backup_set_id"`
+	ClusterID        string                      `json:"cluster_id,omitempty"`
+	Reason           string                      `json:"reason,omitempty"`
+	IdempotencyKey   string                      `json:"idempotency_key,omitempty"`
+	RepositoryID     string                      `json:"repository_id,omitempty"`
+	RepositoryPrefix string                      `json:"repository_prefix,omitempty"`
+	CaptureProvider  string                      `json:"capture_provider,omitempty"`
+	CreatedAt        time.Time                   `json:"created_at"`
+	Expected         []clusterBackupExpectedNode `json:"expected_nodes,omitempty"`
 }
 
 type clusterBackupPhaseRecord struct {
@@ -152,7 +159,7 @@ func (m *Module) applyClusterBackupRequest(ctx context.Context, rec wal.Record) 
 	if _, ok := m.clusterBackups[backupSetID]; ok {
 		return fmt.Errorf("cluster backup %s already exists", backupSetID)
 	}
-	run := clusterBackupRun{BackupSetID: backupSetID, ClusterID: strings.TrimSpace(payload.ClusterID), Reason: strings.TrimSpace(payload.Reason), IdempotencyKey: strings.TrimSpace(payload.IdempotencyKey), Phase: clusterBackupPhaseRequested, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: append([]clusterBackupExpectedNode(nil), payload.Expected...), NodeResults: map[string]clusterbackup.NodeArtifact{}}
+	run := clusterBackupRun{BackupSetID: backupSetID, ClusterID: strings.TrimSpace(payload.ClusterID), Reason: strings.TrimSpace(payload.Reason), IdempotencyKey: strings.TrimSpace(payload.IdempotencyKey), RepositoryID: strings.TrimSpace(payload.RepositoryID), RepositoryPrefix: strings.TrimSpace(payload.RepositoryPrefix), CaptureProvider: strings.TrimSpace(payload.CaptureProvider), Phase: clusterBackupPhaseRequested, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: append([]clusterBackupExpectedNode(nil), payload.Expected...), NodeResults: map[string]clusterbackup.NodeArtifact{}}
 	m.clusterBackups[backupSetID] = run
 	m.activeClusterBackupID = backupSetID
 	return nil
@@ -538,7 +545,7 @@ func cloneStringUint64Map(in map[string]uint64) map[string]uint64 {
 
 func validClusterBackupPhase(phase clusterBackupPhase) bool {
 	switch phase {
-	case clusterBackupPhaseRequested, clusterBackupPhasePrechecking, clusterBackupPhaseReady, clusterBackupPhaseQuiescing, clusterBackupPhaseBarrierWait, clusterBackupPhaseArchiving, clusterBackupPhaseValidating, clusterBackupPhaseCommittingManifest, clusterBackupPhaseSucceeded, clusterBackupPhaseFailed, clusterBackupPhaseAborted, clusterBackupPhaseCanceled, clusterBackupPhaseCanceling, clusterBackupPhaseLegacyRequested, clusterBackupPhaseLegacyPrechecking, clusterBackupPhaseLegacyArchiving:
+	case clusterBackupPhaseRequested, clusterBackupPhasePrechecking, clusterBackupPhaseReady, clusterBackupPhaseQuiescing, clusterBackupPhaseBarrierWait, clusterBackupPhaseArchiving, clusterBackupPhaseValidating, clusterBackupPhaseUploading, clusterBackupPhaseCommittingManifest, clusterBackupPhaseSucceeded, clusterBackupPhaseFailed, clusterBackupPhaseAborted, clusterBackupPhaseCanceled, clusterBackupPhaseCanceling, clusterBackupPhaseLegacyRequested, clusterBackupPhaseLegacyPrechecking, clusterBackupPhaseLegacyArchiving:
 		return true
 	default:
 		return false

@@ -232,6 +232,11 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 		spaceExportDir = filepath.Join(cfg.DataDir, "exports", "spaces")
 	}
 	importExportAPI := clientapi.NewImportExportService(cfg.SessionManager, cfg.GraphManager, cfg.BlobManager, cfg.SpaceManager).WithSchemaManager(cfg.SchemaManager).WithSpaceExportDir(spaceExportDir).WithClientRequestRouter(clientRouter)
+	if cfg.Quiesce != nil {
+		if err := importExportAPI.RegisterQuiesceParticipant(cfg.Quiesce); err != nil {
+			return nil, fmt.Errorf("register import/export quiesce participant: %w", err)
+		}
+	}
 	metadataCatalogAPI := clientapi.NewMetadataCatalogService(cfg.SessionManager, cfg.GraphManager).WithSpaceManager(cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	if cfg.ClusteringManager != nil {
 		cfg.ClusteringManager.SetBackendClientRequestForwarder(clientapi.ForwardedClientHandler{LocalNode: localNode, Sessions: sessionAPI, Transactions: transactionAPI, Graphs: graphAPI, Queries: queryAPI, Search: searchAPI, Metadata: metadataCatalogAPI})

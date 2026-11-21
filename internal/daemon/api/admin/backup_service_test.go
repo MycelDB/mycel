@@ -251,17 +251,20 @@ func TestAdminBackupRepositoryCRUD(t *testing.T) {
 	}
 }
 
-func TestAdminBackupRepositoryBackedClusterOperationsAreExplicitlyUnimplemented(t *testing.T) {
+func TestAdminBackupRepositoryBackedClusterOperationsRequireConfiguredManagers(t *testing.T) {
 	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: backupAPIFixtureDataDir(t), Policy: backupcore.Policy{BackupDir: t.TempDir()}})
 	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
-	if _, err := svc.StartClusterBackup(authenticatedContext(), &adminv1.StartClusterBackupRequest{RepositoryId: "repo-prod"}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("StartClusterBackup(repository) code = %v, want Unimplemented (err=%v)", status.Code(err), err)
+	if _, err := svc.StartClusterBackup(authenticatedContext(), &adminv1.StartClusterBackupRequest{RepositoryId: "repo-prod"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("StartClusterBackup(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
 	}
-	if _, err := svc.ListClusterBackupSets(authenticatedContext(), &adminv1.ListClusterBackupSetsRequest{RepositoryId: "repo-prod"}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("ListClusterBackupSets(repository) code = %v, want Unimplemented (err=%v)", status.Code(err), err)
+	if _, err := svc.ListClusterBackupSets(authenticatedContext(), &adminv1.ListClusterBackupSetsRequest{RepositoryId: "repo-prod"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ListClusterBackupSets(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
 	}
-	if _, err := svc.ValidateClusterBackupSet(authenticatedContext(), &adminv1.ValidateClusterBackupSetRequest{RepositoryId: "repo-prod", BackupSetId: "backup-set-1"}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("ValidateClusterBackupSet(repository) code = %v, want Unimplemented (err=%v)", status.Code(err), err)
+	if _, err := svc.ValidateClusterBackupSet(authenticatedContext(), &adminv1.ValidateClusterBackupSetRequest{RepositoryId: "repo-prod", BackupSetId: "backup-set-1"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ValidateClusterBackupSet(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if _, err := svc.PlanClusterRestore(authenticatedContext(), &adminv1.PlanClusterRestoreRequest{RepositoryId: "repo-prod", BackupSetId: "backup-set-1"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("PlanClusterRestore(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
 	}
 }
 

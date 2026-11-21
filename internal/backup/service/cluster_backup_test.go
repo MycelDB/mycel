@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +237,81 @@ func TestClusterBackupBarriersRejectDuplicates(t *testing.T) {
 	}
 }
 
+func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
+	ctx := context.Background()
+	m := newInitializedBackupModule(t)
+	store := newMemoryRepositoryObjectStore()
+	m.repositoryObjectStoreFactory = func(context.Context, BackupRepository) (backupRepositoryObjectStore, error) { return store, nil }
+	repo := normalizeBackupRepository(BackupRepository{RepositoryID: "repo-phase6", Provider: RepositoryProviderS3Compatible, S3: S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "clusters/test"}, CredentialRef: SecretReference{Scheme: SecretSchemeEnv, Keys: map[string]string{"access_key_id": "MINIO_ACCESS_KEY", "secret_access_key": "MINIO_SECRET_KEY"}}, Encryption: EncryptionPolicy{Mode: EncryptionModeSSES3}, DevOnly: true, Validation: BackupRepositoryValidationSummary{State: ValidationStateValid, CheckedAt: time.Now().UTC()}})
+	m.mu.Lock()
+	m.ensureBackupRepositoriesLocked()
+	m.repositories[repo.RepositoryID] = repo
+	m.mu.Unlock()
+	createdAt := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	completedAt := createdAt.Add(time.Minute)
+	backupSetID := "backup-set-20261120T120000Z-cluster-test"
+	prefix := repositoryBackupSetPrefix(repo, backupSetID)
+	archiveName, err := clusterbackup.NewArchiveName(createdAt, "myceld-0", backupSetID, backupcore.ArchiveFormatTar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestName, err := clusterbackup.NewNodeManifestName(archiveName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryName, err := clusterbackup.NewNodeInventoryName(archiveName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodePrefix := joinRepositoryKey(prefix, "nodes", "myceld-0")
+	nodeArtifact := clusterbackup.NodeArtifact{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1, ArchiveName: archiveName, ArchiveURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, archiveName)), ManifestName: manifestName, ManifestURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, manifestName)), InventoryName: inventoryName, InventoryURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, inventoryName)), InventoryChecksumSHA256: shaHex("inventory"), SizeBytes: 128, ChecksumSHA256: shaHex("archive"), AppliedIndexes: map[string]uint64{"system": 10}, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: "lease-1", AcquiredAt: createdAt, ReleasedAt: completedAt, ExpiresAt: completedAt.Add(time.Minute), Groups: map[string]clusterbackup.RaftFreezeGroup{"system": {GroupID: "system", BarrierIndex: 10, AppliedIndex: 10, CommitIndex: 10, Term: 1, LastIndex: 10, SnapshotIndex: 0, Leader: 1}}}}
+	m.restoreClusterBackupState(backupSetID, map[string]clusterBackupRun{backupSetID: {BackupSetID: backupSetID, ClusterID: "cluster-test", RepositoryID: repo.RepositoryID, RepositoryPrefix: prefix, CaptureProvider: "filesystem_immutable_copy", Phase: clusterBackupPhaseValidating, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: []clusterBackupExpectedNode{{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1}}, Barriers: map[string]uint64{"system": 10}, NodeResults: map[string]clusterbackup.NodeArtifact{"myceld-0": nodeArtifact}}})
+	input := StartClusterBackupInput{Reason: "phase 6 test", ArchiveFormat: backupcore.ArchiveFormatTar, ClusterID: "cluster-test", ClusterName: "cluster-test", RepositoryID: repo.RepositoryID, RepositoryPrefix: prefix, CaptureProvider: "filesystem_immutable_copy", QuiesceReadProfile: backupcore.DefaultProductionQuiesceReadProfile}
+	summary, err := m.publishRepositoryClusterBackupSet(ctx, input, repo, backupSetID, "cluster-test", createdAt, completedAt)
+	if err != nil {
+		t.Fatalf("publishRepositoryClusterBackupSet() error = %v", err)
+	}
+	if summary.ManifestURI == "" || !strings.HasPrefix(summary.ManifestURI, "s3://mycel-backups/") {
+		t.Fatalf("summary manifest uri = %q, want repository s3 uri", summary.ManifestURI)
+	}
+	manifestKey := joinRepositoryKey(prefix, clusterbackup.BackupSetManifestName)
+	completeKey := joinRepositoryKey(prefix, "COMPLETE")
+	if _, ok := store.objects[manifestKey]; !ok {
+		t.Fatalf("backup-set manifest was not uploaded to %s", manifestKey)
+	}
+	if _, ok := store.objects[completeKey]; !ok {
+		t.Fatalf("COMPLETE marker was not uploaded to %s", completeKey)
+	}
+	listed, err := m.ListRepositoryClusterBackupSets(ctx, repo.RepositoryID)
+	if err != nil {
+		t.Fatalf("ListRepositoryClusterBackupSets() error = %v", err)
+	}
+	if len(listed) != 1 || listed[0].Manifest.BackupSetID != backupSetID || listed[0].ProductionReport == nil || !listed[0].ProductionReport.Valid() {
+		t.Fatalf("listed repository backup sets = %#v, want one valid backup set", listed)
+	}
+	validated, err := m.ValidateRepositoryClusterBackupSet(ctx, repo.RepositoryID, backupSetID, clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: true, AllowS3ArtifactURIs: true})
+	if err != nil {
+		t.Fatalf("ValidateRepositoryClusterBackupSet() error = %v", err)
+	}
+	if validated.ProductionMarker == nil || validated.ProductionMarker.ManifestChecksumSHA256 == "" {
+		t.Fatalf("validated marker missing checksum: %#v", validated.ProductionMarker)
+	}
+	plan, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID})
+	if err != nil {
+		t.Fatalf("PlanClusterRestore() error = %v", err)
+	}
+	if !plan.Restorable || plan.RestorePlanID == "" || plan.Capacity.RequiredBytes == 0 || len(plan.DerivedActions) == 0 {
+		t.Fatalf("restore plan = %#v, want restorable plan with capacity and derived actions", plan)
+	}
+	blocked, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModeGenerateNewID})
+	if err != nil {
+		t.Fatalf("PlanClusterRestore(generate identity) error = %v", err)
+	}
+	if blocked.Restorable || len(blocked.Blockers) == 0 {
+		t.Fatalf("blocked restore plan = %#v, want identity-transform blocker", blocked)
+	}
+}
+
 func backendArchiveInputForTest() backend.CreateLocalBackupArchiveInput {
 	return backend.CreateLocalBackupArchiveInput{ClusterID: "cluster-1", BackupSetID: "backup-set-1", PodName: "myceld-0", NodeID: "node_1", RaftNodeID: 1, Ordinal: 0}
 }
@@ -278,6 +356,74 @@ func validPrecheckInput() ClusterBackupPrecheckInput {
 			{PodName: "myceld-1", Path: "/mnt/backups/myceld-1", Writable: true, OutsideDataDir: true},
 		},
 	}
+}
+
+type memoryRepositoryObjectStore struct {
+	objects map[string][]byte
+}
+
+func newMemoryRepositoryObjectStore() *memoryRepositoryObjectStore {
+	return &memoryRepositoryObjectStore{objects: map[string][]byte{}}
+}
+
+func (s *memoryRepositoryObjectStore) PutFile(ctx context.Context, key, path string) (repositoryObjectInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	return s.PutBytes(ctx, key, raw, "")
+}
+
+func (s *memoryRepositoryObjectStore) PutBytes(ctx context.Context, key string, data []byte, contentType string) (repositoryObjectInfo, error) {
+	_ = contentType
+	if err := ctx.Err(); err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	key = cleanRepositoryObjectKey(key)
+	if key == "" {
+		return repositoryObjectInfo{}, fmt.Errorf("key is required")
+	}
+	s.objects[key] = append([]byte(nil), data...)
+	return repositoryObjectInfo{Key: key, URI: "s3://mycel-backups/" + key, SizeBytes: int64(len(data)), ChecksumSHA256: hashBytes(data)}, nil
+}
+
+func (s *memoryRepositoryObjectStore) GetBytes(ctx context.Context, key string, limit int64) ([]byte, repositoryObjectInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, repositoryObjectInfo{}, err
+	}
+	key = cleanRepositoryObjectKey(key)
+	raw, ok := s.objects[key]
+	if !ok {
+		return nil, repositoryObjectInfo{}, fmt.Errorf("object %s not found", key)
+	}
+	if limit > 0 && int64(len(raw)) > limit {
+		return nil, repositoryObjectInfo{}, fmt.Errorf("object %s exceeds limit", key)
+	}
+	out := append([]byte(nil), raw...)
+	return out, repositoryObjectInfo{Key: key, URI: "s3://mycel-backups/" + key, SizeBytes: int64(len(out)), ChecksumSHA256: hashBytes(out)}, nil
+}
+
+func (s *memoryRepositoryObjectStore) Head(ctx context.Context, key string) (repositoryObjectInfo, error) {
+	_, info, err := s.GetBytes(ctx, key, 0)
+	return info, err
+}
+
+func (s *memoryRepositoryObjectStore) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	prefix = cleanRepositoryObjectKey(prefix)
+	keys := []string{}
+	for key := range s.objects {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 func shaHex(value string) string {

@@ -47,3 +47,7 @@ type ClusterBackupManager interface {
 	ClusterBackupStatus(string) (ClusterBackupRunStatus, error)
 	ListClusterBackups() []ClusterBackupRunStatus
 }
+
+type ClusterRestorePlanner interface {
+	PlanClusterRestore(context.Context, PlanClusterRestoreInput) (ClusterRestorePlan, error)
+}
