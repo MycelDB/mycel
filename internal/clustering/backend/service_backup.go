@@ -36,36 +36,43 @@ type BackupRaftFreeze struct {
 }
 
 type CreateLocalBackupArchiveInput struct {
-	ClusterID       string
-	RequesterNodeID uint64
-	BackupSetID     string
-	Reason          string
-	PodName         string
-	NodeID          string
-	RaftNodeID      uint64
-	Ordinal         int
-	OutputDir       string
-	ArchiveFormat   string
-	UTCTimestamp    time.Time
-	Barriers        []BackupRaftBarrier
-	FreezeLeaseID   string
-	TTL             time.Duration
+	ClusterID            string
+	RequesterNodeID      uint64
+	BackupSetID          string
+	Reason               string
+	PodName              string
+	NodeID               string
+	RaftNodeID           uint64
+	Ordinal              int
+	OutputDir            string
+	ArchiveFormat        string
+	UTCTimestamp         time.Time
+	Barriers             []BackupRaftBarrier
+	FreezeLeaseID        string
+	TTL                  time.Duration
+	RepositoryID         string
+	RepositoryPrefix     string
+	CaptureProvider      string
+	ReadAllowlistProfile string
 }
 
 type CreateLocalBackupArchiveResult struct {
-	ClusterID      string
-	PodName        string
-	NodeID         string
-	RaftNodeID     uint64
-	Ordinal        int
-	ArchiveName    string
-	ArchiveURI     string
-	ManifestName   string
-	ManifestURI    string
-	SizeBytes      int64
-	ChecksumSHA256 string
-	AppliedIndexes map[string]uint64
-	RaftFreeze     BackupRaftFreeze
+	ClusterID               string
+	PodName                 string
+	NodeID                  string
+	RaftNodeID              uint64
+	Ordinal                 int
+	ArchiveName             string
+	ArchiveURI              string
+	ManifestName            string
+	ManifestURI             string
+	InventoryName           string
+	InventoryURI            string
+	InventoryChecksumSHA256 string
+	SizeBytes               int64
+	ChecksumSHA256          string
+	AppliedIndexes          map[string]uint64
+	RaftFreeze              BackupRaftFreeze
 }
 
 type ClusterBackupProvider interface {
@@ -92,6 +99,9 @@ func (s *Service) CheckLocalBackupReadiness(ctx context.Context, req *clusterpb.
 	}
 	in.OutputDir = strings.TrimSpace(req.GetOutputDir())
 	in.ArchiveFormat = strings.TrimSpace(req.GetArchiveFormat())
+	in.RepositoryID = strings.TrimSpace(req.GetRepositoryId())
+	in.RepositoryPrefix = strings.TrimSpace(req.GetRepositoryPrefix())
+	in.CaptureProvider = strings.TrimSpace(req.GetCaptureProvider())
 	applied, commits, err := s.ClusterBackupProvider.CheckLocalClusterBackupReadiness(ctx, in)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -107,6 +117,7 @@ func (s *Service) AcquireLocalBackupQuiesce(ctx context.Context, req *clusterpb.
 	if err != nil {
 		return nil, err
 	}
+	in.ReadAllowlistProfile = strings.TrimSpace(req.GetReadAllowlistProfile())
 	if err := s.ClusterBackupProvider.AcquireLocalClusterBackupQuiesce(ctx, in); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -177,29 +188,35 @@ func (s *Service) CreateLocalBackupArchive(ctx context.Context, req *clusterpb.C
 	base.UTCTimestamp = timestamp.UTC()
 	base.Barriers = barriers
 	base.FreezeLeaseID = strings.TrimSpace(req.GetRaftFreezeLeaseId())
+	base.RepositoryID = strings.TrimSpace(req.GetRepositoryId())
+	base.RepositoryPrefix = strings.TrimSpace(req.GetRepositoryPrefix())
+	base.CaptureProvider = strings.TrimSpace(req.GetCaptureProvider())
 	result, err := s.ClusterBackupProvider.CreateLocalClusterBackupArchive(ctx, base)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return &clusterpb.CreateLocalBackupArchiveResponse{
-		ProtocolVersion:      clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1,
-		ClusterId:            result.ClusterID,
-		PodName:              result.PodName,
-		NodeId:               result.NodeID,
-		RaftNodeId:           result.RaftNodeID,
-		Ordinal:              int32(result.Ordinal),
-		ArchiveName:          result.ArchiveName,
-		ArchiveUri:           result.ArchiveURI,
-		ManifestName:         result.ManifestName,
-		ManifestUri:          result.ManifestURI,
-		SizeBytes:            result.SizeBytes,
-		ChecksumSha256:       result.ChecksumSHA256,
-		AppliedIndexes:       result.AppliedIndexes,
-		RaftFreezeLeaseId:    result.RaftFreeze.LeaseID,
-		RaftFreezeAcquiredAt: formatBackendTime(result.RaftFreeze.AcquiredAt),
-		RaftFreezeReleasedAt: formatBackendTime(result.RaftFreeze.ReleasedAt),
-		RaftFreezeExpiresAt:  formatBackendTime(result.RaftFreeze.ExpiresAt),
-		RaftFreezeGroups:     freezeGroupsToProto(result.RaftFreeze.Groups),
+		ProtocolVersion:         clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1,
+		ClusterId:               result.ClusterID,
+		PodName:                 result.PodName,
+		NodeId:                  result.NodeID,
+		RaftNodeId:              result.RaftNodeID,
+		Ordinal:                 int32(result.Ordinal),
+		ArchiveName:             result.ArchiveName,
+		ArchiveUri:              result.ArchiveURI,
+		ManifestName:            result.ManifestName,
+		ManifestUri:             result.ManifestURI,
+		SizeBytes:               result.SizeBytes,
+		ChecksumSha256:          result.ChecksumSHA256,
+		AppliedIndexes:          result.AppliedIndexes,
+		RaftFreezeLeaseId:       result.RaftFreeze.LeaseID,
+		RaftFreezeAcquiredAt:    formatBackendTime(result.RaftFreeze.AcquiredAt),
+		RaftFreezeReleasedAt:    formatBackendTime(result.RaftFreeze.ReleasedAt),
+		RaftFreezeExpiresAt:     formatBackendTime(result.RaftFreeze.ExpiresAt),
+		RaftFreezeGroups:        freezeGroupsToProto(result.RaftFreeze.Groups),
+		InventoryName:           result.InventoryName,
+		InventoryUri:            result.InventoryURI,
+		InventoryChecksumSha256: result.InventoryChecksumSHA256,
 	}, nil
 }
 

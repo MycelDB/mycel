@@ -48,17 +48,5 @@ func isQuiesceReadOnlyMethod(method string, readOnly map[string]bool) bool {
 	if method == "" {
 		return false
 	}
-	if readOnly[method] {
-		return true
-	}
-	name := method
-	if idx := strings.LastIndex(name, "/"); idx >= 0 {
-		name = name[idx+1:]
-	}
-	for _, prefix := range []string{"Get", "List", "Find", "Validate", "Explain", "Search", "Download", "Export", "Watch"} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
+	return readOnly[method]
 }

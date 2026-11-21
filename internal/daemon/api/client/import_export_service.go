@@ -14,6 +14,7 @@ import (
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	daegraph "github.com/myceldb/mycel/internal/graph/service"
+	"github.com/myceldb/mycel/internal/runtime/quiesce"
 	schemaservice "github.com/myceldb/mycel/internal/schema/service"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
@@ -23,6 +24,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const importExportQuiesceParticipantName = "import_export"
+
 type ImportExportService struct {
 	clientv1.UnimplementedImportExportServiceServer
 	sessions       daemonsession.Manager
@@ -31,13 +34,24 @@ type ImportExportService struct {
 	spaces         daemonspace.Manager
 	schemas        schemaservice.Manager
 	router         ClientRequestRouter
+	gate           *quiesce.Gate
 	spaceExportDir string
 	spaceMu        sync.Mutex
 	spaceJobs      map[string]*spaceExportJobRecord
 }
 
 func NewImportExportService(sessions daemonsession.Manager, graphs daegraph.Manager, blobs daemonblob.Manager, spaces daemonspace.Manager) *ImportExportService {
-	return &ImportExportService{sessions: sessions, graphs: graphs, blobs: blobs, spaces: spaces}
+	return &ImportExportService{sessions: sessions, graphs: graphs, blobs: blobs, spaces: spaces, gate: quiesce.NewGate(importExportQuiesceParticipantName)}
+}
+
+func (s *ImportExportService) RegisterQuiesceParticipant(coordinator *quiesce.Coordinator) error {
+	if coordinator == nil {
+		return nil
+	}
+	if s.gate == nil {
+		s.gate = quiesce.NewGate(importExportQuiesceParticipantName)
+	}
+	return coordinator.Register(s.gate)
 }
 
 func (s *ImportExportService) WithClientRequestRouter(router ClientRequestRouter) *ImportExportService {
@@ -45,8 +59,35 @@ func (s *ImportExportService) WithClientRequestRouter(router ClientRequestRouter
 	return s
 }
 
+func (s *ImportExportService) enterImportExportWrite(ctx context.Context) (func(), error) {
+	if s.gate == nil {
+		return func() {}, nil
+	}
+	release, err := s.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
+}
+
+func (s *ImportExportService) enterImportExportRead(ctx context.Context) (func(), error) {
+	if s.gate == nil {
+		return func() {}, nil
+	}
+	release, err := s.gate.EnterRead(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
+}
+
 func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, stream clientv1.ImportExportService_ExportDomainServer) error {
 	ctx := stream.Context()
+	release, err := s.enterImportExportRead(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if s.router != nil {
 		if err := s.router.EnsureLocalTransaction(ctx, req.GetTransactionId()); err != nil {
 			return err
@@ -105,6 +146,11 @@ func (s *ImportExportService) ExportDomain(req *clientv1.ExportDomainRequest, st
 
 func (s *ImportExportService) ImportDomain(stream clientv1.ImportExportService_ImportDomainServer) error {
 	ctx := stream.Context()
+	release, err := s.enterImportExportWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	principal, err := spaceUserPrincipalFromContext(ctx)
 	if err != nil {
 		return err

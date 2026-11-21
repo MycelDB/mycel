@@ -3,6 +3,7 @@ package quiesce
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,9 +27,11 @@ type Gate struct {
 	active                 int
 	activeReads            int
 	allowReadsDuringBackup bool
+	readAllowlistProfile   string
 	reason                 string
 	mode                   Mode
 	source                 string
+	deadline               time.Time
 	since                  time.Time
 	lastErr                string
 	changed                chan struct{}
@@ -109,6 +112,8 @@ func (g *Gate) Quiesce(ctx context.Context, req Request) (Lease, error) {
 	g.mode = req.Mode
 	g.source = req.Source
 	g.allowReadsDuringBackup = req.Mode == ModeBackup && req.AllowReadsDuringBackup
+	g.readAllowlistProfile = normalizeReadAllowlistProfile(req.ReadAllowlistProfile)
+	g.deadline = req.Deadline
 	g.since = time.Now().UTC()
 	g.lastErr = ""
 	g.notifyLocked()
@@ -123,6 +128,8 @@ func (g *Gate) Quiesce(ctx context.Context, req Request) (Lease, error) {
 			g.mode = ""
 			g.source = ""
 			g.allowReadsDuringBackup = false
+			g.readAllowlistProfile = ""
+			g.deadline = time.Time{}
 			g.since = time.Time{}
 			g.lastErr = ctx.Err().Error()
 			g.notifyLocked()
@@ -142,11 +149,11 @@ func (g *Gate) Status() ParticipantStatus {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return ParticipantStatus{Name: g.name, Quiesced: g.closed, Active: g.active + g.activeReads, Reason: g.reason, Mode: g.mode, Source: g.source, Since: g.since, LastError: g.lastErr}
+	return ParticipantStatus{Name: g.name, Quiesced: g.closed, Active: g.active + g.activeReads, ActiveReadOnly: g.activeReads, ActiveWrites: g.active, Reason: g.reason, Mode: g.mode, Source: g.source, Since: g.since, LastError: g.lastErr, ReadAllowlistProfile: g.readAllowlistProfile, Deadline: g.deadline, AcceptingReadOnly: !g.closed || g.readsAllowedDuringQuiesceLocked(), AcceptingWrites: !g.closed}
 }
 
 func (g *Gate) readsAllowedDuringQuiesceLocked() bool {
-	return g.closed && g.mode == ModeBackup && g.allowReadsDuringBackup
+	return g.closed && g.mode == ModeBackup && g.allowReadsDuringBackup && g.readAllowlistProfile == ReadAllowlistProfileStrictReadOnly
 }
 
 func (g *Gate) releaseLease() error {
@@ -160,9 +167,19 @@ func (g *Gate) releaseLease() error {
 	g.mode = ""
 	g.source = ""
 	g.allowReadsDuringBackup = false
+	g.readAllowlistProfile = ""
+	g.deadline = time.Time{}
 	g.since = time.Time{}
 	g.notifyLocked()
 	return nil
+}
+
+func normalizeReadAllowlistProfile(profile string) string {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile == "" {
+		return ReadAllowlistProfileControlOnly
+	}
+	return profile
 }
 
 func (g *Gate) notifyLocked() {

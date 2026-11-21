@@ -410,6 +410,9 @@ message CheckLocalBackupReadinessRequest {
   int32 ordinal = 9;
   string output_dir = 10;
   string archive_format = 11;
+  string repository_id = 12;
+  string repository_prefix = 13;
+  string capture_provider = 14;
 }
 
 message CheckLocalBackupReadinessResponse {
@@ -431,6 +434,7 @@ message AcquireLocalBackupQuiesceRequest {
   string node_id = 7;
   uint64 raft_node_id = 8;
   int32 ordinal = 9;
+  string read_allowlist_profile = 10;
 }
 
 message AcquireLocalBackupQuiesceResponse {
@@ -528,6 +532,9 @@ message CreateLocalBackupArchiveRequest {
   string utc_timestamp = 12;
   repeated BackupRaftBarrier barriers = 13;
   string raft_freeze_lease_id = 14;
+  string repository_id = 15;
+  string repository_prefix = 16;
+  string capture_provider = 17;
 }
 
 message CreateLocalBackupArchiveResponse {
@@ -549,6 +556,9 @@ message CreateLocalBackupArchiveResponse {
   string raft_freeze_released_at = 16;
   string raft_freeze_expires_at = 17;
   map<string, BackupRaftFreezeGroup> raft_freeze_groups = 18;
+  string inventory_name = 19;
+  string inventory_uri = 20;
+  string inventory_checksum_sha256 = 21;
 }
 
 message ClusterMember {

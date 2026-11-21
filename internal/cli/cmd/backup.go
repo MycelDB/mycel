@@ -20,7 +20,7 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
 	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
-	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterValidateCommand(a), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a))
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
 	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
@@ -260,12 +260,13 @@ func NewAdminBackupDeleteCommand(a *app.App) *cobra.Command {
 
 func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
 	var reason, outputDir, archiveFormat, idempotencyKey string
+	var repositoryID, captureProvider, quiesceReadProfile string
 	var convergenceTimeout time.Duration
 	var wait bool
 	var waitTimeout time.Duration
 	cmd := &cobra.Command{Use: "start", Short: "Start a coordinated cluster backup operation", RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(outputDir) == "" {
-			return fmt.Errorf("--output-dir is required")
+		if strings.TrimSpace(outputDir) == "" && strings.TrimSpace(repositoryID) == "" {
+			return fmt.Errorf("--output-dir is required unless --repository-id is set")
 		}
 		format, err := parseBackupArchiveFormat(archiveFormat)
 		if err != nil {
@@ -276,7 +277,15 @@ func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer closeConn()
-		req := &adminv1.StartClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format, IdempotencyKey: idempotencyKey}
+		provider, err := parseBackupCaptureProvider(captureProvider)
+		if err != nil {
+			return err
+		}
+		readProfile, err := parseBackupQuiesceReadProfile(quiesceReadProfile)
+		if err != nil {
+			return err
+		}
+		req := &adminv1.StartClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format, IdempotencyKey: idempotencyKey, RepositoryId: repositoryID, CaptureProvider: provider, QuiesceReadProfile: readProfile}
 		if convergenceTimeout > 0 {
 			req.ConvergenceTimeoutSeconds = int64(convergenceTimeout.Round(time.Second) / time.Second)
 		}
@@ -305,6 +314,9 @@ func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "cluster backup output directory mounted on each pod")
 	cmd.Flags().StringVar(&archiveFormat, "archive-format", "tar.zst", "backup archive format: zip, tar, tar.gz, or tar.zst")
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "optional idempotency key for start retries")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-backed production backup sets")
+	cmd.Flags().StringVar(&captureProvider, "capture-provider", "auto", "capture provider: auto or filesystem_immutable_copy")
+	cmd.Flags().StringVar(&quiesceReadProfile, "quiesce-read-profile", "control_only", "backup quiesce read profile: control_only or strict_read_only")
 	cmd.Flags().DurationVar(&convergenceTimeout, "convergence-timeout", 0, "maximum time to wait for cluster convergence before failing the operation")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the cluster backup operation to finish")
 	cmd.Flags().DurationVar(&waitTimeout, "timeout", 10*time.Minute, "maximum time to wait with --wait")
@@ -398,12 +410,23 @@ func NewAdminBackupClusterStatusCommand(a *app.App) *cobra.Command {
 func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
 	var pageSize int32
 	var pageToken string
+	var repositoryID string
 	cmd := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List cluster backup sets", RunE: func(cmd *cobra.Command, args []string) error {
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer closeConn()
+		if strings.TrimSpace(repositoryID) != "" {
+			res, err := client.ListClusterBackupSets(authCtx, &adminv1.ListClusterBackupSetsRequest{RepositoryId: repositoryID, PageSize: pageSize, PageToken: pageToken})
+			if err != nil {
+				return backupCLIError("list repository cluster backup sets", err)
+			}
+			if a.Output == "json" {
+				return a.Print(res, "")
+			}
+			return a.Print(res.GetBackupSets(), formatClusterBackupSetRows(res.GetBackupSets()))
+		}
 		res, err := client.ListClusterBackups(authCtx, &adminv1.ListClusterBackupsRequest{PageSize: pageSize, PageToken: pageToken})
 		if err != nil {
 			return backupCLIError("list cluster backups", err)
@@ -411,29 +434,52 @@ func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
 		if a.Output == "json" {
 			return a.Print(res, "")
 		}
-		var b strings.Builder
-		for _, backup := range res.GetBackupSets() {
-			fmt.Fprintf(&b, "%s\t%s\t%d nodes\n", backup.GetBackupSetId(), backup.GetState(), backup.GetExpectedNodes())
-		}
-		return a.Print(res.GetBackupSets(), b.String())
+		return a.Print(res.GetBackupSets(), formatClusterBackupSetRows(res.GetBackupSets()))
 	}}
 	cmd.Flags().Int32Var(&pageSize, "page-size", 0, "page size")
 	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID to list repository-truth backup sets")
 	return cmd
 }
 
-func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
-	var backupSetPath string
-	cmd := &cobra.Command{Use: "validate", Short: "Validate a cluster backup set", RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(backupSetPath) == "" {
-			return fmt.Errorf("--backup-set is required")
+func NewAdminBackupClusterDeleteCommand(a *app.App) *cobra.Command {
+	var repositoryID, reason string
+	cmd := &cobra.Command{Use: "delete BACKUP_SET_ID", Aliases: []string{"rm"}, Short: "Delete a repository-backed cluster backup set", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(repositoryID) == "" {
+			return fmt.Errorf("--repository-id is required")
 		}
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer closeConn()
-		res, err := client.ValidateClusterBackupSet(authCtx, &adminv1.ValidateClusterBackupSetRequest{BackupSetPath: backupSetPath})
+		res, err := client.DeleteClusterBackupSet(authCtx, &adminv1.DeleteClusterBackupSetRequest{RepositoryId: repositoryID, BackupSetId: args[0], Reason: reason})
+		if err != nil {
+			return backupCLIError("delete cluster backup set", err)
+		}
+		return a.Print(res, fmt.Sprintf("cluster backup set deleted: %s\nrepository: %s\nstate: %s\n", res.GetBackupSetId(), res.GetRepositoryId(), res.GetState()))
+	}}
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID containing the backup set")
+	cmd.Flags().StringVar(&reason, "reason", "", "operator reason for deletion")
+	return cmd
+}
+
+func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
+	var backupSetPath, repositoryID, backupSetID string
+	cmd := &cobra.Command{Use: "validate", Short: "Validate a cluster backup set", RunE: func(cmd *cobra.Command, args []string) error {
+		repositoryMode := strings.TrimSpace(repositoryID) != "" || strings.TrimSpace(backupSetID) != ""
+		if repositoryMode && (strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(backupSetID) == "") {
+			return fmt.Errorf("--repository-id and --backup-set-id are required together")
+		}
+		if !repositoryMode && strings.TrimSpace(backupSetPath) == "" {
+			return fmt.Errorf("--backup-set is required unless --repository-id and --backup-set-id are set")
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.ValidateClusterBackupSet(authCtx, &adminv1.ValidateClusterBackupSetRequest{BackupSetPath: backupSetPath, RepositoryId: repositoryID, BackupSetId: backupSetID})
 		if err != nil {
 			return backupCLIError("validate cluster backup set", err)
 		}
@@ -446,14 +492,47 @@ func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
 		return a.Print(res, fmt.Sprintf("cluster backup set valid: %s\n", res.GetBackupSet().GetBackupSetId()))
 	}}
 	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-truth validation")
+	cmd.Flags().StringVar(&backupSetID, "backup-set-id", "", "backup set ID for repository-truth validation")
 	return cmd
 }
 
 func NewAdminBackupClusterRestorePlanCommand(a *app.App) *cobra.Command {
-	var backupSetPath string
-	cmd := &cobra.Command{Use: "restore-plan", Short: "Plan an offline cluster backup restore", RunE: func(cmd *cobra.Command, args []string) error {
+	var backupSetPath, repositoryID, backupSetID, targetMode, identityMode, authSessionPolicy string
+	cmd := &cobra.Command{Use: "restore-plan", Short: "Plan a cluster backup restore", RunE: func(cmd *cobra.Command, args []string) error {
+		repositoryMode := strings.TrimSpace(repositoryID) != "" || strings.TrimSpace(backupSetID) != ""
+		if repositoryMode {
+			if strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(backupSetID) == "" {
+				return fmt.Errorf("--repository-id and --backup-set-id are required together")
+			}
+			target := parseRestoreTargetMode(targetMode)
+			if target == adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_UNSPECIFIED {
+				return fmt.Errorf("invalid --target-mode %q", targetMode)
+			}
+			identity := parseRestoreIdentityMode(identityMode)
+			if identity == adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_UNSPECIFIED {
+				return fmt.Errorf("invalid --identity-mode %q", identityMode)
+			}
+			authPolicy := parseRestoreAuthSessionPolicy(authSessionPolicy)
+			if strings.TrimSpace(authSessionPolicy) != "" && authPolicy == adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED {
+				return fmt.Errorf("invalid --auth-session-policy %q", authSessionPolicy)
+			}
+			client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+			if err != nil {
+				return err
+			}
+			defer closeConn()
+			res, err := client.PlanClusterRestore(authCtx, &adminv1.PlanClusterRestoreRequest{RepositoryId: repositoryID, BackupSetId: backupSetID, TargetMode: target, IdentityMode: identity, AuthSessionPolicy: authPolicy})
+			if err != nil {
+				return backupCLIError("plan repository cluster restore", err)
+			}
+			if a.Output == "json" {
+				return a.Print(res, "")
+			}
+			return a.Print(res, formatAdminClusterRestorePlan(res.GetPlan()))
+		}
 		if strings.TrimSpace(backupSetPath) == "" {
-			return fmt.Errorf("--backup-set is required")
+			return fmt.Errorf("--backup-set is required unless --repository-id and --backup-set-id are set")
 		}
 		plan, _, err := clusterbackup.BuildRestorePlan(cmd.Context(), backupSetPath)
 		if err != nil {
@@ -466,6 +545,11 @@ func NewAdminBackupClusterRestorePlanCommand(a *app.App) *cobra.Command {
 		return a.Print(plan, formatClusterRestorePlan(plan))
 	}}
 	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-truth restore planning")
+	cmd.Flags().StringVar(&backupSetID, "backup-set-id", "", "backup set ID for repository-truth restore planning")
+	cmd.Flags().StringVar(&targetMode, "target-mode", "new-cluster-bootstrap", "restore target mode: new-cluster-bootstrap or existing-cluster-replace")
+	cmd.Flags().StringVar(&identityMode, "identity-mode", "preserve-backup-id", "restore identity mode: preserve-backup-id, adopt-target-id, or generate-new-id")
+	cmd.Flags().StringVar(&authSessionPolicy, "auth-session-policy", "", "auth session policy: preserve-restored-sessions or revoke-all-sessions")
 	return cmd
 }
 
@@ -498,6 +582,37 @@ func NewAdminBackupClusterRestoreLocalCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
+func formatAdminClusterRestorePlan(plan *adminv1.RestorePlanSummary) string {
+	if plan == nil {
+		return "cluster backup restore plan: <nil>\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "cluster backup restore plan: %s\n", plan.GetRestorePlanId())
+	fmt.Fprintf(&b, "repository: %s\nbackup_set_id: %s\ntarget_mode: %s\nidentity_mode: %s\nauth_session_policy: %s\nrestorable: %t\n", plan.GetRepositoryId(), plan.GetBackupSetId(), formatRestoreTargetMode(plan.GetTargetMode()), formatRestoreIdentityMode(plan.GetIdentityMode()), formatRestoreAuthSessionPolicy(plan.GetAuthSessionPolicy()), plan.GetRestorable())
+	if validation := plan.GetValidation(); validation != nil {
+		fmt.Fprintf(&b, "validation: %s\n", validation.GetState().String())
+		if validation.GetTotalArtifactBytes() > 0 {
+			fmt.Fprintf(&b, "total_artifact_bytes: %d\n", validation.GetTotalArtifactBytes())
+		}
+	}
+	if capacity := plan.GetCapacity(); capacity != nil && capacity.GetRequiredBytes() > 0 {
+		fmt.Fprintf(&b, "required_bytes: %d\n", capacity.GetRequiredBytes())
+	}
+	if len(plan.GetDerivedActions()) > 0 {
+		b.WriteString("derived_actions:\n")
+		for _, action := range plan.GetDerivedActions() {
+			fmt.Fprintf(&b, "  - subsystem: %s\n    mode: %s\n", action.GetSubsystem().String(), action.GetMode().String())
+		}
+	}
+	if len(plan.GetBlockers()) > 0 {
+		b.WriteString("blockers:\n")
+		for _, blocker := range plan.GetBlockers() {
+			fmt.Fprintf(&b, "  - reason: %s\n    detail: %s\n", blocker.GetReason(), blocker.GetDetail())
+		}
+	}
+	return b.String()
+}
+
 func formatClusterRestorePlan(plan clusterbackup.RestorePlan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cluster backup restore plan: %s\n", plan.BackupSetID)
@@ -517,6 +632,78 @@ func formatClusterRestorePlan(plan clusterbackup.RestorePlan) string {
 		fmt.Fprintf(&b, "    archive: %s\n    manifest: %s\n    checksum_sha256: %s\n", firstNonEmptyBackup(node.ArchivePath, node.ArchiveURI, node.ArchiveName), firstNonEmptyBackup(node.ManifestPath, node.ManifestURI, node.ManifestName), node.ChecksumSHA256)
 	}
 	return b.String()
+}
+
+func parseRestoreTargetMode(value string) adminv1.ClusterRestoreTargetMode {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-")) {
+	case "", "new-cluster-bootstrap", "new":
+		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP
+	case "existing-cluster-replace", "replace":
+		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE
+	default:
+		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_UNSPECIFIED
+	}
+}
+
+func parseRestoreIdentityMode(value string) adminv1.ClusterRestoreIdentityMode {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-")) {
+	case "", "preserve-backup-id", "preserve":
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID
+	case "adopt-target-id", "adopt":
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID
+	case "generate-new-id", "generate":
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID
+	default:
+		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_UNSPECIFIED
+	}
+}
+
+func parseRestoreAuthSessionPolicy(value string) adminv1.ClusterRestoreAuthSessionPolicy {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-")) {
+	case "":
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
+	case "preserve-restored-sessions", "preserve":
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS
+	case "revoke-all-sessions", "revoke":
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS
+	default:
+		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
+	}
+}
+
+func formatRestoreTargetMode(mode adminv1.ClusterRestoreTargetMode) string {
+	switch mode {
+	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP:
+		return "NEW_CLUSTER_BOOTSTRAP"
+	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE:
+		return "EXISTING_CLUSTER_REPLACE"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+func formatRestoreIdentityMode(mode adminv1.ClusterRestoreIdentityMode) string {
+	switch mode {
+	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID:
+		return "PRESERVE_BACKUP_ID"
+	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID:
+		return "ADOPT_TARGET_ID"
+	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID:
+		return "GENERATE_NEW_ID"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+func formatRestoreAuthSessionPolicy(policy adminv1.ClusterRestoreAuthSessionPolicy) string {
+	switch policy {
+	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS:
+		return "PRESERVE_RESTORED_SESSIONS"
+	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS:
+		return "REVOKE_ALL_SESSIONS"
+	default:
+		return "UNSPECIFIED"
+	}
 }
 
 func adminBackupClient(ctx context.Context, a *app.App) (adminv1.AdminBackupServiceClient, context.Context, func(), error) {
@@ -545,6 +732,40 @@ func firstNonEmptyBackup(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func formatClusterBackupSetRows(backups []*adminv1.ClusterBackupSetSummary) string {
+	var b strings.Builder
+	for _, backup := range backups {
+		repository := ""
+		if backup.GetRepositoryId() != "" {
+			repository = "\t" + backup.GetRepositoryId()
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%d nodes%s\n", backup.GetBackupSetId(), backup.GetState(), backup.GetExpectedNodes(), repository)
+	}
+	return b.String()
+}
+
+func parseBackupCaptureProvider(value string) (adminv1.BackupCaptureProvider, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_AUTO, nil
+	case "filesystem_immutable_copy", "filesystem", "fs-copy":
+		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_FILESYSTEM_IMMUTABLE_COPY, nil
+	default:
+		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_UNSPECIFIED, fmt.Errorf("invalid --capture-provider %q: use auto or filesystem_immutable_copy", value)
+	}
+}
+
+func parseBackupQuiesceReadProfile(value string) (adminv1.BackupQuiesceReadProfile, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "control_only", "control-only":
+		return adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_CONTROL_ONLY, nil
+	case "strict_read_only", "strict-read-only":
+		return adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_STRICT_READ_ONLY, nil
+	default:
+		return adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_UNSPECIFIED, fmt.Errorf("invalid --quiesce-read-profile %q: use control_only or strict_read_only", value)
+	}
 }
 
 func parseBackupArchiveFormat(value string) (adminv1.BackupArchiveFormat, error) {

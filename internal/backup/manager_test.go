@@ -330,7 +330,7 @@ func TestManagerRunsPreArchiveAfterQuiesceBeforeSnapshot(t *testing.T) {
 	}
 }
 
-func TestManagerPropagatesAllowReadsDuringBackupToQuiesce(t *testing.T) {
+func TestManagerPropagatesReadOnlyQuiescePolicyToQuiesce(t *testing.T) {
 	dataDir := fixtureDataDir(t)
 	backupDir := t.TempDir()
 	participant := &trackingParticipant{name: "test-participant"}
@@ -338,12 +338,12 @@ func TestManagerPropagatesAllowReadsDuringBackupToQuiesce(t *testing.T) {
 	if err := coord.Register(participant); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
-	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, AllowReadsDuringBackup: true}, Quiesce: coord})
+	mgr := NewManager(ManagerConfig{DataDir: dataDir, Policy: Policy{BackupDir: backupDir, AllowReadOnlyDuringQuiesce: true, QuiesceReadProfile: "strict_read_only", QuiesceDrainTimeout: time.Minute}, Quiesce: coord})
 	if _, err := mgr.Trigger(context.Background(), TriggerInput{Source: "test"}); err != nil {
 		t.Fatalf("Trigger() error = %v", err)
 	}
-	if !participant.lastRequest.AllowReadsDuringBackup {
-		t.Fatalf("AllowReadsDuringBackup was not propagated to quiesce request: %+v", participant.lastRequest)
+	if !participant.lastRequest.AllowReadsDuringBackup || participant.lastRequest.ReadAllowlistProfile != "strict_read_only" || participant.lastRequest.Deadline.IsZero() {
+		t.Fatalf("read-only quiesce policy was not propagated to quiesce request: %+v", participant.lastRequest)
 	}
 }
 

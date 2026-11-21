@@ -305,7 +305,7 @@ func (m *Module) CommitTransactionReplay(ctx context.Context, principalID string
 	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
-		return sessionmodel.TransactionCommit{}, err
+		return sessionmodel.TransactionCommit{}, quiesce.TransactionAbortedByQuiesceError(err)
 	}
 	defer release()
 	if err := ctx.Err(); err != nil {
@@ -338,7 +338,7 @@ func (m *Module) commitTransaction(ctx context.Context, principalID string, tran
 	}
 	release, err := m.enterWrite(ctx)
 	if err != nil {
-		return sessionmodel.TransactionCommit{}, err
+		return sessionmodel.TransactionCommit{}, quiesce.TransactionAbortedByQuiesceError(err)
 	}
 	defer release()
 	if err := ctx.Err(); err != nil {

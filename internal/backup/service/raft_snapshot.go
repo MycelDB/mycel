@@ -11,11 +11,13 @@ import (
 const backupRaftSnapshotVersion = 2
 
 type backupRaftSnapshot struct {
-	Version               int                         `json:"version"`
-	Policy                backupcore.Policy           `json:"policy"`
-	Runtime               backupRuntimeNote           `json:"runtime"`
-	ActiveClusterBackupID string                      `json:"active_cluster_backup_id,omitempty"`
-	ClusterBackups        map[string]clusterBackupRun `json:"cluster_backups,omitempty"`
+	Version                int                                `json:"version"`
+	Policy                 backupcore.Policy                  `json:"policy"`
+	Runtime                backupRuntimeNote                  `json:"runtime"`
+	ActiveClusterBackupID  string                             `json:"active_cluster_backup_id,omitempty"`
+	ClusterBackups         map[string]clusterBackupRun        `json:"cluster_backups,omitempty"`
+	ActiveClusterRestoreID string                             `json:"active_cluster_restore_id,omitempty"`
+	ClusterRestores        map[string]ClusterRestoreOperation `json:"cluster_restores,omitempty"`
 }
 
 type backupRuntimeNote struct {
@@ -28,12 +30,15 @@ func (s RaftStateMachine) Snapshot() ([]byte, error) {
 	if s.Module != nil && s.Module.manager != nil {
 		policy = s.Module.Policy()
 	}
-	activeID := ""
+	activeBackupID := ""
 	clusterBackups := map[string]clusterBackupRun(nil)
+	activeRestoreID := ""
+	clusterRestores := map[string]ClusterRestoreOperation(nil)
 	if s.Module != nil {
-		activeID, clusterBackups = s.Module.clusterBackupSnapshot()
+		activeBackupID, clusterBackups = s.Module.clusterBackupSnapshot()
+		activeRestoreID, clusterRestores = s.Module.clusterRestoreSnapshot()
 	}
-	return json.Marshal(backupRaftSnapshot{Version: backupRaftSnapshotVersion, Policy: policy, Runtime: backupRuntimeNote{RunningExecutions: "excluded_local_only", CompletedArchives: "local_artifacts_not_authoritative"}, ActiveClusterBackupID: activeID, ClusterBackups: clusterBackups})
+	return json.Marshal(backupRaftSnapshot{Version: backupRaftSnapshotVersion, Policy: policy, Runtime: backupRuntimeNote{RunningExecutions: "excluded_local_only", CompletedArchives: "local_artifacts_not_authoritative"}, ActiveClusterBackupID: activeBackupID, ClusterBackups: clusterBackups, ActiveClusterRestoreID: activeRestoreID, ClusterRestores: clusterRestores})
 }
 
 func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
@@ -60,8 +65,10 @@ func (s RaftStateMachine) RestoreSnapshot(data []byte) error {
 	s.Module.mu.Unlock()
 	if snap.Version >= 2 {
 		s.Module.restoreClusterBackupState(snap.ActiveClusterBackupID, snap.ClusterBackups)
+		s.Module.restoreClusterRestoreState(snap.ActiveClusterRestoreID, snap.ClusterRestores)
 	} else {
 		s.Module.restoreClusterBackupState("", nil)
+		s.Module.restoreClusterRestoreState("", nil)
 	}
 	return s.Module.reconcileSchedulerForPolicy(context.Background(), updated)
 }

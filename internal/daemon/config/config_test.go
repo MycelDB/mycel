@@ -425,12 +425,16 @@ func TestLoadFromEnvBackupOverrides(t *testing.T) {
 	t.Setenv("MYCELD_BACKUP_RETRY_AFTER", "7s")
 	t.Setenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT", "12")
 	t.Setenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE", "registry.example/mycel:restore")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE", "restore-system")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT", "mycel-restore")
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
 	backup := cfg.Backup
-	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup {
+	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup || !backup.KubernetesRestoreHelperEnabled || backup.KubernetesRestoreHelperImage != "registry.example/mycel:restore" || backup.KubernetesRestoreHelperNamespace != "restore-system" || backup.KubernetesRestoreHelperServiceAccount != "mycel-restore" {
 		t.Fatalf("unexpected backup overrides: %+v", backup)
 	}
 }
@@ -452,6 +456,7 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Interval: -1}},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{RetentionCount: -1}},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Compression: "tar.gz"}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true}},
 	}
 	for _, tc := range cases {
 		if err := tc.Validate(); err == nil {

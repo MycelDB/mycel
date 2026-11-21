@@ -23,6 +23,9 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 	}
 	switch recordType {
 	case recordTypeBackupPolicyUpdate, recordTypeBackupDelete,
+		recordTypeBackupRepositoryUpsert,
+		recordTypeBackupRepositoryDelete,
+		recordTypeBackupRepositoryValidate,
 		recordTypeClusterBackupRequest,
 		recordTypeClusterBackupPhase,
 		recordTypeClusterBackupBarrier,
@@ -30,7 +33,9 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 		recordTypeClusterBackupComplete,
 		recordTypeClusterBackupFail,
 		recordTypeClusterBackupAbort,
-		recordTypeClusterBackupBlockers:
+		recordTypeClusterBackupBlockers,
+		recordTypeClusterRestoreRequest,
+		recordTypeClusterRestoreUpdate:
 		return true
 	default:
 		return false
@@ -90,6 +95,12 @@ func (m *Module) applyBackupRaftCommand(ctx context.Context, cmd consensus.RaftC
 		return m.applyBackupPolicyUpdate(ctx, rec)
 	case recordTypeBackupDelete:
 		return m.applyBackupDelete(ctx, rec)
+	case recordTypeBackupRepositoryUpsert:
+		return m.applyBackupRepositoryUpsert(ctx, rec)
+	case recordTypeBackupRepositoryDelete:
+		return m.applyBackupRepositoryDelete(ctx, rec)
+	case recordTypeBackupRepositoryValidate:
+		return m.applyBackupRepositoryValidation(ctx, rec)
 	case recordTypeClusterBackupRequest:
 		return m.applyClusterBackupRequest(ctx, rec)
 	case recordTypeClusterBackupPhase:
@@ -106,6 +117,10 @@ func (m *Module) applyBackupRaftCommand(ctx context.Context, cmd consensus.RaftC
 		return m.applyClusterBackupFailure(ctx, rec, clusterBackupPhaseCanceled)
 	case recordTypeClusterBackupBlockers:
 		return m.applyClusterBackupBlockers(ctx, rec)
+	case recordTypeClusterRestoreRequest:
+		return m.applyClusterRestoreRequest(ctx, rec)
+	case recordTypeClusterRestoreUpdate:
+		return m.applyClusterRestoreUpdate(ctx, rec)
 	default:
 		return fmt.Errorf("unsupported backup raft record type %s", cmd.RecordType)
 	}
