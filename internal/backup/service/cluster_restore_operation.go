@@ -223,10 +223,16 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		op.Progress.Nodes[i].State = "applying"
 		op.UpdatedAt = time.Now().UTC()
 		update(op)
-		if err := applyRestoreArchiveToDataDir(ctx, format, archivePath, dataDir, op.RestoreOperationID, mapping.Ordinal); err != nil {
+		var applyErr error
+		if strings.TrimSpace(mapping.TargetPVCName) != "" {
+			applyErr = applyRestoreArchiveToMountedDataDir(ctx, format, archivePath, dataDir)
+		} else {
+			applyErr = applyRestoreArchiveToDataDir(ctx, format, archivePath, dataDir, op.RestoreOperationID, mapping.Ordinal)
+		}
+		if applyErr != nil {
 			op.Progress.Nodes[i].State = "failed"
-			op.Progress.Nodes[i].LastError = err.Error()
-			return op, fmt.Errorf("apply ordinal %d archive: %w", mapping.Ordinal, err)
+			op.Progress.Nodes[i].LastError = applyErr.Error()
+			return op, fmt.Errorf("apply ordinal %d archive: %w", mapping.Ordinal, applyErr)
 		}
 		op.Progress.AppliedNodes++
 		op.State = clusterRestoreStatePostRestoreValidate
@@ -301,6 +307,20 @@ func applyRestoreArchiveToDataDir(ctx context.Context, format backupcore.Archive
 		return fmt.Errorf("commit restored data dir atomically: %w", err)
 	}
 	committed = true
+	return nil
+}
+
+func applyRestoreArchiveToMountedDataDir(ctx context.Context, format backupcore.ArchiveFormat, archivePath, dataDir string) error {
+	dataDir = strings.TrimSpace(dataDir)
+	if err := ensureRestoreDataDirEmpty(dataDir); err != nil {
+		return fmt.Errorf("mounted target data dir is not clean: %w", err)
+	}
+	if err := clusterbackup.ExtractArchive(ctx, format, archivePath, dataDir); err != nil {
+		return fmt.Errorf("extract archive to mounted target data dir: %w", err)
+	}
+	if err := clusterbackup.VerifyRestoredDataDir(dataDir); err != nil {
+		return fmt.Errorf("verify mounted target data dir: %w", err)
+	}
 	return nil
 }
 
