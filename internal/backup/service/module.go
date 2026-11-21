@@ -157,6 +157,15 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 }
 
 func (m *Module) Start(ctx context.Context) error {
+	if err := m.reconcileInterruptedClusterRestores(ctx); err != nil {
+		if m.raftMode() {
+			if m.logger != nil {
+				m.logger.Warn("cluster restore restart reconciliation deferred", "error", err)
+			}
+		} else {
+			return err
+		}
+	}
 	if !m.policy.Enabled {
 		return nil
 	}

@@ -318,11 +318,20 @@ func restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestore
 		blockers = append(blockers, ValidationBlocker{Reason: "target_node_mapping_required", Detail: "restore execution requires explicit target node mappings", FieldPath: "target.nodes"})
 	}
 	for i, node := range plan.Target.Nodes {
-		if strings.TrimSpace(node.TargetPVCName) != "" {
-			blockers = append(blockers, ValidationBlocker{Reason: "target_pvc_restore_not_implemented", Detail: "Phase 7 execution MVP supports target_data_dir mappings only; PVC helper restore remains a Lab/Kubernetes wrapper", FieldPath: fmt.Sprintf("target.nodes[%d].target_pvc_name", i)})
+		dataDir := strings.TrimSpace(node.TargetDataDir)
+		pvcName := strings.TrimSpace(node.TargetPVCName)
+		if dataDir == "" {
+			if pvcName != "" {
+				blockers = append(blockers, ValidationBlocker{Reason: "target_pvc_restore_requires_mounted_data_dir", Detail: "PVC restore execution requires a helper/controller to mount the target PVC and provide target_data_dir for that mount", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
+			} else {
+				blockers = append(blockers, ValidationBlocker{Reason: "target_data_dir_required", Detail: "restore execution requires target_data_dir for every node mapping", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
+			}
+			continue
 		}
-		if strings.TrimSpace(node.TargetDataDir) == "" {
-			blockers = append(blockers, ValidationBlocker{Reason: "target_data_dir_required", Detail: "restore execution requires target_data_dir for every node mapping", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
+		if !filepath.IsAbs(dataDir) {
+			blockers = append(blockers, ValidationBlocker{Reason: "target_data_dir_not_absolute", Detail: "restore execution requires an absolute target_data_dir path", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
+		} else if filepath.Clean(dataDir) == string(filepath.Separator) {
+			blockers = append(blockers, ValidationBlocker{Reason: "target_data_dir_unsafe", Detail: "restore execution refuses to target the filesystem root", FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i)})
 		}
 	}
 	if strings.TrimSpace(plan.Staging.StagingURI) == "" {
@@ -378,8 +387,15 @@ func ensureRestoreDataDirEmpty(path string) error {
 	if path == "" {
 		return fmt.Errorf("target data directory is required")
 	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return os.MkdirAll(filepath.Dir(path), 0o700)
+	}
+	if err != nil {
 		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("target data directory %s is not a directory", path)
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -389,6 +405,28 @@ func ensureRestoreDataDirEmpty(path string) error {
 		return fmt.Errorf("target data directory %s is not empty", path)
 	}
 	return nil
+}
+
+func removeExistingEmptyRestoreDataDir(path string) error {
+	path = strings.TrimSpace(path)
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("target data directory %s is not a directory", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("target data directory %s is not empty", path)
+	}
+	return os.Remove(path)
 }
 
 func fileSHA256Local(ctx context.Context, path string) (string, int64, error) {

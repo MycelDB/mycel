@@ -351,6 +351,12 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	if err != nil || status.RestoreOperationID != op.RestoreOperationID {
 		t.Fatalf("ClusterRestoreStatus()=(%#v,%v), want %s", status, err, op.RestoreOperationID)
 	}
+	if len(status.CleanupTasks) != 1 || status.CleanupTasks[0].State != "deleted" {
+		t.Fatalf("cleanup tasks=%#v, want deleted staging directory", status.CleanupTasks)
+	}
+	if _, err := os.Stat(restoreOperationStagingPath(stagingDir, op.RestoreOperationID)); !os.IsNotExist(err) {
+		t.Fatalf("restore staging dir still exists or stat failed: %v", err)
+	}
 	restoreListed := m.ListClusterRestores()
 	if len(restoreListed) != 1 || restoreListed[0].RestoreOperationID != op.RestoreOperationID {
 		t.Fatalf("ListClusterRestores()=%#v, want restore operation", restoreListed)
@@ -375,6 +381,77 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	}
 	if replayed.RestoreOperationID != failed.RestoreOperationID || replayed.State != failed.State {
 		t.Fatalf("idempotency replay=%#v, want original %#v", replayed, failed)
+	}
+	pvcTargetDir := filepath.Join(t.TempDir(), "target-pvc-node-0")
+	pvcStagingDir := filepath.Join(t.TempDir(), "pvc-staging")
+	pvcTarget := ClusterRestoreTarget{ExpectedNodeCount: 1, Nodes: []ClusterRestoreNodeMapping{{Ordinal: 0, SourcePodName: "myceld-0", SourceNodeID: "node-1", TargetPodName: "myceld-0", TargetPVCName: "data-myceld-0", TargetDataDir: pvcTargetDir}}}
+	pvcStaging := ClusterRestoreStagingLocation{StagingURI: pvcStagingDir, CleanBeforeUse: true}
+	pvcPlan, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: pvcTarget, Staging: pvcStaging})
+	if err != nil || !pvcPlan.Restorable {
+		t.Fatalf("PlanClusterRestore(PVC mapping)=(%#v,%v), want restorable", pvcPlan, err)
+	}
+	pvcOp, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RestorePlanID: pvcPlan.RestorePlanID, RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: pvcTarget, Staging: pvcStaging, Preconditions: ClusterRestorePreconditionEvidence{CleanTarget: ClusterRestoreCleanTargetProof{TargetEmpty: true}, SourceFencing: ClusterRestoreSourceFencingEvidence{SourceClusterFenced: true}}})
+	if err != nil {
+		t.Fatalf("StartClusterRestore(PVC mapping) error = %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for pvcOp.State != "SUCCEEDED" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		var statusErr error
+		pvcOp, statusErr = m.ClusterRestoreStatus(pvcOp.RestoreOperationID)
+		if statusErr != nil {
+			t.Fatalf("ClusterRestoreStatus(PVC mapping) error = %v", statusErr)
+		}
+	}
+	if pvcOp.State != "SUCCEEDED" || pvcOp.Progress.VerifiedNodes != 1 {
+		t.Fatalf("PVC-mapped restore operation = %#v, want succeeded with verified node", pvcOp)
+	}
+}
+
+func TestClusterRestoreStartReconcilesInterruptedOperation(t *testing.T) {
+	ctx := context.Background()
+	m := newInitializedBackupModule(t)
+	stagingDir := filepath.Join(t.TempDir(), "restore-op-interrupted")
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	targetDir := filepath.Join(t.TempDir(), "target-node-0")
+	tmpDir := restoreTempDataDirPath(targetDir, "restore-op-interrupted", 0)
+	if err := os.MkdirAll(filepath.Join(tmpDir, "meta", "clustering"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "meta", "raft"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "meta", "clustering", "node.json"), []byte(`{"node_id":"node-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "meta", "raft", "hard_state.pb"), []byte("raft"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	m.restoreClusterRestoreState("restore-op-interrupted", map[string]ClusterRestoreOperation{"restore-op-interrupted": {RestoreOperationID: "restore-op-interrupted", RepositoryID: "repo-1", BackupSetID: "backup-set-1", State: clusterRestoreStateApplyingArtifacts, CreatedAt: now, UpdatedAt: now, Target: ClusterRestoreTarget{Nodes: []ClusterRestoreNodeMapping{{Ordinal: 0, TargetDataDir: targetDir}}}, CleanupTasks: []CleanupTask{{TaskID: "staging-directory", ResourceKind: "local_directory", ResourceURI: stagingDir, State: "created"}}}})
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start() reconcile interrupted restore error = %v", err)
+	}
+	op, err := m.ClusterRestoreStatus("restore-op-interrupted")
+	if err != nil {
+		t.Fatalf("ClusterRestoreStatus(interrupted) error = %v", err)
+	}
+	if op.State != clusterRestoreStateFailedRequiresOp || len(op.Blockers) == 0 {
+		t.Fatalf("interrupted restore op=%#v, want failed-requires-operator blocker", op)
+	}
+	if len(op.CleanupTasks) != 1 || op.CleanupTasks[0].State != "deleted" {
+		t.Fatalf("interrupted cleanup tasks=%#v, want deleted", op.CleanupTasks)
+	}
+	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
+		t.Fatalf("interrupted staging dir still exists or stat failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "meta", "clustering", "node.json")); err != nil {
+		t.Fatalf("interrupted temp restore was not committed to target dir: %v", err)
+	}
+	if _, err := os.Stat(tmpDir); !os.IsNotExist(err) {
+		t.Fatalf("interrupted temp restore dir still exists or stat failed: %v", err)
 	}
 }
 

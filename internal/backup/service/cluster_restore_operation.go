@@ -103,9 +103,11 @@ func (m *Module) runClusterRestoreOperation(ctx context.Context, input StartClus
 		}
 		final.CompletedAt = time.Now().UTC()
 		final.UpdatedAt = final.CompletedAt
+		final = m.cleanupClusterRestoreOperation(context.Background(), final)
 		_ = m.persistClusterRestoreOperation(context.Background(), final)
 		return
 	}
+	final = m.cleanupClusterRestoreOperation(context.Background(), final)
 	_ = m.persistClusterRestoreOperation(context.Background(), final)
 }
 
@@ -131,6 +133,7 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		op.UpdatedAt = op.CompletedAt
 		return op, nil
 	}
+	stagingPath = restoreOperationStagingPath(stagingPath, op.RestoreOperationID)
 	if plan.Staging.CleanBeforeUse {
 		if err := os.RemoveAll(stagingPath); err != nil {
 			return op, fmt.Errorf("clean restore staging path: %w", err)
@@ -216,14 +219,11 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		artifact := artifacts[mapping.Ordinal]
 		archivePath := filepath.Join(stagingPath, fmt.Sprintf("ordinal-%d", mapping.Ordinal), artifact.ArchiveName)
 		dataDir := strings.TrimSpace(mapping.TargetDataDir)
-		if err := ensureRestoreDataDirEmpty(dataDir); err != nil {
-			return op, fmt.Errorf("target data dir for ordinal %d is not clean: %w", mapping.Ordinal, err)
-		}
 		op.Progress.CurrentNode = fmt.Sprintf("ordinal-%d", mapping.Ordinal)
 		op.Progress.Nodes[i].State = "applying"
 		op.UpdatedAt = time.Now().UTC()
 		update(op)
-		if err := clusterbackup.ExtractArchive(ctx, format, archivePath, dataDir); err != nil {
+		if err := applyRestoreArchiveToDataDir(ctx, format, archivePath, dataDir, op.RestoreOperationID, mapping.Ordinal); err != nil {
 			op.Progress.Nodes[i].State = "failed"
 			op.Progress.Nodes[i].LastError = err.Error()
 			return op, fmt.Errorf("apply ordinal %d archive: %w", mapping.Ordinal, err)
@@ -250,6 +250,171 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 	op.CompletedAt = time.Now().UTC()
 	op.UpdatedAt = op.CompletedAt
 	return op, nil
+}
+
+func restoreOperationStagingPath(root, operationID string) string {
+	root = filepath.Clean(root)
+	component := repositorySafePathComponent(operationID)
+	if component == "" {
+		component = "restore-operation"
+	}
+	if filepath.Base(root) == component {
+		return root
+	}
+	return filepath.Join(root, component)
+}
+
+func applyRestoreArchiveToDataDir(ctx context.Context, format backupcore.ArchiveFormat, archivePath, dataDir, operationID string, ordinal int) error {
+	dataDir = strings.TrimSpace(dataDir)
+	if err := ensureRestoreDataDirEmpty(dataDir); err != nil {
+		return fmt.Errorf("target data dir is not clean: %w", err)
+	}
+	tmp := restoreTempDataDirPath(dataDir, operationID, ordinal)
+	if tmp == "" {
+		return fmt.Errorf("target data dir %s cannot be restored atomically", dataDir)
+	}
+	if err := os.RemoveAll(tmp); err != nil {
+		return fmt.Errorf("clean temporary restore dir: %w", err)
+	}
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		return fmt.Errorf("create temporary restore dir: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+	if err := clusterbackup.ExtractArchive(ctx, format, archivePath, tmp); err != nil {
+		return fmt.Errorf("extract archive to temporary restore dir: %w", err)
+	}
+	if err := clusterbackup.VerifyRestoredDataDir(tmp); err != nil {
+		return fmt.Errorf("verify temporary restore dir: %w", err)
+	}
+	if err := ensureRestoreDataDirEmpty(dataDir); err != nil {
+		return fmt.Errorf("target data dir changed during restore: %w", err)
+	}
+	if err := removeExistingEmptyRestoreDataDir(dataDir); err != nil {
+		return fmt.Errorf("prepare target data dir for atomic restore: %w", err)
+	}
+	if err := os.Rename(tmp, dataDir); err != nil {
+		return fmt.Errorf("commit restored data dir atomically: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func restoreTempDataDirPath(dataDir, operationID string, ordinal int) string {
+	dataDir = filepath.Clean(strings.TrimSpace(dataDir))
+	if dataDir == "." || dataDir == string(filepath.Separator) {
+		return ""
+	}
+	parent := filepath.Dir(dataDir)
+	base := filepath.Base(dataDir)
+	return filepath.Join(parent, "."+base+".restore-"+repositorySafePathComponent(operationID)+fmt.Sprintf("-%d", ordinal))
+}
+
+func (m *Module) cleanupClusterRestoreOperation(ctx context.Context, op ClusterRestoreOperation) ClusterRestoreOperation {
+	for i := range op.CleanupTasks {
+		task := &op.CleanupTasks[i]
+		if task.ResourceKind != "local_directory" || strings.TrimSpace(task.ResourceURI) == "" {
+			continue
+		}
+		if task.State == "deleted" || task.State == "skipped" {
+			continue
+		}
+		path := filepath.Clean(task.ResourceURI)
+		if !restoreCleanupDirectoryAllowed(path, op.RestoreOperationID) {
+			task.State = "skipped"
+			task.LastError = "cleanup path is not operation-scoped"
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			task.State = "failed"
+			task.LastError = err.Error()
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			task.State = "failed"
+			task.LastError = err.Error()
+			continue
+		}
+		task.State = "deleted"
+		task.LastError = ""
+	}
+	return op
+}
+
+func restoreCleanupDirectoryAllowed(path, operationID string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	component := repositorySafePathComponent(operationID)
+	if component == "" {
+		return false
+	}
+	return filepath.Base(path) == component
+}
+
+func (m *Module) reconcileInterruptedClusterRestores(ctx context.Context) error {
+	m.mu.Lock()
+	m.ensureClusterRestoreStateLocked()
+	var interrupted []ClusterRestoreOperation
+	for _, op := range m.clusterRestores {
+		if !clusterRestoreStateTerminal(op.State) {
+			interrupted = append(interrupted, cloneClusterRestoreOperation(op))
+		}
+	}
+	m.mu.Unlock()
+	for _, op := range interrupted {
+		op = recoverInterruptedRestoreApply(op)
+		now := time.Now().UTC()
+		op.State = clusterRestoreStateFailedRequiresOp
+		op.Error = "cluster restore operation was interrupted by daemon restart"
+		op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_operation_interrupted", Detail: "daemon restarted before restore operation reached a terminal state; inspect target data dirs/PVCs and restart from a fresh restore plan", FieldPath: "restore_operation_id"})
+		op.CompletedAt = now
+		op.UpdatedAt = now
+		op = m.cleanupClusterRestoreOperation(ctx, op)
+		if err := m.persistClusterRestoreOperation(ctx, op); err != nil {
+			return fmt.Errorf("mark interrupted cluster restore %s failed: %w", op.RestoreOperationID, err)
+		}
+	}
+	return nil
+}
+
+func recoverInterruptedRestoreApply(op ClusterRestoreOperation) ClusterRestoreOperation {
+	for i, mapping := range op.Target.Nodes {
+		dataDir := strings.TrimSpace(mapping.TargetDataDir)
+		if dataDir == "" {
+			continue
+		}
+		tmp := restoreTempDataDirPath(dataDir, op.RestoreOperationID, mapping.Ordinal)
+		if tmp == "" {
+			continue
+		}
+		if _, err := os.Stat(tmp); err != nil {
+			continue
+		}
+		fieldPath := fmt.Sprintf("target.nodes[%d].target_data_dir", i)
+		if err := clusterbackup.VerifyRestoredDataDir(tmp); err != nil {
+			op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_temp_dir_invalid", Detail: err.Error(), FieldPath: fieldPath})
+			continue
+		}
+		if err := ensureRestoreDataDirEmpty(dataDir); err != nil {
+			op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_target_not_clean_after_restart", Detail: err.Error(), FieldPath: fieldPath})
+			continue
+		}
+		if err := removeExistingEmptyRestoreDataDir(dataDir); err != nil {
+			op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_target_prepare_failed_after_restart", Detail: err.Error(), FieldPath: fieldPath})
+			continue
+		}
+		if err := os.Rename(tmp, dataDir); err != nil {
+			op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_temp_commit_failed_after_restart", Detail: err.Error(), FieldPath: fieldPath})
+			continue
+		}
+		op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_temp_committed_after_restart", Detail: "completed temporary restore directory was committed after daemon restart; operator validation is still required", FieldPath: fieldPath})
+	}
+	return op
 }
 
 func (m *Module) ClusterRestoreStatus(restoreOperationID string) (ClusterRestoreOperation, error) {
