@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -31,6 +32,63 @@ type PlanClusterRestoreInput struct {
 	IdentityMode      string
 	AuthSessionPolicy string
 	ValidationOptions clusterbackup.BackupSetValidationOptions
+	Target            ClusterRestoreTarget
+	Staging           ClusterRestoreStagingLocation
+}
+
+type ClusterRestoreTarget struct {
+	TargetClusterID   string
+	TargetClusterName string
+	Namespace         string
+	StatefulSet       string
+	ExpectedNodeCount int
+	Nodes             []ClusterRestoreNodeMapping
+	Labels            map[string]string
+	Annotations       map[string]string
+}
+
+type ClusterRestoreNodeMapping struct {
+	Ordinal          int
+	SourcePodName    string
+	SourceNodeID     string
+	SourceArchiveURI string
+	TargetPodName    string
+	TargetNodeName   string
+	TargetPVCName    string
+	TargetDataDir    string
+	StagingPath      string
+}
+
+type ClusterRestoreStagingLocation struct {
+	StagingURI     string
+	StorageClass   string
+	RequiredBytes  int64
+	AvailableBytes int64
+	CleanBeforeUse bool
+	Blockers       []ValidationBlocker
+}
+
+type ClusterRestorePreconditionEvidence struct {
+	CleanTarget   ClusterRestoreCleanTargetProof
+	SourceFencing ClusterRestoreSourceFencingEvidence
+	Blockers      []ValidationBlocker
+}
+
+type ClusterRestoreCleanTargetProof struct {
+	ProofID             string
+	CheckedAt           time.Time
+	TargetEmpty         bool
+	CheckedNodes        []ClusterRestoreNodeMapping
+	Blockers            []ValidationBlocker
+	OperatorAttestation string
+}
+
+type ClusterRestoreSourceFencingEvidence struct {
+	SourceClusterFenced bool
+	FencedAt            time.Time
+	FenceTokenRef       string
+	FencedEndpoints     []string
+	Blockers            []ValidationBlocker
 }
 
 type ClusterRestorePlan struct {
@@ -47,6 +105,9 @@ type ClusterRestorePlan struct {
 	DerivedActions     []backupcore.DerivedSubsystemPolicy
 	Blockers           []ValidationBlocker
 	PlannedAt          time.Time
+	Target             ClusterRestoreTarget
+	Staging            ClusterRestoreStagingLocation
+	Preconditions      ClusterRestorePreconditionEvidence
 	ProductionManifest *clusterbackup.BackupSetManifestV1
 	ProductionMarker   *clusterbackup.CompleteMarkerV1
 }
@@ -91,7 +152,9 @@ func (m *Module) PlanClusterRestore(ctx context.Context, input PlanClusterRestor
 			authPolicy = ClusterRestoreAuthSessionPolicyRevokeAllSessions
 		}
 	}
-	plan := ClusterRestorePlan{RestorePlanID: restorePlanID(repositoryID, backupSetID, targetMode, identityMode, authPolicy, result), RepositoryID: repositoryID, BackupSetID: backupSetID, TargetMode: targetMode, IdentityMode: identityMode, AuthSessionPolicy: authPolicy, Validation: result.ProductionReport, Compatibility: manifest.Compatibility, DerivedActions: restoreDerivedActions(*manifest), PlannedAt: plannedAt, ProductionManifest: manifest, ProductionMarker: result.ProductionMarker}
+	target := normalizeRestoreTarget(input.Target)
+	staging := normalizeRestoreStaging(input.Staging)
+	plan := ClusterRestorePlan{RestorePlanID: restorePlanID(repositoryID, backupSetID, targetMode, identityMode, authPolicy, target, staging, result), RepositoryID: repositoryID, BackupSetID: backupSetID, TargetMode: targetMode, IdentityMode: identityMode, AuthSessionPolicy: authPolicy, Validation: result.ProductionReport, Compatibility: manifest.Compatibility, DerivedActions: restoreDerivedActions(*manifest), PlannedAt: plannedAt, Target: target, Staging: staging, Preconditions: restorePlanRequiredPreconditions(*manifest, targetMode, identityMode), ProductionManifest: manifest, ProductionMarker: result.ProductionMarker}
 	if result.ProductionReport != nil {
 		plan.Capacity = result.ProductionReport.Capacity
 		for _, issue := range result.ProductionReport.Errors {
@@ -102,6 +165,8 @@ func (m *Module) PlanClusterRestore(ctx context.Context, input PlanClusterRestor
 		plan.Capacity.RequiredBytes = parseSignedDecimalStringLocal(manifest.Validation.TotalArtifactBytes)
 	}
 	plan.Blockers = append(plan.Blockers, restorePlanPolicyBlockers(*manifest, targetMode, identityMode, authPolicy)...)
+	plan.Blockers = append(plan.Blockers, restorePlanTargetBlockers(*manifest, target)...)
+	plan.Blockers = append(plan.Blockers, staging.Blockers...)
 	if validateErr != nil {
 		plan.Blockers = append(plan.Blockers, ValidationBlocker{Reason: "backup_set_invalid", Detail: validateErr.Error(), FieldPath: "backup_set"})
 	}
@@ -159,13 +224,83 @@ func restoreDerivedActions(manifest clusterbackup.BackupSetManifestV1) []backupc
 	return out
 }
 
-func restorePlanID(repositoryID, backupSetID, targetMode, identityMode, authPolicy string, result ClusterBackupSetValidationResult) string {
+func restorePlanTargetBlockers(manifest clusterbackup.BackupSetManifestV1, target ClusterRestoreTarget) []ValidationBlocker {
+	var blockers []ValidationBlocker
+	if target.ExpectedNodeCount > 0 && target.ExpectedNodeCount != manifest.Source.Topology.NodeCount {
+		blockers = append(blockers, ValidationBlocker{Reason: "target_topology_mismatch", Detail: fmt.Sprintf("target expected_node_count=%d does not match backup node_count=%d", target.ExpectedNodeCount, manifest.Source.Topology.NodeCount), FieldPath: "target.expected_node_count"})
+	}
+	if len(target.Nodes) > 0 && len(target.Nodes) != manifest.Source.Topology.NodeCount {
+		blockers = append(blockers, ValidationBlocker{Reason: "target_node_mapping_incomplete", Detail: fmt.Sprintf("target provides %d node mappings for backup node_count=%d", len(target.Nodes), manifest.Source.Topology.NodeCount), FieldPath: "target.nodes"})
+	}
+	seen := map[int]bool{}
+	for i, node := range target.Nodes {
+		if node.Ordinal < 0 || node.Ordinal >= manifest.Source.Topology.NodeCount {
+			blockers = append(blockers, ValidationBlocker{Reason: "target_node_mapping_invalid", Detail: fmt.Sprintf("target node mapping ordinal %d is outside backup node range", node.Ordinal), FieldPath: fmt.Sprintf("target.nodes[%d].ordinal", i)})
+		}
+		if seen[node.Ordinal] {
+			blockers = append(blockers, ValidationBlocker{Reason: "target_node_mapping_duplicate", Detail: fmt.Sprintf("target node mapping repeats ordinal %d", node.Ordinal), FieldPath: fmt.Sprintf("target.nodes[%d].ordinal", i)})
+		}
+		seen[node.Ordinal] = true
+		if strings.TrimSpace(node.TargetPVCName) == "" && strings.TrimSpace(node.TargetDataDir) == "" {
+			blockers = append(blockers, ValidationBlocker{Reason: "target_node_mapping_destination_required", Detail: "target node mapping requires target_pvc_name or target_data_dir before restore execution", FieldPath: fmt.Sprintf("target.nodes[%d]", i)})
+		}
+	}
+	return blockers
+}
+
+func restorePlanRequiredPreconditions(manifest clusterbackup.BackupSetManifestV1, targetMode, identityMode string) ClusterRestorePreconditionEvidence {
+	out := ClusterRestorePreconditionEvidence{}
+	if targetMode == ClusterRestoreTargetModeNewClusterBootstrap {
+		out.CleanTarget.Blockers = append(out.CleanTarget.Blockers, ValidationBlocker{Reason: "clean_target_proof_required", Detail: "NEW_CLUSTER_BOOTSTRAP restore execution requires proof that target data dirs/PVCs are empty", FieldPath: "preconditions.clean_target"})
+	}
+	if identityMode == ClusterRestoreIdentityModePreserveBackupID || manifest.Compatibility.RequiresSourceFencingForPreservedIdentity {
+		out.SourceFencing.Blockers = append(out.SourceFencing.Blockers, ValidationBlocker{Reason: "source_fencing_required", Detail: "preserved-identity restore execution requires source-fencing evidence", FieldPath: "preconditions.source_fencing"})
+	}
+	return out
+}
+
+func normalizeRestoreTarget(in ClusterRestoreTarget) ClusterRestoreTarget {
+	in.TargetClusterID = strings.TrimSpace(in.TargetClusterID)
+	in.TargetClusterName = strings.TrimSpace(in.TargetClusterName)
+	in.Namespace = strings.TrimSpace(in.Namespace)
+	in.StatefulSet = strings.TrimSpace(in.StatefulSet)
+	for i := range in.Nodes {
+		in.Nodes[i].SourcePodName = strings.TrimSpace(in.Nodes[i].SourcePodName)
+		in.Nodes[i].SourceNodeID = strings.TrimSpace(in.Nodes[i].SourceNodeID)
+		in.Nodes[i].SourceArchiveURI = strings.TrimSpace(in.Nodes[i].SourceArchiveURI)
+		in.Nodes[i].TargetPodName = strings.TrimSpace(in.Nodes[i].TargetPodName)
+		in.Nodes[i].TargetNodeName = strings.TrimSpace(in.Nodes[i].TargetNodeName)
+		in.Nodes[i].TargetPVCName = strings.TrimSpace(in.Nodes[i].TargetPVCName)
+		in.Nodes[i].TargetDataDir = strings.TrimSpace(in.Nodes[i].TargetDataDir)
+		in.Nodes[i].StagingPath = strings.TrimSpace(in.Nodes[i].StagingPath)
+	}
+	return in
+}
+
+func normalizeRestoreStaging(in ClusterRestoreStagingLocation) ClusterRestoreStagingLocation {
+	in.StagingURI = strings.TrimSpace(in.StagingURI)
+	in.StorageClass = strings.TrimSpace(in.StorageClass)
+	return in
+}
+
+func restorePlanID(repositoryID, backupSetID, targetMode, identityMode, authPolicy string, target ClusterRestoreTarget, staging ClusterRestoreStagingLocation, result ClusterBackupSetValidationResult) string {
 	markerChecksum := ""
 	if result.ProductionMarker != nil {
 		markerChecksum = result.ProductionMarker.ManifestChecksumSHA256
 	}
-	sum := sha256.Sum256([]byte(strings.Join([]string{repositoryID, backupSetID, targetMode, identityMode, authPolicy, markerChecksum}, "\x00")))
+	targetHash := stableRestorePlanComponent(target)
+	stagingHash := stableRestorePlanComponent(staging)
+	sum := sha256.Sum256([]byte(strings.Join([]string{repositoryID, backupSetID, targetMode, identityMode, authPolicy, markerChecksum, targetHash, stagingHash}, "\x00")))
 	return "restore-plan-" + hex.EncodeToString(sum[:8])
+}
+
+func stableRestorePlanComponent(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func normalizeRestoreEnum(value string) string {

@@ -483,7 +483,7 @@ func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "cluster restore planner is not configured")
 	}
-	plan, err := planner.PlanClusterRestore(ctx, daemonbackup.PlanClusterRestoreInput{RepositoryID: req.GetRepositoryId(), BackupSetID: req.GetBackupSetId(), TargetMode: restoreTargetModeFromProto(req.GetTargetMode()), IdentityMode: restoreIdentityModeFromProto(req.GetIdentityMode()), AuthSessionPolicy: restoreAuthSessionPolicyFromProto(req.GetAuthSessionPolicy()), ValidationOptions: validationOptionsForBackupSet(req.GetValidationOptions())})
+	plan, err := planner.PlanClusterRestore(ctx, daemonbackup.PlanClusterRestoreInput{RepositoryID: req.GetRepositoryId(), BackupSetID: req.GetBackupSetId(), TargetMode: restoreTargetModeFromProto(req.GetTargetMode()), IdentityMode: restoreIdentityModeFromProto(req.GetIdentityMode()), AuthSessionPolicy: restoreAuthSessionPolicyFromProto(req.GetAuthSessionPolicy()), ValidationOptions: validationOptionsForBackupSet(req.GetValidationOptions()), Target: restoreTargetFromProto(req.GetTarget()), Staging: restoreStagingFromProto(req.GetStaging())})
 	if err != nil {
 		return nil, mapBackupError(err, "plan cluster restore")
 	}
@@ -719,7 +719,7 @@ func mapBackupSetValidationReport(report clusterbackup.BackupSetValidationReport
 }
 
 func mapRestorePlanSummary(plan daemonbackup.ClusterRestorePlan) *adminv1.RestorePlanSummary {
-	out := &adminv1.RestorePlanSummary{RestorePlanId: plan.RestorePlanID, RepositoryId: plan.RepositoryID, BackupSetId: plan.BackupSetID, TargetMode: restoreTargetModeToProto(plan.TargetMode), IdentityMode: restoreIdentityModeToProto(plan.IdentityMode), AuthSessionPolicy: restoreAuthSessionPolicyToProto(plan.AuthSessionPolicy), Restorable: plan.Restorable, PlannedAt: formatBackupTime(plan.PlannedAt)}
+	out := &adminv1.RestorePlanSummary{RestorePlanId: plan.RestorePlanID, RepositoryId: plan.RepositoryID, BackupSetId: plan.BackupSetID, TargetMode: restoreTargetModeToProto(plan.TargetMode), IdentityMode: restoreIdentityModeToProto(plan.IdentityMode), AuthSessionPolicy: restoreAuthSessionPolicyToProto(plan.AuthSessionPolicy), Restorable: plan.Restorable, PlannedAt: formatBackupTime(plan.PlannedAt), Target: restoreTargetToProto(plan.Target), Staging: restoreStagingToProto(plan.Staging), RequiredPreconditions: restorePreconditionsToProto(plan.Preconditions)}
 	if plan.Validation != nil {
 		out.Validation = mapBackupSetValidationReport(*plan.Validation)
 		if plan.ProductionManifest != nil {
@@ -747,6 +747,93 @@ func mapRestorePlanSummary(plan daemonbackup.ClusterRestorePlan) *adminv1.Restor
 		out.DerivedActions = append(out.DerivedActions, &adminv1.DerivedSubsystemPolicy{Subsystem: derivedSubsystemToProto(action.Subsystem), Mode: derivedPolicyModeToProto(action.Mode)})
 	}
 	return out
+}
+
+func restoreTargetFromProto(in *adminv1.ClusterRestoreTarget) daemonbackup.ClusterRestoreTarget {
+	if in == nil {
+		return daemonbackup.ClusterRestoreTarget{}
+	}
+	out := daemonbackup.ClusterRestoreTarget{TargetClusterID: in.GetTargetClusterId(), TargetClusterName: in.GetTargetClusterName(), Namespace: in.GetNamespace(), StatefulSet: in.GetStatefulSet(), ExpectedNodeCount: int(in.GetExpectedNodeCount()), Labels: copyStringMap(in.GetLabels()), Annotations: copyStringMap(in.GetAnnotations())}
+	for _, node := range in.GetNodes() {
+		out.Nodes = append(out.Nodes, daemonbackup.ClusterRestoreNodeMapping{Ordinal: int(node.GetOrdinal()), SourcePodName: node.GetSourcePodName(), SourceNodeID: node.GetSourceNodeId(), SourceArchiveURI: node.GetSourceArchiveUri(), TargetPodName: node.GetTargetPodName(), TargetNodeName: node.GetTargetNodeName(), TargetPVCName: node.GetTargetPvcName(), TargetDataDir: node.GetTargetDataDir(), StagingPath: node.GetStagingPath()})
+	}
+	return out
+}
+
+func restoreTargetToProto(in daemonbackup.ClusterRestoreTarget) *adminv1.ClusterRestoreTarget {
+	if in.TargetClusterID == "" && in.TargetClusterName == "" && in.Namespace == "" && in.StatefulSet == "" && in.ExpectedNodeCount == 0 && len(in.Nodes) == 0 && len(in.Labels) == 0 && len(in.Annotations) == 0 {
+		return nil
+	}
+	out := &adminv1.ClusterRestoreTarget{TargetClusterId: in.TargetClusterID, TargetClusterName: in.TargetClusterName, Namespace: in.Namespace, StatefulSet: in.StatefulSet, ExpectedNodeCount: int32(in.ExpectedNodeCount), Labels: copyStringMap(in.Labels), Annotations: copyStringMap(in.Annotations)}
+	for _, node := range in.Nodes {
+		out.Nodes = append(out.Nodes, &adminv1.ClusterRestoreNodeMapping{Ordinal: int32(node.Ordinal), SourcePodName: node.SourcePodName, SourceNodeId: node.SourceNodeID, SourceArchiveUri: node.SourceArchiveURI, TargetPodName: node.TargetPodName, TargetNodeName: node.TargetNodeName, TargetPvcName: node.TargetPVCName, TargetDataDir: node.TargetDataDir, StagingPath: node.StagingPath})
+	}
+	return out
+}
+
+func restoreStagingFromProto(in *adminv1.ClusterRestoreStagingLocation) daemonbackup.ClusterRestoreStagingLocation {
+	if in == nil {
+		return daemonbackup.ClusterRestoreStagingLocation{}
+	}
+	out := daemonbackup.ClusterRestoreStagingLocation{StagingURI: in.GetStagingUri(), StorageClass: in.GetStorageClass(), RequiredBytes: in.GetRequiredBytes(), AvailableBytes: in.GetAvailableBytes(), CleanBeforeUse: in.GetCleanBeforeUse()}
+	for _, blocker := range in.GetBlockers() {
+		out.Blockers = append(out.Blockers, validationBlockerFromProto(blocker))
+	}
+	return out
+}
+
+func restoreStagingToProto(in daemonbackup.ClusterRestoreStagingLocation) *adminv1.ClusterRestoreStagingLocation {
+	if in.StagingURI == "" && in.StorageClass == "" && in.RequiredBytes == 0 && in.AvailableBytes == 0 && !in.CleanBeforeUse && len(in.Blockers) == 0 {
+		return nil
+	}
+	out := &adminv1.ClusterRestoreStagingLocation{StagingUri: in.StagingURI, StorageClass: in.StorageClass, RequiredBytes: in.RequiredBytes, AvailableBytes: in.AvailableBytes, CleanBeforeUse: in.CleanBeforeUse}
+	for _, blocker := range in.Blockers {
+		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
+	}
+	return out
+}
+
+func restorePreconditionsToProto(in daemonbackup.ClusterRestorePreconditionEvidence) *adminv1.ClusterRestorePreconditionEvidence {
+	if len(in.Blockers) == 0 && len(in.CleanTarget.Blockers) == 0 && len(in.CleanTarget.CheckedNodes) == 0 && !in.CleanTarget.TargetEmpty && len(in.SourceFencing.Blockers) == 0 && !in.SourceFencing.SourceClusterFenced {
+		return nil
+	}
+	out := &adminv1.ClusterRestorePreconditionEvidence{CleanTarget: restoreCleanTargetProofToProto(in.CleanTarget), SourceFencing: restoreSourceFencingToProto(in.SourceFencing)}
+	for _, blocker := range in.Blockers {
+		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
+	}
+	return out
+}
+
+func restoreCleanTargetProofToProto(in daemonbackup.ClusterRestoreCleanTargetProof) *adminv1.ClusterRestoreCleanTargetProof {
+	if in.ProofID == "" && in.CheckedAt.IsZero() && !in.TargetEmpty && len(in.CheckedNodes) == 0 && len(in.Blockers) == 0 && in.OperatorAttestation == "" {
+		return nil
+	}
+	out := &adminv1.ClusterRestoreCleanTargetProof{ProofId: in.ProofID, CheckedAt: formatBackupTime(in.CheckedAt), TargetEmpty: in.TargetEmpty, OperatorAttestation: in.OperatorAttestation}
+	for _, node := range in.CheckedNodes {
+		out.CheckedNodes = append(out.CheckedNodes, &adminv1.ClusterRestoreNodeMapping{Ordinal: int32(node.Ordinal), SourcePodName: node.SourcePodName, SourceNodeId: node.SourceNodeID, SourceArchiveUri: node.SourceArchiveURI, TargetPodName: node.TargetPodName, TargetNodeName: node.TargetNodeName, TargetPvcName: node.TargetPVCName, TargetDataDir: node.TargetDataDir, StagingPath: node.StagingPath})
+	}
+	for _, blocker := range in.Blockers {
+		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
+	}
+	return out
+}
+
+func restoreSourceFencingToProto(in daemonbackup.ClusterRestoreSourceFencingEvidence) *adminv1.ClusterRestoreSourceFencingEvidence {
+	if !in.SourceClusterFenced && in.FencedAt.IsZero() && in.FenceTokenRef == "" && len(in.FencedEndpoints) == 0 && len(in.Blockers) == 0 {
+		return nil
+	}
+	out := &adminv1.ClusterRestoreSourceFencingEvidence{SourceClusterFenced: in.SourceClusterFenced, FencedAt: formatBackupTime(in.FencedAt), FenceTokenRef: in.FenceTokenRef, FencedEndpoints: append([]string(nil), in.FencedEndpoints...)}
+	for _, blocker := range in.Blockers {
+		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
+	}
+	return out
+}
+
+func validationBlockerFromProto(in *adminv1.ValidationBlocker) daemonbackup.ValidationBlocker {
+	if in == nil {
+		return daemonbackup.ValidationBlocker{}
+	}
+	return daemonbackup.ValidationBlocker{Reason: in.GetReason(), Detail: in.GetDetail(), Retryable: in.GetRetryable(), FieldPath: in.GetFieldPath()}
 }
 
 func applyProductionBackupSetSummary(out *adminv1.ClusterBackupSetSummary, manifest clusterbackup.BackupSetManifestV1, marker *clusterbackup.CompleteMarkerV1, report *clusterbackup.BackupSetValidationReport) {
