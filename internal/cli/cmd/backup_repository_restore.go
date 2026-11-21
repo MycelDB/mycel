@@ -188,16 +188,27 @@ func restoreRepositoryBackupOrdinalLocal(ctx context.Context, in repositoryResto
 }
 
 func newRepositoryRestoreS3Client(ctx context.Context, in repositoryRestoreLocalInput) (*s3.Client, error) {
-	accessKey := os.Getenv(strings.TrimSpace(in.AccessKeyEnv))
-	secretKey := os.Getenv(strings.TrimSpace(in.SecretKeyEnv))
-	if accessKey == "" || secretKey == "" {
-		return nil, fmt.Errorf("repository credential environment variables are not set")
+	loadOptions := []func(*awsconfig.LoadOptions) error{}
+	accessKeyEnv := strings.TrimSpace(in.AccessKeyEnv)
+	secretKeyEnv := strings.TrimSpace(in.SecretKeyEnv)
+	accessKey := ""
+	secretKey := ""
+	if accessKeyEnv != "" {
+		accessKey = os.Getenv(accessKeyEnv)
 	}
-	sessionToken := ""
-	if name := strings.TrimSpace(in.SessionTokenEnv); name != "" {
-		sessionToken = os.Getenv(name)
+	if secretKeyEnv != "" {
+		secretKey = os.Getenv(secretKeyEnv)
 	}
-	loadOptions := []func(*awsconfig.LoadOptions) error{awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, sessionToken))}
+	if accessKey != "" || secretKey != "" {
+		if accessKey == "" || secretKey == "" {
+			return nil, fmt.Errorf("repository credential environment variables are incomplete")
+		}
+		sessionToken := ""
+		if name := strings.TrimSpace(in.SessionTokenEnv); name != "" {
+			sessionToken = os.Getenv(name)
+		}
+		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, sessionToken)))
+	}
 	if strings.TrimSpace(in.Region) != "" {
 		loadOptions = append(loadOptions, awsconfig.WithRegion(strings.TrimSpace(in.Region)))
 	}

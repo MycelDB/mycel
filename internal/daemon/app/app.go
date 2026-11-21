@@ -372,6 +372,20 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	})
+	if cfg.Backup.KubernetesRestoreHelperEnabled {
+		helper, err := backupservice.NewInClusterKubernetesPVCRestoreHelper(backupservice.KubernetesPVCRestoreHelperConfig{
+			Namespace:          cfg.Backup.KubernetesRestoreHelperNamespace,
+			HelperImage:        cfg.Backup.KubernetesRestoreHelperImage,
+			ServiceAccountName: cfg.Backup.KubernetesRestoreHelperServiceAccount,
+			DeleteOnCompletion: true,
+		})
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("configure Kubernetes PVC restore helper: %w", err)
+		}
+		backupService.WithClusterRestorePVCHelper(helper)
+		logger.Info("Kubernetes PVC restore helper enabled", "namespace", cfg.Backup.KubernetesRestoreHelperNamespace, "service_account", cfg.Backup.KubernetesRestoreHelperServiceAccount)
+	}
 	if rt.ProjectionRegistries != nil {
 		backupService.WithProjectionRegistryManager(rt.ProjectionRegistries)
 		backupService.WithProjectionArtifactProvider(func(ctx context.Context) ([]projection.ArtifactManifest, error) {

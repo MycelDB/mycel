@@ -100,17 +100,21 @@ type SearchConfig struct {
 }
 
 type BackupConfig struct {
-	Enabled                bool
-	BackupDir              string
-	Interval               time.Duration
-	RetentionCount         int
-	IncludeLogs            bool
-	Compression            string
-	QuiesceDrainTimeout    time.Duration
-	BackupTimeout          time.Duration
-	RetryAfter             time.Duration
-	StatusHistoryLimit     int
-	AllowReadsDuringBackup bool
+	Enabled                               bool
+	BackupDir                             string
+	Interval                              time.Duration
+	RetentionCount                        int
+	IncludeLogs                           bool
+	Compression                           string
+	QuiesceDrainTimeout                   time.Duration
+	BackupTimeout                         time.Duration
+	RetryAfter                            time.Duration
+	StatusHistoryLimit                    int
+	AllowReadsDuringBackup                bool
+	KubernetesRestoreHelperEnabled        bool
+	KubernetesRestoreHelperImage          string
+	KubernetesRestoreHelperNamespace      string
+	KubernetesRestoreHelperServiceAccount string
 }
 
 type WALConfig struct {
@@ -300,17 +304,21 @@ func LoadFromEnv() (Config, error) {
 			HybridRRFK: parseFloatEnv(os.Getenv("MYCELD_SEARCH_HYBRID_RRF_K"), DefaultSearchHybridRRFK),
 		},
 		Backup: BackupConfig{
-			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
-			BackupDir:              strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
-			Interval:               parseDurationEnv(os.Getenv("MYCELD_BACKUP_INTERVAL"), DefaultBackupInterval),
-			RetentionCount:         parseIntEnv(os.Getenv("MYCELD_BACKUP_RETENTION_COUNT"), DefaultBackupRetentionCount),
-			IncludeLogs:            parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_INCLUDE_LOGS"), false),
-			Compression:            valueOrDefault(os.Getenv("MYCELD_BACKUP_COMPRESSION"), DefaultBackupCompression),
-			QuiesceDrainTimeout:    parseDurationEnv(os.Getenv("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT"), DefaultBackupQuiesceDrainTimeout),
-			BackupTimeout:          parseDurationEnv(os.Getenv("MYCELD_BACKUP_TIMEOUT"), DefaultBackupTimeout),
-			RetryAfter:             parseDurationEnv(os.Getenv("MYCELD_BACKUP_RETRY_AFTER"), DefaultBackupRetryAfter),
-			StatusHistoryLimit:     parseIntEnv(os.Getenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT"), DefaultBackupStatusHistoryLimit),
-			AllowReadsDuringBackup: parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP"), false),
+			Enabled:                               parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
+			BackupDir:                             strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
+			Interval:                              parseDurationEnv(os.Getenv("MYCELD_BACKUP_INTERVAL"), DefaultBackupInterval),
+			RetentionCount:                        parseIntEnv(os.Getenv("MYCELD_BACKUP_RETENTION_COUNT"), DefaultBackupRetentionCount),
+			IncludeLogs:                           parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_INCLUDE_LOGS"), false),
+			Compression:                           valueOrDefault(os.Getenv("MYCELD_BACKUP_COMPRESSION"), DefaultBackupCompression),
+			QuiesceDrainTimeout:                   parseDurationEnv(os.Getenv("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT"), DefaultBackupQuiesceDrainTimeout),
+			BackupTimeout:                         parseDurationEnv(os.Getenv("MYCELD_BACKUP_TIMEOUT"), DefaultBackupTimeout),
+			RetryAfter:                            parseDurationEnv(os.Getenv("MYCELD_BACKUP_RETRY_AFTER"), DefaultBackupRetryAfter),
+			StatusHistoryLimit:                    parseIntEnv(os.Getenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT"), DefaultBackupStatusHistoryLimit),
+			AllowReadsDuringBackup:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP"), false),
+			KubernetesRestoreHelperEnabled:        parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED"), false),
+			KubernetesRestoreHelperImage:          strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE")),
+			KubernetesRestoreHelperNamespace:      strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE")),
+			KubernetesRestoreHelperServiceAccount: strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT")),
 		},
 		SemanticMaintenance: SemanticMaintenanceConfig{
 			Enabled:                    parseBoolEnvDefault(os.Getenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED"), true),
@@ -699,6 +707,9 @@ func (c BackupConfig) Validate() error {
 	}
 	if compression := strings.ToLower(strings.TrimSpace(c.Compression)); compression != "" && compression != "zip" {
 		return fmt.Errorf("MYCELD_BACKUP_COMPRESSION must be zip")
+	}
+	if c.KubernetesRestoreHelperEnabled && strings.TrimSpace(c.KubernetesRestoreHelperImage) == "" {
+		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE is required when MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED=true")
 	}
 	return nil
 }
