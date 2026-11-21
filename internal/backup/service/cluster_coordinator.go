@@ -214,11 +214,23 @@ func (m *Module) CancelClusterBackup(ctx context.Context, backupSetID, reason st
 
 func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClusterBackupInput, backupSetID, clusterID string, createdAt time.Time, nodes []ClusterBackupNode) {
 	failRecord := recordTypeClusterBackupFail
+	repositoryCompletePublished := false
 	fail := func(phase clusterBackupPhase, err error) {
 		if ctx.Err() != nil {
 			failRecord = recordTypeClusterBackupAbort
 			err = firstNonNilError(err, ctx.Err())
 			phase = clusterBackupPhaseCanceling
+		}
+		if strings.TrimSpace(input.RepositoryID) != "" && !repositoryCompletePublished {
+			deleted, cleanupErr := m.cleanupIncompleteRepositoryBackupSet(context.Background(), input, backupSetID)
+			if cleanupErr != nil {
+				if m.logger != nil {
+					m.logger.Warn("failed to clean incomplete repository backup set", "backup_set_id", backupSetID, "repository_id", input.RepositoryID, "prefix", input.RepositoryPrefix, "error", cleanupErr)
+				}
+				err = fmt.Errorf("%w; incomplete repository prefix cleanup failed: %v", err, cleanupErr)
+			} else if deleted > 0 && m.logger != nil {
+				m.logger.Info("cleaned incomplete repository backup set", "backup_set_id", backupSetID, "repository_id", input.RepositoryID, "prefix", input.RepositoryPrefix, "deleted_objects", deleted)
+			}
 		}
 		_ = m.commitRaft(context.Background(), failRecord, clusterBackupFailureRecord{BackupSetID: backupSetID, Phase: phase, Message: err.Error(), UpdatedAt: time.Now().UTC()})
 	}
@@ -376,6 +388,7 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 			fail(clusterBackupPhaseUploading, err)
 			return
 		}
+		repositoryCompletePublished = true
 	} else {
 		manifest.ManifestURI = fileURI(filepath.Join(input.OutputDir, clusterbackup.BackupSetManifestName))
 		if err := writeClusterBackupSetManifest(input.OutputDir, manifest); err != nil {
@@ -483,7 +496,7 @@ func (m *Module) buildClusterBackupManifest(backupSetID, clusterID, reason strin
 	return manifest, nil
 }
 
-func (m *Module) publishRepositoryClusterBackupSet(ctx context.Context, input StartClusterBackupInput, repo BackupRepository, backupSetID, clusterID string, createdAt, completedAt time.Time) (clusterbackup.Manifest, error) {
+func (m *Module) publishRepositoryClusterBackupSet(ctx context.Context, input StartClusterBackupInput, repo BackupRepository, backupSetID, clusterID string, createdAt, completedAt time.Time) (summary clusterbackup.Manifest, retErr error) {
 	store, err := m.repositoryObjectStore(ctx, repo)
 	if err != nil {
 		return clusterbackup.Manifest{}, err
@@ -491,6 +504,12 @@ func (m *Module) publishRepositoryClusterBackupSet(ctx context.Context, input St
 	if strings.TrimSpace(input.RepositoryPrefix) == "" {
 		input.RepositoryPrefix = repositoryBackupSetPrefix(repo, backupSetID)
 	}
+	publishedComplete := false
+	defer func() {
+		if retErr != nil && !publishedComplete {
+			m.cleanupRepositoryPrefixBestEffort(context.Background(), store, input.RepositoryPrefix)
+		}
+	}()
 	manifestKey := joinRepositoryKey(input.RepositoryPrefix, clusterbackup.BackupSetManifestName)
 	manifestURI := repositoryObjectURI(repo, manifestKey)
 	production, err := m.buildProductionBackupSetManifest(input, repo, backupSetID, clusterID, createdAt, completedAt, manifestURI)
@@ -525,7 +544,8 @@ func (m *Module) publishRepositoryClusterBackupSet(ctx context.Context, input St
 	if _, err := store.PutBytes(ctx, joinRepositoryKey(input.RepositoryPrefix, "COMPLETE"), markerRaw, "application/json"); err != nil {
 		return clusterbackup.Manifest{}, fmt.Errorf("upload COMPLETE marker: %w", err)
 	}
-	summary := productionBackupSetManifestSummary(production)
+	publishedComplete = true
+	summary = productionBackupSetManifestSummary(production)
 	summary.ManifestURI = manifestInfo.URI
 	return summary, nil
 }

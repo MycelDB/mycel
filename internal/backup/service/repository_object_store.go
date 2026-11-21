@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 const repositoryObjectChecksumMetadataKey = "mycel-sha256"
@@ -33,6 +34,7 @@ type backupRepositoryObjectStore interface {
 	GetFile(ctx context.Context, key, path string) (repositoryObjectInfo, error)
 	Head(ctx context.Context, key string) (repositoryObjectInfo, error)
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
+	DeletePrefix(ctx context.Context, prefix string) (int, error)
 }
 
 type backupRepositoryObjectStoreFactory func(context.Context, BackupRepository) (backupRepositoryObjectStore, error)
@@ -219,6 +221,37 @@ func (s *s3RepositoryObjectStore) ListKeys(ctx context.Context, prefix string) (
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func (s *s3RepositoryObjectStore) DeletePrefix(ctx context.Context, prefix string) (int, error) {
+	prefix = cleanRepositoryObjectKey(prefix)
+	if prefix == "" {
+		return 0, fmt.Errorf("repository object prefix is required")
+	}
+	keys, err := s.ListKeys(ctx, prefix)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for start := 0; start < len(keys); start += 1000 {
+		end := start + 1000
+		if end > len(keys) {
+			end = len(keys)
+		}
+		objects := make([]types.ObjectIdentifier, 0, end-start)
+		for _, key := range keys[start:end] {
+			objects = append(objects, types.ObjectIdentifier{Key: aws.String(key)})
+		}
+		if len(objects) == 0 {
+			continue
+		}
+		_, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(s.repo.S3.Bucket), Delete: &types.Delete{Objects: objects, Quiet: aws.Bool(true)}})
+		if err != nil {
+			return deleted, err
+		}
+		deleted += len(objects)
+	}
+	return deleted, nil
 }
 
 func copyRepositoryObjectWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {

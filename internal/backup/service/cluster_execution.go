@@ -465,6 +465,12 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 		}
 		prefix := firstNonEmptyString(in.RepositoryPrefix, repositoryBackupSetPrefix(repo, in.BackupSetID))
 		nodePrefix := joinRepositoryKey(prefix, "nodes", repositorySafePathComponent(in.PodName))
+		nodeUploadComplete := false
+		defer func() {
+			if !nodeUploadComplete {
+				m.cleanupRepositoryPrefixBestEffort(context.Background(), store, nodePrefix)
+			}
+		}()
 		archiveInfo, err := store.PutFile(ctx, joinRepositoryKey(nodePrefix, archiveName), result.ArchivePath)
 		if err != nil {
 			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("upload archive: %w", err)
@@ -477,6 +483,7 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 		if err != nil {
 			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("upload node inventory: %w", err)
 		}
+		nodeUploadComplete = true
 		archiveURI = archiveInfo.URI
 		manifestURI = manifestInfo.URI
 		inventoryURI = inventoryInfo.URI

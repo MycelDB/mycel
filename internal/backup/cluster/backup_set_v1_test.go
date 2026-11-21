@@ -114,6 +114,41 @@ func TestValidateProductionBackupSetRejectsRawSecretArtifactEvidence(t *testing.
 	assertBackupSetIssue(t, report, "raw_secret_material")
 }
 
+func TestValidateProductionBackupSetRejectsPartialOptionalDerivedArtifactEvidence(t *testing.T) {
+	dir := writeProductionBackupSetFixture(t, func(m *BackupSetManifestV1) {
+		m.DerivedState[0].ArtifactURI = "s3://mycel-backups/partial-derived-index"
+		m.DerivedState[0].ChecksumSHA256 = strings.Repeat("e", 64)
+	})
+	_, _, report, err := ValidateBackupSetPath(context.Background(), dir, BackupSetValidationOptions{RequireCompleteMarker: true})
+	if err != nil {
+		t.Fatalf("ValidateBackupSetPath() error = %v", err)
+	}
+	assertBackupSetIssue(t, report, "omitted_derived_artifact_evidence_present")
+}
+
+func TestValidateProductionBackupSetRequiresOptionalDerivedOmissionRebuildRequired(t *testing.T) {
+	dir := writeProductionBackupSetFixture(t, func(m *BackupSetManifestV1) {
+		m.DerivedState[0].RestorePolicy = "PRESERVED"
+		m.DerivedState[0].ValidationState = "OMITTED"
+	})
+	_, _, report, err := ValidateBackupSetPath(context.Background(), dir, BackupSetValidationOptions{RequireCompleteMarker: true})
+	if err != nil {
+		t.Fatalf("ValidateBackupSetPath() error = %v", err)
+	}
+	assertBackupSetIssue(t, report, "optional_derived_artifact_omission_not_rebuild_required")
+}
+
+func TestValidateProductionBackupSetRequiresExternalPayloadRecoveryPoint(t *testing.T) {
+	dir := writeProductionBackupSetFixture(t, func(m *BackupSetManifestV1) {
+		m.ExternalObjectStores = []BackupSetExternalObjectStore{{Usage: "BLOB_PAYLOADS", Provider: "S3_COMPATIBLE", IncludePayloadBytes: false, Bucket: "payloads", Prefix: "objects/", EndpointFingerprint: "s3:example", CredentialRef: "k8s-secret:backup/payloads#credentials", ObjectReferenceManifestURI: "s3://mycel-backups/object-refs.json", ObjectReferenceManifestChecksumSHA256: strings.Repeat("f", 64), ObjectCount: "1", LogicalBytes: "10", ValidationState: "VERIFIED"}}
+	})
+	_, _, report, err := ValidateBackupSetPath(context.Background(), dir, BackupSetValidationOptions{RequireCompleteMarker: true})
+	if err != nil {
+		t.Fatalf("ValidateBackupSetPath() error = %v", err)
+	}
+	assertBackupSetIssue(t, report, "external_payload_recovery_point_required")
+}
+
 func TestValidateProductionBackupSetRejectsInsufficientCapacity(t *testing.T) {
 	dir := writeProductionBackupSetFixture(t, func(m *BackupSetManifestV1) {})
 	_, _, report, err := ValidateBackupSetPath(context.Background(), dir, BackupSetValidationOptions{RequireCompleteMarker: true, AvailableTargetBytes: 1})

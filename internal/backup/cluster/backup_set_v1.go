@@ -1086,6 +1086,8 @@ func (r *BackupSetValidationReport) validateExternalObjectStores(m BackupSetMani
 		}
 		if store.IncludePayloadBytes {
 			r.addWarning("external_payload_bytes_included", "external object-store payload bytes are marked included; ensure policy explicitly allows this", path+".include_payload_bytes")
+		} else if strings.TrimSpace(store.RecoveryPointRef) == "" {
+			r.addError("external_payload_recovery_point_required", "external object-store payload bytes are not included; recovery_point_ref is required for restore dependency validation", false, path+".recovery_point_ref")
 		}
 		if strings.TrimSpace(store.ObjectReferenceManifestURI) == "" || !validSHA256(store.ObjectReferenceManifestChecksumSHA256) {
 			r.addError("object_reference_manifest_required", "object reference manifest URI and checksum are required", false, path+".object_reference_manifest_uri")
@@ -1115,17 +1117,32 @@ func (r *BackupSetValidationReport) validateDerivedState(m BackupSetManifestV1) 
 			r.addError("duplicate_derived_state", "duplicate derived_state entry", false, path)
 		}
 		seen[key] = true
+		mode := strings.ToUpper(strings.TrimSpace(row.PolicyMode))
+		restorePolicy := strings.ToUpper(strings.TrimSpace(row.RestorePolicy))
+		validationState := strings.ToUpper(strings.TrimSpace(row.ValidationState))
+		hasArtifactEvidence := strings.TrimSpace(row.ArtifactURI) != "" || strings.TrimSpace(row.SizeBytes) != "" || strings.TrimSpace(row.ChecksumSHA256) != "" || strings.TrimSpace(row.FormatVersion) != ""
 		if row.Included {
 			if strings.TrimSpace(row.ArtifactURI) == "" || strings.TrimSpace(row.SizeBytes) == "" || !validSHA256(row.ChecksumSHA256) || strings.TrimSpace(row.FormatVersion) == "" {
 				r.addError("included_derived_artifact_evidence_required", "included derived artifact requires URI, size, checksum, and format_version", false, path)
 			}
 			r.checkDecimalString(path+".size_bytes", row.SizeBytes, true)
+		} else if hasArtifactEvidence {
+			r.addError("omitted_derived_artifact_evidence_present", "omitted derived artifacts must not publish partial artifact URI, size, checksum, or format evidence", false, path)
 		}
-		if row.PolicyMode == "INCLUDE_REQUIRED" && (!row.Included || row.ValidationState != "INCLUDED_AND_VALIDATED") {
-			r.addError("required_derived_artifact_not_validated", "required derived artifact must be included and validated", false, path)
+		if mode == "INCLUDE_REQUIRED" && (!row.Included || validationState != "INCLUDED_AND_VALIDATED" || restorePolicy != "PRESERVED") {
+			r.addError("required_derived_artifact_not_validated", "required derived artifact must be included, preserved, and validated", false, path)
 		}
-		if row.PolicyMode == "INCLUDE_OPTIONAL" && row.Included && row.ValidationState != "INCLUDED_AND_VALIDATED" {
+		if (mode == "INCLUDE_OPTIONAL" || mode == "REBUILD_ALLOWED") && row.Included && validationState != "INCLUDED_AND_VALIDATED" {
 			r.addError("optional_derived_artifact_invalidly_included", "optional derived artifact may be included only when valid", false, path)
+		}
+		if (mode == "INCLUDE_OPTIONAL" || mode == "REBUILD_ALLOWED") && !row.Included && (restorePolicy != "REBUILD_REQUIRED" || validationState != "REBUILD_REQUIRED") {
+			r.addError("optional_derived_artifact_omission_not_rebuild_required", "omitted optional derived artifacts must be marked rebuild-required", false, path)
+		}
+		if mode == "DISCARD" && (row.Included || hasArtifactEvidence || restorePolicy != "DISCARD" || validationState != "DISCARDED") {
+			r.addError("discarded_derived_artifact_policy_invalid", "discarded derived artifacts must not include artifact evidence and must be marked DISCARDED", false, path)
+		}
+		if mode != "INCLUDE_REQUIRED" && mode != "INCLUDE_OPTIONAL" && mode != "REBUILD_ALLOWED" && mode != "DISCARD" && strings.TrimSpace(row.PolicyMode) != "" {
+			r.addError("derived_state_policy_mode_invalid", "derived_state policy_mode is not recognized", false, path+".policy_mode")
 		}
 	}
 }
