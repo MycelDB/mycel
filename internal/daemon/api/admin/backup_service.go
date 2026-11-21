@@ -509,21 +509,62 @@ func (s *AdminBackupService) GetClusterRestoreStatus(ctx context.Context, req *a
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "cluster restore status is not implemented")
+	manager, ok := s.manager.(daemonbackup.ClusterRestoreManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster restore manager is not configured")
+	}
+	op, err := manager.ClusterRestoreStatus(req.GetRestoreOperationId())
+	if err != nil {
+		return nil, mapBackupError(err, "get cluster restore status")
+	}
+	return &adminv1.GetClusterRestoreStatusResponse{Operation: mapClusterRestoreOperation(op)}, nil
 }
 
 func (s *AdminBackupService) ListClusterRestores(ctx context.Context, req *adminv1.ListClusterRestoresRequest) (*adminv1.ListClusterRestoresResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "cluster restore listing is not implemented")
+	manager, ok := s.manager.(daemonbackup.ClusterRestoreManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster restore manager is not configured")
+	}
+	operations := manager.ListClusterRestores()
+	items := make([]*adminv1.ClusterRestoreOperation, 0, len(operations))
+	for _, op := range operations {
+		items = append(items, mapClusterRestoreOperation(op))
+	}
+	offset, err := parsePageToken(req.GetPageToken())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	pageSize := normalizePageSize(req.GetPageSize())
+	if offset > len(items) {
+		offset = len(items)
+	}
+	end := offset + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	next := ""
+	if end < len(items) {
+		next = strconv.Itoa(end)
+	}
+	return &adminv1.ListClusterRestoresResponse{Operations: items[offset:end], NextPageToken: next}, nil
 }
 
 func (s *AdminBackupService) CancelClusterRestore(ctx context.Context, req *adminv1.CancelClusterRestoreRequest) (*adminv1.CancelClusterRestoreResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "cluster restore cancellation is not implemented")
+	manager, ok := s.manager.(daemonbackup.ClusterRestoreManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "cluster restore manager is not configured")
+	}
+	op, err := manager.CancelClusterRestore(ctx, req.GetRestoreOperationId(), req.GetReason())
+	if err != nil {
+		return nil, mapBackupError(err, "cancel cluster restore")
+	}
+	return &adminv1.CancelClusterRestoreResponse{Operation: mapClusterRestoreOperation(op)}, nil
 }
 
 func (s *AdminBackupService) ValidateClusterBackupSet(ctx context.Context, req *adminv1.ValidateClusterBackupSetRequest) (*adminv1.ValidateClusterBackupSetResponse, error) {
@@ -1580,6 +1621,12 @@ func mapBackupError(err error, action string) error {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 	msg := err.Error()
+	if strings.Contains(msg, "not known") {
+		return status.Error(codes.NotFound, msg)
+	}
+	if strings.Contains(msg, "already active") || strings.Contains(msg, "already running") {
+		return status.Error(codes.Aborted, msg)
+	}
 	if strings.Contains(msg, "required") || strings.Contains(msg, "must") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "invalid") || strings.Contains(msg, "unknown time zone") || strings.Contains(msg, "out of range") {
 		return status.Error(codes.InvalidArgument, msg)
 	}

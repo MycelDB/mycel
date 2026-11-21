@@ -47,6 +47,9 @@ type Module struct {
 	activeClusterBackupID        string
 	clusterBackups               map[string]clusterBackupRun
 	clusterBackupCancels         map[string]context.CancelFunc
+	activeClusterRestoreID       string
+	clusterRestores              map[string]ClusterRestoreOperation
+	clusterRestoreCancels        map[string]context.CancelFunc
 	clusterBackupLeases          map[string]*quiesce.CompositeLease
 	clusterBackupFreeze          map[string]*clusterBackupFreezeLease
 	repositories                 map[string]BackupRepository
@@ -129,6 +132,11 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			for typ, applier := range m.clusterBackupWALAppliers() {
 				if err := registry.Register(typ, applier); err != nil {
 					return runtime.Abort(ModuleName, "wal", "register cluster backup WAL applier", err)
+				}
+			}
+			for typ, applier := range m.clusterRestoreWALAppliers() {
+				if err := registry.Register(typ, applier); err != nil {
+					return runtime.Abort(ModuleName, "wal", "register cluster restore WAL applier", err)
 				}
 			}
 		}

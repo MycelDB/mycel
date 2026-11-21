@@ -55,4 +55,7 @@ type ClusterRestorePlanner interface {
 type ClusterRestoreManager interface {
 	ClusterRestorePlanner
 	StartClusterRestore(context.Context, StartClusterRestoreInput) (ClusterRestoreOperation, error)
+	ClusterRestoreStatus(string) (ClusterRestoreOperation, error)
+	ListClusterRestores() []ClusterRestoreOperation
+	CancelClusterRestore(context.Context, string, string) (ClusterRestoreOperation, error)
 }

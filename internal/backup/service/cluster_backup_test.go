@@ -321,6 +321,12 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	stagingDir := filepath.Join(t.TempDir(), "staging")
 	target := ClusterRestoreTarget{ExpectedNodeCount: 1, Nodes: []ClusterRestoreNodeMapping{{Ordinal: 0, SourcePodName: "myceld-0", SourceNodeID: "node-1", TargetPodName: "myceld-0", TargetDataDir: targetDir}}}
 	staging := ClusterRestoreStagingLocation{StagingURI: stagingDir, CleanBeforeUse: true}
+	m.mu.Lock()
+	run := m.clusterBackups[backupSetID]
+	run.Phase = clusterBackupPhaseSucceeded
+	m.clusterBackups[backupSetID] = run
+	m.activeClusterBackupID = ""
+	m.mu.Unlock()
 	execPlan, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: target, Staging: staging})
 	if err != nil {
 		t.Fatalf("PlanClusterRestore(execution target) error = %v", err)
@@ -329,18 +335,46 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartClusterRestore() error = %v", err)
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for op.State != "SUCCEEDED" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		var statusErr error
+		op, statusErr = m.ClusterRestoreStatus(op.RestoreOperationID)
+		if statusErr != nil {
+			t.Fatalf("ClusterRestoreStatus() error = %v", statusErr)
+		}
+	}
 	if op.State != "SUCCEEDED" || op.Progress.VerifiedNodes != 1 {
 		t.Fatalf("restore operation = %#v, want succeeded with verified node", op)
+	}
+	status, err := m.ClusterRestoreStatus(op.RestoreOperationID)
+	if err != nil || status.RestoreOperationID != op.RestoreOperationID {
+		t.Fatalf("ClusterRestoreStatus()=(%#v,%v), want %s", status, err, op.RestoreOperationID)
+	}
+	restoreListed := m.ListClusterRestores()
+	if len(restoreListed) != 1 || restoreListed[0].RestoreOperationID != op.RestoreOperationID {
+		t.Fatalf("ListClusterRestores()=%#v, want restore operation", restoreListed)
+	}
+	canceled, err := m.CancelClusterRestore(ctx, op.RestoreOperationID, "terminal replay")
+	if err != nil || canceled.State != "SUCCEEDED" {
+		t.Fatalf("CancelClusterRestore(terminal)=(%#v,%v), want succeeded unchanged", canceled, err)
 	}
 	if _, err := os.Stat(filepath.Join(targetDir, "meta", "clustering", "node.json")); err != nil {
 		t.Fatalf("restored node identity missing: %v", err)
 	}
-	failed, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: target, Staging: staging})
+	failed, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, IdempotencyKey: "missing-preconditions", Target: target, Staging: staging})
 	if err != nil {
 		t.Fatalf("StartClusterRestore(missing preconditions) error = %v", err)
 	}
 	if failed.State != "FAILED_REQUIRES_OPERATOR" || len(failed.Blockers) == 0 {
 		t.Fatalf("missing-precondition restore operation = %#v, want blockers", failed)
+	}
+	replayed, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, IdempotencyKey: "missing-preconditions", Target: target, Staging: staging})
+	if err != nil {
+		t.Fatalf("StartClusterRestore(idempotency replay) error = %v", err)
+	}
+	if replayed.RestoreOperationID != failed.RestoreOperationID || replayed.State != failed.State {
+		t.Fatalf("idempotency replay=%#v, want original %#v", replayed, failed)
 	}
 }
 

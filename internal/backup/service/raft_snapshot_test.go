@@ -76,6 +76,40 @@ func TestBackupRaftSnapshotRestoreClusterBackupState(t *testing.T) {
 	}
 }
 
+func TestBackupRaftSnapshotRestoreClusterRestoreState(t *testing.T) {
+	ctx := context.Background()
+	source := NewModule()
+	if result := source.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("source init failed: %v", result.Error)
+	}
+	now := time.Now().UTC()
+	source.restoreClusterRestoreState("restore-op-active", map[string]ClusterRestoreOperation{
+		"restore-op-active": {RestoreOperationID: "restore-op-active", RepositoryID: "repo-1", BackupSetID: "backup-set-1", State: clusterRestoreStateStagingArtifacts, CreatedAt: now, UpdatedAt: now, Progress: ClusterRestoreProgress{TotalNodes: 3, StagedNodes: 1}},
+		"restore-op-done":   {RestoreOperationID: "restore-op-done", RepositoryID: "repo-1", BackupSetID: "backup-set-0", State: clusterRestoreStateSucceeded, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, CompletedAt: now},
+	})
+	snapshot, err := (RaftStateMachine{Module: source}).Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	restored := NewModule()
+	if result := restored.Init(ctx, &daemonruntime.Runtime{Config: config.Config{DataDir: t.TempDir()}, LoggerValue: slog.Default()}); !result.OK {
+		t.Fatalf("restored init failed: %v", result.Error)
+	}
+	if err := (RaftStateMachine{Module: restored}).RestoreSnapshot(snapshot); err != nil {
+		t.Fatalf("RestoreSnapshot() error = %v", err)
+	}
+	active, operations := restored.clusterRestoreSnapshot()
+	if active != "restore-op-active" {
+		t.Fatalf("active=%q want restore-op-active", active)
+	}
+	if operations["restore-op-active"].Progress.StagedNodes != 1 {
+		t.Fatalf("restored active operation=%#v", operations["restore-op-active"])
+	}
+	if operations["restore-op-done"].State != clusterRestoreStateSucceeded {
+		t.Fatalf("restored terminal operation=%#v", operations["restore-op-done"])
+	}
+}
+
 func TestBackupRaftSnapshotRestoreVersionOneClearsClusterBackupState(t *testing.T) {
 	ctx := context.Background()
 	legacy := backupRaftSnapshot{Version: 1, Policy: backupcore.Policy{Enabled: false, BackupDir: "backups", ScheduleKind: backupcore.ScheduleKindInterval, Interval: time.Hour, RetentionCount: 2, Compression: "zip"}}
@@ -88,11 +122,16 @@ func TestBackupRaftSnapshotRestoreVersionOneClearsClusterBackupState(t *testing.
 		t.Fatalf("restored init failed: %v", result.Error)
 	}
 	restored.restoreClusterBackupState("stale", map[string]clusterBackupRun{"stale": {BackupSetID: "stale", Phase: clusterBackupPhaseRequested}})
+	restored.restoreClusterRestoreState("restore-stale", map[string]ClusterRestoreOperation{"restore-stale": {RestoreOperationID: "restore-stale", State: clusterRestoreStateStagingArtifacts}})
 	if err := (RaftStateMachine{Module: restored}).RestoreSnapshot(raw); err != nil {
 		t.Fatalf("RestoreSnapshot(v1) error = %v", err)
 	}
 	active, runs := restored.clusterBackupSnapshot()
 	if active != "" || len(runs) != 0 {
 		t.Fatalf("active=%q runs=%#v, want empty v1 cluster backup state", active, runs)
+	}
+	restoreActive, operations := restored.clusterRestoreSnapshot()
+	if restoreActive != "" || len(operations) != 0 {
+		t.Fatalf("restore active=%q operations=%#v, want empty v1 cluster restore state", restoreActive, operations)
 	}
 }

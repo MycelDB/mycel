@@ -152,10 +152,14 @@ func (m *Module) applyClusterBackupRequest(ctx context.Context, rec wal.Record) 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.ensureClusterBackupStateLocked()
+	m.ensureClusterRestoreStateLocked()
 	if m.activeClusterBackupID != "" && m.activeClusterBackupID != backupSetID {
 		return fmt.Errorf("cluster backup %s is already active", m.activeClusterBackupID)
 	}
-	m.ensureClusterBackupStateLocked()
+	if m.activeClusterRestoreID != "" {
+		return fmt.Errorf("cluster restore operation %s is already active", m.activeClusterRestoreID)
+	}
 	if _, ok := m.clusterBackups[backupSetID]; ok {
 		return fmt.Errorf("cluster backup %s already exists", backupSetID)
 	}

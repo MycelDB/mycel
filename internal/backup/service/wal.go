@@ -24,6 +24,9 @@ const (
 	recordTypeClusterBackupFail       wal.RecordType = "daemon.backup.cluster.fail.v1"
 	recordTypeClusterBackupAbort      wal.RecordType = "daemon.backup.cluster.abort.v1"
 	recordTypeClusterBackupBlockers   wal.RecordType = "daemon.backup.cluster.blockers.v1"
+
+	recordTypeClusterRestoreRequest wal.RecordType = "daemon.backup.cluster_restore.request.v1"
+	recordTypeClusterRestoreUpdate  wal.RecordType = "daemon.backup.cluster_restore.update.v1"
 )
 
 type backupPolicyRecord struct {
@@ -95,6 +98,8 @@ func (m *Module) commitWAL(ctx context.Context, typ wal.RecordType, payload any)
 	} else if applier, ok := m.backupRepositoryWALAppliers()[typ]; ok {
 		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
 	} else if applier, ok := m.clusterBackupWALAppliers()[typ]; ok {
+		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
+	} else if applier, ok := m.clusterRestoreWALAppliers()[typ]; ok {
 		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
 	} else {
 		err = errors.New("unsupported backup WAL record type")
