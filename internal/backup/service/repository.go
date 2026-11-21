@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -298,6 +299,13 @@ func (m *Module) applyBackupRepositoryUpsert(ctx context.Context, rec wal.Record
 	m.ensureBackupRepositoriesLocked()
 	existing, exists := m.repositories[repository.RepositoryID]
 	if exists && !payload.AllowReplace {
+		if sameBackupRepositoryConfig(existing, repository) {
+			// Restored Raft/WAL state can contain a repository catalog snapshot and
+			// the original create record in the replay range. Treat an identical
+			// create as idempotent and preserve any newer validation/update evidence
+			// already present in the restored snapshot.
+			return nil
+		}
 		return ErrBackupRepositoryAlreadyExists
 	}
 	if !exists {
@@ -640,6 +648,18 @@ func cleanRepositoryPrefix(prefix string) string {
 		return ""
 	}
 	return prefix
+}
+
+func sameBackupRepositoryConfig(a, b BackupRepository) bool {
+	a = normalizeBackupRepository(a)
+	b = normalizeBackupRepository(b)
+	a.CreateTime = time.Time{}
+	a.UpdateTime = time.Time{}
+	a.Validation = BackupRepositoryValidationSummary{}
+	b.CreateTime = time.Time{}
+	b.UpdateTime = time.Time{}
+	b.Validation = BackupRepositoryValidationSummary{}
+	return reflect.DeepEqual(a, b)
 }
 
 func cloneBackupRepository(in BackupRepository) BackupRepository {

@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/myceldb/mycel/internal/wal"
 )
 
 type fakeBackupRepositoryValidator struct {
@@ -101,6 +105,52 @@ func TestBackupRepositoryCatalogCRUDPersistsAndRedactsValidation(t *testing.T) {
 	}
 	if _, err := module.GetBackupRepository(created.RepositoryID); err == nil {
 		t.Fatalf("GetBackupRepository() after delete succeeded")
+	}
+}
+
+func TestBackupRepositoryDuplicateCreateReplayIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	module := NewModule()
+	module.dataDir = t.TempDir()
+	repo := BackupRepository{
+		RepositoryID:  "repo-replay",
+		DisplayName:   "Replay repository",
+		Provider:      RepositoryProviderS3Compatible,
+		S3:            S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "cluster-a", Region: "us-east-1"},
+		CredentialRef: SecretReference{Scheme: SecretSchemeEnv, Keys: map[string]string{"access_key_id": "MINIO_ACCESS_KEY", "secret_access_key": "MINIO_SECRET_KEY"}},
+		Encryption:    EncryptionPolicy{Mode: EncryptionModeNone},
+		DevOnly:       true,
+	}
+	created, err := module.CreateBackupRepository(ctx, repo)
+	if err != nil {
+		t.Fatalf("CreateBackupRepository() error = %v", err)
+	}
+	module.repositoryValidator = fakeBackupRepositoryValidator{validation: BackupRepositoryValidationSummary{State: ValidationStateValid, CheckedAt: time.Now().UTC()}}
+	if _, err := module.ValidateBackupRepository(ctx, created.RepositoryID); err != nil {
+		t.Fatalf("ValidateBackupRepository() error = %v", err)
+	}
+	raw, err := json.Marshal(backupRepositoryUpsertRecord{Repository: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.applyBackupRepositoryUpsert(ctx, wal.Record{Type: recordTypeBackupRepositoryUpsert, Payload: raw}); err != nil {
+		t.Fatalf("duplicate replay apply error = %v", err)
+	}
+	got, err := module.GetBackupRepository(created.RepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Validation.State != ValidationStateValid {
+		t.Fatalf("duplicate replay downgraded validation: %#v", got.Validation)
+	}
+
+	repo.S3.Prefix = "cluster-b"
+	raw, err = json.Marshal(backupRepositoryUpsertRecord{Repository: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.applyBackupRepositoryUpsert(ctx, wal.Record{Type: recordTypeBackupRepositoryUpsert, Payload: raw}); !errors.Is(err, ErrBackupRepositoryAlreadyExists) {
+		t.Fatalf("different duplicate apply error = %v, want %v", err, ErrBackupRepositoryAlreadyExists)
 	}
 }
 
