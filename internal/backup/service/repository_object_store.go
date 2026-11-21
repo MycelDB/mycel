@@ -30,6 +30,7 @@ type backupRepositoryObjectStore interface {
 	PutFile(ctx context.Context, key, path string) (repositoryObjectInfo, error)
 	PutBytes(ctx context.Context, key string, data []byte, contentType string) (repositoryObjectInfo, error)
 	GetBytes(ctx context.Context, key string, limit int64) ([]byte, repositoryObjectInfo, error)
+	GetFile(ctx context.Context, key, path string) (repositoryObjectInfo, error)
 	Head(ctx context.Context, key string) (repositoryObjectInfo, error)
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
 }
@@ -131,6 +132,51 @@ func (s *s3RepositoryObjectStore) GetBytes(ctx context.Context, key string, limi
 		info.ChecksumSHA256 = strings.TrimSpace(out.Metadata[repositoryObjectChecksumMetadataKey])
 	}
 	return raw, info, nil
+}
+
+func (s *s3RepositoryObjectStore) GetFile(ctx context.Context, key, path string) (repositoryObjectInfo, error) {
+	key = cleanRepositoryObjectKey(key)
+	if key == "" {
+		return repositoryObjectInfo{}, fmt.Errorf("repository object key is required")
+	}
+	if strings.TrimSpace(path) == "" {
+		return repositoryObjectInfo{}, fmt.Errorf("repository object destination path is required")
+	}
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.repo.S3.Bucket), Key: aws.String(key)})
+	if err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	defer out.Body.Close()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	tmp := path + ".tmp"
+	file, err := os.Create(tmp)
+	if err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	h := sha256.New()
+	size, copyErr := copyRepositoryObjectWithContext(ctx, io.MultiWriter(file, h), out.Body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return repositoryObjectInfo{}, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return repositoryObjectInfo{}, closeErr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return repositoryObjectInfo{}, err
+	}
+	info := repositoryObjectInfo{Key: key, URI: repositoryObjectURI(s.repo, key), SizeBytes: size, ChecksumSHA256: hex.EncodeToString(h.Sum(nil))}
+	if out.Metadata != nil {
+		if checksum := strings.TrimSpace(out.Metadata[repositoryObjectChecksumMetadataKey]); checksum != "" {
+			info.ChecksumSHA256 = checksum
+		}
+	}
+	return info, nil
 }
 
 func (s *s3RepositoryObjectStore) Head(ctx context.Context, key string) (repositoryObjectInfo, error) {

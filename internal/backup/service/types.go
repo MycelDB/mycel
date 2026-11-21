@@ -51,3 +51,8 @@ type ClusterBackupManager interface {
 type ClusterRestorePlanner interface {
 	PlanClusterRestore(context.Context, PlanClusterRestoreInput) (ClusterRestorePlan, error)
 }
+
+type ClusterRestoreManager interface {
+	ClusterRestorePlanner
+	StartClusterRestore(context.Context, StartClusterRestoreInput) (ClusterRestoreOperation, error)
+}

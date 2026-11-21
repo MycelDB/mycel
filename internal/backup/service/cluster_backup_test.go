@@ -1,6 +1,8 @@
 package service
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -264,7 +266,12 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	nodePrefix := joinRepositoryKey(prefix, "nodes", "myceld-0")
-	nodeArtifact := clusterbackup.NodeArtifact{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1, ArchiveName: archiveName, ArchiveURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, archiveName)), ManifestName: manifestName, ManifestURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, manifestName)), InventoryName: inventoryName, InventoryURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, inventoryName)), InventoryChecksumSHA256: shaHex("inventory"), SizeBytes: 128, ChecksumSHA256: shaHex("archive"), AppliedIndexes: map[string]uint64{"system": 10}, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: "lease-1", AcquiredAt: createdAt, ReleasedAt: completedAt, ExpiresAt: completedAt.Add(time.Minute), Groups: map[string]clusterbackup.RaftFreezeGroup{"system": {GroupID: "system", BarrierIndex: 10, AppliedIndex: 10, CommitIndex: 10, Term: 1, LastIndex: 10, SnapshotIndex: 0, Leader: 1}}}}
+	archiveKey := joinRepositoryKey(nodePrefix, archiveName)
+	archiveBytes := minimalRestoreTarBytes(t, "node-1")
+	if _, err := store.PutBytes(ctx, archiveKey, archiveBytes, "application/x-tar"); err != nil {
+		t.Fatalf("PutBytes(archive) error = %v", err)
+	}
+	nodeArtifact := clusterbackup.NodeArtifact{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1, ArchiveName: archiveName, ArchiveURI: repositoryObjectURI(repo, archiveKey), ManifestName: manifestName, ManifestURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, manifestName)), InventoryName: inventoryName, InventoryURI: repositoryObjectURI(repo, joinRepositoryKey(nodePrefix, inventoryName)), InventoryChecksumSHA256: shaHex("inventory"), SizeBytes: int64(len(archiveBytes)), ChecksumSHA256: hashBytes(archiveBytes), AppliedIndexes: map[string]uint64{"system": 10}, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: "lease-1", AcquiredAt: createdAt, ReleasedAt: completedAt, ExpiresAt: completedAt.Add(time.Minute), Groups: map[string]clusterbackup.RaftFreezeGroup{"system": {GroupID: "system", BarrierIndex: 10, AppliedIndex: 10, CommitIndex: 10, Term: 1, LastIndex: 10, SnapshotIndex: 0, Leader: 1}}}}
 	m.restoreClusterBackupState(backupSetID, map[string]clusterBackupRun{backupSetID: {BackupSetID: backupSetID, ClusterID: "cluster-test", RepositoryID: repo.RepositoryID, RepositoryPrefix: prefix, CaptureProvider: "filesystem_immutable_copy", Phase: clusterBackupPhaseValidating, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: []clusterBackupExpectedNode{{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1}}, Barriers: map[string]uint64{"system": 10}, NodeResults: map[string]clusterbackup.NodeArtifact{"myceld-0": nodeArtifact}}})
 	input := StartClusterBackupInput{Reason: "phase 6 test", ArchiveFormat: backupcore.ArchiveFormatTar, ClusterID: "cluster-test", ClusterName: "cluster-test", RepositoryID: repo.RepositoryID, RepositoryPrefix: prefix, CaptureProvider: "filesystem_immutable_copy", QuiesceReadProfile: backupcore.DefaultProductionQuiesceReadProfile}
 	summary, err := m.publishRepositoryClusterBackupSet(ctx, input, repo, backupSetID, "cluster-test", createdAt, completedAt)
@@ -309,6 +316,31 @@ func TestRepositoryClusterBackupPublishesManifestAndComplete(t *testing.T) {
 	}
 	if blocked.Restorable || len(blocked.Blockers) == 0 {
 		t.Fatalf("blocked restore plan = %#v, want identity-transform blocker", blocked)
+	}
+	targetDir := filepath.Join(t.TempDir(), "target-node-0")
+	stagingDir := filepath.Join(t.TempDir(), "staging")
+	target := ClusterRestoreTarget{ExpectedNodeCount: 1, Nodes: []ClusterRestoreNodeMapping{{Ordinal: 0, SourcePodName: "myceld-0", SourceNodeID: "node-1", TargetPodName: "myceld-0", TargetDataDir: targetDir}}}
+	staging := ClusterRestoreStagingLocation{StagingURI: stagingDir, CleanBeforeUse: true}
+	execPlan, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: target, Staging: staging})
+	if err != nil {
+		t.Fatalf("PlanClusterRestore(execution target) error = %v", err)
+	}
+	op, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RestorePlanID: execPlan.RestorePlanID, RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: target, Staging: staging, Preconditions: ClusterRestorePreconditionEvidence{CleanTarget: ClusterRestoreCleanTargetProof{TargetEmpty: true}, SourceFencing: ClusterRestoreSourceFencingEvidence{SourceClusterFenced: true}}})
+	if err != nil {
+		t.Fatalf("StartClusterRestore() error = %v", err)
+	}
+	if op.State != "SUCCEEDED" || op.Progress.VerifiedNodes != 1 {
+		t.Fatalf("restore operation = %#v, want succeeded with verified node", op)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "meta", "clustering", "node.json")); err != nil {
+		t.Fatalf("restored node identity missing: %v", err)
+	}
+	failed, err := m.StartClusterRestore(ctx, StartClusterRestoreInput{RepositoryID: repo.RepositoryID, BackupSetID: backupSetID, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Target: target, Staging: staging})
+	if err != nil {
+		t.Fatalf("StartClusterRestore(missing preconditions) error = %v", err)
+	}
+	if failed.State != "FAILED_REQUIRES_OPERATOR" || len(failed.Blockers) == 0 {
+		t.Fatalf("missing-precondition restore operation = %#v, want blockers", failed)
 	}
 }
 
@@ -406,6 +438,20 @@ func (s *memoryRepositoryObjectStore) GetBytes(ctx context.Context, key string, 
 	return out, repositoryObjectInfo{Key: key, URI: "s3://mycel-backups/" + key, SizeBytes: int64(len(out)), ChecksumSHA256: hashBytes(out)}, nil
 }
 
+func (s *memoryRepositoryObjectStore) GetFile(ctx context.Context, key, path string) (repositoryObjectInfo, error) {
+	raw, info, err := s.GetBytes(ctx, key, 0)
+	if err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return repositoryObjectInfo{}, err
+	}
+	return info, nil
+}
+
 func (s *memoryRepositoryObjectStore) Head(ctx context.Context, key string) (repositoryObjectInfo, error) {
 	_, info, err := s.GetBytes(ctx, key, 0)
 	return info, err
@@ -424,6 +470,28 @@ func (s *memoryRepositoryObjectStore) ListKeys(ctx context.Context, prefix strin
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+func minimalRestoreTarBytes(t *testing.T, nodeID string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	entries := map[string]string{
+		"meta/clustering/node.json": fmt.Sprintf(`{"node_id":%q}`, nodeID),
+		"meta/raft/hard_state.pb":   "raft-state",
+	}
+	for name, body := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(body))}); err != nil {
+			t.Fatalf("write tar header %s: %v", name, err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("write tar body %s: %v", name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	return buf.Bytes()
 }
 
 func shaHex(value string) string {
