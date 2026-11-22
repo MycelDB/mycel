@@ -20,7 +20,9 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
 	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
-	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
+	retention := &cobra.Command{Use: "retention", Short: "Preview and apply repository backup retention"}
+	retention.AddCommand(NewAdminBackupClusterRetentionPlanCommand(a), NewAdminBackupClusterRetentionApplyCommand(a))
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), retention, NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
 	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
@@ -464,6 +466,50 @@ func NewAdminBackupClusterDeleteCommand(a *app.App) *cobra.Command {
 	return cmd
 }
 
+func NewAdminBackupClusterRetentionPlanCommand(a *app.App) *cobra.Command {
+	opts := retentionCLIOptions{}
+	cmd := &cobra.Command{Use: "plan", Short: "Preview repository backup retention pruning", RunE: func(cmd *cobra.Command, args []string) error {
+		policy, err := retentionPolicyFromFlags(cmd, opts)
+		if err != nil {
+			return err
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.PlanRepositoryRetention(authCtx, &adminv1.PlanRepositoryRetentionRequest{RepositoryId: opts.repositoryID, RetentionPolicy: policy, Now: opts.now})
+		if err != nil {
+			return backupCLIError("plan repository retention", err)
+		}
+		return printRepositoryRetentionPlan(a, res.GetPlan())
+	}}
+	bindRetentionFlags(cmd, &opts, false)
+	return cmd
+}
+
+func NewAdminBackupClusterRetentionApplyCommand(a *app.App) *cobra.Command {
+	opts := retentionCLIOptions{}
+	cmd := &cobra.Command{Use: "apply", Short: "Apply repository backup retention pruning", RunE: func(cmd *cobra.Command, args []string) error {
+		policy, err := retentionPolicyFromFlags(cmd, opts)
+		if err != nil {
+			return err
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		res, err := client.ApplyRepositoryRetention(authCtx, &adminv1.ApplyRepositoryRetentionRequest{RepositoryId: opts.repositoryID, RetentionPolicy: policy, Reason: opts.reason, Now: opts.now})
+		if err != nil {
+			return backupCLIError("apply repository retention", err)
+		}
+		return printRepositoryRetentionPlan(a, res.GetPlan())
+	}}
+	bindRetentionFlags(cmd, &opts, true)
+	return cmd
+}
+
 func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
 	var backupSetPath, repositoryID, backupSetID string
 	cmd := &cobra.Command{Use: "validate", Short: "Validate a cluster backup set", RunE: func(cmd *cobra.Command, args []string) error {
@@ -704,6 +750,117 @@ func formatRestoreAuthSessionPolicy(policy adminv1.ClusterRestoreAuthSessionPoli
 	default:
 		return "UNSPECIFIED"
 	}
+}
+
+type retentionCLIOptions struct {
+	repositoryID          string
+	keepLastSuccessful    int32
+	keepFor               string
+	deleteIncompleteAfter string
+	now                   string
+	reason                string
+}
+
+func bindRetentionFlags(cmd *cobra.Command, opts *retentionCLIOptions, includeReason bool) {
+	cmd.Flags().StringVar(&opts.repositoryID, "repository-id", "", "backup repository ID; defaults to policy default_repository_id")
+	cmd.Flags().Int32Var(&opts.keepLastSuccessful, "keep-last-successful", 0, "override number of newest successful backups to keep")
+	cmd.Flags().StringVar(&opts.keepFor, "keep-for", "", "override age duration for successful backups to keep, for example 336h or 14d")
+	cmd.Flags().StringVar(&opts.deleteIncompleteAfter, "delete-incomplete-after", "", "override age duration before incomplete backup prefixes are deleted")
+	cmd.Flags().StringVar(&opts.now, "now", "", "RFC3339 planning time for deterministic previews")
+	if includeReason {
+		cmd.Flags().StringVar(&opts.reason, "reason", "", "operator reason for applying retention")
+	}
+}
+
+func retentionPolicyFromFlags(cmd *cobra.Command, opts retentionCLIOptions) (*adminv1.RetentionPolicy, error) {
+	changed := cmd.Flags().Changed("keep-last-successful") || cmd.Flags().Changed("keep-for") || cmd.Flags().Changed("delete-incomplete-after")
+	if !changed {
+		return nil, nil
+	}
+	policy := &adminv1.RetentionPolicy{}
+	if cmd.Flags().Changed("keep-last-successful") {
+		if opts.keepLastSuccessful < 0 {
+			return nil, fmt.Errorf("--keep-last-successful must not be negative")
+		}
+		policy.KeepLastSuccessful = opts.keepLastSuccessful
+	}
+	if cmd.Flags().Changed("keep-for") {
+		seconds, err := parseRetentionDurationSeconds(opts.keepFor)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --keep-for: %w", err)
+		}
+		policy.KeepForSeconds = seconds
+	}
+	if cmd.Flags().Changed("delete-incomplete-after") {
+		seconds, err := parseRetentionDurationSeconds(opts.deleteIncompleteAfter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --delete-incomplete-after: %w", err)
+		}
+		policy.DeleteIncompleteAfterSeconds = seconds
+	}
+	return policy, nil
+}
+
+func parseRetentionDurationSeconds(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if strings.HasSuffix(value, "d") && len(value) > 1 {
+		days, err := strconv.ParseInt(strings.TrimSuffix(value, "d"), 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		if days < 0 {
+			return 0, fmt.Errorf("duration must not be negative")
+		}
+		return int64((time.Duration(days) * 24 * time.Hour).Seconds()), nil
+	}
+	seconds, err := parseDurationSeconds(value)
+	if err != nil {
+		return 0, err
+	}
+	if seconds < 0 {
+		return 0, fmt.Errorf("duration must not be negative")
+	}
+	return seconds, nil
+}
+
+func printRepositoryRetentionPlan(a *app.App, plan *adminv1.RepositoryRetentionPlan) error {
+	if a.Output == "json" {
+		return a.Print(plan, "")
+	}
+	if plan == nil {
+		return a.Print(plan, "repository retention plan: <nil>\n")
+	}
+	var b strings.Builder
+	mode := "apply"
+	if plan.GetDryRun() {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(&b, "repository retention plan: %s\n", mode)
+	fmt.Fprintf(&b, "  repository: %s\n", plan.GetRepositoryId())
+	fmt.Fprintf(&b, "  planned_at: %s\n", plan.GetPlannedAt())
+	if policy := plan.GetRetentionPolicy(); policy != nil {
+		fmt.Fprintf(&b, "  keep_last_successful: %d\n", policy.GetKeepLastSuccessful())
+		fmt.Fprintf(&b, "  keep_for: %s\n", formatSeconds(policy.GetKeepForSeconds()))
+		fmt.Fprintf(&b, "  delete_incomplete_after: %s\n", formatSeconds(policy.GetDeleteIncompleteAfterSeconds()))
+	}
+	fmt.Fprintf(&b, "  deleted_objects: %d\n", plan.GetDeletedObjects())
+	for _, warning := range plan.GetWarnings() {
+		fmt.Fprintf(&b, "  warning: %s\n", warning)
+	}
+	for _, action := range plan.GetActions() {
+		line := fmt.Sprintf("  - %s %s reason=%s", action.GetAction(), action.GetBackupSetId(), action.GetReason())
+		if action.GetDeletedObjects() > 0 {
+			line += fmt.Sprintf(" deleted_objects=%d", action.GetDeletedObjects())
+		}
+		if action.GetBlocked() {
+			line += " blocked=true"
+		}
+		if action.GetError() != "" {
+			line += " error=" + action.GetError()
+		}
+		fmt.Fprintln(&b, line)
+	}
+	return a.Print(plan, b.String())
 }
 
 func adminBackupClient(ctx context.Context, a *app.App) (adminv1.AdminBackupServiceClient, context.Context, func(), error) {

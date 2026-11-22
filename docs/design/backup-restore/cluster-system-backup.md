@@ -107,6 +107,37 @@ The pod name in the filename is required so archives remain identifiable after
 they are copied between mounted backup volumes, object storage, operator
 workstations, and restore pods.
 
+## Repository retention and pruning
+
+Repository-backed cluster backups are pruned through deterministic retention
+plans. Operators can preview a plan with `PlanRepositoryRetention` or
+`mycel admin backup cluster retention plan` and can apply the same policy with
+`ApplyRepositoryRetention` or `mycel admin backup cluster retention apply`.
+Successful repository-backed backup completion also runs best-effort automatic
+retention using the daemon's effective backup policy; retention failures and
+warnings are emitted without converting the successful backup into a failure.
+
+The first retention policy supports:
+
+- `keep_last_successful`: keep the newest N valid completed backup sets.
+- `keep_for`: keep valid completed backup sets newer than the age cutoff.
+- `delete_incomplete_after`: delete incomplete backup-set prefixes only after
+  their age is known and older than the configured cutoff.
+
+Retention plans list repository-object truth under the repository's
+`backup-sets/` prefix. A backup set is considered completed only when both
+`backup-set.json` and a valid `COMPLETE` marker validate. Completed sets with an
+invalid manifest/marker are not pruned automatically; they are reported as
+warnings for operator review. Prefixes without `COMPLETE` are treated as
+incomplete and are eligible for cleanup only when their backup-set ID contains a
+parseable `YYYYMMDDTHHMMSSZ` timestamp and the age cutoff has passed.
+
+Deletion is fail-closed around active operations: any backup set referenced by a
+non-terminal cluster backup or cluster restore operation is planned as `blocked`
+and is never deleted by retention. Apply responses include per-action deletion
+counts, retryability, partial-failure errors, and warnings so operators can audit
+exactly which repository prefixes were removed and which need follow-up.
+
 ## Backup set manifest
 
 `backup-set.json` is the authoritative operator artifact for restore planning.

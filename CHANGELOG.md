@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
+- Added repository-backed cluster backup retention planning and safe pruning: automatic post-backup retention, public retention preview/apply admin and CLI paths, keep-last-successful/keep-for semantics, age-gated incomplete-prefix cleanup, active backup/restore blockers, and partial-deletion warnings (#381).
 - Added restore operation hardening for repository-backed cluster restores: owner-gated restart resume for safe pre-apply phases, phase-aware cancel finalization, execution-time staging/target capacity blockers, durable per-node post-restore validation evidence, and bounded restore operation history pruning (#380).
 - Added production Kubernetes restore controller orchestration for repository-backed `NEW_CLUSTER_BOOTSTRAP` restores: StatefulSet scale-down fencing, missing/replacement PVC preparation, helper pod evidence capture, per-node restore evidence, and RBAC/configuration guidance (#379).
 - Added the daemon foundation for repository-backed production backups: backup repository CRUD admin RPC handlers, persisted repository catalog state, structured credential-reference/encryption validation, sanitized validation evidence, development-only env/file credential gating, Kubernetes/ExternalSecret projected-file credential resolution, TLS CA reference support, and S3-compatible sentinel write/head/read/list probes.

@@ -404,6 +404,26 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		fail(clusterBackupPhaseCommittingManifest, err)
 		return
 	}
+	if repositoryCompletePublished {
+		m.applyRepositoryRetentionAfterBackup(backupSetID, input.RepositoryID)
+	}
+}
+
+func (m *Module) applyRepositoryRetentionAfterBackup(backupSetID, repositoryID string) {
+	retentionCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	plan, err := m.ApplyRepositoryRetention(retentionCtx, RepositoryRetentionPlanOptions{RepositoryID: repositoryID})
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("repository backup retention failed", "backup_set_id", backupSetID, "repository_id", repositoryID, "error", err)
+		}
+		return
+	}
+	if len(plan.Warnings) > 0 && m.logger != nil {
+		m.logger.Warn("repository backup retention completed with warnings", "backup_set_id", backupSetID, "repository_id", repositoryID, "warnings", strings.Join(plan.Warnings, "; "), "deleted_objects", plan.DeletedObjects)
+	} else if plan.DeletedObjects > 0 && m.logger != nil {
+		m.logger.Info("repository backup retention applied", "backup_set_id", backupSetID, "repository_id", repositoryID, "deleted_objects", plan.DeletedObjects)
+	}
 }
 
 func (m *Module) clusterPeerClient() backendClient {

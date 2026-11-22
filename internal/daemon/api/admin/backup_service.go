@@ -488,6 +488,59 @@ func (s *AdminBackupService) DeleteClusterBackupSet(ctx context.Context, req *ad
 	return &adminv1.DeleteClusterBackupSetResponse{RepositoryId: req.GetRepositoryId(), BackupSetId: req.GetBackupSetId(), State: adminv1.BackupDeletionState_BACKUP_DELETION_STATE_DELETED}, nil
 }
 
+func (s *AdminBackupService) PlanRepositoryRetention(ctx context.Context, req *adminv1.PlanRepositoryRetentionRequest) (*adminv1.PlanRepositoryRetentionResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	manager, ok := s.manager.(daemonbackup.RepositoryRetentionManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "repository retention planner is not configured")
+	}
+	now, err := parseOptionalBackupTime(req.GetNow(), "now")
+	if err != nil {
+		return nil, err
+	}
+	plan, err := manager.PlanRepositoryRetention(ctx, daemonbackup.RepositoryRetentionPlanOptions{RepositoryID: req.GetRepositoryId(), Policy: retentionPolicyFromProto(req.GetRetentionPolicy()), Now: now})
+	if err != nil {
+		return nil, mapBackupError(err, "plan repository retention")
+	}
+	return &adminv1.PlanRepositoryRetentionResponse{Plan: mapRepositoryRetentionPlan(plan)}, nil
+}
+
+func (s *AdminBackupService) ApplyRepositoryRetention(ctx context.Context, req *adminv1.ApplyRepositoryRetentionRequest) (*adminv1.ApplyRepositoryRetentionResponse, error) {
+	principal, err := s.requireBackupManage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	manager, ok := s.manager.(daemonbackup.RepositoryRetentionManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "repository retention manager is not configured")
+	}
+	now, err := parseOptionalBackupTime(req.GetNow(), "now")
+	if err != nil {
+		return nil, err
+	}
+	reason := firstNonEmptyAdmin(req.GetReason(), "repository retention requested by "+principal.PrincipalID)
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryBackup, "backup.repository_retention.started", "Repository backup retention started", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		event.Resource = activitymodel.Resource{Kind: "backup_repository", ID: req.GetRepositoryId()}
+		event.IdempotencyKey = "backup.repository_retention:" + req.GetRepositoryId() + ":" + reason
+	})
+	plan, err := manager.ApplyRepositoryRetention(ctx, daemonbackup.RepositoryRetentionPlanOptions{RepositoryID: req.GetRepositoryId(), Policy: retentionPolicyFromProto(req.GetRetentionPolicy()), Now: now})
+	if err != nil {
+		s.emit(ctx, activitymodel.SeverityError, activitymodel.CategoryBackup, "backup.repository_retention.failed", "Repository backup retention failed", func(event *activitymodel.Event) {
+			event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+			event.Resource = activitymodel.Resource{Kind: "backup_repository", ID: req.GetRepositoryId()}
+		})
+		return nil, mapBackupError(err, "apply repository retention")
+	}
+	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryBackup, "backup.repository_retention.completed", "Repository backup retention completed", func(event *activitymodel.Event) {
+		event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
+		event.Resource = activitymodel.Resource{Kind: "backup_repository", ID: plan.RepositoryID}
+	})
+	return &adminv1.ApplyRepositoryRetentionResponse{Plan: mapRepositoryRetentionPlan(plan)}, nil
+}
+
 func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv1.PlanClusterRestoreRequest) (*adminv1.PlanClusterRestoreResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
@@ -1423,9 +1476,28 @@ func mapBackupPolicy(policy backupcore.Policy) *adminv1.BackupPolicy {
 		QuiesceReadProfile:         quiesceReadProfileToProto(policy.QuiesceReadProfile),
 		AllowReadOnlyDuringQuiesce: policy.AllowReadOnlyDuringQuiesce,
 		DerivedSubsystems:          derived,
-		RetentionPolicy:            &adminv1.RetentionPolicy{KeepLastSuccessful: int32(policy.Retention.KeepLastSuccessful), KeepForSeconds: int64(policy.Retention.KeepFor.Seconds()), DeleteIncompleteAfterSeconds: int64(policy.Retention.DeleteIncompleteAfter.Seconds())},
+		RetentionPolicy:            retentionPolicyToProto(policy.Retention),
 		ValidationOptions:          &adminv1.ValidationOptions{IncludeArtifactChecks: policy.Validation.IncludeArtifactChecks, IncludeExternalDependencyChecks: policy.Validation.IncludeExternalDependencyChecks, IncludeCapacityEstimates: policy.Validation.IncludeCapacityEstimates, RequireCompleteMarker: policy.Validation.RequireCompleteMarker},
 	}
+}
+
+func retentionPolicyToProto(policy backupcore.RetentionPolicy) *adminv1.RetentionPolicy {
+	return &adminv1.RetentionPolicy{KeepLastSuccessful: int32(policy.KeepLastSuccessful), KeepForSeconds: int64(policy.KeepFor.Seconds()), DeleteIncompleteAfterSeconds: int64(policy.DeleteIncompleteAfter.Seconds())}
+}
+
+func retentionPolicyFromProto(policy *adminv1.RetentionPolicy) backupcore.RetentionPolicy {
+	if policy == nil {
+		return backupcore.RetentionPolicy{}
+	}
+	return backupcore.RetentionPolicy{KeepLastSuccessful: int(policy.GetKeepLastSuccessful()), KeepFor: time.Duration(policy.GetKeepForSeconds()) * time.Second, DeleteIncompleteAfter: time.Duration(policy.GetDeleteIncompleteAfterSeconds()) * time.Second}
+}
+
+func mapRepositoryRetentionPlan(plan daemonbackup.RepositoryRetentionPlan) *adminv1.RepositoryRetentionPlan {
+	out := &adminv1.RepositoryRetentionPlan{RepositoryId: plan.RepositoryID, PlannedAt: formatBackupTime(plan.PlannedAt), RetentionPolicy: retentionPolicyToProto(plan.Policy), DryRun: plan.DryRun, Warnings: append([]string(nil), plan.Warnings...), DeletedObjects: int32(plan.DeletedObjects)}
+	for _, action := range plan.Actions {
+		out.Actions = append(out.Actions, &adminv1.RepositoryRetentionAction{BackupSetId: action.BackupSetID, Prefix: action.Prefix, Action: action.Action, Reason: action.Reason, CreatedAt: formatBackupTime(action.CreatedAt), CompletedAt: formatBackupTime(action.CompletedAt), ObjectCount: int32(action.ObjectCount), DeletedObjects: int32(action.DeletedObjects), Retryable: action.Retryable, Blocked: action.Blocked, Error: action.Error, RetentionCutoff: formatBackupTime(action.RetentionCutoff)})
+	}
+	return out
 }
 
 func backupPolicyFromProto(policy *adminv1.BackupPolicy) backupcore.Policy {
@@ -1440,10 +1512,7 @@ func backupPolicyFromProto(policy *adminv1.BackupPolicy) backupcore.Policy {
 	for _, row := range policy.GetDerivedSubsystems() {
 		derived = append(derived, backupcore.DerivedSubsystemPolicy{Subsystem: derivedSubsystemFromProto(row.GetSubsystem()), Mode: derivedPolicyModeFromProto(row.GetMode())})
 	}
-	retention := backupcore.RetentionPolicy{}
-	if policy.GetRetentionPolicy() != nil {
-		retention = backupcore.RetentionPolicy{KeepLastSuccessful: int(policy.GetRetentionPolicy().GetKeepLastSuccessful()), KeepFor: time.Duration(policy.GetRetentionPolicy().GetKeepForSeconds()) * time.Second, DeleteIncompleteAfter: time.Duration(policy.GetRetentionPolicy().GetDeleteIncompleteAfterSeconds()) * time.Second}
-	}
+	retention := retentionPolicyFromProto(policy.GetRetentionPolicy())
 	validation := backupcore.ValidationOptions{}
 	if policy.GetValidationOptions() != nil {
 		validation = backupcore.ValidationOptions{IncludeArtifactChecks: policy.GetValidationOptions().GetIncludeArtifactChecks(), IncludeExternalDependencyChecks: policy.GetValidationOptions().GetIncludeExternalDependencyChecks(), IncludeCapacityEstimates: policy.GetValidationOptions().GetIncludeCapacityEstimates(), RequireCompleteMarker: policy.GetValidationOptions().GetRequireCompleteMarker()}
@@ -1602,6 +1671,18 @@ func archiveFormatFromProto(format adminv1.BackupArchiveFormat) backupcore.Archi
 
 func mapQuiesceParticipant(in quiesce.ParticipantStatus) *adminv1.QuiesceParticipantStatus {
 	return &adminv1.QuiesceParticipantStatus{Name: in.Name, Quiesced: in.Quiesced, Active: int32(in.Active), Reason: in.Reason, Mode: string(in.Mode), Source: in.Source, Since: formatBackupTime(in.Since), LastError: in.LastError, ActiveReadOnly: int32(in.ActiveReadOnly), ActiveWrites: int32(in.ActiveWrites), ReadAllowlistProfile: in.ReadAllowlistProfile, Deadline: formatBackupTime(in.Deadline), AcceptingReadOnly: in.AcceptingReadOnly, AcceptingWrites: in.AcceptingWrites}
+}
+
+func parseOptionalBackupTime(value, field string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, status.Errorf(codes.InvalidArgument, "%s must be RFC3339", field)
+	}
+	return parsed.UTC(), nil
 }
 
 func formatBackupTime(value time.Time) string {
