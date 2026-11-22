@@ -64,7 +64,9 @@ func (m *Module) PlanRepositoryRetention(ctx context.Context, options Repository
 
 func (m *Module) ApplyRepositoryRetention(ctx context.Context, options RepositoryRetentionPlanOptions) (RepositoryRetentionPlan, error) {
 	options.Apply = true
-	return m.planRepositoryRetention(ctx, options)
+	plan, err := m.planRepositoryRetention(ctx, options)
+	m.recordRepositoryRetentionObservation(plan, options.RepositoryID, err)
+	return plan, err
 }
 
 func (m *Module) planRepositoryRetention(ctx context.Context, options RepositoryRetentionPlanOptions) (RepositoryRetentionPlan, error) {
@@ -149,6 +151,48 @@ func (m *Module) planRepositoryRetention(ctx context.Context, options Repository
 		m.applyRepositoryRetentionActions(ctx, store, &plan)
 	}
 	return plan, nil
+}
+
+type repositoryRetentionObservation struct {
+	RepositoryID   string
+	ObservedAt     time.Time
+	Failed         bool
+	WarningCount   int
+	ActionErrors   int
+	BlockedActions int
+	DeletedObjects int
+}
+
+func (m *Module) recordRepositoryRetentionObservation(plan RepositoryRetentionPlan, requestedRepositoryID string, err error) {
+	observedAt := plan.PlannedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	obs := repositoryRetentionObservation{RepositoryID: firstNonEmptyString(plan.RepositoryID, strings.TrimSpace(requestedRepositoryID)), ObservedAt: observedAt, Failed: err != nil, WarningCount: len(plan.Warnings), DeletedObjects: plan.DeletedObjects}
+	for _, action := range plan.Actions {
+		if strings.TrimSpace(action.Error) != "" {
+			obs.ActionErrors++
+		}
+		if action.Blocked || action.Action == RetentionActionBlocked || action.Action == RetentionActionWarn {
+			obs.BlockedActions++
+		}
+	}
+	m.mu.Lock()
+	m.lastRepositoryRetentionObservation = obs
+	m.mu.Unlock()
+}
+
+func (m *Module) repositoryRetentionObservationSnapshot(repositoryID string) (repositoryRetentionObservation, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	obs := m.lastRepositoryRetentionObservation
+	if obs.ObservedAt.IsZero() {
+		return repositoryRetentionObservation{}, false
+	}
+	if strings.TrimSpace(repositoryID) != "" && strings.TrimSpace(obs.RepositoryID) != "" && strings.TrimSpace(repositoryID) != strings.TrimSpace(obs.RepositoryID) {
+		return repositoryRetentionObservation{}, false
+	}
+	return obs, true
 }
 
 type repositoryRetentionCompletedItem struct {

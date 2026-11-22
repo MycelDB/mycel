@@ -22,7 +22,7 @@ func NewAdminBackupCommand(a *app.App) *cobra.Command {
 	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
 	retention := &cobra.Command{Use: "retention", Short: "Preview and apply repository backup retention"}
 	retention.AddCommand(NewAdminBackupClusterRetentionPlanCommand(a), NewAdminBackupClusterRetentionApplyCommand(a))
-	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), retention, NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterObservabilityCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), retention, NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
 	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
 	return cmd
 }
@@ -407,6 +407,40 @@ func NewAdminBackupClusterStatusCommand(a *app.App) *cobra.Command {
 		st := res.GetStatus()
 		return a.Print(res, fmt.Sprintf("cluster backup status: %s\nbackup_set_id: %s\ncluster_id: %s\nmanifest: %s\nerror: %s\n", st.GetState(), st.GetBackupSetId(), st.GetClusterId(), st.GetManifestUri(), st.GetError()))
 	}}
+}
+
+func NewAdminBackupClusterObservabilityCommand(a *app.App) *cobra.Command {
+	var repositoryID string
+	var includeRetentionProbe bool
+	var staleOperationAfter, backupFreshnessAfter, incompleteBackupAfter time.Duration
+	cmd := &cobra.Command{Use: "observability", Aliases: []string{"metrics"}, Short: "Show backup/restore observability metrics and alert conditions", RunE: func(cmd *cobra.Command, args []string) error {
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
+		if err != nil {
+			return err
+		}
+		defer closeConn()
+		req := &adminv1.GetBackupObservabilityRequest{RepositoryId: repositoryID, IncludeRetentionProbe: includeRetentionProbe}
+		if staleOperationAfter > 0 {
+			req.StaleOperationAfterSeconds = int64(staleOperationAfter.Round(time.Second) / time.Second)
+		}
+		if backupFreshnessAfter > 0 {
+			req.BackupFreshnessAfterSeconds = int64(backupFreshnessAfter.Round(time.Second) / time.Second)
+		}
+		if incompleteBackupAfter > 0 {
+			req.IncompleteBackupAfterSeconds = int64(incompleteBackupAfter.Round(time.Second) / time.Second)
+		}
+		res, err := client.GetBackupObservability(authCtx, req)
+		if err != nil {
+			return backupCLIError("get backup observability", err)
+		}
+		return printBackupObservability(a, res.GetSnapshot())
+	}}
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for retention/incomplete-backup probes")
+	cmd.Flags().BoolVar(&includeRetentionProbe, "include-retention-probe", false, "include a non-mutating repository retention probe")
+	cmd.Flags().DurationVar(&staleOperationAfter, "stale-operation-after", 0, "alert threshold for active backup/restore operation age")
+	cmd.Flags().DurationVar(&backupFreshnessAfter, "backup-freshness-after", 0, "alert threshold for latest successful cluster backup age")
+	cmd.Flags().DurationVar(&incompleteBackupAfter, "incomplete-backup-after", 0, "alert threshold for incomplete repository backup prefixes")
+	return cmd
 }
 
 func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
@@ -861,6 +895,44 @@ func printRepositoryRetentionPlan(a *app.App, plan *adminv1.RepositoryRetentionP
 		fmt.Fprintln(&b, line)
 	}
 	return a.Print(plan, b.String())
+}
+
+func printBackupObservability(a *app.App, snapshot *adminv1.BackupObservabilitySnapshot) error {
+	if a.Output == "json" {
+		return a.Print(snapshot, "")
+	}
+	if snapshot == nil {
+		return a.Print(snapshot, "backup observability: <nil>\n")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "backup observability: %s\n", firstNonEmptyBackup(snapshot.GetSummaryState(), "unknown"))
+	fmt.Fprintf(&b, "  observed_at: %s\n", snapshot.GetObservedAt())
+	if snapshot.GetRepositoryId() != "" {
+		fmt.Fprintf(&b, "  repository: %s\n", snapshot.GetRepositoryId())
+	}
+	firing := 0
+	for _, alert := range snapshot.GetAlerts() {
+		if alert.GetFiring() {
+			firing++
+		}
+	}
+	fmt.Fprintf(&b, "  metrics: %d\n", len(snapshot.GetMetrics()))
+	fmt.Fprintf(&b, "  firing_alerts: %d\n", firing)
+	if firing == 0 {
+		fmt.Fprintln(&b, "  alerts: none firing")
+	} else {
+		fmt.Fprintln(&b, "  alerts:")
+		for _, alert := range snapshot.GetAlerts() {
+			if !alert.GetFiring() {
+				continue
+			}
+			fmt.Fprintf(&b, "  - [%s] %s reason=%s\n", alert.GetSeverity(), alert.GetName(), alert.GetReason())
+			for _, evidence := range alert.GetEvidence() {
+				fmt.Fprintf(&b, "      evidence: %s\n", evidence)
+			}
+		}
+	}
+	return a.Print(snapshot, b.String())
 }
 
 func adminBackupClient(ctx context.Context, a *app.App) (adminv1.AdminBackupServiceClient, context.Context, func(), error) {
