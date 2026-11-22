@@ -27,6 +27,7 @@ const (
 
 	recordTypeClusterRestoreRequest wal.RecordType = "daemon.backup.cluster_restore.request.v1"
 	recordTypeClusterRestoreUpdate  wal.RecordType = "daemon.backup.cluster_restore.update.v1"
+	recordTypeClusterRestorePrune   wal.RecordType = "daemon.backup.cluster_restore.prune.v1"
 )
 
 type backupPolicyRecord struct {

@@ -375,6 +375,36 @@ the StatefulSet, and validate. The backup-set manifest is used in both paths to
 verify that the operator or controller restored the correct archive to the correct
 ordinal.
 
+Restore operations are durable system-Raft records and keep a bounded history
+using the backup status history limit. Terminal restore operations beyond the
+newest retained history entries are pruned through a dedicated restore-prune log
+record, while active/non-terminal operations are never pruned.
+
+Restart reconciliation is fail-closed by phase. If the daemon restarts before
+any target-preparation or apply phase, and the restored operation records the
+same executor identity as the local daemon, the daemon may clean operation-scoped
+staging and resume from a fresh repository plan. Restarts after Kubernetes target
+preparation, PVC helper execution, archive apply, or post-restore validation are
+marked `FAILED_REQUIRES_OPERATOR` with blockers because target PVCs or data
+directories may have been modified. Completed temporary local restore directories
+may be committed after restart only when they verify successfully and the target
+is still clean; the operation still requires operator validation.
+
+Cancellation is also phase-aware. Cancellation before target mutation reaches
+`CANCELED` after operation-scoped cleanup. Cancellation during target preparation,
+artifact apply, or post-restore validation reaches `FAILED_REQUIRES_OPERATOR`
+and records a `restore_cancel_requires_operator_validation` blocker so operators
+inspect target PVCs/data directories before retrying.
+
+Before staging/apply, execution rechecks capacity using the current plan's
+required bytes, any supplied staging capacity evidence, and local filesystem
+capacity for daemon-managed staging/target directories. Capacity failures become
+retryable `FAILED_REQUIRES_OPERATOR` blockers before target mutation. Successful
+post-restore validation records durable per-node evidence for restored node
+identity, preserved identity/auth-session policy, manifest Raft/identity lineage,
+semantic/lexical/projection barrier counts, vector-store catalog validation, and
+derived-subsystem rebuild requirements.
+
 ### Kubernetes restore controller configuration
 
 The same in-cluster helper is both the PVC restore helper and the first

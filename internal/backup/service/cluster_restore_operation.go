@@ -15,6 +15,7 @@ import (
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/encryption"
 	"github.com/myceldb/mycel/internal/wal"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -39,6 +40,12 @@ type clusterRestoreUpdateRecord struct {
 	Operation ClusterRestoreOperation `json:"operation"`
 }
 
+type clusterRestorePruneRecord struct {
+	RestoreOperationIDs []string  `json:"restore_operation_ids"`
+	PrunedAt            time.Time `json:"pruned_at"`
+	Reason              string    `json:"reason"`
+}
+
 func (m *Module) StartClusterRestore(ctx context.Context, input StartClusterRestoreInput) (ClusterRestoreOperation, error) {
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
 	if input.IdempotencyKey != "" {
@@ -51,7 +58,8 @@ func (m *Module) StartClusterRestore(ctx context.Context, input StartClusterRest
 	if err != nil {
 		return ClusterRestoreOperation{}, err
 	}
-	op := ClusterRestoreOperation{RestoreOperationID: restoreOperationID(plan, input.IdempotencyKey, createdAt), RestorePlanID: plan.RestorePlanID, RepositoryID: plan.RepositoryID, BackupSetID: plan.BackupSetID, State: clusterRestoreStatePending, TargetMode: plan.TargetMode, IdentityMode: plan.IdentityMode, AuthSessionPolicy: plan.AuthSessionPolicy, CreatedAt: createdAt, UpdatedAt: createdAt, Target: plan.Target, Staging: plan.Staging, Preconditions: input.Preconditions, IdempotencyKey: input.IdempotencyKey}
+	executorID, executorNodeID, executorNodeName, executorRaftNodeID := m.clusterRestoreExecutorIdentity()
+	op := ClusterRestoreOperation{RestoreOperationID: restoreOperationID(plan, input.IdempotencyKey, createdAt), RestorePlanID: plan.RestorePlanID, RepositoryID: plan.RepositoryID, BackupSetID: plan.BackupSetID, State: clusterRestoreStatePending, TargetMode: plan.TargetMode, IdentityMode: plan.IdentityMode, AuthSessionPolicy: plan.AuthSessionPolicy, IdempotencyKey: input.IdempotencyKey, ExecutorID: executorID, ExecutorNodeID: executorNodeID, ExecutorNodeName: executorNodeName, ExecutorRaftNodeID: executorRaftNodeID, CreatedAt: createdAt, UpdatedAt: createdAt, Target: plan.Target, Staging: plan.Staging, Preconditions: input.Preconditions}
 	blockers := m.restoreExecutionBlockers(plan, input)
 	if len(blockers) > 0 {
 		op.State = clusterRestoreStateFailedRequiresOp
@@ -62,6 +70,7 @@ func (m *Module) StartClusterRestore(ctx context.Context, input StartClusterRest
 		if err := m.commitClusterRestore(ctx, recordTypeClusterRestoreRequest, clusterRestoreRequestRecord{Operation: op}); err != nil {
 			return ClusterRestoreOperation{}, err
 		}
+		_ = m.pruneClusterRestoreHistory(ctx)
 		return m.ClusterRestoreStatus(op.RestoreOperationID)
 	}
 	if err := m.commitClusterRestore(ctx, recordTypeClusterRestoreRequest, clusterRestoreRequestRecord{Operation: op}); err != nil {
@@ -95,11 +104,15 @@ func (m *Module) runClusterRestoreOperation(ctx context.Context, input StartClus
 	final, err := m.executeClusterRestoreOperation(ctx, input, plan, op, update)
 	if err != nil {
 		if ctx.Err() != nil {
-			if current, statusErr := m.ClusterRestoreStatus(op.RestoreOperationID); statusErr == nil && current.Error != "" {
-				final.Error = current.Error
+			if current, statusErr := m.ClusterRestoreStatus(op.RestoreOperationID); statusErr == nil {
+				final.CancelRequestedAt = current.CancelRequestedAt
+				final.CancelRequestedState = current.CancelRequestedState
+				final.CancelReason = current.CancelReason
+				if current.Error != "" {
+					final.Error = current.Error
+				}
 			}
-			final.State = clusterRestoreStateCanceled
-			final.Error = firstNonEmptyString(final.Error, ctx.Err().Error())
+			final = finalizeClusterRestoreCancellation(final, ctx.Err())
 		} else if final.State == "" || !clusterRestoreStateTerminal(final.State) {
 			final.State = clusterRestoreStateFailed
 			final.Error = err.Error()
@@ -108,10 +121,12 @@ func (m *Module) runClusterRestoreOperation(ctx context.Context, input StartClus
 		final.UpdatedAt = final.CompletedAt
 		final = m.cleanupClusterRestoreOperation(context.Background(), final)
 		_ = m.persistClusterRestoreOperation(context.Background(), final)
+		_ = m.pruneClusterRestoreHistory(context.Background())
 		return
 	}
 	final = m.cleanupClusterRestoreOperation(context.Background(), final)
 	_ = m.persistClusterRestoreOperation(context.Background(), final)
+	_ = m.pruneClusterRestoreHistory(context.Background())
 }
 
 func (m *Module) executeClusterRestoreOperation(ctx context.Context, input StartClusterRestoreInput, plan ClusterRestorePlan, op ClusterRestoreOperation, update func(ClusterRestoreOperation)) (ClusterRestoreOperation, error) {
@@ -161,7 +176,21 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 	}
 	sortedMappings := append([]ClusterRestoreNodeMapping(nil), plan.Target.Nodes...)
 	sort.Slice(sortedMappings, func(i, j int) bool { return sortedMappings[i].Ordinal < sortedMappings[j].Ordinal })
+	artifacts := map[int]clusterbackup.BackupSetNodeArtifact{}
+	for _, artifact := range manifest.Artifacts.Nodes {
+		artifacts[artifact.Ordinal] = artifact
+		op.Progress.BytesTotal += parseSignedDecimalStringLocal(artifact.SizeBytes)
+	}
 	op.Progress.TotalNodes = len(sortedMappings)
+	if blockers := restoreExecutionCapacityBlockers(plan, sortedMappings, artifacts, stagingPath); len(blockers) > 0 {
+		op.State = clusterRestoreStateFailedRequiresOp
+		op.Error = "cluster restore execution capacity checks failed"
+		op.Blockers = append(op.Blockers, blockers...)
+		op.CompletedAt = time.Now().UTC()
+		op.UpdatedAt = op.CompletedAt
+		update(op)
+		return op, nil
+	}
 	pvcControllerEvidence := map[int]map[string]string(nil)
 	if controller := m.clusterRestorePVCTargetController(); controller != nil && restoreMappingsUsePVCHelper(sortedMappings) {
 		op.State = clusterRestoreStatePreparingTarget
@@ -190,11 +219,6 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 			update(op)
 			return op, fmt.Errorf("prepare Kubernetes restore target: %w", prepareErr)
 		}
-	}
-	artifacts := map[int]clusterbackup.BackupSetNodeArtifact{}
-	for _, artifact := range manifest.Artifacts.Nodes {
-		artifacts[artifact.Ordinal] = artifact
-		op.Progress.BytesTotal += parseSignedDecimalStringLocal(artifact.SizeBytes)
 	}
 	op.State = clusterRestoreStateStagingArtifacts
 	op.Progress.CurrentPhase = "staging_artifacts"
@@ -297,6 +321,13 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 				op.Progress.Nodes[i].LastError = applyErr.Error()
 				return op, fmt.Errorf("apply ordinal %d archive with PVC helper: %w", mapping.Ordinal, applyErr)
 			}
+			validationEvidence, validationErr := restorePostValidationEvidence(plan, mapping, artifact, "helper_verified", "")
+			if validationErr != nil {
+				op.Progress.Nodes[i].State = "failed"
+				op.Progress.Nodes[i].LastError = validationErr.Error()
+				return op, fmt.Errorf("collect post-restore validation evidence for ordinal %d: %w", mapping.Ordinal, validationErr)
+			}
+			op.Progress.Nodes[i].Evidence = mergeRestoreNodeEvidence(op.Progress.Nodes[i].Evidence, validationEvidence)
 			completed := result.BytesCompleted
 			if completed <= 0 {
 				completed = parseSignedDecimalStringLocal(artifact.SizeBytes)
@@ -343,11 +374,13 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		op.Progress.Nodes[i].State = "verifying"
 		op.UpdatedAt = time.Now().UTC()
 		update(op)
-		if err := clusterbackup.VerifyRestoredDataDir(dataDir); err != nil {
+		validationEvidence, err := validateRestoredDataDirForOperation(dataDir, plan, mapping, artifact)
+		if err != nil {
 			op.Progress.Nodes[i].State = "failed"
 			op.Progress.Nodes[i].LastError = err.Error()
 			return op, fmt.Errorf("verify restored ordinal %d: %w", mapping.Ordinal, err)
 		}
+		op.Progress.Nodes[i].Evidence = mergeRestoreNodeEvidence(op.Progress.Nodes[i].Evidence, validationEvidence)
 		op.Progress.VerifiedNodes++
 		op.Progress.Nodes[i].State = "verified"
 		op.UpdatedAt = time.Now().UTC()
@@ -554,11 +587,27 @@ func (m *Module) reconcileInterruptedClusterRestores(ctx context.Context) error 
 	}
 	m.mu.Unlock()
 	for _, op := range interrupted {
+		if m.clusterRestoreCanResumeAfterRestart(op) {
+			if err := m.resumeClusterRestoreOperation(ctx, op); err != nil {
+				op = recoverInterruptedRestoreApply(op)
+				now := time.Now().UTC()
+				op.State = clusterRestoreStateFailedRequiresOp
+				op.Error = "cluster restore operation could not resume after daemon restart"
+				op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_resume_failed", Detail: err.Error(), FieldPath: "restore_operation_id", Retryable: true})
+				op.CompletedAt = now
+				op.UpdatedAt = now
+				op = m.cleanupClusterRestoreOperation(ctx, op)
+				if persistErr := m.persistClusterRestoreOperation(ctx, op); persistErr != nil {
+					return fmt.Errorf("mark interrupted cluster restore %s failed after resume failure: %w", op.RestoreOperationID, persistErr)
+				}
+			}
+			continue
+		}
 		op = recoverInterruptedRestoreApply(op)
 		now := time.Now().UTC()
 		op.State = clusterRestoreStateFailedRequiresOp
 		op.Error = "cluster restore operation was interrupted by daemon restart"
-		op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_operation_interrupted", Detail: "daemon restarted before restore operation reached a terminal state; inspect target data dirs/PVCs and restart from a fresh restore plan", FieldPath: "restore_operation_id"})
+		op.Blockers = append(op.Blockers, clusterRestoreInterruptedBlocker(op))
 		op.CompletedAt = now
 		op.UpdatedAt = now
 		op = m.cleanupClusterRestoreOperation(ctx, op)
@@ -566,7 +615,7 @@ func (m *Module) reconcileInterruptedClusterRestores(ctx context.Context) error 
 			return fmt.Errorf("mark interrupted cluster restore %s failed: %w", op.RestoreOperationID, err)
 		}
 	}
-	return nil
+	return m.pruneClusterRestoreHistory(ctx)
 }
 
 func recoverInterruptedRestoreApply(op ClusterRestoreOperation) ClusterRestoreOperation {
@@ -602,6 +651,334 @@ func recoverInterruptedRestoreApply(op ClusterRestoreOperation) ClusterRestoreOp
 		op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_temp_committed_after_restart", Detail: "completed temporary restore directory was committed after daemon restart; operator validation is still required", FieldPath: fieldPath})
 	}
 	return op
+}
+
+func (m *Module) clusterRestoreExecutorIdentity() (executorID, nodeID, nodeName string, raftNodeID uint64) {
+	if m == nil {
+		return "", "", "", 0
+	}
+	identity := m.localIdentity
+	nodeID = strings.TrimSpace(identity.NodeID)
+	nodeName = strings.TrimSpace(identity.NodeName)
+	raftNodeID = identity.RaftNodeID
+	switch {
+	case identity.RaftMode && raftNodeID != 0:
+		executorID = fmt.Sprintf("raft-node:%d", raftNodeID)
+	case nodeID != "":
+		executorID = "node-id:" + nodeID
+	case nodeName != "":
+		executorID = "node-name:" + nodeName
+	case strings.TrimSpace(identity.BackendAdvertiseAddr) != "":
+		executorID = "backend:" + strings.TrimSpace(identity.BackendAdvertiseAddr)
+	case strings.TrimSpace(m.dataDir) != "":
+		executorID = "data-dir:" + filepath.Clean(m.dataDir)
+	}
+	return executorID, nodeID, nodeName, raftNodeID
+}
+
+func (m *Module) clusterRestoreCanResumeAfterRestart(op ClusterRestoreOperation) bool {
+	if m == nil || strings.TrimSpace(op.ExecutorID) == "" || op.Progress.AppliedNodes != 0 || op.Progress.VerifiedNodes != 0 {
+		return false
+	}
+	currentExecutor, _, _, _ := m.clusterRestoreExecutorIdentity()
+	if currentExecutor == "" || currentExecutor != strings.TrimSpace(op.ExecutorID) {
+		return false
+	}
+	if len(op.Blockers) != 0 || op.TargetMode != ClusterRestoreTargetModeNewClusterBootstrap || op.IdentityMode != ClusterRestoreIdentityModePreserveBackupID {
+		return false
+	}
+	for _, node := range op.Progress.Nodes {
+		switch strings.ToLower(strings.TrimSpace(node.State)) {
+		case "", "staging", "staged":
+		default:
+			return false
+		}
+	}
+	switch strings.ToUpper(strings.TrimSpace(op.State)) {
+	case clusterRestoreStatePending, clusterRestoreStateValidatingTarget, clusterRestoreStateStagingArtifacts:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Module) resumeClusterRestoreOperation(ctx context.Context, op ClusterRestoreOperation) error {
+	plan, err := m.PlanClusterRestore(ctx, PlanClusterRestoreInput{RepositoryID: op.RepositoryID, BackupSetID: op.BackupSetID, TargetMode: op.TargetMode, IdentityMode: op.IdentityMode, AuthSessionPolicy: op.AuthSessionPolicy, Target: op.Target, Staging: op.Staging})
+	if err != nil {
+		return fmt.Errorf("plan restore for restart resume: %w", err)
+	}
+	if !plan.Restorable {
+		return fmt.Errorf("restore plan %s is no longer restorable: %v", plan.RestorePlanID, plan.Blockers)
+	}
+	now := time.Now().UTC()
+	op = m.cleanupClusterRestoreOperation(ctx, op)
+	op.RestorePlanID = plan.RestorePlanID
+	op.Target = plan.Target
+	op.Staging = plan.Staging
+	op.State = clusterRestoreStatePending
+	op.Error = ""
+	op.Blockers = nil
+	op.Progress = ClusterRestoreProgress{CurrentPhase: "resuming_after_restart"}
+	op.ResumeCount++
+	op.LastResumeAt = now
+	op.UpdatedAt = now
+	if err := m.persistClusterRestoreOperation(ctx, op); err != nil {
+		return err
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	if m.clusterRestoreCancels == nil {
+		m.clusterRestoreCancels = map[string]context.CancelFunc{}
+	}
+	m.clusterRestoreCancels[op.RestoreOperationID] = cancel
+	m.mu.Unlock()
+	input := StartClusterRestoreInput{RestorePlanID: plan.RestorePlanID, PlanFreshnessToken: plan.RestorePlanID, RepositoryID: op.RepositoryID, BackupSetID: op.BackupSetID, TargetMode: op.TargetMode, IdentityMode: op.IdentityMode, AuthSessionPolicy: op.AuthSessionPolicy, Target: plan.Target, Staging: plan.Staging, Preconditions: op.Preconditions, IdempotencyKey: op.IdempotencyKey}
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			delete(m.clusterRestoreCancels, op.RestoreOperationID)
+			m.mu.Unlock()
+		}()
+		m.runClusterRestoreOperation(runCtx, input, plan, op)
+	}()
+	return nil
+}
+
+func clusterRestoreInterruptedBlocker(op ClusterRestoreOperation) ValidationBlocker {
+	state := strings.ToUpper(strings.TrimSpace(op.State))
+	detail := "daemon restarted before restore operation reached a terminal state; inspect target data dirs/PVCs and restart from a fresh restore plan"
+	if !clusterRestoreStateRestartSafe(state) {
+		detail = fmt.Sprintf("daemon restarted during %s, a phase that may have modified target PVCs or data directories; inspect target state, cleanup or recreate targets, then restart from a fresh restore plan", state)
+	} else if strings.TrimSpace(op.ExecutorID) == "" {
+		detail = "daemon restarted before restore completed, and the original executor identity was not recorded; inspect target state and restart from a fresh restore plan"
+	}
+	return ValidationBlocker{Reason: "restore_operation_interrupted", Detail: detail, FieldPath: "restore_operation_id"}
+}
+
+func clusterRestoreStateRestartSafe(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case clusterRestoreStatePending, clusterRestoreStateValidatingTarget, clusterRestoreStateStagingArtifacts:
+		return true
+	default:
+		return false
+	}
+}
+
+func finalizeClusterRestoreCancellation(op ClusterRestoreOperation, cause error) ClusterRestoreOperation {
+	phase := firstNonEmptyString(op.CancelRequestedState, op.State)
+	reason := firstNonEmptyString(op.CancelReason, op.Error, "cluster restore cancellation requested")
+	if clusterRestoreCancelRequiresOperator(phase, op) {
+		op.State = clusterRestoreStateFailedRequiresOp
+		op.Error = firstNonEmptyString(reason, "cluster restore cancellation requires operator validation")
+		op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "restore_cancel_requires_operator_validation", Detail: fmt.Sprintf("restore cancellation was requested during %s after target preparation/apply may have modified target PVCs or data directories; inspect and cleanup target state before retrying", strings.ToUpper(strings.TrimSpace(phase))), FieldPath: "restore_operation_id"})
+		return op
+	}
+	op.State = clusterRestoreStateCanceled
+	op.Error = firstNonEmptyString(reason, fmt.Sprint(cause))
+	return op
+}
+
+func clusterRestoreCancelRequiresOperator(phase string, op ClusterRestoreOperation) bool {
+	if op.Progress.AppliedNodes > 0 || op.Progress.VerifiedNodes > 0 {
+		return true
+	}
+	switch strings.ToUpper(strings.TrimSpace(phase)) {
+	case clusterRestoreStatePreparingTarget, clusterRestoreStateApplyingArtifacts, clusterRestoreStatePostRestoreValidate:
+		return true
+	default:
+		return false
+	}
+}
+
+func restoreExecutionCapacityBlockers(plan ClusterRestorePlan, mappings []ClusterRestoreNodeMapping, artifacts map[int]clusterbackup.BackupSetNodeArtifact, stagingPath string) []ValidationBlocker {
+	var blockers []ValidationBlocker
+	required := plan.Capacity.RequiredBytes
+	if required <= 0 {
+		for _, artifact := range artifacts {
+			required += parseSignedDecimalStringLocal(artifact.SizeBytes)
+		}
+	}
+	if plan.Staging.AvailableBytes > 0 && required > 0 && plan.Staging.AvailableBytes < required {
+		blockers = append(blockers, ValidationBlocker{Reason: "restore_staging_capacity_exhausted", Detail: fmt.Sprintf("restore plan requires at least %d bytes but staging reports %d bytes available", required, plan.Staging.AvailableBytes), FieldPath: "staging.available_bytes", Retryable: true})
+	}
+	if restorePlanRequiresLocalStaging(mappings) && strings.TrimSpace(stagingPath) != "" && required > 0 {
+		if available, err := restoreFilesystemAvailableBytes(stagingPath); err != nil {
+			blockers = append(blockers, ValidationBlocker{Reason: "restore_staging_capacity_check_failed", Detail: err.Error(), FieldPath: "staging.staging_uri", Retryable: true})
+		} else if available < required {
+			blockers = append(blockers, ValidationBlocker{Reason: "restore_staging_capacity_exhausted", Detail: fmt.Sprintf("local staging path %s has %d bytes available, restore requires at least %d bytes", stagingPath, available, required), FieldPath: "staging.staging_uri", Retryable: true})
+		}
+	}
+	for i, mapping := range mappings {
+		if restoreNodeUsesPVCHelper(mapping) || strings.TrimSpace(mapping.TargetDataDir) == "" {
+			continue
+		}
+		artifact := artifacts[mapping.Ordinal]
+		nodeRequired := parseSignedDecimalStringLocal(artifact.SizeBytes)
+		if nodeRequired <= 0 {
+			continue
+		}
+		parent := filepath.Dir(filepath.Clean(strings.TrimSpace(mapping.TargetDataDir)))
+		capacityPath, err := restoreExistingCapacityPath(parent)
+		if err != nil {
+			blockers = append(blockers, ValidationBlocker{Reason: "restore_target_capacity_check_failed", Detail: err.Error(), FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i), Retryable: true})
+			continue
+		}
+		if available, err := restoreFilesystemAvailableBytes(capacityPath); err != nil {
+			blockers = append(blockers, ValidationBlocker{Reason: "restore_target_capacity_check_failed", Detail: err.Error(), FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i), Retryable: true})
+		} else if available < nodeRequired {
+			blockers = append(blockers, ValidationBlocker{Reason: "restore_target_capacity_exhausted", Detail: fmt.Sprintf("target filesystem for %s has %d bytes available, ordinal %d archive requires at least %d bytes", mapping.TargetDataDir, available, mapping.Ordinal, nodeRequired), FieldPath: fmt.Sprintf("target.nodes[%d].target_data_dir", i), Retryable: true})
+		}
+	}
+	return blockers
+}
+
+func restoreFilesystemAvailableBytes(path string) (int64, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return 0, fmt.Errorf("capacity path is required")
+	}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", path, err)
+	}
+	return int64(stat.Bavail) * int64(stat.Bsize), nil
+}
+
+func restoreExistingCapacityPath(path string) (string, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." {
+		return "", fmt.Errorf("capacity path is required")
+	}
+	for {
+		if info, err := os.Stat(path); err == nil {
+			if !info.IsDir() {
+				return "", fmt.Errorf("capacity path %s is not a directory", path)
+			}
+			return path, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", fmt.Errorf("no existing filesystem path found for capacity check")
+		}
+		path = parent
+	}
+}
+
+func validateRestoredDataDirForOperation(dataDir string, plan ClusterRestorePlan, mapping ClusterRestoreNodeMapping, artifact clusterbackup.BackupSetNodeArtifact) (map[string]string, error) {
+	if err := clusterbackup.VerifyRestoredDataDir(dataDir); err != nil {
+		return nil, err
+	}
+	restoredNodeID, err := restoredDataDirNodeID(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	expectedNodeID := firstNonEmptyString(mapping.SourceNodeID, artifact.NodeID)
+	if expectedNodeID != "" && restoredNodeID != expectedNodeID {
+		return nil, fmt.Errorf("restored node_id=%s does not match expected source node_id=%s for ordinal %d", restoredNodeID, expectedNodeID, mapping.Ordinal)
+	}
+	return restorePostValidationEvidence(plan, mapping, artifact, "passed", restoredNodeID)
+}
+
+func restoredDataDirNodeID(dataDir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "meta", "clustering", "node.json"))
+	if err != nil {
+		return "", fmt.Errorf("read restored clustering metadata: %w", err)
+	}
+	var identity struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := json.Unmarshal(raw, &identity); err != nil {
+		return "", fmt.Errorf("parse restored clustering metadata: %w", err)
+	}
+	if strings.TrimSpace(identity.NodeID) == "" {
+		return "", fmt.Errorf("restored clustering metadata has empty node_id")
+	}
+	return strings.TrimSpace(identity.NodeID), nil
+}
+
+func restorePostValidationEvidence(plan ClusterRestorePlan, mapping ClusterRestoreNodeMapping, artifact clusterbackup.BackupSetNodeArtifact, state, restoredNodeID string) (map[string]string, error) {
+	manifest := plan.ProductionManifest
+	if manifest == nil {
+		return nil, fmt.Errorf("restore plan is missing production manifest")
+	}
+	identity := manifest.Consistency.BarrierSet.Identity
+	system := manifest.Consistency.BarrierSet.SystemMetadata
+	evidence := map[string]string{
+		"post_restore_validation":              state,
+		"post_restore_validated_at":            time.Now().UTC().Format(time.RFC3339Nano),
+		"post_restore_validator":               "cluster_restore_operation/v1",
+		"restore_identity_mode":                plan.IdentityMode,
+		"restore_auth_session_policy":          plan.AuthSessionPolicy,
+		"manifest_cluster_id":                  system.ClusterID,
+		"manifest_bootstrap_epoch":             system.BootstrapEpoch,
+		"manifest_system_raft_group_id":        system.SystemRaftGroupID,
+		"manifest_system_raft_barrier_index":   system.SystemRaftBarrierIndex,
+		"manifest_identity_raft_group_id":      identity.IdentityRaftGroupID,
+		"manifest_identity_raft_barrier_index": identity.IdentityRaftBarrierIndex,
+		"authorization_revision":               identity.AuthorizationRevision,
+		"auth_session_policy":                  identity.AuthSessionPolicy,
+		"expected_node_id":                     firstNonEmptyString(mapping.SourceNodeID, artifact.NodeID),
+		"expected_pod_name":                    firstNonEmptyString(mapping.SourcePodName, artifact.PodName),
+		"expected_raft_node_id":                artifact.RaftNodeID,
+		"raft_identity_lineage":                plan.IdentityMode,
+		"semantic_barrier_count":               fmt.Sprint(len(manifest.Consistency.BarrierSet.Semantic)),
+		"lexical_barrier_count":                fmt.Sprint(len(manifest.Consistency.BarrierSet.Lexical)),
+		"projection_barrier_count":             fmt.Sprint(len(manifest.Consistency.BarrierSet.Projections)),
+		"derived_rebuild_required_subsystems":  strings.Join(restoreDerivedSubsystems(manifest.DerivedState, "REBUILD_REQUIRED"), ","),
+		"derived_included_subsystems":          strings.Join(restoreDerivedIncludedSubsystems(manifest.DerivedState), ","),
+	}
+	if restoredNodeID != "" {
+		evidence["restored_node_id"] = restoredNodeID
+		evidence["vector_store_catalog"] = "valid"
+	}
+	if identity.PrincipalStoreChecksumSHA256 != "" {
+		evidence["principal_store_checksum_present"] = "true"
+	}
+	if identity.RoleBindingChecksumSHA256 != "" {
+		evidence["role_binding_checksum_present"] = "true"
+	}
+	if identity.CapabilityGrantChecksumSHA256 != "" {
+		evidence["capability_grant_checksum_present"] = "true"
+	}
+	if identity.RefreshSessionStoreChecksumSHA256 != "" {
+		evidence["refresh_session_checksum_present"] = "true"
+	}
+	return evidence, nil
+}
+
+func restoreDerivedSubsystems(rows []clusterbackup.BackupSetDerivedState, want string) []string {
+	want = normalizeProductionEnum(want)
+	seen := map[string]bool{}
+	var out []string
+	for _, row := range rows {
+		subsystem := normalizeProductionEnum(row.Subsystem)
+		if subsystem == "" || seen[subsystem] {
+			continue
+		}
+		if normalizeProductionEnum(row.RestorePolicy) == want || normalizeProductionEnum(row.ValidationState) == want {
+			seen[subsystem] = true
+			out = append(out, subsystem)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func restoreDerivedIncludedSubsystems(rows []clusterbackup.BackupSetDerivedState) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, row := range rows {
+		subsystem := normalizeProductionEnum(row.Subsystem)
+		if subsystem == "" || seen[subsystem] || !row.Included {
+			continue
+		}
+		seen[subsystem] = true
+		out = append(out, subsystem)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *Module) ClusterRestoreStatus(restoreOperationID string) (ClusterRestoreOperation, error) {
@@ -659,23 +1036,32 @@ func (m *Module) CancelClusterRestore(ctx context.Context, restoreOperationID, r
 	if clusterRestoreStateTerminal(op.State) {
 		return cloneClusterRestoreOperation(op), nil
 	}
+	now := time.Now().UTC()
 	if cancel != nil {
 		cancel()
+		op.CancelRequestedAt = now
+		op.CancelRequestedState = op.State
+		op.CancelReason = firstNonEmptyString(reason, "cluster restore cancellation requested")
 		op.State = clusterRestoreStateCanceling
-		op.Error = firstNonEmptyString(reason, "cluster restore cancellation requested")
-		op.UpdatedAt = time.Now().UTC()
+		op.Error = op.CancelReason
+		op.UpdatedAt = now
 		if err := m.persistClusterRestoreOperation(ctx, op); err != nil {
 			return ClusterRestoreOperation{}, err
 		}
 		return m.ClusterRestoreStatus(restoreOperationID)
 	}
-	op.State = clusterRestoreStateCanceled
-	op.Error = firstNonEmptyString(reason, "cluster restore canceled before execution could resume")
-	op.CompletedAt = time.Now().UTC()
-	op.UpdatedAt = op.CompletedAt
+	op.CancelRequestedAt = now
+	op.CancelRequestedState = op.State
+	op.CancelReason = firstNonEmptyString(reason, "cluster restore canceled before execution could resume")
+	op.Error = op.CancelReason
+	op = finalizeClusterRestoreCancellation(op, nil)
+	op.CompletedAt = now
+	op.UpdatedAt = now
+	op = m.cleanupClusterRestoreOperation(ctx, op)
 	if err := m.persistClusterRestoreOperation(ctx, op); err != nil {
 		return ClusterRestoreOperation{}, err
 	}
+	_ = m.pruneClusterRestoreHistory(ctx)
 	return m.ClusterRestoreStatus(restoreOperationID)
 }
 
@@ -738,10 +1124,34 @@ func (m *Module) applyClusterRestoreUpdate(ctx context.Context, rec wal.Record) 
 	return nil
 }
 
+func (m *Module) applyClusterRestorePrune(ctx context.Context, rec wal.Record) error {
+	var payload clusterRestorePruneRecord
+	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+		return err
+	}
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureClusterRestoreStateLocked()
+	for _, id := range payload.RestoreOperationIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || id == m.activeClusterRestoreID {
+			continue
+		}
+		op, ok := m.clusterRestores[id]
+		if !ok || !clusterRestoreStateTerminal(op.State) {
+			continue
+		}
+		delete(m.clusterRestores, id)
+	}
+	return nil
+}
+
 func (m *Module) clusterRestoreWALAppliers() map[wal.RecordType]wal.Applier {
 	return map[wal.RecordType]wal.Applier{
 		recordTypeClusterRestoreRequest: wal.ApplierFunc(m.applyClusterRestoreRequest),
 		recordTypeClusterRestoreUpdate:  wal.ApplierFunc(m.applyClusterRestoreUpdate),
+		recordTypeClusterRestorePrune:   wal.ApplierFunc(m.applyClusterRestorePrune),
 	}
 }
 
@@ -765,6 +1175,69 @@ func (m *Module) commitClusterRestore(ctx context.Context, typ wal.RecordType, p
 		return fmt.Errorf("unsupported cluster restore record type %s", typ)
 	}
 	return applier.ApplyWAL(ctx, wal.Record{Type: typ, SchemaVersion: 1, Encoding: wal.PayloadEncodingJSON, Payload: raw})
+}
+
+func (m *Module) pruneClusterRestoreHistory(ctx context.Context) error {
+	limit := m.clusterRestoreHistoryLimit()
+	m.mu.Lock()
+	activeID := m.activeClusterRestoreID
+	operations := cloneClusterRestoreOperations(m.clusterRestores)
+	m.mu.Unlock()
+	ids := clusterRestorePruneIDs(operations, activeID, limit)
+	if len(ids) == 0 {
+		return nil
+	}
+	return m.commitClusterRestore(ctx, recordTypeClusterRestorePrune, clusterRestorePruneRecord{RestoreOperationIDs: ids, PrunedAt: time.Now().UTC(), Reason: "status_history_limit"})
+}
+
+func (m *Module) clusterRestoreHistoryLimit() int {
+	if m != nil && m.policy.StatusHistoryLimit > 0 {
+		return m.policy.StatusHistoryLimit
+	}
+	if m != nil && m.config.StatusHistoryLimit > 0 {
+		return m.config.StatusHistoryLimit
+	}
+	return backupcore.DefaultStatusHistoryLimit
+}
+
+func clusterRestorePruneIDs(operations map[string]ClusterRestoreOperation, activeID string, limit int) []string {
+	if limit <= 0 {
+		limit = backupcore.DefaultStatusHistoryLimit
+	}
+	terminal := make([]ClusterRestoreOperation, 0, len(operations))
+	for _, op := range operations {
+		if op.RestoreOperationID == activeID || !clusterRestoreStateTerminal(op.State) {
+			continue
+		}
+		terminal = append(terminal, cloneClusterRestoreOperation(op))
+	}
+	if len(terminal) <= limit {
+		return nil
+	}
+	sort.Slice(terminal, func(i, j int) bool {
+		left := clusterRestoreHistorySortTime(terminal[i])
+		right := clusterRestoreHistorySortTime(terminal[j])
+		if left.Equal(right) {
+			return terminal[i].RestoreOperationID > terminal[j].RestoreOperationID
+		}
+		return left.After(right)
+	})
+	ids := make([]string, 0, len(terminal)-limit)
+	for _, op := range terminal[limit:] {
+		ids = append(ids, op.RestoreOperationID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func clusterRestoreHistorySortTime(op ClusterRestoreOperation) time.Time {
+	if !op.CompletedAt.IsZero() {
+		return op.CompletedAt
+	}
+	if !op.UpdatedAt.IsZero() {
+		return op.UpdatedAt
+	}
+	return op.CreatedAt
 }
 
 func (m *Module) findClusterRestoreByIdempotencyKey(key string) (ClusterRestoreOperation, bool) {
@@ -827,6 +1300,11 @@ func normalizeClusterRestoreOperation(op ClusterRestoreOperation) ClusterRestore
 	op.IdentityMode = normalizeRestoreEnum(op.IdentityMode)
 	op.AuthSessionPolicy = normalizeRestoreEnum(op.AuthSessionPolicy)
 	op.IdempotencyKey = strings.TrimSpace(op.IdempotencyKey)
+	op.ExecutorID = strings.TrimSpace(op.ExecutorID)
+	op.ExecutorNodeID = strings.TrimSpace(op.ExecutorNodeID)
+	op.ExecutorNodeName = strings.TrimSpace(op.ExecutorNodeName)
+	op.CancelRequestedState = strings.ToUpper(strings.TrimSpace(op.CancelRequestedState))
+	op.CancelReason = strings.TrimSpace(op.CancelReason)
 	if op.CreatedAt.IsZero() {
 		op.CreatedAt = time.Now().UTC()
 	}

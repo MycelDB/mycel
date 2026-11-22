@@ -132,3 +132,88 @@ func TestRestoreCleanTargetProofMappingBlockers(t *testing.T) {
 		t.Fatalf("blockers=%#v, want none", blockers)
 	}
 }
+
+func TestRestoreExecutionCapacityBlockers(t *testing.T) {
+	staging := t.TempDir()
+	target := filepath.Join(t.TempDir(), "node-0")
+	plan := ClusterRestorePlan{Capacity: clusterbackup.BackupSetCapacityEstimate{RequiredBytes: 4096}, Staging: ClusterRestoreStagingLocation{AvailableBytes: 1024}}
+	mappings := []ClusterRestoreNodeMapping{{Ordinal: 0, TargetDataDir: target}}
+	artifacts := map[int]clusterbackup.BackupSetNodeArtifact{0: {Ordinal: 0, SizeBytes: "2048"}}
+	blockers := restoreExecutionCapacityBlockers(plan, mappings, artifacts, staging)
+	if !hasBlockerReason(blockers, "restore_staging_capacity_exhausted") {
+		t.Fatalf("blockers=%#v, want restore_staging_capacity_exhausted", blockers)
+	}
+}
+
+func TestClusterRestorePruneIDsKeepsNewestTerminalAndActive(t *testing.T) {
+	now := time.Now().UTC()
+	ops := map[string]ClusterRestoreOperation{
+		"old":    {RestoreOperationID: "old", State: clusterRestoreStateSucceeded, CreatedAt: now.Add(-4 * time.Hour), CompletedAt: now.Add(-3 * time.Hour)},
+		"new":    {RestoreOperationID: "new", State: clusterRestoreStateFailed, CreatedAt: now.Add(-2 * time.Hour), CompletedAt: now.Add(-time.Hour)},
+		"active": {RestoreOperationID: "active", State: clusterRestoreStateStagingArtifacts, CreatedAt: now},
+	}
+	ids := clusterRestorePruneIDs(ops, "active", 1)
+	if len(ids) != 1 || ids[0] != "old" {
+		t.Fatalf("clusterRestorePruneIDs()=%v, want [old]", ids)
+	}
+}
+
+func TestClusterRestoreCanResumeAfterRestartRequiresOwnerAndSafePhase(t *testing.T) {
+	dataDir := t.TempDir()
+	m := &Module{dataDir: dataDir}
+	executorID, _, _, _ := m.clusterRestoreExecutorIdentity()
+	op := ClusterRestoreOperation{RestoreOperationID: "restore-op", ExecutorID: executorID, State: clusterRestoreStateStagingArtifacts, TargetMode: ClusterRestoreTargetModeNewClusterBootstrap, IdentityMode: ClusterRestoreIdentityModePreserveBackupID, Progress: ClusterRestoreProgress{Nodes: []ClusterRestoreNodeProgress{{Ordinal: 0, State: "staged"}}}}
+	if !m.clusterRestoreCanResumeAfterRestart(op) {
+		t.Fatalf("clusterRestoreCanResumeAfterRestart()=false, want true")
+	}
+	op.State = clusterRestoreStateApplyingArtifacts
+	if m.clusterRestoreCanResumeAfterRestart(op) {
+		t.Fatalf("clusterRestoreCanResumeAfterRestart(applying)=true, want false")
+	}
+	op.State = clusterRestoreStateStagingArtifacts
+	op.ExecutorID = "data-dir:/other"
+	if m.clusterRestoreCanResumeAfterRestart(op) {
+		t.Fatalf("clusterRestoreCanResumeAfterRestart(wrong owner)=true, want false")
+	}
+}
+
+func TestCancelClusterRestoreWithoutRunnerRequiresOperatorDuringApply(t *testing.T) {
+	m := NewModule(Config{StatusHistoryLimit: 20})
+	now := time.Now().UTC()
+	m.restoreClusterRestoreState("restore-op", map[string]ClusterRestoreOperation{"restore-op": {RestoreOperationID: "restore-op", State: clusterRestoreStateApplyingArtifacts, CreatedAt: now, UpdatedAt: now, Progress: ClusterRestoreProgress{AppliedNodes: 1}}})
+	canceled, err := m.CancelClusterRestore(context.Background(), "restore-op", "operator requested cancel")
+	if err != nil {
+		t.Fatalf("CancelClusterRestore() error=%v", err)
+	}
+	if canceled.State != clusterRestoreStateFailedRequiresOp || !hasBlockerReason(canceled.Blockers, "restore_cancel_requires_operator_validation") {
+		t.Fatalf("CancelClusterRestore()=%#v, want failed-requires-operator cancellation blocker", canceled)
+	}
+}
+
+func TestValidateRestoredDataDirForOperationEvidence(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "meta", "clustering"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, "meta", "raft"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "meta", "clustering", "node.json"), []byte(`{"node_id":"node-1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "meta", "raft", "hard_state.pb"), []byte("raft"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := ClusterRestorePlan{IdentityMode: ClusterRestoreIdentityModePreserveBackupID, AuthSessionPolicy: ClusterRestoreAuthSessionPolicyPreserveRestoredSessions, ProductionManifest: &clusterbackup.BackupSetManifestV1{Consistency: clusterbackup.BackupSetConsistency{BarrierSet: clusterbackup.CheckpointBarrierSetV1{SystemMetadata: clusterbackup.CheckpointSystemMetadata{ClusterID: "cluster-a", BootstrapEpoch: "1", SystemRaftGroupID: "system", SystemRaftBarrierIndex: "10"}, Identity: clusterbackup.CheckpointIdentity{IdentityRaftGroupID: "system", IdentityRaftBarrierIndex: "10", AuthorizationRevision: "9", RefreshSessionStoreChecksumSHA256: "abc", AuthSessionPolicy: ClusterRestoreAuthSessionPolicyPreserveRestoredSessions}}}, DerivedState: []clusterbackup.BackupSetDerivedState{{Subsystem: "LEXICAL_SEARCH", RestorePolicy: "REBUILD_REQUIRED", ValidationState: "REBUILD_REQUIRED"}, {Subsystem: "SEMANTIC_VECTOR_SEARCH", Included: true, RestorePolicy: "PRESERVED", ValidationState: "PASSED"}}}}
+	evidence, err := validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "node-1", SourcePodName: "myceld-0"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "node-1", PodName: "myceld-0", RaftNodeID: "1"})
+	if err != nil {
+		t.Fatalf("validateRestoredDataDirForOperation() error=%v", err)
+	}
+	if evidence["post_restore_validation"] != "passed" || evidence["restored_node_id"] != "node-1" || evidence["refresh_session_checksum_present"] != "true" || evidence["derived_rebuild_required_subsystems"] != "lexical_search" {
+		t.Fatalf("evidence=%#v", evidence)
+	}
+	_, err = validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "other-node"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "other-node"})
+	if err == nil {
+		t.Fatalf("validateRestoredDataDirForOperation(node mismatch) error=nil, want error")
+	}
+}
