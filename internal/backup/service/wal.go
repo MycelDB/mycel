@@ -19,6 +19,7 @@ const (
 	recordTypeClusterBackupRequest    wal.RecordType = "daemon.backup.cluster.request.v1"
 	recordTypeClusterBackupPhase      wal.RecordType = "daemon.backup.cluster.phase.v1"
 	recordTypeClusterBackupBarrier    wal.RecordType = "daemon.backup.cluster.barrier.v1"
+	recordTypeClusterBackupCapture    wal.RecordType = "daemon.backup.cluster.capture.v1"
 	recordTypeClusterBackupNodeResult wal.RecordType = "daemon.backup.cluster.node_result.v1"
 	recordTypeClusterBackupComplete   wal.RecordType = "daemon.backup.cluster.complete.v1"
 	recordTypeClusterBackupFail       wal.RecordType = "daemon.backup.cluster.fail.v1"
@@ -68,6 +69,7 @@ func (m *Module) clusterBackupWALAppliers() map[wal.RecordType]wal.Applier {
 		recordTypeClusterBackupRequest:    wal.ApplierFunc(m.applyClusterBackupRequest),
 		recordTypeClusterBackupPhase:      wal.ApplierFunc(m.applyClusterBackupPhase),
 		recordTypeClusterBackupBarrier:    wal.ApplierFunc(m.applyClusterBackupBarrier),
+		recordTypeClusterBackupCapture:    wal.ApplierFunc(m.applyClusterBackupCapture),
 		recordTypeClusterBackupNodeResult: wal.ApplierFunc(m.applyClusterBackupNodeResult),
 		recordTypeClusterBackupComplete:   wal.ApplierFunc(m.applyClusterBackupComplete),
 		recordTypeClusterBackupFail: wal.ApplierFunc(func(ctx context.Context, rec wal.Record) error {

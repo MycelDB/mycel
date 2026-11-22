@@ -438,12 +438,16 @@ func TestLoadFromEnvBackupOverrides(t *testing.T) {
 	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS", "gp3")
 	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST", "20Gi")
 	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES", "ReadWriteOnce, ReadWriteMany")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS", "ebs-csi")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE", "data-{pod}")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_DELETE_ON_COMPLETION", "false")
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
 	backup := cfg.Backup
-	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup || !backup.KubernetesRestoreHelperEnabled || backup.KubernetesRestoreHelperImage != "registry.example/mycel:restore" || backup.KubernetesRestoreHelperNamespace != "restore-system" || backup.KubernetesRestoreHelperServiceAccount != "mycel-restore" || !backup.KubernetesRestoreScaleDownStatefulSet || !backup.KubernetesRestoreProvisionPVCs || !backup.KubernetesRestoreReplaceExistingPVCs || backup.KubernetesRestorePVCStorageClassName != "gp3" || backup.KubernetesRestorePVCStorageRequest != "20Gi" || len(backup.KubernetesRestorePVCAccessModes) != 2 || backup.KubernetesRestorePVCAccessModes[0] != "ReadWriteOnce" || backup.KubernetesRestorePVCAccessModes[1] != "ReadWriteMany" {
+	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup || !backup.KubernetesRestoreHelperEnabled || backup.KubernetesRestoreHelperImage != "registry.example/mycel:restore" || backup.KubernetesRestoreHelperNamespace != "restore-system" || backup.KubernetesRestoreHelperServiceAccount != "mycel-restore" || !backup.KubernetesRestoreScaleDownStatefulSet || !backup.KubernetesRestoreProvisionPVCs || !backup.KubernetesRestoreReplaceExistingPVCs || backup.KubernetesRestorePVCStorageClassName != "gp3" || backup.KubernetesRestorePVCStorageRequest != "20Gi" || len(backup.KubernetesRestorePVCAccessModes) != 2 || backup.KubernetesRestorePVCAccessModes[0] != "ReadWriteOnce" || backup.KubernetesRestorePVCAccessModes[1] != "ReadWriteMany" || !backup.KubernetesSnapshotCaptureEnabled || backup.KubernetesSnapshotClassName != "ebs-csi" || backup.KubernetesSnapshotSourcePVCTemplate != "data-{pod}" || backup.KubernetesSnapshotDeleteOnCompletion {
 		t.Fatalf("unexpected backup overrides: %+v", backup)
 	}
 }

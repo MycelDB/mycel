@@ -375,6 +375,20 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
 	}).WithExternalObjectDependencyProvider(blobService)
+	if cfg.Backup.KubernetesSnapshotCaptureEnabled {
+		provider, err := backupservice.NewInClusterKubernetesSnapshotCaptureProvider(backupservice.KubernetesSnapshotCaptureProviderConfig{
+			Namespace:          cfg.Backup.KubernetesRestoreHelperNamespace,
+			SnapshotClassName:  cfg.Backup.KubernetesSnapshotClassName,
+			SourcePVCTemplate:  cfg.Backup.KubernetesSnapshotSourcePVCTemplate,
+			DeleteOnCompletion: cfg.Backup.KubernetesSnapshotDeleteOnCompletion,
+		})
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("configure Kubernetes snapshot capture provider: %w", err)
+		}
+		backupService.WithClusterSnapshotCaptureProvider(provider)
+		logger.Info("Kubernetes snapshot capture provider enabled", "namespace", cfg.Backup.KubernetesRestoreHelperNamespace, "snapshot_class", cfg.Backup.KubernetesSnapshotClassName, "delete_on_completion", cfg.Backup.KubernetesSnapshotDeleteOnCompletion)
+	}
 	if cfg.Backup.KubernetesRestoreHelperEnabled {
 		helper, err := backupservice.NewInClusterKubernetesPVCRestoreHelper(backupservice.KubernetesPVCRestoreHelperConfig{
 			Namespace:            cfg.Backup.KubernetesRestoreHelperNamespace,

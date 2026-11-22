@@ -58,6 +58,7 @@ type Module struct {
 	repositoryObjectStoreFactory       backupRepositoryObjectStoreFactory
 	lastRepositoryRetentionObservation repositoryRetentionObservation
 	clusterRestorePVCHelper            ClusterRestorePVCHelper
+	clusterSnapshotCaptureProvider     ClusterSnapshotCaptureProvider
 	clusterBackendClient               backendClient
 	clusterNodeAddrs                   []string
 	clusterLocalRaftNode               consensus.NodeID
@@ -103,6 +104,11 @@ func (m *Module) WithExternalObjectDependencyValidator(validator ExternalObjectD
 
 func (m *Module) WithClusterRestorePVCHelper(helper ClusterRestorePVCHelper) *Module {
 	m.clusterRestorePVCHelper = helper
+	return m
+}
+
+func (m *Module) WithClusterSnapshotCaptureProvider(provider ClusterSnapshotCaptureProvider) *Module {
+	m.clusterSnapshotCaptureProvider = provider
 	return m
 }
 

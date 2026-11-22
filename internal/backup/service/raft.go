@@ -29,6 +29,7 @@ func (s RaftStateMachine) SupportsRaftCommandRecord(scope consensus.CommandScope
 		recordTypeClusterBackupRequest,
 		recordTypeClusterBackupPhase,
 		recordTypeClusterBackupBarrier,
+		recordTypeClusterBackupCapture,
 		recordTypeClusterBackupNodeResult,
 		recordTypeClusterBackupComplete,
 		recordTypeClusterBackupFail,
@@ -107,6 +108,8 @@ func (m *Module) applyBackupRaftCommand(ctx context.Context, cmd consensus.RaftC
 		return m.applyClusterBackupPhase(ctx, rec)
 	case recordTypeClusterBackupBarrier:
 		return m.applyClusterBackupBarrier(ctx, rec)
+	case recordTypeClusterBackupCapture:
+		return m.applyClusterBackupCapture(ctx, rec)
 	case recordTypeClusterBackupNodeResult:
 		return m.applyClusterBackupNodeResult(ctx, rec)
 	case recordTypeClusterBackupComplete:

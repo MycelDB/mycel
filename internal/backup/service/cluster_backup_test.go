@@ -134,6 +134,77 @@ func TestClusterBackupIdempotencyKeyFindsPersistedRun(t *testing.T) {
 	}
 }
 
+func TestClusterBackupSnapshotCaptureRecordAndManifestEvidence(t *testing.T) {
+	ctx := context.Background()
+	m := newInitializedBackupModule(t)
+	createdAt := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	backupSetID := "backup-set-20261122T100000Z-cluster-test"
+	request := clusterBackupRequestRecord{BackupSetID: backupSetID, ClusterID: "cluster-test", CaptureProvider: clusterCaptureProviderCSI, CreatedAt: createdAt, Expected: []clusterBackupExpectedNode{{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1}}}
+	applyClusterRecord(t, ctx, m, recordTypeClusterBackupRequest, request, "request")
+	applyClusterRecord(t, ctx, m, recordTypeClusterBackupBarrier, clusterBackupBarrierRecord{BackupSetID: backupSetID, Barriers: map[string]uint64{"system": 10}, UpdatedAt: createdAt}, "barrier")
+	evidence := mustJSONRaw(map[string]any{"schema": "mycel.kubernetes_snapshot_capture_evidence", "version": 1, "provider": "CSI_VOLUME_SNAPSHOT", "snapshot_class_name": "ebs-csi", "snapshots": []map[string]any{{"pod_name": "myceld-0", "source_pvc_ref": "pvc/myceld-data-myceld-0", "snapshot_ref": "volumesnapshot.snapshot.storage.k8s.io/mycel-snap-0", "ready_to_use": true}}})
+	nodeSource := mustJSONRaw(map[string]any{"provider": "CSI_VOLUME_SNAPSHOT", "source_pvc_ref": "pvc/myceld-data-myceld-0", "snapshot_ref": "volumesnapshot.snapshot.storage.k8s.io/mycel-snap-0", "ready_to_use": true})
+	applyClusterRecord(t, ctx, m, recordTypeClusterBackupCapture, clusterBackupCaptureRecord{BackupSetID: backupSetID, Provider: clusterCaptureProviderCSI, ProviderVersion: "snapshot.storage.k8s.io/v1", SnapshotClassName: "ebs-csi", DataMover: "kubernetes-csi-volumesnapshot-plus-mycel-daemon-s3-compatible", ProviderEvidence: evidence, NodeSources: map[string]json.RawMessage{"myceld-0": nodeSource}, Cleanup: ClusterSnapshotCleanupResult{Attempted: true, Completed: true, Items: []ClusterSnapshotCleanupItem{{PodName: "myceld-0", ResourceURI: "k8s://backup/volumesnapshot/mycel-snap-0", State: "deleted"}}}, UpdatedAt: createdAt}, "capture")
+	archiveName, err := clusterbackup.NewArchiveName(createdAt, "myceld-0", backupSetID, backupcore.ArchiveFormatTar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestName, err := clusterbackup.NewNodeManifestName(archiveName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventoryName, err := clusterbackup.NewNodeInventoryName(archiveName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := clusterbackup.NodeArtifact{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1, ArchiveName: archiveName, ArchiveURI: "s3://mycel-backups/clusters/test/nodes/myceld-0/" + archiveName, ManifestName: manifestName, ManifestURI: "s3://mycel-backups/clusters/test/nodes/myceld-0/" + manifestName, InventoryName: inventoryName, InventoryURI: "s3://mycel-backups/clusters/test/nodes/myceld-0/" + inventoryName, InventoryChecksumSHA256: shaHex("inventory"), SizeBytes: 123, ChecksumSHA256: shaHex("archive"), AppliedIndexes: map[string]uint64{"system": 10}, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: "lease-1", AcquiredAt: createdAt, ReleasedAt: createdAt.Add(time.Second), ExpiresAt: createdAt.Add(time.Minute), Groups: map[string]clusterbackup.RaftFreezeGroup{"system": {GroupID: "system", BarrierIndex: 10, AppliedIndex: 10, CommitIndex: 10}}}}
+	applyClusterRecord(t, ctx, m, recordTypeClusterBackupNodeResult, clusterBackupNodeResultRecord{BackupSetID: backupSetID, Node: node, UpdatedAt: createdAt}, "node-result")
+	repo := normalizeBackupRepository(BackupRepository{RepositoryID: "repo-snap", Provider: RepositoryProviderS3Compatible, S3: S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "clusters/test"}, CredentialRef: SecretReference{Scheme: SecretSchemeEnv, Keys: map[string]string{"access_key_id": "MINIO_ACCESS_KEY", "secret_access_key": "MINIO_SECRET_KEY"}}, DevOnly: true})
+	input := StartClusterBackupInput{ArchiveFormat: backupcore.ArchiveFormatTar, ClusterID: "cluster-test", ClusterName: "cluster-test", RepositoryID: repo.RepositoryID, RepositoryPrefix: repositoryBackupSetPrefix(repo, backupSetID), CaptureProvider: clusterCaptureProviderCSI, QuiesceReadProfile: backupcore.DefaultProductionQuiesceReadProfile}
+	manifest, err := m.buildProductionBackupSetManifest(input, repo, backupSetID, "cluster-test", createdAt, createdAt.Add(time.Minute), "s3://mycel-backups/clusters/test/backup-set.json")
+	if err != nil {
+		t.Fatalf("buildProductionBackupSetManifest() error = %v", err)
+	}
+	if manifest.Capture.Provider != "CSI_VOLUME_SNAPSHOT" || manifest.Capture.SnapshotClassName != "ebs-csi" {
+		t.Fatalf("capture=%#v, want CSI snapshot evidence", manifest.Capture)
+	}
+	if len(manifest.Artifacts.Nodes) != 1 || !bytes.Contains(manifest.Artifacts.Nodes[0].CaptureSource, []byte("mycel-snap-0")) {
+		t.Fatalf("node capture source=%s, want snapshot ref", string(manifest.Artifacts.Nodes[0].CaptureSource))
+	}
+	if manifest.Audit.Labels["capture_provider"] != clusterCaptureProviderCSI {
+		t.Fatalf("audit labels=%v, want csi capture provider", manifest.Audit.Labels)
+	}
+	raw, err := marshalProductionJSON(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := clusterbackup.ParseBackupSetDocument(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := clusterbackup.ValidateBackupSetDocument(ctx, doc, nil, clusterbackup.BackupSetValidationOptions{AllowS3ArtifactURIs: true, ExpectedNodeCount: 1})
+	if err := report.Error(); err != nil {
+		t.Fatalf("snapshot manifest validation error = %v", err)
+	}
+}
+
+func TestClusterBackupSnapshotProviderRequiresCaptureEvidence(t *testing.T) {
+	m := newInitializedBackupModule(t)
+	createdAt := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	backupSetID := "backup-set-missing-snapshot-evidence"
+	archiveName, err := clusterbackup.NewArchiveName(createdAt, "myceld-0", backupSetID, backupcore.ArchiveFormatTar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := clusterbackup.NodeArtifact{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1, ArchiveName: archiveName, ArchiveURI: "s3://mycel-backups/archive.tar", ManifestName: "node.manifest.json", ManifestURI: "s3://mycel-backups/node.manifest.json", InventoryName: "node.inventory.json", InventoryURI: "s3://mycel-backups/node.inventory.json", InventoryChecksumSHA256: shaHex("inventory"), SizeBytes: 1, ChecksumSHA256: shaHex("archive"), AppliedIndexes: map[string]uint64{"system": 10}}
+	m.restoreClusterBackupState(backupSetID, map[string]clusterBackupRun{backupSetID: {BackupSetID: backupSetID, ClusterID: "cluster-test", RepositoryID: "repo-snap", RepositoryPrefix: "clusters/test/backup-sets/" + backupSetID, CaptureProvider: clusterCaptureProviderCSI, Phase: clusterBackupPhaseValidating, CreatedAt: createdAt, UpdatedAt: createdAt, Expected: []clusterBackupExpectedNode{{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1}}, Barriers: map[string]uint64{"system": 10}, NodeResults: map[string]clusterbackup.NodeArtifact{"myceld-0": node}}})
+	repo := normalizeBackupRepository(BackupRepository{RepositoryID: "repo-snap", Provider: RepositoryProviderS3Compatible, S3: S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "clusters/test"}, CredentialRef: SecretReference{Scheme: SecretSchemeEnv, Keys: map[string]string{"access_key_id": "MINIO_ACCESS_KEY", "secret_access_key": "MINIO_SECRET_KEY"}}, DevOnly: true})
+	_, err = m.buildProductionBackupSetManifest(StartClusterBackupInput{ArchiveFormat: backupcore.ArchiveFormatTar, RepositoryID: repo.RepositoryID, RepositoryPrefix: "clusters/test/backup-sets/" + backupSetID, CaptureProvider: clusterCaptureProviderCSI}, repo, backupSetID, "cluster-test", createdAt, createdAt.Add(time.Minute), "s3://mycel-backups/backup-set.json")
+	if err == nil || !strings.Contains(err.Error(), "snapshot capture evidence") {
+		t.Fatalf("buildProductionBackupSetManifest() error=%v, want snapshot capture evidence", err)
+	}
+}
+
 func TestBackupRaftStateMachineFailReleasesActiveClusterBackup(t *testing.T) {
 	ctx := context.Background()
 	m := newInitializedBackupModule(t)

@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
+- Added explicit CSI/EBS snapshot capture providers for repository-backed cluster backups: opt-in Kubernetes `VolumeSnapshot` capture preflights, per-PVC snapshot readiness/cleanup evidence in `backup-set.json`, CLI parsing for `csi_volume_snapshot` / `aws_ebs_snapshot`, and fail-closed behavior before `COMPLETE` when provider capture fails (#384).
 - Added backup/restore observability snapshots: `GetBackupObservability`, `mycel admin backup cluster observability`, credential-free metric rows, evaluated alert conditions, retention/incomplete-prefix probes, and rollout/runbook documentation for production backup/restore operations (#385).
 - Added external object-store dependency manifests for repository-backed cluster backups: object-store blob payload inventories are published as checksum-bound object reference manifests, backup sets record non-secret external store/recovery-point evidence, and restore planning fails closed on missing manifests, mismatched recovery points, or unavailable external payload validation (#383).
 - Added restored-cluster derived subsystem readiness reporting: restore writes a durable local marker for preserved/discarded/rebuild-required derived artifacts, PVC helper restores publish the same marker, admin cluster readiness exposes derived subsystem state/evidence, and health reports degraded restored-derived rebuild requirements (#382).
