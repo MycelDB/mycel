@@ -999,7 +999,7 @@ func restoreProgressToProto(in daemonbackup.ClusterRestoreProgress) *adminv1.Clu
 	}
 	out := &adminv1.ClusterRestoreProgress{TotalNodes: int32(in.TotalNodes), StagedNodes: int32(in.StagedNodes), AppliedNodes: int32(in.AppliedNodes), VerifiedNodes: int32(in.VerifiedNodes), BytesTotal: in.BytesTotal, BytesCompleted: in.BytesCompleted, CurrentPhase: in.CurrentPhase, CurrentNode: in.CurrentNode}
 	for _, node := range in.Nodes {
-		out.Nodes = append(out.Nodes, &adminv1.ClusterRestoreNodeProgress{Ordinal: int32(node.Ordinal), State: node.State, SourceArchiveUri: node.SourceArchiveURI, StagingUri: node.StagingURI, BytesTotal: node.BytesTotal, BytesCompleted: node.BytesCompleted, ChecksumSha256: node.ChecksumSHA256, LastError: node.LastError})
+		out.Nodes = append(out.Nodes, &adminv1.ClusterRestoreNodeProgress{Ordinal: int32(node.Ordinal), State: node.State, SourceArchiveUri: node.SourceArchiveURI, StagingUri: node.StagingURI, BytesTotal: node.BytesTotal, BytesCompleted: node.BytesCompleted, ChecksumSha256: node.ChecksumSHA256, LastError: node.LastError, Evidence: copyStringMap(node.Evidence)})
 	}
 	return out
 }

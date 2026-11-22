@@ -72,6 +72,38 @@ func TestRestoreArchiveExtractionPathDecryptsEncryptedArchive(t *testing.T) {
 	}
 }
 
+func TestRestoreExecutionBlockersAllowControllerManagedPVCRestore(t *testing.T) {
+	plan := ClusterRestorePlan{
+		RestorePlanID: "plan-1",
+		TargetMode:    ClusterRestoreTargetModeNewClusterBootstrap,
+		IdentityMode:  ClusterRestoreIdentityModePreserveBackupID,
+		Target: ClusterRestoreTarget{StatefulSet: "myceld", Nodes: []ClusterRestoreNodeMapping{
+			{Ordinal: 0, TargetPVCName: "data-myceld-0"},
+		}},
+	}
+	input := StartClusterRestoreInput{RestorePlanID: "plan-1"}
+	blockers := restoreExecutionBlockersWithPVCHelper(plan, input, true, true, true)
+	if hasBlockerReason(blockers, "target_pvc_restore_requires_mounted_data_dir") || hasBlockerReason(blockers, "clean_target_proof_required") || hasBlockerReason(blockers, "source_fencing_required") {
+		t.Fatalf("controller-managed PVC restore should not require external PVC mount/clean-target/source-fencing proofs: %#v", blockers)
+	}
+}
+
+func TestRestoreExecutionBlockersRequireFenceWhenControllerCannotScaleDown(t *testing.T) {
+	plan := ClusterRestorePlan{
+		RestorePlanID: "plan-1",
+		TargetMode:    ClusterRestoreTargetModeNewClusterBootstrap,
+		IdentityMode:  ClusterRestoreIdentityModePreserveBackupID,
+		Target: ClusterRestoreTarget{StatefulSet: "myceld", Nodes: []ClusterRestoreNodeMapping{
+			{Ordinal: 0, TargetPVCName: "data-myceld-0"},
+		}},
+	}
+	input := StartClusterRestoreInput{RestorePlanID: "plan-1"}
+	blockers := restoreExecutionBlockersWithPVCHelper(plan, input, true, true, false)
+	if !hasBlockerReason(blockers, "source_fencing_required") {
+		t.Fatalf("blockers=%#v, want source_fencing_required", blockers)
+	}
+}
+
 func TestRestoreCleanTargetProofMappingBlockers(t *testing.T) {
 	target := ClusterRestoreTarget{Nodes: []ClusterRestoreNodeMapping{
 		{Ordinal: 0, TargetPVCName: "data-myceld-0", TargetDataDir: "/mnt/restore/0"},

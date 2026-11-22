@@ -20,6 +20,7 @@ import (
 const (
 	clusterRestoreStatePending             = "PENDING"
 	clusterRestoreStateValidatingTarget    = "VALIDATING_TARGET"
+	clusterRestoreStatePreparingTarget     = "PREPARING_TARGET"
 	clusterRestoreStateStagingArtifacts    = "STAGING_ARTIFACTS"
 	clusterRestoreStateApplyingArtifacts   = "APPLYING_ARTIFACTS"
 	clusterRestoreStatePostRestoreValidate = "POST_RESTORE_VALIDATING"
@@ -158,18 +159,47 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 	if !backupcore.IsSupportedArchiveFormat(format) {
 		return op, fmt.Errorf("unsupported restore archive format %q", manifest.Artifacts.ArchiveFormat)
 	}
+	sortedMappings := append([]ClusterRestoreNodeMapping(nil), plan.Target.Nodes...)
+	sort.Slice(sortedMappings, func(i, j int) bool { return sortedMappings[i].Ordinal < sortedMappings[j].Ordinal })
+	op.Progress.TotalNodes = len(sortedMappings)
+	pvcControllerEvidence := map[int]map[string]string(nil)
+	if controller := m.clusterRestorePVCTargetController(); controller != nil && restoreMappingsUsePVCHelper(sortedMappings) {
+		op.State = clusterRestoreStatePreparingTarget
+		op.Progress.CurrentPhase = "preparing_kubernetes_target"
+		op.Progress.CurrentNode = ""
+		op.UpdatedAt = time.Now().UTC()
+		update(op)
+		prepared, prepareErr := controller.PrepareRepositoryRestoreTarget(ctx, ClusterRestorePVCTargetControllerRequest{RestoreOperationID: op.RestoreOperationID, Target: plan.Target, Nodes: sortedMappings})
+		op.CleanupTasks = append(op.CleanupTasks, prepared.CleanupTasks...)
+		if prepared.CleanTarget.TargetEmpty || len(prepared.CleanTarget.CheckedNodes) > 0 || len(prepared.CleanTarget.Blockers) > 0 || prepared.CleanTarget.OperatorAttestation != "" {
+			op.Preconditions.CleanTarget = prepared.CleanTarget
+		}
+		if prepared.SourceFencing.SourceClusterFenced || !prepared.SourceFencing.FencedAt.IsZero() || prepared.SourceFencing.FenceTokenRef != "" || len(prepared.SourceFencing.FencedEndpoints) > 0 || len(prepared.SourceFencing.Blockers) > 0 {
+			op.Preconditions.SourceFencing = prepared.SourceFencing
+		}
+		pvcControllerEvidence = prepared.NodeEvidence
+		op.UpdatedAt = time.Now().UTC()
+		update(op)
+		if prepareErr != nil {
+			op.State = clusterRestoreStateFailedRequiresOp
+			op.Error = fmt.Errorf("prepare Kubernetes restore target: %w", prepareErr).Error()
+			op.Blockers = append(op.Blockers, prepared.CleanTarget.Blockers...)
+			op.Blockers = append(op.Blockers, prepared.SourceFencing.Blockers...)
+			op.Blockers = append(op.Blockers, ValidationBlocker{Reason: "kubernetes_target_prepare_failed", Detail: prepareErr.Error(), FieldPath: "target", Retryable: true})
+			op.UpdatedAt = time.Now().UTC()
+			update(op)
+			return op, fmt.Errorf("prepare Kubernetes restore target: %w", prepareErr)
+		}
+	}
 	artifacts := map[int]clusterbackup.BackupSetNodeArtifact{}
 	for _, artifact := range manifest.Artifacts.Nodes {
 		artifacts[artifact.Ordinal] = artifact
 		op.Progress.BytesTotal += parseSignedDecimalStringLocal(artifact.SizeBytes)
 	}
 	op.State = clusterRestoreStateStagingArtifacts
-	op.Progress.TotalNodes = len(plan.Target.Nodes)
 	op.Progress.CurrentPhase = "staging_artifacts"
 	op.UpdatedAt = time.Now().UTC()
 	update(op)
-	sortedMappings := append([]ClusterRestoreNodeMapping(nil), plan.Target.Nodes...)
-	sort.Slice(sortedMappings, func(i, j int) bool { return sortedMappings[i].Ordinal < sortedMappings[j].Ordinal })
 	for _, mapping := range sortedMappings {
 		if err := ctx.Err(); err != nil {
 			return op, err
@@ -178,7 +208,7 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		if !ok {
 			return op, fmt.Errorf("backup set %s has no artifact for ordinal %d", plan.BackupSetID, mapping.Ordinal)
 		}
-		progress := ClusterRestoreNodeProgress{Ordinal: mapping.Ordinal, State: "staging", SourceArchiveURI: artifact.ArchiveURI, ChecksumSHA256: artifact.ChecksumSHA256, BytesTotal: parseSignedDecimalStringLocal(artifact.SizeBytes)}
+		progress := ClusterRestoreNodeProgress{Ordinal: mapping.Ordinal, State: "staging", SourceArchiveURI: artifact.ArchiveURI, ChecksumSHA256: artifact.ChecksumSHA256, BytesTotal: parseSignedDecimalStringLocal(artifact.SizeBytes), Evidence: copyStringMapLocal(pvcControllerEvidence[mapping.Ordinal])}
 		op.Progress.CurrentNode = fmt.Sprintf("ordinal-%d", mapping.Ordinal)
 		op.Progress.Nodes = append(op.Progress.Nodes, progress)
 		op.UpdatedAt = time.Now().UTC()
@@ -255,6 +285,7 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 			}
 			result, helperErr := m.clusterRestorePVCHelper.RestoreRepositoryBackupNodeToPVC(ctx, ClusterRestorePVCHelperRequest{RestoreOperationID: op.RestoreOperationID, Repository: repo, BackupSetID: plan.BackupSetID, BackupSetPrefix: backupSetPrefix, Manifest: *manifest, CompleteMarker: marker, Artifact: artifact, Target: plan.Target, Node: mapping, ArchiveFormat: format, store: store})
 			op.CleanupTasks = append(op.CleanupTasks, result.CleanupTasks...)
+			op.Progress.Nodes[i].Evidence = mergeRestoreNodeEvidence(op.Progress.Nodes[i].Evidence, result.Evidence)
 			if helperErr != nil {
 				op.Progress.Nodes[i].State = "failed"
 				op.Progress.Nodes[i].LastError = helperErr.Error()
@@ -825,6 +856,9 @@ func cloneClusterRestoreOperation(op ClusterRestoreOperation) ClusterRestoreOper
 	op.Staging.Blockers = append([]ValidationBlocker(nil), op.Staging.Blockers...)
 	op.Preconditions = cloneClusterRestorePreconditions(op.Preconditions)
 	op.Progress.Nodes = append([]ClusterRestoreNodeProgress(nil), op.Progress.Nodes...)
+	for i := range op.Progress.Nodes {
+		op.Progress.Nodes[i].Evidence = copyStringMapLocal(op.Progress.Nodes[i].Evidence)
+	}
 	return op
 }
 

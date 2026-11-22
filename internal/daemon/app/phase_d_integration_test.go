@@ -570,25 +570,27 @@ func (c *phaseDIntegrationCluster) leaderForSpace(ctx context.Context, t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	var leader consensus.NodeID
 	if err := consensus.WaitUntil(ctx, 20*time.Millisecond, func() bool {
+		leader = 0
 		for _, node := range c.nodes {
 			g, ok := node.groups.Group(consensus.PartitionGroupID(cmd.PartitionID))
-			if ok && g.Leader() != 0 {
-				return true
+			if !ok || g.Leader() == 0 {
+				continue
+			}
+			if leader == 0 {
+				leader = g.Leader()
+				continue
+			}
+			if g.Leader() != leader {
+				return false
 			}
 		}
-		return false
+		return leader != 0
 	}); err != nil {
-		t.Fatalf("space partition leader unavailable: %v", err)
+		t.Fatalf("space partition leader unavailable or inconsistent: %v", err)
 	}
-	for _, node := range c.nodes {
-		g, ok := node.groups.Group(consensus.PartitionGroupID(cmd.PartitionID))
-		if ok && g.Leader() != 0 {
-			return g.Leader()
-		}
-	}
-	t.Fatal("unreachable")
-	return 0
+	return leader
 }
 
 func (c *phaseDIntegrationCluster) waitForSpace(ctx context.Context, t *testing.T, spaceID string) {

@@ -374,10 +374,16 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	})
 	if cfg.Backup.KubernetesRestoreHelperEnabled {
 		helper, err := backupservice.NewInClusterKubernetesPVCRestoreHelper(backupservice.KubernetesPVCRestoreHelperConfig{
-			Namespace:          cfg.Backup.KubernetesRestoreHelperNamespace,
-			HelperImage:        cfg.Backup.KubernetesRestoreHelperImage,
-			ServiceAccountName: cfg.Backup.KubernetesRestoreHelperServiceAccount,
-			DeleteOnCompletion: true,
+			Namespace:            cfg.Backup.KubernetesRestoreHelperNamespace,
+			HelperImage:          cfg.Backup.KubernetesRestoreHelperImage,
+			ServiceAccountName:   cfg.Backup.KubernetesRestoreHelperServiceAccount,
+			DeleteOnCompletion:   true,
+			ScaleDownStatefulSet: cfg.Backup.KubernetesRestoreScaleDownStatefulSet,
+			ProvisionPVCs:        cfg.Backup.KubernetesRestoreProvisionPVCs,
+			ReplaceExistingPVCs:  cfg.Backup.KubernetesRestoreReplaceExistingPVCs,
+			PVCStorageClassName:  cfg.Backup.KubernetesRestorePVCStorageClassName,
+			PVCStorageRequest:    cfg.Backup.KubernetesRestorePVCStorageRequest,
+			PVCAccessModes:       cfg.Backup.KubernetesRestorePVCAccessModes,
 		})
 		if err != nil {
 			_ = rt.Close()
