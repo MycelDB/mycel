@@ -111,13 +111,15 @@ func (m *Module) StartClusterBackup(ctx context.Context, input StartClusterBacku
 		repositoryID = strings.TrimSpace(policy.DefaultRepositoryID)
 	}
 	input.RepositoryID = repositoryID
-	captureProvider := strings.TrimSpace(input.CaptureProvider)
-	if captureProvider == "" || captureProvider == backupcore.DefaultProductionCaptureProvider {
-		captureProvider = "filesystem_immutable_copy"
-	}
-	captureProvider = strings.ToLower(captureProvider)
-	if captureProvider != "filesystem_immutable_copy" {
-		return ClusterBackupRunStatus{}, fmt.Errorf("capture_provider %q is not implemented; use filesystem_immutable_copy", captureProvider)
+	captureProvider := normalizeClusterCaptureProvider(input.CaptureProvider)
+	switch captureProvider {
+	case clusterCaptureProviderFilesystem:
+	case clusterCaptureProviderCSI, clusterCaptureProviderAWSEBS:
+		if m.clusterSnapshotCaptureProvider == nil {
+			return ClusterBackupRunStatus{}, fmt.Errorf("capture_provider %q requires MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED=true or a configured snapshot capture provider", captureProvider)
+		}
+	default:
+		return ClusterBackupRunStatus{}, fmt.Errorf("unsupported capture_provider %q", input.CaptureProvider)
 	}
 	input.CaptureProvider = captureProvider
 	if strings.TrimSpace(input.QuiesceReadProfile) == "" {
@@ -331,6 +333,34 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		}
 		frozen = append(frozen, clusterBackupFrozenNode{node: node, freeze: freeze})
 	}
+	var snapshotProvider ClusterSnapshotCaptureProvider
+	var snapshotCapture *ClusterSnapshotCaptureResult
+	snapshotCleanupDone := false
+	cleanupSnapshotCapture := func() {
+		if snapshotCleanupDone || snapshotCapture == nil || snapshotProvider == nil {
+			return
+		}
+		cleanup := snapshotProvider.CleanupClusterSnapshot(context.Background(), *snapshotCapture)
+		capture := captureResultWithCleanup(*snapshotCapture, cleanup)
+		snapshotCapture = &capture
+		snapshotCleanupDone = true
+	}
+	defer cleanupSnapshotCapture()
+	if captureProviderRequiresSnapshot(input.CaptureProvider) {
+		snapshotProvider = m.clusterSnapshotCaptureProvider
+		if snapshotProvider == nil {
+			m.releaseClusterRaftFreeze(context.Background(), input, backupSetID, clusterID, createdAt, frozen)
+			fail(clusterBackupPhaseArchiving, fmt.Errorf("capture_provider %q requires a configured snapshot capture provider", input.CaptureProvider))
+			return
+		}
+		capture, err := snapshotProvider.CaptureClusterSnapshot(ctx, ClusterSnapshotCaptureRequest{BackupSetID: backupSetID, ClusterID: clusterID, Namespace: input.Namespace, StatefulSet: input.StatefulSet, CaptureProvider: input.CaptureProvider, CreatedAt: createdAt, Nodes: nodes})
+		if err != nil {
+			m.releaseClusterRaftFreeze(context.Background(), input, backupSetID, clusterID, createdAt, frozen)
+			fail(clusterBackupPhaseArchiving, fmt.Errorf("capture %s snapshots: %w", input.CaptureProvider, err))
+			return
+		}
+		snapshotCapture = &capture
+	}
 	results := make([]backend.CreateLocalBackupArchiveResult, 0, len(nodes))
 	for _, frozenNode := range frozen {
 		node := frozenNode.node
@@ -353,6 +383,14 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		return
 	}
 	releasedAt := time.Now().UTC()
+	if snapshotCapture != nil {
+		cleanupSnapshotCapture()
+		capture := *snapshotCapture
+		if err := m.commitRaft(ctx, recordTypeClusterBackupCapture, clusterBackupCaptureRecord{BackupSetID: backupSetID, Provider: capture.Provider, ProviderVersion: capture.ProviderVersion, FallbackUsed: capture.FallbackUsed, SnapshotClassName: capture.SnapshotClassName, DataMover: capture.DataMover, ProviderEvidence: capture.Evidence, NodeSources: capture.NodeSources, Cleanup: capture.Cleanup, UpdatedAt: time.Now().UTC()}); err != nil {
+			fail(clusterBackupPhaseArchiving, err)
+			return
+		}
+	}
 	for _, result := range results {
 		if result.RaftFreeze.ReleasedAt.IsZero() {
 			result.RaftFreeze.ReleasedAt = releasedAt
@@ -601,11 +639,19 @@ func (m *Module) buildProductionBackupSetManifest(input StartClusterBackupInput,
 		Nodes     []clusterbackup.BackupSetSourceNode `json:"nodes"`
 	}{ClusterID: clusterID, Nodes: sourceNodes})
 	repositoryURI := repositoryObjectURI(repo, input.RepositoryPrefix)
+	captureSpec, err := productionClusterCaptureSpec(run, input, repo)
+	if err != nil {
+		return clusterbackup.BackupSetManifestV1{}, err
+	}
 	totalBytes := int64(0)
 	artifactNodes := make([]clusterbackup.BackupSetNodeArtifact, 0, len(nodes))
 	for _, node := range nodes {
 		totalBytes += node.SizeBytes
-		artifactNodes = append(artifactNodes, clusterbackup.BackupSetNodeArtifact{ArtifactID: fmt.Sprintf("node:%d", node.Ordinal), PodName: node.PodName, NodeID: node.NodeID, NodeName: firstNonEmptyString(node.NodeID, node.PodName), Ordinal: node.Ordinal, RaftNodeID: decimalUint64(node.RaftNodeID), SourcePVCRef: "pvc/myceld-data-" + node.PodName, SourceDataDir: m.dataDir, ArchiveName: node.ArchiveName, ArchiveURI: node.ArchiveURI, ManifestName: node.ManifestName, ManifestURI: node.ManifestURI, InventoryURI: node.InventoryURI, InventoryChecksumSHA256: node.InventoryChecksumSHA256, SizeBytes: decimalInt64(node.SizeBytes), ChecksumSHA256: node.ChecksumSHA256, CaptureSource: mustJSONRaw(map[string]any{"provider": "FILESYSTEM_IMMUTABLE_COPY", "scratch": "redacted"}), AppliedIndexes: uint64MapToDecimalStrings(node.AppliedIndexes), RaftFreeze: productionNodeRaftFreeze(node.RaftFreeze)})
+		if captureProviderRequiresSnapshot(captureSpec.AuditLabel) && len(captureSpec.NodeSources[strings.TrimSpace(node.PodName)]) == 0 {
+			return clusterbackup.BackupSetManifestV1{}, fmt.Errorf("snapshot capture source evidence is required for pod %s", node.PodName)
+		}
+		captureSource := captureSpec.nodeCaptureSource(node.PodName)
+		artifactNodes = append(artifactNodes, clusterbackup.BackupSetNodeArtifact{ArtifactID: fmt.Sprintf("node:%d", node.Ordinal), PodName: node.PodName, NodeID: node.NodeID, NodeName: firstNonEmptyString(node.NodeID, node.PodName), Ordinal: node.Ordinal, RaftNodeID: decimalUint64(node.RaftNodeID), SourcePVCRef: "pvc/myceld-data-" + node.PodName, SourceDataDir: m.dataDir, ArchiveName: node.ArchiveName, ArchiveURI: node.ArchiveURI, ManifestName: node.ManifestName, ManifestURI: node.ManifestURI, InventoryURI: node.InventoryURI, InventoryChecksumSHA256: node.InventoryChecksumSHA256, SizeBytes: decimalInt64(node.SizeBytes), ChecksumSHA256: node.ChecksumSHA256, CaptureSource: captureSource, AppliedIndexes: uint64MapToDecimalStrings(node.AppliedIndexes), RaftFreeze: productionNodeRaftFreeze(node.RaftFreeze)})
 	}
 	barrierSet := m.productionBarrierSet(input, backupSetID, clusterID, createdAt, sourceNodes, artifactNodes, membershipHash, placementHash)
 	derivedState := productionDerivedState(policy.DerivedSubsystems, artifactNodes, input.ArchiveFormat)
@@ -620,19 +666,90 @@ func (m *Module) buildProductionBackupSetManifest(input StartClusterBackupInput,
 		Operation:            clusterbackup.BackupSetOperation{BackupOperationID: backupSetID, Trigger: "MANUAL", Reason: input.Reason, IdempotencyKeyHash: hashOptionalString(input.IdempotencyKey), StartedAt: createdAt, CompletedAt: completedAt, PolicyID: "policy-default", PolicyRevision: "1", PolicyHashSHA256: policyHash},
 		Source:               clusterbackup.BackupSetSource{ClusterID: clusterID, ClusterName: firstNonEmptyString(input.ClusterName, clusterID), Namespace: strings.TrimSpace(input.Namespace), StatefulSet: firstNonEmptyString(input.StatefulSet, "myceld"), DataDir: m.dataDir, MycelVersion: firstNonEmptyString(strings.TrimSpace(input.Image), "development"), MycelAPIVersion: "v1", Image: strings.TrimSpace(input.Image), ImageDigest: strings.TrimSpace(input.ImageDigest), StorageFormatVersions: storageVersions, Topology: clusterbackup.BackupSetSourceTopology{NodeCount: len(sourceNodes), PartitionCount: maxInt(1, len(run.Barriers)), ReplicaFactor: maxInt(1, len(sourceNodes)), Nodes: sourceNodes}, MembershipHashSHA256: membershipHash, PlacementHashSHA256: placementHash},
 		Repository:           clusterbackup.BackupSetRepository{RepositoryID: repo.RepositoryID, Type: "S3_COMPATIBLE", URI: repositoryURI, Bucket: repo.S3.Bucket, Prefix: input.RepositoryPrefix, EndpointFingerprint: repositoryEndpointFingerprint(repo), CredentialRef: credentialReferenceManifestString(repo.CredentialRef), Encryption: clusterbackup.BackupSetEncryptionPolicy{Mode: encryptionModeManifestString(repo.Encryption.Mode), KMSKeyRef: secretReferenceManifestString(repo.Encryption.KeyRef), KeyFingerprint: hashOptionalString(repo.Encryption.KMSKeyID)}, LayoutVersion: 1},
-		Policy:               clusterbackup.BackupSetPolicy{PolicyID: "policy-default", PolicyRevision: "1", PolicyHashSHA256: policyHash, RetentionClass: "DEFAULT", Consistency: mustJSONRaw(map[string]any{"quiesce_required": true, "read_allowlist_profile": productionEnum(input.QuiesceReadProfile), "allow_read_only_during_quiesce": false}), Capture: mustJSONRaw(map[string]any{"provider": "FILESYSTEM_IMMUTABLE_COPY", "archive_format": productionArchiveFormat(input.ArchiveFormat)}), Upload: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "layout_version": 1, "complete_marker": true}), Validation: mustJSONRaw(map[string]any{"checksum_algorithm": clusterbackup.ProductionChecksumAlgorithmSHA256, "require_complete_marker": true}), DerivedSubsystems: productionDerivedPolicies(policy.DerivedSubsystems)},
+		Policy:               clusterbackup.BackupSetPolicy{PolicyID: "policy-default", PolicyRevision: "1", PolicyHashSHA256: policyHash, RetentionClass: "DEFAULT", Consistency: mustJSONRaw(map[string]any{"quiesce_required": true, "read_allowlist_profile": productionEnum(input.QuiesceReadProfile), "allow_read_only_during_quiesce": false}), Capture: captureSpec.policyCapture(input.ArchiveFormat), Upload: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "layout_version": 1, "complete_marker": true}), Validation: mustJSONRaw(map[string]any{"checksum_algorithm": clusterbackup.ProductionChecksumAlgorithmSHA256, "require_complete_marker": true}), DerivedSubsystems: productionDerivedPolicies(policy.DerivedSubsystems)},
 		Compatibility:        clusterbackup.BackupSetCompatibility{RequiredFeatures: []string{}, StorageFormatVersions: storageVersions, MinRestoreMycelVersion: "v0.23.0", SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, RequiresSameTopology: true, RequiresSourceFencingForPreservedIdentity: true},
 		Consistency:          clusterbackup.BackupSetConsistency{Quiescence: mustJSONRaw(map[string]any{"mode": "BACKUP", "read_allowlist_profile": productionEnum(input.QuiesceReadProfile)}), BarrierSet: barrierSet},
-		Capture:              clusterbackup.BackupSetCapture{Provider: "FILESYSTEM_IMMUTABLE_COPY", ProviderVersion: "phase-6-mvp", FallbackUsed: false, DataMover: "mycel-daemon-s3-compatible", ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), TemporaryProviderRefsRedacted: true, ProviderEvidence: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "repository_prefix": input.RepositoryPrefix, "scratch": "redacted"})},
+		Capture:              clusterbackup.BackupSetCapture{Provider: captureSpec.Provider, ProviderVersion: captureSpec.ProviderVersion, FallbackUsed: captureSpec.FallbackUsed, SnapshotClassName: captureSpec.SnapshotClassName, DataMover: captureSpec.DataMover, ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), TemporaryProviderRefsRedacted: true, ProviderEvidence: captureSpec.ProviderEvidence},
 		Artifacts:            clusterbackup.BackupSetArtifacts{ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), ChecksumAlgorithm: clusterbackup.ProductionChecksumAlgorithmSHA256, Nodes: artifactNodes, AdditionalManifests: []clusterbackup.BackupSetArtifactRef{}},
 		ExternalObjectStores: []clusterbackup.BackupSetExternalObjectStore{},
 		DerivedState:         derivedState,
-		Validation:           clusterbackup.BackupSetValidation{Result: clusterbackup.ProductionValidationStatePassed, ValidatedAt: completedAt, ValidatorVersion: "mycel-phase-6-mvp", ExpectedNodeCount: len(sourceNodes), NodeArtifactCount: len(artifactNodes), RequiredArtifactCount: len(artifactNodes), ValidatedArtifactCount: len(artifactNodes), TotalArtifactBytes: decimalInt64(totalBytes), ChecksumAlgorithm: clusterbackup.ProductionChecksumAlgorithmSHA256, Checks: []clusterbackup.BackupSetCheckResult{{Name: "repository_manifest_shape", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: completedAt, Detail: "backup-set manifest satisfies v1 structural validators"}, {Name: "node_artifact_catalog", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: completedAt, Detail: "node archive, manifest, and inventory URIs are present"}, {Name: "complete_marker", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: completedAt, Detail: "COMPLETE marker will be published after backup-set.json"}}, Warnings: []string{}, Errors: []string{}},
-		Restore:              clusterbackup.BackupSetRestore{SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, DefaultIdentityMode: "PRESERVE_BACKUP_ID", SupportedAuthSessionPolicies: []string{"PRESERVE_RESTORED_SESSIONS", "REVOKE_ALL_SESSIONS"}, RequiresSameTopology: true, RequiredSecretRefs: []string{credentialReferenceManifestString(repo.CredentialRef)}, RequiredExternalDependencies: []string{}, OperatorNotes: "Phase 6 repository-backed backup set generated by portable filesystem immutable copy."},
-		Audit:                clusterbackup.BackupSetAudit{Labels: map[string]string{"capture_provider": "filesystem_immutable_copy"}, Annotations: map[string]string{"manifest_uri": manifestURI}, Redactions: []string{"credential_ref", "temporary_provider_refs"}},
+		Validation:           clusterbackup.BackupSetValidation{Result: clusterbackup.ProductionValidationStatePassed, ValidatedAt: completedAt, ValidatorVersion: "mycel-phase-10-snapshot-provider", ExpectedNodeCount: len(sourceNodes), NodeArtifactCount: len(artifactNodes), RequiredArtifactCount: len(artifactNodes), ValidatedArtifactCount: len(artifactNodes), TotalArtifactBytes: decimalInt64(totalBytes), ChecksumAlgorithm: clusterbackup.ProductionChecksumAlgorithmSHA256, Checks: productionValidationChecks(captureSpec, completedAt), Warnings: captureSpec.ValidationWarnings, Errors: []string{}},
+		Restore:              clusterbackup.BackupSetRestore{SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, DefaultIdentityMode: "PRESERVE_BACKUP_ID", SupportedAuthSessionPolicies: []string{"PRESERVE_RESTORED_SESSIONS", "REVOKE_ALL_SESSIONS"}, RequiresSameTopology: true, RequiredSecretRefs: []string{credentialReferenceManifestString(repo.CredentialRef)}, RequiredExternalDependencies: []string{}, OperatorNotes: captureSpec.OperatorNotes},
+		Audit:                clusterbackup.BackupSetAudit{Labels: map[string]string{"capture_provider": captureSpec.AuditLabel}, Annotations: map[string]string{"manifest_uri": manifestURI}, Redactions: []string{"credential_ref", "temporary_provider_refs"}},
 	}
 	manifest.DerivedState = clusterbackup.SortBackupSetDerivedState(manifest.DerivedState)
 	return manifest, nil
+}
+
+type productionCaptureSpec struct {
+	Provider           string
+	ProviderVersion    string
+	FallbackUsed       bool
+	SnapshotClassName  string
+	DataMover          string
+	ProviderEvidence   json.RawMessage
+	NodeSources        map[string]json.RawMessage
+	AuditLabel         string
+	OperatorNotes      string
+	ValidationWarnings []string
+}
+
+func productionClusterCaptureSpec(run clusterBackupRun, input StartClusterBackupInput, repo BackupRepository) (productionCaptureSpec, error) {
+	provider := normalizeClusterCaptureProvider(firstNonEmptyString(run.CaptureProvider, input.CaptureProvider))
+	manifestProvider := productionCaptureProvider(provider)
+	spec := productionCaptureSpec{Provider: manifestProvider, ProviderVersion: "phase-6-mvp", DataMover: snapshotDataMover(provider), ProviderEvidence: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "repository_prefix": input.RepositoryPrefix, "scratch": "redacted"}), AuditLabel: provider, OperatorNotes: "Repository-backed backup set generated by portable filesystem immutable copy."}
+	if !captureProviderRequiresSnapshot(provider) {
+		return spec, nil
+	}
+	if run.Capture == nil || len(run.Capture.ProviderEvidence) == 0 {
+		return productionCaptureSpec{}, fmt.Errorf("snapshot capture evidence is required for capture_provider %q", provider)
+	}
+	spec.ProviderVersion = firstNonEmptyString(run.Capture.ProviderVersion, "snapshot.storage.k8s.io/v1")
+	spec.FallbackUsed = run.Capture.FallbackUsed
+	spec.SnapshotClassName = strings.TrimSpace(run.Capture.SnapshotClassName)
+	spec.DataMover = firstNonEmptyString(run.Capture.DataMover, snapshotDataMover(provider))
+	spec.ProviderEvidence = append(json.RawMessage(nil), run.Capture.ProviderEvidence...)
+	spec.NodeSources = make(map[string]json.RawMessage, len(run.Capture.NodeSources))
+	for key, value := range run.Capture.NodeSources {
+		if strings.TrimSpace(key) != "" && len(value) > 0 {
+			spec.NodeSources[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	spec.OperatorNotes = "Snapshot capture provider evidence is included. Repository archive artifacts remain the restore authority for v0.23.x; snapshot and cleanup evidence validate the immutable capture source and Kubernetes/AWS compatibility."
+	for _, warning := range run.Capture.Cleanup.Warnings {
+		if strings.TrimSpace(warning) != "" {
+			spec.ValidationWarnings = append(spec.ValidationWarnings, "snapshot cleanup warning: "+strings.TrimSpace(warning))
+		}
+	}
+	return spec, nil
+}
+
+func (s productionCaptureSpec) nodeCaptureSource(podName string) json.RawMessage {
+	if len(s.NodeSources) > 0 {
+		if raw := s.NodeSources[strings.TrimSpace(podName)]; len(raw) > 0 {
+			return append(json.RawMessage(nil), raw...)
+		}
+	}
+	return mustJSONRaw(map[string]any{"provider": s.Provider, "scratch": "redacted"})
+}
+
+func (s productionCaptureSpec) policyCapture(format backupcore.ArchiveFormat) json.RawMessage {
+	payload := map[string]any{"provider": s.Provider, "archive_format": productionArchiveFormat(format)}
+	if strings.TrimSpace(s.SnapshotClassName) != "" {
+		payload["snapshot_class_name"] = strings.TrimSpace(s.SnapshotClassName)
+	}
+	if s.FallbackUsed {
+		payload["fallback_used"] = true
+	}
+	return mustJSONRaw(payload)
+}
+
+func productionValidationChecks(capture productionCaptureSpec, checkedAt time.Time) []clusterbackup.BackupSetCheckResult {
+	checks := []clusterbackup.BackupSetCheckResult{{Name: "repository_manifest_shape", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: checkedAt, Detail: "backup-set manifest satisfies v1 structural validators"}, {Name: "node_artifact_catalog", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: checkedAt, Detail: "node archive, manifest, and inventory URIs are present"}, {Name: "complete_marker", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: checkedAt, Detail: "COMPLETE marker will be published after backup-set.json"}}
+	if capture.Provider == manifestCaptureProviderCSI || capture.Provider == manifestCaptureProviderAWSEBS {
+		checks = append(checks, clusterbackup.BackupSetCheckResult{Name: "snapshot_capture_provider", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: checkedAt, Detail: "snapshot provider evidence was captured before repository publication"})
+	}
+	return checks
 }
 
 func (m *Module) attachExternalObjectStoreDependencies(ctx context.Context, store backupRepositoryObjectStore, repo BackupRepository, repositoryPrefix string, manifest *clusterbackup.BackupSetManifestV1) error {

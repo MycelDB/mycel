@@ -82,28 +82,39 @@ EKS-style production environment:
    `external-secret:...`, or `vault:...`; raw access keys must not be stored in
    Mycel metadata or backup manifests.
 3. Configure the daemon backup repository and default backup policy with the
-   repository ID, retention policy, `filesystem_immutable_copy` capture provider,
-   and the default quiesce profile (`CONTROL_ONLY`, no read-only client traffic
-   during quiesce).
-4. If blob payloads live in an external object store, set non-secret refs for
+   repository ID, retention policy, and the default quiesce profile
+   (`CONTROL_ONLY`, no read-only client traffic during quiesce). Keep
+   `filesystem_immutable_copy` for the portable fallback path, or explicitly
+   request `csi_volume_snapshot` / `aws_ebs_snapshot` only after enabling the
+   Kubernetes snapshot provider.
+4. For CSI/EBS snapshot capture, enable the provider on the control daemon:
+   `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED=true`, set
+   `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS=<VolumeSnapshotClass>` when your
+   storage class requires it, and verify
+   `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE` matches the StatefulSet
+   PVC names (default `myceld-data-{pod}`). Provider failures fail closed before
+   `COMPLETE`; successful snapshot-backed backups publish credential-free
+   snapshot/readiness/cleanup evidence in `backup-set.json` while repository
+   archives remain the restore authority.
+5. If blob payloads live in an external object store, set non-secret refs for
    `MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF`,
    `MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF`, and especially
    `MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF`. Backups that omit external
    payload bytes must bind to a recoverable external object-store snapshot or
    recovery point.
-5. For Kubernetes PVC restore orchestration, run the restore control daemon
+6. For Kubernetes PVC restore orchestration, run the restore control daemon
    outside the target StatefulSet and set the helper/controller environment only
    after reviewing RBAC:
    `MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED=true`,
    `MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE=<mycel image>`, plus optional
    namespace/service-account overrides. Existing PVC replacement is destructive
    and remains disabled unless explicitly opted in.
-6. Create alert rules from `mycel admin backup cluster observability --output json`
+7. Create alert rules from `mycel admin backup cluster observability --output json`
    or the `GetBackupObservability` RPC before enabling scheduled backups. At
    minimum alert on stale latest success, failed backup/restore, restore blockers,
    incomplete repository prefixes, retention warnings/apply failures, and
    incomplete restore cleanup.
-7. Run one staging backup, validate repository truth (`backup-set.json` plus
+8. Run one staging backup, validate repository truth (`backup-set.json` plus
    `COMPLETE`), run a restore drill to fresh PVCs, and capture the observability
    snapshot as rollout evidence.
 

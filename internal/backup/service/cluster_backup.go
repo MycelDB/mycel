@@ -81,6 +81,7 @@ type clusterBackupRun struct {
 	Expected         []clusterBackupExpectedNode           `json:"expected_nodes,omitempty"`
 	Barriers         map[string]uint64                     `json:"barriers,omitempty"`
 	NodeResults      map[string]clusterbackup.NodeArtifact `json:"node_results,omitempty"`
+	Capture          *clusterBackupCaptureEvidence         `json:"capture,omitempty"`
 	Manifest         *clusterbackup.Manifest               `json:"manifest,omitempty"`
 	Failure          *clusterBackupFailure                 `json:"failure,omitempty"`
 	Blockers         []ClusterBackupBlocker                `json:"blockers,omitempty"`
@@ -115,6 +116,19 @@ type clusterBackupNodeResultRecord struct {
 	BackupSetID string                     `json:"backup_set_id"`
 	Node        clusterbackup.NodeArtifact `json:"node"`
 	UpdatedAt   time.Time                  `json:"updated_at"`
+}
+
+type clusterBackupCaptureRecord struct {
+	BackupSetID       string                       `json:"backup_set_id"`
+	Provider          string                       `json:"provider"`
+	ProviderVersion   string                       `json:"provider_version,omitempty"`
+	FallbackUsed      bool                         `json:"fallback_used"`
+	SnapshotClassName string                       `json:"snapshot_class_name,omitempty"`
+	DataMover         string                       `json:"data_mover,omitempty"`
+	ProviderEvidence  json.RawMessage              `json:"provider_evidence,omitempty"`
+	NodeSources       map[string]json.RawMessage   `json:"node_sources,omitempty"`
+	Cleanup           ClusterSnapshotCleanupResult `json:"cleanup,omitempty"`
+	UpdatedAt         time.Time                    `json:"updated_at"`
 }
 
 type clusterBackupCompleteRecord struct {
@@ -228,6 +242,48 @@ func (m *Module) applyClusterBackupBarrier(ctx context.Context, rec wal.Record) 
 	run.UpdatedAt = updatedAt
 	m.clusterBackups[payload.BackupSetID] = run
 	m.activeClusterBackupID = payload.BackupSetID
+	return nil
+}
+
+func (m *Module) applyClusterBackupCapture(ctx context.Context, rec wal.Record) error {
+	var payload clusterBackupCaptureRecord
+	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+		return err
+	}
+	_ = ctx
+	backupSetID := strings.TrimSpace(payload.BackupSetID)
+	if backupSetID == "" {
+		return fmt.Errorf("backup_set_id is required")
+	}
+	provider := normalizeClusterCaptureProvider(payload.Provider)
+	if !captureProviderRequiresSnapshot(provider) {
+		return fmt.Errorf("snapshot capture record provider %q is not a snapshot provider", payload.Provider)
+	}
+	updatedAt := payload.UpdatedAt.UTC()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, err := m.clusterBackupRunLocked(backupSetID)
+	if err != nil {
+		return err
+	}
+	if normalizeClusterCaptureProvider(run.CaptureProvider) != provider {
+		return fmt.Errorf("snapshot capture provider %q does not match recorded cluster backup provider %q", provider, run.CaptureProvider)
+	}
+	nodeSources := make(map[string]json.RawMessage, len(payload.NodeSources))
+	for key, value := range payload.NodeSources {
+		key = strings.TrimSpace(key)
+		if key == "" || len(value) == 0 {
+			continue
+		}
+		nodeSources[key] = append(json.RawMessage(nil), value...)
+	}
+	run.Capture = &clusterBackupCaptureEvidence{Provider: provider, ProviderVersion: strings.TrimSpace(payload.ProviderVersion), FallbackUsed: payload.FallbackUsed, SnapshotClassName: strings.TrimSpace(payload.SnapshotClassName), DataMover: strings.TrimSpace(payload.DataMover), ProviderEvidence: append(json.RawMessage(nil), payload.ProviderEvidence...), NodeSources: nodeSources, Cleanup: payload.Cleanup}
+	run.UpdatedAt = updatedAt
+	m.clusterBackups[backupSetID] = run
+	m.activeClusterBackupID = backupSetID
 	return nil
 }
 
@@ -504,6 +560,25 @@ func cloneClusterBackupRuns(in map[string]clusterBackupRun) map[string]clusterBa
 				nv.RaftFreeze.Groups = cloneRaftFreezeGroups(nv.RaftFreeze.Groups)
 				v.NodeResults[nk] = nv
 			}
+		}
+		if v.Capture != nil {
+			capture := *v.Capture
+			capture.ProviderEvidence = append(json.RawMessage(nil), v.Capture.ProviderEvidence...)
+			if v.Capture.NodeSources != nil {
+				capture.NodeSources = make(map[string]json.RawMessage, len(v.Capture.NodeSources))
+				for sourceKey, sourceValue := range v.Capture.NodeSources {
+					capture.NodeSources[sourceKey] = append(json.RawMessage(nil), sourceValue...)
+				}
+			}
+			capture.Cleanup.Items = append([]ClusterSnapshotCleanupItem(nil), v.Capture.Cleanup.Items...)
+			capture.Cleanup.Warnings = append([]string(nil), v.Capture.Cleanup.Warnings...)
+			if v.Capture.Cleanup.Evidence != nil {
+				capture.Cleanup.Evidence = make(map[string]string, len(v.Capture.Cleanup.Evidence))
+				for evidenceKey, evidenceValue := range v.Capture.Cleanup.Evidence {
+					capture.Cleanup.Evidence[evidenceKey] = evidenceValue
+				}
+			}
+			v.Capture = &capture
 		}
 		if v.Manifest != nil {
 			manifest := *v.Manifest

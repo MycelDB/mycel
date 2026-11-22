@@ -54,6 +54,7 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"daemon.backup.cluster.request.v1":         {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.phase.v1":           {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.barrier.v1":         {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
+	"daemon.backup.cluster.capture.v1":         {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "snapshot backup providers"},
 	"daemon.backup.cluster.node_result.v1":     {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.complete.v1":        {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.fail.v1":            {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},

@@ -121,6 +121,10 @@ type BackupConfig struct {
 	KubernetesRestorePVCStorageClassName  string
 	KubernetesRestorePVCStorageRequest    string
 	KubernetesRestorePVCAccessModes       []string
+	KubernetesSnapshotCaptureEnabled      bool
+	KubernetesSnapshotClassName           string
+	KubernetesSnapshotSourcePVCTemplate   string
+	KubernetesSnapshotDeleteOnCompletion  bool
 }
 
 type WALConfig struct {
@@ -337,6 +341,10 @@ func LoadFromEnv() (Config, error) {
 			KubernetesRestorePVCStorageClassName:  strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS")),
 			KubernetesRestorePVCStorageRequest:    strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST")),
 			KubernetesRestorePVCAccessModes:       parseCSVEnv(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES")),
+			KubernetesSnapshotCaptureEnabled:      parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED"), false),
+			KubernetesSnapshotClassName:           strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS")),
+			KubernetesSnapshotSourcePVCTemplate:   strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE")),
+			KubernetesSnapshotDeleteOnCompletion:  parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_DELETE_ON_COMPLETION"), true),
 		},
 		SemanticMaintenance: SemanticMaintenanceConfig{
 			Enabled:                    parseBoolEnvDefault(os.Getenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED"), true),

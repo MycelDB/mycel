@@ -535,6 +535,39 @@ operator-resolved. This prevents restored clusters from silently appearing fully
 ready when lexical, graph checkpoint/query-index, or semantic/vector-derived
 artifacts were intentionally omitted from the backup set.
 
+### Kubernetes snapshot capture provider configuration
+
+`CSI_VOLUME_SNAPSHOT` and `AWS_EBS_SNAPSHOT` are explicit opt-in cluster backup
+capture providers. `AUTO` still resolves to the portable
+`FILESYSTEM_IMMUTABLE_COPY` fallback unless the operator requests a snapshot
+provider. A control daemon running in Kubernetes can enable the CSI-backed
+provider with:
+
+```sh
+MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED=true
+MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS=ebs-csi
+MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE=myceld-data-{pod}
+MYCELD_BACKUP_KUBERNETES_SNAPSHOT_DELETE_ON_COMPLETION=true
+```
+
+The source PVC template supports `{pod}`, `{ordinal}`, and `{statefulset}` and
+defaults to `myceld-data-{pod}`. The provider preflights the Kubernetes
+`snapshot.storage.k8s.io/v1` API and the named `VolumeSnapshotClass`, creates one
+`VolumeSnapshot` per source PVC while cluster backup quiescence and Raft freeze
+are held, waits for every snapshot to report `readyToUse=true`, and records
+credential-free provider evidence in `backup-set.json`. Repository archive
+artifacts remain the v0.23.x restore authority; snapshot evidence lets restore
+planning and operators distinguish CSI/EBS-backed capture from portable
+filesystem-copy capture. Provider creation/readiness failures fail closed and no
+`COMPLETE` marker is published.
+
+When `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_DELETE_ON_COMPLETION=true`, the daemon
+removes the transient `VolumeSnapshot` resources after node archives are created
+and records cleanup evidence/warnings in the capture provider evidence. Set it to
+`false` only when an environment-specific snapshot/clone workflow deliberately
+retains snapshots for operator-managed validation; retained snapshot names remain
+non-secret but should still be handled as infrastructure identifiers.
+
 ### Kubernetes restore controller configuration
 
 The same in-cluster helper is both the PVC restore helper and the first
@@ -597,6 +630,9 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets", "statefulsets/scale"]
     verbs: ["get", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "delete", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -609,6 +645,30 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: mycel-restore-helper
+---
+# VolumeSnapshotClass is cluster-scoped; bind this only when the snapshot
+# provider preflights or selects classes by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mycel-snapshot-class-reader
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mycel-snapshot-class-reader
+subjects:
+  - kind: ServiceAccount
+    name: mycel-restore-helper
+    namespace: <namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mycel-snapshot-class-reader
 ```
 
 Raw object-store credentials are still never stored in Mycel metadata. Env

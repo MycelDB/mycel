@@ -317,7 +317,7 @@ func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
 	cmd.Flags().StringVar(&archiveFormat, "archive-format", "tar.zst", "backup archive format: zip, tar, tar.gz, or tar.zst")
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "optional idempotency key for start retries")
 	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-backed production backup sets")
-	cmd.Flags().StringVar(&captureProvider, "capture-provider", "auto", "capture provider: auto or filesystem_immutable_copy")
+	cmd.Flags().StringVar(&captureProvider, "capture-provider", "auto", "capture provider: auto, filesystem_immutable_copy, csi_volume_snapshot, or aws_ebs_snapshot")
 	cmd.Flags().StringVar(&quiesceReadProfile, "quiesce-read-profile", "control_only", "backup quiesce read profile: control_only or strict_read_only")
 	cmd.Flags().DurationVar(&convergenceTimeout, "convergence-timeout", 0, "maximum time to wait for cluster convergence before failing the operation")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the cluster backup operation to finish")
@@ -981,8 +981,12 @@ func parseBackupCaptureProvider(value string) (adminv1.BackupCaptureProvider, er
 		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_AUTO, nil
 	case "filesystem_immutable_copy", "filesystem", "fs-copy":
 		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_FILESYSTEM_IMMUTABLE_COPY, nil
+	case "csi_volume_snapshot", "csi", "volumesnapshot", "volume_snapshot":
+		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_CSI_VOLUME_SNAPSHOT, nil
+	case "aws_ebs_snapshot", "ebs", "aws-ebs", "ebs_snapshot":
+		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_AWS_EBS_SNAPSHOT, nil
 	default:
-		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_UNSPECIFIED, fmt.Errorf("invalid --capture-provider %q: use auto or filesystem_immutable_copy", value)
+		return adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_UNSPECIFIED, fmt.Errorf("invalid --capture-provider %q: use auto, filesystem_immutable_copy, csi_volume_snapshot, or aws_ebs_snapshot", value)
 	}
 }
 

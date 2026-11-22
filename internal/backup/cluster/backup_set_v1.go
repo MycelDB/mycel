@@ -953,7 +953,8 @@ func (r *BackupSetValidationReport) validateBarrierSet(m BackupSetManifestV1) {
 }
 
 func (r *BackupSetValidationReport) validateCapture(m BackupSetManifestV1) {
-	if strings.TrimSpace(m.Capture.Provider) == "" || strings.TrimSpace(m.Capture.ProviderVersion) == "" || strings.TrimSpace(m.Capture.DataMover) == "" {
+	provider := strings.TrimSpace(m.Capture.Provider)
+	if provider == "" || strings.TrimSpace(m.Capture.ProviderVersion) == "" || strings.TrimSpace(m.Capture.DataMover) == "" {
 		r.addError("capture_fields_required", "capture provider, provider_version, and data_mover are required", false, "capture")
 	}
 	if m.Capture.ArchiveFormat == "" || m.Artifacts.ArchiveFormat != "" && m.Capture.ArchiveFormat != m.Artifacts.ArchiveFormat {
@@ -961,6 +962,16 @@ func (r *BackupSetValidationReport) validateCapture(m BackupSetManifestV1) {
 	}
 	if !m.Capture.TemporaryProviderRefsRedacted {
 		r.addError("provider_refs_not_redacted", "capture.temporary_provider_refs_redacted must be true", false, "capture.temporary_provider_refs_redacted")
+	}
+	if provider == "CSI_VOLUME_SNAPSHOT" || provider == "AWS_EBS_SNAPSHOT" {
+		if len(bytes.TrimSpace(m.Capture.ProviderEvidence)) == 0 || bytes.Equal(bytes.TrimSpace(m.Capture.ProviderEvidence), []byte("null")) {
+			r.addError("snapshot_provider_evidence_required", "snapshot capture providers require capture.provider_evidence", false, "capture.provider_evidence")
+		}
+		for i, node := range m.Artifacts.Nodes {
+			if len(bytes.TrimSpace(node.CaptureSource)) == 0 || bytes.Equal(bytes.TrimSpace(node.CaptureSource), []byte("null")) {
+				r.addError("snapshot_node_capture_source_required", "snapshot capture providers require per-node capture_source evidence", false, fmt.Sprintf("artifacts.nodes[%d].capture_source", i))
+			}
+		}
 	}
 }
 
