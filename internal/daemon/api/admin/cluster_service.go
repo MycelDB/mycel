@@ -47,6 +47,10 @@ type GraphIdempotencyDiagnosticsProvider interface {
 	IdempotencyMetrics() graphservice.IdempotencyMetrics
 }
 
+type DerivedReadinessProvider interface {
+	RestoredDerivedReadiness(context.Context) ([]clustering.DerivedSubsystemReadiness, error)
+}
+
 type AdminClusterService struct {
 	adminv1.UnimplementedAdminClusterServiceServer
 	cluster                  *clustering.Manager
@@ -61,6 +65,7 @@ type AdminClusterService struct {
 	graphCheckpoint          GraphCheckpointProvider
 	graphIdempotency         GraphIdempotencyDiagnosticsProvider
 	graphPeerCollector       GraphConsistencyPeerCollector
+	derivedReadiness         DerivedReadinessProvider
 }
 
 func NewAdminClusterService(cluster *clustering.Manager, authorizer OperatorAuthorizer) *AdminClusterService {
@@ -104,6 +109,11 @@ func (s *AdminClusterService) WithGraphIdempotencyDiagnostics(provider GraphIdem
 
 func (s *AdminClusterService) WithGraphConsistencyPeerCollector(collector GraphConsistencyPeerCollector) *AdminClusterService {
 	s.graphPeerCollector = collector
+	return s
+}
+
+func (s *AdminClusterService) WithDerivedReadiness(provider DerivedReadinessProvider) *AdminClusterService {
+	s.derivedReadiness = provider
 	return s
 }
 
@@ -286,7 +296,7 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	if pending > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d pending member(s)", pending))
 	}
-	readiness := s.evaluatedReadiness()
+	readiness := s.evaluatedReadiness(ctx)
 	if readiness.ExpectedMemberCount > 0 && active > 0 && int(active) < readiness.ExpectedMemberCount {
 		warnings = append(warnings, fmt.Sprintf("active member count %d is below expected %d", active, readiness.ExpectedMemberCount))
 	}
@@ -297,6 +307,9 @@ func (s *AdminClusterService) GetClusterHealth(ctx context.Context, req *adminv1
 	}
 	for _, blocker := range readiness.ReadinessBlockers {
 		warnings = append(warnings, blocker)
+	}
+	if !readiness.DerivedReady {
+		warnings = append(warnings, derivedReadinessWarning(readiness.DerivedSubsystems))
 	}
 	admissionRequired := s.clusterAdmissionRequired()
 	if admissionRequired && !s.cluster.IsAdmitted() {
@@ -337,7 +350,7 @@ func (s *AdminClusterService) clusterAdmissionRequired() bool {
 	return s.cluster.State() != model.NodeStateStandalone
 }
 
-func (s *AdminClusterService) evaluatedReadiness() clustering.ClusterReadiness {
+func (s *AdminClusterService) evaluatedReadiness(ctx context.Context) clustering.ClusterReadiness {
 	if s == nil || s.cluster == nil {
 		return clustering.ClusterReadiness{ProcessReady: true, ReadinessBlockers: []string{"clustering manager is not available"}}
 	}
@@ -365,6 +378,20 @@ func (s *AdminClusterService) evaluatedReadiness() clustering.ClusterReadiness {
 	readiness.ReadReady = readiness.MetadataReady && readiness.RaftReady
 	readiness.WriteReady = readiness.ReadReady
 	readiness.ClientReady = readiness.ClientReady && readiness.ReadReady && readiness.WriteReady
+	readiness.DerivedReady = true
+	readiness.RestoredClusterReady = true
+	if s.derivedReadiness != nil {
+		derived, err := s.derivedReadiness.RestoredDerivedReadiness(ctx)
+		if err != nil {
+			readiness.DerivedReady = false
+			readiness.RestoredClusterReady = false
+			readiness.DerivedSubsystems = []clustering.DerivedSubsystemReadiness{{Subsystem: "RESTORED_DERIVED_READINESS", State: "unknown", Ready: false, Reason: err.Error()}}
+		} else if len(derived) > 0 {
+			readiness.DerivedSubsystems = derived
+			readiness.DerivedReady = derivedSubsystemsReady(derived)
+			readiness.RestoredClusterReady = readiness.DerivedReady
+		}
+	}
 	return readiness
 }
 
@@ -415,8 +442,54 @@ func appendReadinessBlocker(readiness *clustering.ClusterReadiness, blocker stri
 	readiness.WriteReady = false
 }
 
+func derivedSubsystemsReady(rows []clustering.DerivedSubsystemReadiness) bool {
+	for _, row := range rows {
+		if !row.Ready || row.RebuildRequired {
+			return false
+		}
+	}
+	return true
+}
+
+func derivedReadinessWarning(rows []clustering.DerivedSubsystemReadiness) string {
+	parts := []string{}
+	for _, row := range rows {
+		if row.Ready && !row.RebuildRequired {
+			continue
+		}
+		detail := firstNonEmptyCluster(row.Subsystem, "derived_subsystem")
+		if row.State != "" {
+			detail += ":" + row.State
+		}
+		if row.Reason != "" {
+			detail += ":" + row.Reason
+		}
+		parts = append(parts, detail)
+	}
+	if len(parts) == 0 {
+		return "restored derived subsystems are not ready"
+	}
+	sort.Strings(parts)
+	return "restored derived subsystems are not ready: " + strings.Join(parts, ", ")
+}
+
 func clusterReadinessToProto(readiness clustering.ClusterReadiness) *adminv1.ClusterReadiness {
-	return &adminv1.ClusterReadiness{ClientReady: readiness.ClientReady, MetadataApplied: readiness.MetadataApplied, MetadataValidated: readiness.MetadataValidated, PartitionGroupsStarted: readiness.PartitionGroupsStarted, AuthoritativeClusterId: readiness.AuthoritativeClusterID, LocalClusterId: readiness.LocalClusterID, ExpectedMemberCount: int32(readiness.ExpectedMemberCount), ReadinessBlockers: append([]string(nil), readiness.ReadinessBlockers...), ProcessReady: readiness.ProcessReady, MetadataReady: readiness.MetadataReady, RaftReady: readiness.RaftReady, ReadReady: readiness.ReadReady, WriteReady: readiness.WriteReady}
+	out := &adminv1.ClusterReadiness{ClientReady: readiness.ClientReady, MetadataApplied: readiness.MetadataApplied, MetadataValidated: readiness.MetadataValidated, PartitionGroupsStarted: readiness.PartitionGroupsStarted, AuthoritativeClusterId: readiness.AuthoritativeClusterID, LocalClusterId: readiness.LocalClusterID, ExpectedMemberCount: int32(readiness.ExpectedMemberCount), ReadinessBlockers: append([]string(nil), readiness.ReadinessBlockers...), ProcessReady: readiness.ProcessReady, MetadataReady: readiness.MetadataReady, RaftReady: readiness.RaftReady, ReadReady: readiness.ReadReady, WriteReady: readiness.WriteReady, DerivedReady: readiness.DerivedReady, RestoredClusterReady: readiness.RestoredClusterReady}
+	for _, row := range readiness.DerivedSubsystems {
+		out.DerivedSubsystems = append(out.DerivedSubsystems, &adminv1.ClusterDerivedSubsystemReadiness{Subsystem: row.Subsystem, State: row.State, Ready: row.Ready, RebuildRequired: row.RebuildRequired, Reason: row.Reason, ArtifactId: row.ArtifactID, PolicyMode: row.PolicyMode, RestorePolicy: row.RestorePolicy, ValidationState: row.ValidationState, SourceFrontierKind: row.SourceFrontierKind, SourceFrontierValue: row.SourceFrontierValue, Evidence: copyStringMapCluster(row.Evidence), UpdatedAt: row.UpdatedAt})
+	}
+	return out
+}
+
+func copyStringMapCluster(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func firstNonEmptyCluster(values ...string) string {
@@ -442,7 +515,7 @@ func (s *AdminClusterService) GetClusterStatus(ctx context.Context, req *adminv1
 			peers = append(peers, clusterPeerToProto(peer))
 		}
 	}
-	readiness := s.evaluatedReadiness()
+	readiness := s.evaluatedReadiness(ctx)
 	return &adminv1.GetClusterStatusResponse{
 		Node: &adminv1.ClusterLocalNode{
 			NodeId:                   identity.NodeID,

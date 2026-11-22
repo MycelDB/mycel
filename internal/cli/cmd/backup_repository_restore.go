@@ -184,6 +184,10 @@ func restoreRepositoryBackupOrdinalLocal(ctx context.Context, in repositoryResto
 	if err := clusterbackup.VerifyRestoredDataDir(dataDir); err != nil {
 		return repositoryRestoreLocalResult{}, fmt.Errorf("verify restored data dir: %w", err)
 	}
+	markerDoc := clusterbackup.BuildRestoredDerivedReadiness(manifest, clusterbackup.RestoredDerivedReadinessOptions{Ordinal: artifact.Ordinal, NodeID: artifact.NodeID, PodName: artifact.PodName, TargetPVCName: strings.TrimSpace(in.TargetPVCName), RestoredAt: time.Now().UTC(), Evidence: map[string]string{"restore_helper": "restore-repository-local"}})
+	if err := clusterbackup.WriteRestoredDerivedReadiness(dataDir, markerDoc); err != nil {
+		return repositoryRestoreLocalResult{}, fmt.Errorf("write restored derived readiness marker: %w", err)
+	}
 	return repositoryRestoreLocalResult{BackupSetID: manifest.BackupSetID, RepositoryBucket: bucket, BackupSetPrefix: prefix, Ordinal: artifact.Ordinal, PodName: artifact.PodName, TargetPVCName: strings.TrimSpace(in.TargetPVCName), DataDir: dataDir, ArchiveURI: artifact.ArchiveURI, ArchiveChecksum: checksum, ArchiveSizeBytes: size, CompleteMarkerURI: "s3://" + bucket + "/" + markerKey}, nil
 }
 

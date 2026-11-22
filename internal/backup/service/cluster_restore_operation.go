@@ -374,7 +374,7 @@ func (m *Module) executeClusterRestoreOperation(ctx context.Context, input Start
 		op.Progress.Nodes[i].State = "verifying"
 		op.UpdatedAt = time.Now().UTC()
 		update(op)
-		validationEvidence, err := validateRestoredDataDirForOperation(dataDir, plan, mapping, artifact)
+		validationEvidence, err := validateRestoredDataDirForOperation(dataDir, plan, mapping, artifact, op.RestoreOperationID)
 		if err != nil {
 			op.Progress.Nodes[i].State = "failed"
 			op.Progress.Nodes[i].LastError = err.Error()
@@ -866,7 +866,7 @@ func restoreExistingCapacityPath(path string) (string, error) {
 	}
 }
 
-func validateRestoredDataDirForOperation(dataDir string, plan ClusterRestorePlan, mapping ClusterRestoreNodeMapping, artifact clusterbackup.BackupSetNodeArtifact) (map[string]string, error) {
+func validateRestoredDataDirForOperation(dataDir string, plan ClusterRestorePlan, mapping ClusterRestoreNodeMapping, artifact clusterbackup.BackupSetNodeArtifact, restoreOperationID string) (map[string]string, error) {
 	if err := clusterbackup.VerifyRestoredDataDir(dataDir); err != nil {
 		return nil, err
 	}
@@ -878,7 +878,19 @@ func validateRestoredDataDirForOperation(dataDir string, plan ClusterRestorePlan
 	if expectedNodeID != "" && restoredNodeID != expectedNodeID {
 		return nil, fmt.Errorf("restored node_id=%s does not match expected source node_id=%s for ordinal %d", restoredNodeID, expectedNodeID, mapping.Ordinal)
 	}
-	return restorePostValidationEvidence(plan, mapping, artifact, "passed", restoredNodeID)
+	evidence, err := restorePostValidationEvidence(plan, mapping, artifact, "passed", restoredNodeID)
+	if err != nil {
+		return nil, err
+	}
+	if plan.ProductionManifest != nil {
+		doc := clusterbackup.BuildRestoredDerivedReadiness(*plan.ProductionManifest, clusterbackup.RestoredDerivedReadinessOptions{RestoreOperationID: restoreOperationID, RestorePlanID: plan.RestorePlanID, Ordinal: mapping.Ordinal, NodeID: restoredNodeID, PodName: artifact.PodName, RestoredAt: time.Now().UTC(), Evidence: map[string]string{"post_restore_validation": "passed"}})
+		if err := clusterbackup.WriteRestoredDerivedReadiness(dataDir, doc); err != nil {
+			return nil, fmt.Errorf("write restored derived readiness marker: %w", err)
+		}
+		evidence["restored_derived_readiness_marker"] = clusterbackup.RestoredDerivedReadinessRelativePath
+		evidence["restored_derived_ready"] = fmt.Sprintf("%t", doc.DerivedReady)
+	}
+	return evidence, nil
 }
 
 func restoredDataDirNodeID(dataDir string) (string, error) {

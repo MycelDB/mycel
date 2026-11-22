@@ -436,6 +436,26 @@ identity, preserved identity/auth-session policy, manifest Raft/identity lineage
 semantic/lexical/projection barrier counts, vector-store catalog validation, and
 derived-subsystem rebuild requirements.
 
+Restore also writes a local marker at
+`meta/backup/restored-derived-readiness.json` inside each restored data
+directory/PVC. The marker is derived from `backup-set.json` `derived_state` rows
+and reports each subsystem as `ready`, `discarded`, `rebuild_required`, or
+`unknown` with policy mode, restore policy, validation state, source frontier,
+and non-secret evidence. Omitted `INCLUDE_OPTIONAL` and `REBUILD_ALLOWED`
+artifacts are always marked `rebuild_required`; they never publish partial
+artifact URI/checksum/format evidence. `INCLUDE_REQUIRED` artifacts are ready only
+when they were included and validated, and discarded in-memory artifacts are
+reported as `discarded` so operators know no restore action is required.
+
+A daemon started from a restored data directory reads this marker and exposes it
+through Admin Cluster readiness as `derived_ready`, `restored_cluster_ready`, and
+per-subsystem `derived_subsystems`. Durable read/write routing readiness remains
+separate from derived-artifact readiness, but cluster health reports a degraded
+warning until rebuild-required derived subsystems are rebuilt or otherwise
+operator-resolved. This prevents restored clusters from silently appearing fully
+ready when lexical, graph checkpoint/query-index, or semantic/vector-derived
+artifacts were intentionally omitted from the backup set.
+
 ### Kubernetes restore controller configuration
 
 The same in-cluster helper is both the PVC restore helper and the first

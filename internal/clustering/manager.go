@@ -229,6 +229,7 @@ func (m *Manager) Readiness() ClusterReadiness {
 	defer m.mu.RUnlock()
 	out := m.readiness
 	out.ReadinessBlockers = append([]string(nil), out.ReadinessBlockers...)
+	out.DerivedSubsystems = cloneDerivedSubsystemReadiness(out.DerivedSubsystems)
 	return out
 }
 
@@ -298,7 +299,7 @@ func (m *Manager) ApplySystemMetadata(ctx context.Context, meta consensus.System
 	if err := WritePeers(m.dataDir, id, nil, now); err != nil {
 		return err
 	}
-	readiness := ClusterReadiness{ClientReady: false, MetadataApplied: true, MetadataValidated: true, PartitionGroupsStarted: false, AuthoritativeClusterID: meta.ClusterID, LocalClusterID: id.ClusterID, ExpectedMemberCount: meta.NodeCount, ReadinessBlockers: []string{"partition groups are not started"}, ProcessReady: true, MetadataReady: true}
+	readiness := ClusterReadiness{ClientReady: false, MetadataApplied: true, MetadataValidated: true, PartitionGroupsStarted: false, AuthoritativeClusterID: meta.ClusterID, LocalClusterID: id.ClusterID, ExpectedMemberCount: meta.NodeCount, ReadinessBlockers: []string{"partition groups are not started"}, ProcessReady: true, MetadataReady: true, DerivedReady: true, RestoredClusterReady: true}
 	m.mu.Lock()
 	m.identity = id
 	m.state = NodeStateInitializing
@@ -386,7 +387,7 @@ func removeReadinessBlocker(blockers []string, blocker string) []string {
 }
 
 func initialReadiness(id model.NodeIdentity, state model.NodeState, opts Options) ClusterReadiness {
-	out := ClusterReadiness{LocalClusterID: id.ClusterID, ProcessReady: true}
+	out := ClusterReadiness{LocalClusterID: id.ClusterID, ProcessReady: true, DerivedReady: true, RestoredClusterReady: true}
 	if !opts.RaftMode {
 		out.ExpectedMemberCount = 1
 		out.ClientReady = state == NodeStateStandalone || state == NodeStateClustered

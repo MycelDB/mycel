@@ -17,6 +17,40 @@ type ClusterReadiness struct {
 	RaftReady              bool
 	ReadReady              bool
 	WriteReady             bool
+	DerivedReady           bool
+	RestoredClusterReady   bool
+	DerivedSubsystems      []DerivedSubsystemReadiness
+}
+
+type DerivedSubsystemReadiness struct {
+	Subsystem           string
+	State               string
+	Ready               bool
+	RebuildRequired     bool
+	Reason              string
+	ArtifactID          string
+	PolicyMode          string
+	RestorePolicy       string
+	ValidationState     string
+	SourceFrontierKind  string
+	SourceFrontierValue string
+	Evidence            map[string]string
+	UpdatedAt           string
+}
+
+func cloneDerivedSubsystemReadiness(in []DerivedSubsystemReadiness) []DerivedSubsystemReadiness {
+	out := make([]DerivedSubsystemReadiness, 0, len(in))
+	for _, row := range in {
+		cp := row
+		if row.Evidence != nil {
+			cp.Evidence = make(map[string]string, len(row.Evidence))
+			for k, v := range row.Evidence {
+				cp.Evidence[k] = v
+			}
+		}
+		out = append(out, cp)
+	}
+	return out
 }
 
 func (r ClusterReadiness) withBlocker(blocker string) ClusterReadiness {
