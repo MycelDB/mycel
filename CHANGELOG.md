@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
+- Added restored-cluster derived subsystem readiness reporting: restore writes a durable local marker for preserved/discarded/rebuild-required derived artifacts, PVC helper restores publish the same marker, admin cluster readiness exposes derived subsystem state/evidence, and health reports degraded restored-derived rebuild requirements (#382).
 - Added repository-backed cluster backup retention planning and safe pruning: automatic post-backup retention, public retention preview/apply admin and CLI paths, keep-last-successful/keep-for semantics, age-gated incomplete-prefix cleanup, active backup/restore blockers, and partial-deletion warnings (#381).
 - Added restore operation hardening for repository-backed cluster restores: owner-gated restart resume for safe pre-apply phases, phase-aware cancel finalization, execution-time staging/target capacity blockers, durable per-node post-restore validation evidence, and bounded restore operation history pruning (#380).
 - Added production Kubernetes restore controller orchestration for repository-backed `NEW_CLUSTER_BOOTSTRAP` restores: StatefulSet scale-down fencing, missing/replacement PVC preparation, helper pod evidence capture, per-node restore evidence, and RBAC/configuration guidance (#379).

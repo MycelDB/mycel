@@ -205,14 +205,17 @@ func TestValidateRestoredDataDirForOperationEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := ClusterRestorePlan{IdentityMode: ClusterRestoreIdentityModePreserveBackupID, AuthSessionPolicy: ClusterRestoreAuthSessionPolicyPreserveRestoredSessions, ProductionManifest: &clusterbackup.BackupSetManifestV1{Consistency: clusterbackup.BackupSetConsistency{BarrierSet: clusterbackup.CheckpointBarrierSetV1{SystemMetadata: clusterbackup.CheckpointSystemMetadata{ClusterID: "cluster-a", BootstrapEpoch: "1", SystemRaftGroupID: "system", SystemRaftBarrierIndex: "10"}, Identity: clusterbackup.CheckpointIdentity{IdentityRaftGroupID: "system", IdentityRaftBarrierIndex: "10", AuthorizationRevision: "9", RefreshSessionStoreChecksumSHA256: "abc", AuthSessionPolicy: ClusterRestoreAuthSessionPolicyPreserveRestoredSessions}}}, DerivedState: []clusterbackup.BackupSetDerivedState{{Subsystem: "LEXICAL_SEARCH", RestorePolicy: "REBUILD_REQUIRED", ValidationState: "REBUILD_REQUIRED"}, {Subsystem: "SEMANTIC_VECTOR_SEARCH", Included: true, RestorePolicy: "PRESERVED", ValidationState: "PASSED"}}}}
-	evidence, err := validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "node-1", SourcePodName: "myceld-0"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "node-1", PodName: "myceld-0", RaftNodeID: "1"})
+	evidence, err := validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "node-1", SourcePodName: "myceld-0"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "node-1", PodName: "myceld-0", RaftNodeID: "1"}, "restore-1")
 	if err != nil {
 		t.Fatalf("validateRestoredDataDirForOperation() error=%v", err)
 	}
-	if evidence["post_restore_validation"] != "passed" || evidence["restored_node_id"] != "node-1" || evidence["refresh_session_checksum_present"] != "true" || evidence["derived_rebuild_required_subsystems"] != "lexical_search" {
+	if evidence["post_restore_validation"] != "passed" || evidence["restored_node_id"] != "node-1" || evidence["refresh_session_checksum_present"] != "true" || evidence["derived_rebuild_required_subsystems"] != "lexical_search" || evidence["restored_derived_readiness_marker"] == "" || evidence["restored_derived_ready"] != "false" {
 		t.Fatalf("evidence=%#v", evidence)
 	}
-	_, err = validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "other-node"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "other-node"})
+	if marker, ok, err := clusterbackup.ReadRestoredDerivedReadiness(dataDir); err != nil || !ok || marker.DerivedReady || marker.Subsystems[0].State != "rebuild_required" {
+		t.Fatalf("restored derived readiness marker = %#v ok=%t err=%v", marker, ok, err)
+	}
+	_, err = validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "other-node"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "other-node"}, "restore-2")
 	if err == nil {
 		t.Fatalf("validateRestoredDataDirForOperation(node mismatch) error=nil, want error")
 	}

@@ -185,6 +185,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	}
 	if cfg.ClusteringManager != nil {
 		clusterAdmin := adminapi.NewAdminClusterService(cfg.ClusteringManager, cfg.PrincipalManager).WithWALStatus(cfg.WALStatus, cfg.WALCheckpoint).WithClusterRuntime(cfg.ClusterConfig, cfg.RaftGroups, cfg.RaftTransportDiagnostics)
+		if provider, ok := cfg.BackupManager.(adminapi.DerivedReadinessProvider); ok {
+			clusterAdmin.WithDerivedReadiness(provider)
+		}
 		if provider, ok := cfg.GraphManager.(adminapi.LocalGraphConsistencyProvider); ok {
 			clusterAdmin.WithGraphConsistency(provider)
 		}
