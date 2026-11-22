@@ -344,23 +344,117 @@ be explicit and auditable.
 
 ## Restore model
 
-Full-system restore remains offline. The operator should:
+Full-system restore remains offline. For production Kubernetes deployments the
+recommended path is daemon-managed `NEW_CLUSTER_BOOTSTRAP` restore into
+controller-prepared PVCs:
 
-1. stop the target StatefulSet;
-2. create fresh empty PVCs;
-3. make each pod archive available to a restore pod/job, usually by mounting the
-   backup volume or copying the archive from object storage to the restore
-   environment;
-4. restore each pod archive into the matching ordinal PVC:
-   - `myceld-0` archive to `myceld-0` PVC;
-   - `myceld-1` archive to `myceld-1` PVC;
-   - `myceld-2` archive to `myceld-2` PVC;
-5. recreate required deployment secrets from the operator's secret manager;
-6. start the StatefulSet;
-7. validate cluster identity, health, graph data, blob payloads, and login.
+1. the operator starts `StartClusterRestore` against a repository-backed backup
+   set, preserving backup identity and supplying the target namespace,
+   StatefulSet name, and per-ordinal target PVC names;
+2. the daemon validates repository truth using both `backup-set.json` and
+   `COMPLETE`;
+3. if the in-cluster Kubernetes restore helper/controller is enabled, the daemon
+   scales the target/source StatefulSet to zero before replacing PVCs for
+   `PRESERVE_BACKUP_ID` restores;
+4. the controller creates missing target PVCs or replaces existing target PVCs
+   only when PVC replacement is explicitly enabled;
+5. helper pods mount each target PVC and run
+   `mycel admin backup cluster restore-repository-local`, which downloads the
+   matching node archive from the repository, verifies/decrypts it, proves the
+   mounted data directory is empty, and extracts the archive;
+6. restore status records per-node Kubernetes evidence including namespace,
+   helper pod, target PVC UID/action, source-fencing token, pod phase, helper
+   log tail, and event tail;
+7. the operator starts the StatefulSet and validates cluster identity, health,
+   graph data, blob payloads, and login.
 
-The backup-set manifest is used to verify that the operator restored the correct
-archive to the correct ordinal.
+Manual restore remains possible for environments without the controller: the
+operator must stop the StatefulSet, create fresh empty PVCs, run a restore pod/job
+per ordinal, recreate required deployment secrets from the secret manager, start
+the StatefulSet, and validate. The backup-set manifest is used in both paths to
+verify that the operator or controller restored the correct archive to the correct
+ordinal.
+
+### Kubernetes restore controller configuration
+
+The same in-cluster helper is both the PVC restore helper and the first
+production Kubernetes restore controller. The control daemon that receives
+`StartClusterRestore` must run outside the target StatefulSet; a daemon pod whose
+`HOSTNAME` is one of the target StatefulSet pods fails closed instead of scaling
+itself down midway through PVC replacement. The helper/controller is opt-in and
+must be configured on the control daemon pod:
+
+```sh
+MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED=true
+MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE=docker.io/myceldb/mycel:<digest-or-tag>
+MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE=<namespace>
+MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT=mycel-restore-helper
+
+# Target preparation controls.
+MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED=true
+MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED=true
+MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED=false
+MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS=gp3
+MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST=20Gi
+MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES=ReadWriteOnce
+```
+
+Safe defaults create missing PVCs but do not delete/replace existing PVCs.
+Existing PVC replacement is destructive and requires
+`MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED=true`; it also requires
+StatefulSet scale-down fencing to remain enabled. Missing PVC creation requires a
+storage request from either `MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST`
+or the restore target annotation `myceldb.io/restore-pvc-storage-request`.
+Storage class and access modes may also be supplied through target annotations:
+`myceldb.io/restore-pvc-storage-class` and
+`myceldb.io/restore-pvc-access-modes`.
+
+The control daemon pod must run as a service account with the minimum Kubernetes
+permissions for its namespace. The same service account name may also be supplied
+through `MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT` for helper pods:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mycel-restore-helper
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "delete", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "delete", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "statefulsets/scale"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mycel-restore-helper
+subjects:
+  - kind: ServiceAccount
+    name: mycel-restore-helper
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mycel-restore-helper
+```
+
+Raw object-store credentials are still never stored in Mycel metadata. Env
+credential references are copied into a transient Kubernetes Secret for helper
+pods; Kubernetes Secret references use `secretKeyRef`; `aws-irsa` uses the AWS
+default credential provider chain.
 
 ## Security notes
 

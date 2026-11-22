@@ -429,12 +429,18 @@ func TestLoadFromEnvBackupOverrides(t *testing.T) {
 	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE", "registry.example/mycel:restore")
 	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE", "restore-system")
 	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT", "mycel-restore")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS", "gp3")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST", "20Gi")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES", "ReadWriteOnce, ReadWriteMany")
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
 	backup := cfg.Backup
-	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup || !backup.KubernetesRestoreHelperEnabled || backup.KubernetesRestoreHelperImage != "registry.example/mycel:restore" || backup.KubernetesRestoreHelperNamespace != "restore-system" || backup.KubernetesRestoreHelperServiceAccount != "mycel-restore" {
+	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup || !backup.KubernetesRestoreHelperEnabled || backup.KubernetesRestoreHelperImage != "registry.example/mycel:restore" || backup.KubernetesRestoreHelperNamespace != "restore-system" || backup.KubernetesRestoreHelperServiceAccount != "mycel-restore" || !backup.KubernetesRestoreScaleDownStatefulSet || !backup.KubernetesRestoreProvisionPVCs || !backup.KubernetesRestoreReplaceExistingPVCs || backup.KubernetesRestorePVCStorageClassName != "gp3" || backup.KubernetesRestorePVCStorageRequest != "20Gi" || len(backup.KubernetesRestorePVCAccessModes) != 2 || backup.KubernetesRestorePVCAccessModes[0] != "ReadWriteOnce" || backup.KubernetesRestorePVCAccessModes[1] != "ReadWriteMany" {
 		t.Fatalf("unexpected backup overrides: %+v", backup)
 	}
 }
@@ -457,6 +463,8 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{RetentionCount: -1}},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Compression: "tar.gz"}},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true, KubernetesRestoreHelperImage: "registry.example/mycel:restore", KubernetesRestoreReplaceExistingPVCs: true, KubernetesRestoreProvisionPVCs: false, KubernetesRestoreScaleDownStatefulSet: true}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true, KubernetesRestoreHelperImage: "registry.example/mycel:restore", KubernetesRestoreReplaceExistingPVCs: true, KubernetesRestoreProvisionPVCs: true, KubernetesRestoreScaleDownStatefulSet: false}},
 	}
 	for _, tc := range cases {
 		if err := tc.Validate(); err == nil {

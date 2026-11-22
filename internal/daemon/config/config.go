@@ -115,6 +115,12 @@ type BackupConfig struct {
 	KubernetesRestoreHelperImage          string
 	KubernetesRestoreHelperNamespace      string
 	KubernetesRestoreHelperServiceAccount string
+	KubernetesRestoreScaleDownStatefulSet bool
+	KubernetesRestoreProvisionPVCs        bool
+	KubernetesRestoreReplaceExistingPVCs  bool
+	KubernetesRestorePVCStorageClassName  string
+	KubernetesRestorePVCStorageRequest    string
+	KubernetesRestorePVCAccessModes       []string
 }
 
 type WALConfig struct {
@@ -319,6 +325,12 @@ func LoadFromEnv() (Config, error) {
 			KubernetesRestoreHelperImage:          strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE")),
 			KubernetesRestoreHelperNamespace:      strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE")),
 			KubernetesRestoreHelperServiceAccount: strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT")),
+			KubernetesRestoreScaleDownStatefulSet: parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED"), true),
+			KubernetesRestoreProvisionPVCs:        parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED"), true),
+			KubernetesRestoreReplaceExistingPVCs:  parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED"), false),
+			KubernetesRestorePVCStorageClassName:  strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS")),
+			KubernetesRestorePVCStorageRequest:    strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST")),
+			KubernetesRestorePVCAccessModes:       parseCSVEnv(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES")),
 		},
 		SemanticMaintenance: SemanticMaintenanceConfig{
 			Enabled:                    parseBoolEnvDefault(os.Getenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED"), true),
@@ -710,6 +722,20 @@ func (c BackupConfig) Validate() error {
 	}
 	if c.KubernetesRestoreHelperEnabled && strings.TrimSpace(c.KubernetesRestoreHelperImage) == "" {
 		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE is required when MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED=true")
+	}
+	if c.KubernetesRestoreHelperEnabled && len(c.KubernetesRestorePVCAccessModes) == 0 {
+		c.KubernetesRestorePVCAccessModes = []string{"ReadWriteOnce"}
+	}
+	for _, mode := range c.KubernetesRestorePVCAccessModes {
+		if strings.TrimSpace(mode) == "" {
+			return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES must not contain empty values")
+		}
+	}
+	if c.KubernetesRestoreReplaceExistingPVCs && !c.KubernetesRestoreProvisionPVCs {
+		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED requires MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED=true")
+	}
+	if c.KubernetesRestoreReplaceExistingPVCs && !c.KubernetesRestoreScaleDownStatefulSet {
+		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED requires MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED=true")
 	}
 	return nil
 }

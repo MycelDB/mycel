@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,13 +24,19 @@ const (
 )
 
 type KubernetesPVCRestoreHelperConfig struct {
-	Namespace          string
-	HelperImage        string
-	ServiceAccountName string
-	ImagePullPolicy    string
-	Timeout            time.Duration
-	PollInterval       time.Duration
-	DeleteOnCompletion bool
+	Namespace            string
+	HelperImage          string
+	ServiceAccountName   string
+	ImagePullPolicy      string
+	Timeout              time.Duration
+	PollInterval         time.Duration
+	DeleteOnCompletion   bool
+	ScaleDownStatefulSet bool
+	ProvisionPVCs        bool
+	ReplaceExistingPVCs  bool
+	PVCStorageClassName  string
+	PVCStorageRequest    string
+	PVCAccessModes       []string
 }
 
 type KubernetesPVCRestoreHelper struct {
@@ -81,7 +88,82 @@ func newKubernetesPVCRestoreHelper(baseURL, token string, client *http.Client, c
 	if strings.TrimSpace(config.ImagePullPolicy) == "" {
 		config.ImagePullPolicy = "IfNotPresent"
 	}
+	if len(config.PVCAccessModes) == 0 {
+		config.PVCAccessModes = []string{"ReadWriteOnce"}
+	}
 	return &KubernetesPVCRestoreHelper{baseURL: strings.TrimRight(baseURL, "/"), token: strings.TrimSpace(token), client: client, config: config}
+}
+
+func (h *KubernetesPVCRestoreHelper) PrepareRepositoryRestoreTarget(ctx context.Context, req ClusterRestorePVCTargetControllerRequest) (ClusterRestorePVCTargetControllerResult, error) {
+	result := ClusterRestorePVCTargetControllerResult{NodeEvidence: map[int]map[string]string{}}
+	if h == nil {
+		return result, fmt.Errorf("Kubernetes PVC restore controller is not configured")
+	}
+	namespace := firstNonEmptyString(strings.TrimSpace(req.Target.Namespace), strings.TrimSpace(h.config.Namespace), "default")
+	statefulSet := strings.TrimSpace(req.Target.StatefulSet)
+	now := time.Now().UTC()
+	for _, node := range req.Nodes {
+		pvcName := strings.TrimSpace(node.TargetPVCName)
+		if pvcName == "" {
+			blocker := ValidationBlocker{Reason: "target_pvc_name_required", Detail: fmt.Sprintf("restore target ordinal %d has no target_pvc_name", node.Ordinal), FieldPath: fmt.Sprintf("target.nodes[%d].target_pvc_name", node.Ordinal)}
+			result.CleanTarget.Blockers = append(result.CleanTarget.Blockers, blocker)
+			return result, errors.New(blocker.Detail)
+		}
+		result.NodeEvidence[node.Ordinal] = map[string]string{"kubernetes_namespace": namespace, "target_pvc_name": pvcName}
+		if statefulSet != "" {
+			result.NodeEvidence[node.Ordinal]["stateful_set"] = statefulSet
+		}
+	}
+	if statefulSet != "" && h.config.ScaleDownStatefulSet {
+		if kubernetesRestoreControllerSelfTargetsStatefulSet(statefulSet) {
+			err := fmt.Errorf("Kubernetes restore controller is running in target StatefulSet %q; start restore from a control daemon outside the target StatefulSet before scale-down/PVC replacement", statefulSet)
+			result.SourceFencing.Blockers = append(result.SourceFencing.Blockers, ValidationBlocker{Reason: "kubernetes_restore_controller_self_target", Detail: err.Error(), FieldPath: "target.stateful_set"})
+			return result, err
+		}
+		fence, task, err := h.scaleStatefulSetToZero(ctx, namespace, statefulSet, req.Nodes)
+		result.CleanupTasks = append(result.CleanupTasks, task)
+		if err != nil {
+			result.SourceFencing.Blockers = append(result.SourceFencing.Blockers, ValidationBlocker{Reason: "kubernetes_statefulset_scale_down_failed", Detail: err.Error(), FieldPath: "target.stateful_set", Retryable: true})
+			return result, err
+		}
+		result.SourceFencing = fence
+		for ordinal := range result.NodeEvidence {
+			result.NodeEvidence[ordinal]["source_fencing"] = fence.FenceTokenRef
+		}
+	}
+	allFresh := true
+	checked := make([]ClusterRestoreNodeMapping, 0, len(req.Nodes))
+	for index, node := range req.Nodes {
+		pvcName := strings.TrimSpace(node.TargetPVCName)
+		evidence := result.NodeEvidence[node.Ordinal]
+		prepared, blockers, err := h.prepareTargetPVC(ctx, namespace, pvcName, req.Target, node)
+		for key, value := range prepared {
+			evidence[key] = value
+		}
+		if len(blockers) > 0 {
+			result.CleanTarget.Blockers = append(result.CleanTarget.Blockers, blockers...)
+		}
+		if err != nil {
+			if len(blockers) == 0 {
+				result.CleanTarget.Blockers = append(result.CleanTarget.Blockers, ValidationBlocker{Reason: "kubernetes_target_pvc_prepare_failed", Detail: err.Error(), FieldPath: fmt.Sprintf("target.nodes[%d].target_pvc_name", index), Retryable: true})
+			}
+			return result, err
+		}
+		if evidence["target_pvc_fresh"] != "true" {
+			allFresh = false
+		}
+		checked = append(checked, node)
+	}
+	result.CleanTarget = ClusterRestoreCleanTargetProof{ProofID: kubernetesRestoreSafeName(req.RestoreOperationID + "-kubernetes-pvc-empty"), CheckedAt: now, TargetEmpty: allFresh, CheckedNodes: checked, Blockers: result.CleanTarget.Blockers, OperatorAttestation: "Kubernetes restore controller created or replaced every target PVC; helper pod verifies the mounted data dir is empty immediately before extraction"}
+	if !allFresh && len(result.CleanTarget.Blockers) == 0 {
+		result.CleanTarget.Blockers = append(result.CleanTarget.Blockers, ValidationBlocker{Reason: "target_pvc_not_controller_fresh", Detail: "all controller-managed target PVCs must be newly created or explicitly replaced before helper restore", FieldPath: "target.nodes"})
+		return result, fmt.Errorf("controller-managed target PVCs are not all fresh")
+	}
+	for ordinal := range result.NodeEvidence {
+		result.NodeEvidence[ordinal]["empty_target_proof_id"] = result.CleanTarget.ProofID
+		result.NodeEvidence[ordinal]["empty_target_proof"] = strconv.FormatBool(result.CleanTarget.TargetEmpty)
+	}
+	return result, nil
 }
 
 func (h *KubernetesPVCRestoreHelper) RestoreRepositoryBackupNodeToPVC(ctx context.Context, req ClusterRestorePVCHelperRequest) (result ClusterRestorePVCHelperResult, retErr error) {
@@ -103,6 +185,7 @@ func (h *KubernetesPVCRestoreHelper) RestoreRepositoryBackupNodeToPVC(ctx contex
 		return result, err
 	}
 	result.TargetPVCName = pvcName
+	result.Evidence = map[string]string{"kubernetes_namespace": namespace, "target_pvc_name": pvcName, "helper_pod_name": podName}
 	if cleanupSecret {
 		defer func() {
 			state, lastErr := h.deleteNamespacedResource(context.Background(), namespace, "secrets", secretName)
@@ -156,15 +239,272 @@ func (h *KubernetesPVCRestoreHelper) RestoreRepositoryBackupNodeToPVC(ctx contex
 		return result, fmt.Errorf("create Kubernetes restore helper pod: %w", err)
 	}
 	phase, logs, err := h.waitForPodCompletion(ctx, namespace, podName)
+	result.Evidence["helper_pod_phase"] = phase
+	result.Evidence["helper_logs_tail"] = boundedString(logs, 4096)
+	if events, eventsErr := h.getPodEvents(ctx, namespace, podName); eventsErr == nil && strings.TrimSpace(events) != "" {
+		result.Evidence["helper_events_tail"] = boundedString(events, 4096)
+	}
 	if err != nil {
 		return result, err
 	}
 	if phase != "Succeeded" {
 		return result, fmt.Errorf("Kubernetes restore helper pod finished phase=%s logs=%s", phase, boundedString(logs, 4096))
 	}
+	result.Evidence["helper_verified"] = "true"
+	result.Evidence["empty_target_verified_by"] = "restore-repository-local"
 	result.Verified = true
 	result.BytesCompleted = parseSignedDecimalStringLocal(req.Artifact.SizeBytes)
 	return result, nil
+}
+
+func (h *KubernetesPVCRestoreHelper) scaleStatefulSetToZero(ctx context.Context, namespace, statefulSet string, nodes []ClusterRestoreNodeMapping) (ClusterRestoreSourceFencingEvidence, CleanupTask, error) {
+	uri := "k8s://" + namespace + "/statefulset/" + statefulSet
+	task := CleanupTask{TaskID: "kubernetes-statefulset-scale-down", ResourceKind: "kubernetes_statefulset", ResourceURI: uri, State: "pending"}
+	current, exists, err := h.getKubernetesResource(ctx, fmt.Sprintf("/apis/apps/v1/namespaces/%s/statefulsets/%s", url.PathEscape(namespace), url.PathEscape(statefulSet)))
+	if err != nil {
+		task.State = "failed"
+		task.LastError = err.Error()
+		return ClusterRestoreSourceFencingEvidence{}, task, err
+	}
+	if !exists {
+		err := fmt.Errorf("target StatefulSet %s/%s was not found", namespace, statefulSet)
+		task.State = "failed"
+		task.LastError = err.Error()
+		return ClusterRestoreSourceFencingEvidence{}, task, err
+	}
+	before := nestedInt64(current, "spec", "replicas")
+	if _, err := h.patchJSON(ctx, fmt.Sprintf("/apis/apps/v1/namespaces/%s/statefulsets/%s/scale", url.PathEscape(namespace), url.PathEscape(statefulSet)), map[string]any{"spec": map[string]any{"replicas": 0}}); err != nil {
+		task.State = "failed"
+		task.LastError = err.Error()
+		return ClusterRestoreSourceFencingEvidence{}, task, err
+	}
+	deadline := time.Now().Add(h.config.Timeout)
+	for {
+		latest, latestExists, latestErr := h.getKubernetesResource(ctx, fmt.Sprintf("/apis/apps/v1/namespaces/%s/statefulsets/%s", url.PathEscape(namespace), url.PathEscape(statefulSet)))
+		if latestErr != nil {
+			task.State = "failed"
+			task.LastError = latestErr.Error()
+			return ClusterRestoreSourceFencingEvidence{}, task, latestErr
+		}
+		if !latestExists {
+			err := fmt.Errorf("target StatefulSet %s/%s disappeared while waiting for scale-down", namespace, statefulSet)
+			task.State = "failed"
+			task.LastError = err.Error()
+			return ClusterRestoreSourceFencingEvidence{}, task, err
+		}
+		if nestedInt64(latest, "status", "replicas") == 0 && nestedInt64(latest, "status", "readyReplicas") == 0 {
+			gone, goneErr := h.statefulSetPodsGone(ctx, namespace, statefulSet, nodes)
+			if goneErr != nil {
+				task.State = "failed"
+				task.LastError = goneErr.Error()
+				return ClusterRestoreSourceFencingEvidence{}, task, goneErr
+			}
+			if gone {
+				task.State = "scaled_down"
+				return ClusterRestoreSourceFencingEvidence{SourceClusterFenced: true, FencedAt: time.Now().UTC(), FenceTokenRef: fmt.Sprintf("%s?replicas_before=%d&replicas_after=0", uri, before), FencedEndpoints: []string{uri}}, task, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			err := fmt.Errorf("StatefulSet %s/%s did not scale to zero before timeout", namespace, statefulSet)
+			task.State = "failed"
+			task.LastError = err.Error()
+			return ClusterRestoreSourceFencingEvidence{}, task, err
+		}
+		timer := time.NewTimer(h.config.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			task.State = "failed"
+			task.LastError = ctx.Err().Error()
+			return ClusterRestoreSourceFencingEvidence{}, task, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (h *KubernetesPVCRestoreHelper) statefulSetPodsGone(ctx context.Context, namespace, statefulSet string, nodes []ClusterRestoreNodeMapping) (bool, error) {
+	for _, node := range nodes {
+		podName := strings.TrimSpace(node.TargetPodName)
+		if podName == "" {
+			podName = strings.TrimSpace(node.SourcePodName)
+		}
+		if podName == "" {
+			podName = fmt.Sprintf("%s-%d", statefulSet, node.Ordinal)
+		}
+		_, exists, err := h.getKubernetesResource(ctx, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", url.PathEscape(namespace), url.PathEscape(podName)))
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (h *KubernetesPVCRestoreHelper) prepareTargetPVC(ctx context.Context, namespace, pvcName string, target ClusterRestoreTarget, node ClusterRestoreNodeMapping) (map[string]string, []ValidationBlocker, error) {
+	evidence := map[string]string{"target_pvc_name": pvcName, "target_pvc_fresh": "false"}
+	path := fmt.Sprintf("/api/v1/namespaces/%s/persistentvolumeclaims/%s", url.PathEscape(namespace), url.PathEscape(pvcName))
+	existing, exists, err := h.getKubernetesResource(ctx, path)
+	if err != nil {
+		return evidence, nil, err
+	}
+	var pvcSpec map[string]any
+	if exists {
+		evidence["target_pvc_uid_before"] = nestedString(existing, "metadata", "uid")
+		if !h.config.ReplaceExistingPVCs {
+			blocker := ValidationBlocker{Reason: "target_pvc_exists_replacement_not_enabled", Detail: fmt.Sprintf("target PVC %s/%s already exists; set MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED=true to let the daemon replace it or provide an external clean-target proof", namespace, pvcName), FieldPath: "target.nodes.target_pvc_name"}
+			return evidence, []ValidationBlocker{blocker}, errors.New(blocker.Detail)
+		}
+		if !h.config.ProvisionPVCs {
+			blocker := ValidationBlocker{Reason: "target_pvc_replacement_requires_provisioning", Detail: fmt.Sprintf("target PVC %s/%s replacement requires PVC provisioning to recreate the claim after deletion", namespace, pvcName), FieldPath: "target.nodes.target_pvc_name"}
+			return evidence, []ValidationBlocker{blocker}, errors.New(blocker.Detail)
+		}
+		pvcSpec = sanitizePVCSpec(existing)
+		state, lastErr := h.deleteNamespacedResource(ctx, namespace, "persistentvolumeclaims", pvcName)
+		evidence["target_pvc_delete_state"] = state
+		if lastErr != "" {
+			return evidence, nil, errors.New(lastErr)
+		}
+		if err := h.waitForPVCDeleted(ctx, namespace, pvcName); err != nil {
+			return evidence, nil, err
+		}
+		evidence["target_pvc_action"] = "replaced"
+	} else {
+		evidence["target_pvc_action"] = "created"
+	}
+	if !h.config.ProvisionPVCs {
+		blocker := ValidationBlocker{Reason: "target_pvc_provisioning_disabled", Detail: fmt.Sprintf("target PVC %s/%s does not exist and controller PVC provisioning is disabled", namespace, pvcName), FieldPath: "target.nodes.target_pvc_name"}
+		return evidence, []ValidationBlocker{blocker}, errors.New(blocker.Detail)
+	}
+	if pvcSpec == nil {
+		var blockers []ValidationBlocker
+		pvcSpec, blockers = h.pvcSpecFromConfig(target, node)
+		if len(blockers) > 0 {
+			return evidence, blockers, errors.New(blockers[0].Detail)
+		}
+	}
+	pvc := map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": pvcName, "namespace": namespace, "labels": restorePVCLabels(target.Labels)}, "spec": pvcSpec}
+	if err := h.createNamespacedResource(ctx, namespace, "persistentvolumeclaims", pvc); err != nil {
+		return evidence, nil, err
+	}
+	created, err := h.waitForPVCExists(ctx, namespace, pvcName)
+	if err != nil {
+		return evidence, nil, err
+	}
+	evidence["target_pvc_uid_after"] = nestedString(created, "metadata", "uid")
+	evidence["target_pvc_phase"] = nestedString(created, "status", "phase")
+	evidence["target_pvc_fresh"] = "true"
+	return evidence, nil, nil
+}
+
+func (h *KubernetesPVCRestoreHelper) pvcSpecFromConfig(target ClusterRestoreTarget, node ClusterRestoreNodeMapping) (map[string]any, []ValidationBlocker) {
+	storage := firstNonEmptyString(strings.TrimSpace(target.Annotations["myceldb.io/restore-pvc-storage-request"]), strings.TrimSpace(h.config.PVCStorageRequest))
+	if storage == "" {
+		blocker := ValidationBlocker{Reason: "target_pvc_provisioning_requires_storage_request", Detail: "controller-managed Kubernetes restore cannot create a missing target PVC without MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST or target annotation myceldb.io/restore-pvc-storage-request", FieldPath: "target.annotations[myceldb.io/restore-pvc-storage-request]"}
+		return nil, []ValidationBlocker{blocker}
+	}
+	accessModes := append([]string(nil), h.config.PVCAccessModes...)
+	if modes := strings.TrimSpace(target.Annotations["myceldb.io/restore-pvc-access-modes"]); modes != "" {
+		accessModes = splitCSVLocal(modes)
+	}
+	if len(accessModes) == 0 {
+		accessModes = []string{"ReadWriteOnce"}
+	}
+	spec := map[string]any{"accessModes": accessModes, "resources": map[string]any{"requests": map[string]any{"storage": storage}}}
+	if className := firstNonEmptyString(strings.TrimSpace(target.Annotations["myceldb.io/restore-pvc-storage-class"]), strings.TrimSpace(h.config.PVCStorageClassName)); className != "" {
+		spec["storageClassName"] = className
+	}
+	return spec, nil
+}
+
+func restorePVCLabels(labels map[string]string) map[string]string {
+	out := map[string]string{"app.kubernetes.io/name": "mycel", "app.kubernetes.io/managed-by": "mycel-daemon", "app.kubernetes.io/component": "restore-target-pvc"}
+	for key, value := range labels {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func sanitizePVCSpec(pvc map[string]any) map[string]any {
+	spec, _ := pvc["spec"].(map[string]any)
+	out := map[string]any{}
+	for _, key := range []string{"accessModes", "resources", "storageClassName", "volumeMode"} {
+		if value, ok := spec[key]; ok {
+			if nested, ok := value.(map[string]any); ok {
+				out[key] = cloneAnyMap(nested)
+			} else {
+				out[key] = value
+			}
+		}
+	}
+	return out
+}
+
+func (h *KubernetesPVCRestoreHelper) waitForPVCExists(ctx context.Context, namespace, pvcName string) (map[string]any, error) {
+	deadline := time.Now().Add(h.config.Timeout)
+	path := fmt.Sprintf("/api/v1/namespaces/%s/persistentvolumeclaims/%s", url.PathEscape(namespace), url.PathEscape(pvcName))
+	for {
+		pvc, exists, err := h.getKubernetesResource(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return pvc, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("PVC %s/%s was not created before timeout", namespace, pvcName)
+		}
+		timer := time.NewTimer(h.config.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (h *KubernetesPVCRestoreHelper) waitForPVCDeleted(ctx context.Context, namespace, pvcName string) error {
+	deadline := time.Now().Add(h.config.Timeout)
+	path := fmt.Sprintf("/api/v1/namespaces/%s/persistentvolumeclaims/%s", url.PathEscape(namespace), url.PathEscape(pvcName))
+	for {
+		_, exists, err := h.getKubernetesResource(ctx, path)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("PVC %s/%s was not deleted before timeout", namespace, pvcName)
+		}
+		timer := time.NewTimer(h.config.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (h *KubernetesPVCRestoreHelper) getKubernetesResource(ctx context.Context, path string) (map[string]any, bool, error) {
+	body, statusCode, _, err := h.doJSONStatus(ctx, http.MethodGet, path, "", nil)
+	if statusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return body, true, nil
+}
+
+func (h *KubernetesPVCRestoreHelper) patchJSON(ctx context.Context, path string, body any) (map[string]any, error) {
+	out, _, _, err := h.doJSONStatus(ctx, http.MethodPatch, path, "application/merge-patch+json", body)
+	return out, err
 }
 
 type kubernetesRestoreCredentialEnv struct {
@@ -314,40 +654,57 @@ func (h *KubernetesPVCRestoreHelper) getPodLogs(ctx context.Context, namespace, 
 	return string(raw), nil
 }
 
+func (h *KubernetesPVCRestoreHelper) getPodEvents(ctx context.Context, namespace, podName string) (string, error) {
+	path := fmt.Sprintf("/api/v1/namespaces/%s/events?fieldSelector=involvedObject.name=%s", url.PathEscape(namespace), url.QueryEscape(podName))
+	_, statusCode, raw, err := h.doJSONStatus(ctx, http.MethodGet, path, "", nil)
+	if err != nil && statusCode != http.StatusNotFound {
+		return "", err
+	}
+	return raw, nil
+}
+
 func (h *KubernetesPVCRestoreHelper) doJSON(ctx context.Context, method, path string, body any) (map[string]any, error) {
+	out, _, _, err := h.doJSONStatus(ctx, method, path, "application/json", body)
+	return out, err
+}
+
+func (h *KubernetesPVCRestoreHelper) doJSONStatus(ctx context.Context, method, path, contentType string, body any) (map[string]any, int, string, error) {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return nil, err
+			return nil, 0, "", err
 		}
 		reader = bytes.NewReader(raw)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, h.baseURL+path, reader)
 	if err != nil {
-		return nil, err
+		return nil, 0, "", err
 	}
 	h.authorize(request)
 	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
+		if strings.TrimSpace(contentType) == "" {
+			contentType = "application/json"
+		}
+		request.Header.Set("Content-Type", contentType)
 	}
 	response, err := h.client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, 0, "", err
 	}
 	defer response.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(response.Body, 512*1024))
 	if response.StatusCode >= 300 {
-		return nil, fmt.Errorf("Kubernetes API %s %s failed: %s: %s", method, path, response.Status, boundedString(string(raw), 4096))
+		return nil, response.StatusCode, string(raw), fmt.Errorf("Kubernetes API %s %s failed: %s: %s", method, path, response.Status, boundedString(string(raw), 4096))
 	}
 	if len(raw) == 0 {
-		return map[string]any{}, nil
+		return map[string]any{}, response.StatusCode, "", nil
 	}
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode Kubernetes API response: %w", err)
+		return nil, response.StatusCode, string(raw), fmt.Errorf("decode Kubernetes API response: %w", err)
 	}
-	return out, nil
+	return out, response.StatusCode, string(raw), nil
 }
 
 func (h *KubernetesPVCRestoreHelper) authorize(request *http.Request) {
@@ -367,6 +724,74 @@ func nestedString(values map[string]any, path ...string) string {
 	}
 	value, _ := current.(string)
 	return value
+}
+
+func nestedInt64(values map[string]any, path ...string) int64 {
+	var current any = values
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return 0
+		}
+		current = object[key]
+	}
+	switch value := current.(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case string:
+		parsed, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if nested, ok := value.(map[string]any); ok {
+			out[key] = cloneAnyMap(nested)
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func splitCSVLocal(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func kubernetesRestoreControllerSelfTargetsStatefulSet(statefulSet string) bool {
+	statefulSet = strings.TrimSpace(statefulSet)
+	hostname := strings.TrimSpace(os.Getenv("HOSTNAME"))
+	if statefulSet == "" || hostname == "" || !strings.HasPrefix(hostname, statefulSet+"-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(hostname, statefulSet+"-")
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func kubernetesRestoreSafeName(value string) string {

@@ -96,6 +96,23 @@ type ClusterRestorePVCHelper interface {
 	RestoreRepositoryBackupNodeToPVC(context.Context, ClusterRestorePVCHelperRequest) (ClusterRestorePVCHelperResult, error)
 }
 
+type ClusterRestorePVCTargetController interface {
+	PrepareRepositoryRestoreTarget(context.Context, ClusterRestorePVCTargetControllerRequest) (ClusterRestorePVCTargetControllerResult, error)
+}
+
+type ClusterRestorePVCTargetControllerRequest struct {
+	RestoreOperationID string
+	Target             ClusterRestoreTarget
+	Nodes              []ClusterRestoreNodeMapping
+}
+
+type ClusterRestorePVCTargetControllerResult struct {
+	CleanTarget   ClusterRestoreCleanTargetProof
+	SourceFencing ClusterRestoreSourceFencingEvidence
+	CleanupTasks  []CleanupTask
+	NodeEvidence  map[int]map[string]string
+}
+
 type ClusterRestorePVCHelperRequest struct {
 	RestoreOperationID string
 	Repository         BackupRepository
@@ -116,6 +133,7 @@ type ClusterRestorePVCHelperResult struct {
 	Verified       bool
 	BytesCompleted int64
 	CleanupTasks   []CleanupTask
+	Evidence       map[string]string
 }
 
 type ClusterRestoreOperation struct {
@@ -169,6 +187,7 @@ type ClusterRestoreNodeProgress struct {
 	BytesCompleted   int64
 	ChecksumSHA256   string
 	LastError        string
+	Evidence         map[string]string
 }
 
 type ClusterRestoreCleanTargetProof struct {
@@ -322,15 +341,17 @@ func restoreDerivedActions(manifest clusterbackup.BackupSetManifestV1) []backupc
 }
 
 func (m *Module) restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestoreInput) []ValidationBlocker {
-	return restoreExecutionBlockersWithPVCHelper(plan, input, m != nil && m.clusterRestorePVCHelper != nil)
+	return restoreExecutionBlockersWithPVCHelper(plan, input, m != nil && m.clusterRestorePVCHelper != nil, m != nil && m.clusterRestorePVCTargetController() != nil, m == nil || m.clusterRestorePVCTargetControllerCanFence())
 }
 
 func restoreExecutionBlockers(plan ClusterRestorePlan, input StartClusterRestoreInput) []ValidationBlocker {
-	return restoreExecutionBlockersWithPVCHelper(plan, input, false)
+	return restoreExecutionBlockersWithPVCHelper(plan, input, false, false, false)
 }
 
-func restoreExecutionBlockersWithPVCHelper(plan ClusterRestorePlan, input StartClusterRestoreInput, pvcHelperAvailable bool) []ValidationBlocker {
+func restoreExecutionBlockersWithPVCHelper(plan ClusterRestorePlan, input StartClusterRestoreInput, pvcHelperAvailable bool, pvcControllerAvailable bool, pvcControllerCanFence bool) []ValidationBlocker {
 	blockers := append([]ValidationBlocker(nil), plan.Blockers...)
+	controllerWillPrepare := pvcControllerAvailable && restoreMappingsUsePVCHelper(plan.Target.Nodes)
+	controllerWillFence := controllerWillPrepare && pvcControllerCanFence && strings.TrimSpace(plan.Target.StatefulSet) != ""
 	providedPlanID := strings.TrimSpace(input.RestorePlanID)
 	providedFreshnessToken := strings.TrimSpace(input.PlanFreshnessToken)
 	if providedPlanID == "" && providedFreshnessToken == "" {
@@ -377,12 +398,18 @@ func restoreExecutionBlockersWithPVCHelper(plan ClusterRestorePlan, input StartC
 			blockers = append(blockers, ValidationBlocker{Reason: "staging_location_unsupported", Detail: err.Error(), FieldPath: "staging.staging_uri"})
 		}
 	}
-	if !input.Preconditions.CleanTarget.TargetEmpty {
+	if !input.Preconditions.CleanTarget.TargetEmpty && !controllerWillPrepare {
 		blockers = append(blockers, ValidationBlocker{Reason: "clean_target_proof_required", Detail: "restore execution requires clean_target.target_empty=true and rechecks target data dirs before apply", FieldPath: "preconditions.clean_target.target_empty"})
 	}
-	blockers = append(blockers, restoreCleanTargetProofMappingBlockers(plan.Target, input.Preconditions.CleanTarget)...)
+	if !controllerWillPrepare {
+		blockers = append(blockers, restoreCleanTargetProofMappingBlockers(plan.Target, input.Preconditions.CleanTarget)...)
+	}
 	if plan.IdentityMode == ClusterRestoreIdentityModePreserveBackupID && !input.Preconditions.SourceFencing.SourceClusterFenced {
-		blockers = append(blockers, ValidationBlocker{Reason: "source_fencing_required", Detail: "PRESERVE_BACKUP_ID restore execution requires source_fencing.source_cluster_fenced=true", FieldPath: "preconditions.source_fencing.source_cluster_fenced"})
+		if controllerWillPrepare && strings.TrimSpace(plan.Target.StatefulSet) == "" {
+			blockers = append(blockers, ValidationBlocker{Reason: "source_fencing_requires_statefulset", Detail: "controller-managed preserved-identity restore requires target.stateful_set so the daemon can scale the source/target StatefulSet to zero before PVC replacement", FieldPath: "target.stateful_set"})
+		} else if !controllerWillFence {
+			blockers = append(blockers, ValidationBlocker{Reason: "source_fencing_required", Detail: "PRESERVE_BACKUP_ID restore execution requires source_fencing.source_cluster_fenced=true or an enabled Kubernetes restore controller that can scale target.stateful_set to zero", FieldPath: "preconditions.source_fencing.source_cluster_fenced"})
+		}
 	}
 	blockers = append(blockers, input.Preconditions.Blockers...)
 	blockers = append(blockers, input.Preconditions.CleanTarget.Blockers...)
@@ -415,8 +442,52 @@ func restoreCleanTargetProofMappingBlockers(target ClusterRestoreTarget, proof C
 	return blockers
 }
 
+func (m *Module) clusterRestorePVCTargetController() ClusterRestorePVCTargetController {
+	if m == nil || m.clusterRestorePVCHelper == nil {
+		return nil
+	}
+	controller, ok := m.clusterRestorePVCHelper.(ClusterRestorePVCTargetController)
+	if !ok {
+		return nil
+	}
+	return controller
+}
+
+func (m *Module) clusterRestorePVCTargetControllerCanFence() bool {
+	if m == nil || m.clusterRestorePVCTargetController() == nil {
+		return false
+	}
+	if helper, ok := m.clusterRestorePVCHelper.(*KubernetesPVCRestoreHelper); ok {
+		return helper.config.ScaleDownStatefulSet
+	}
+	return true
+}
+
 func restoreNodeUsesPVCHelper(node ClusterRestoreNodeMapping) bool {
 	return strings.TrimSpace(node.TargetPVCName) != "" && strings.TrimSpace(node.TargetDataDir) == ""
+}
+
+func restoreMappingsUsePVCHelper(nodes []ClusterRestoreNodeMapping) bool {
+	if len(nodes) == 0 {
+		return false
+	}
+	for _, node := range nodes {
+		if !restoreNodeUsesPVCHelper(node) {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeRestoreNodeEvidence(left, right map[string]string) map[string]string {
+	if len(left) == 0 {
+		return copyStringMapLocal(right)
+	}
+	out := copyStringMapLocal(left)
+	for key, value := range right {
+		out[key] = value
+	}
+	return out
 }
 
 func restorePlanRequiresLocalStaging(nodes []ClusterRestoreNodeMapping) bool {
