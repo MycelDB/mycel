@@ -34,6 +34,9 @@ func effectiveBlobConfig(cfg Config) Config {
 	cfg.S3Region = strings.TrimSpace(cfg.S3Region)
 	cfg.S3KMSKeyID = strings.TrimSpace(cfg.S3KMSKeyID)
 	cfg.S3EndpointURL = strings.TrimSpace(cfg.S3EndpointURL)
+	cfg.ObjectStoreCredentialRef = strings.TrimSpace(cfg.ObjectStoreCredentialRef)
+	cfg.ObjectStoreBackupPolicyRef = strings.TrimSpace(cfg.ObjectStoreBackupPolicyRef)
+	cfg.ObjectStoreRecoveryPointRef = strings.TrimSpace(cfg.ObjectStoreRecoveryPointRef)
 	return cfg
 }
 

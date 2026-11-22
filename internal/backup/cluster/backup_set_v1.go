@@ -360,6 +360,7 @@ type BackupSetExternalObjectStore struct {
 	Prefix                                string `json:"prefix"`
 	EndpointFingerprint                   string `json:"endpoint_fingerprint"`
 	CredentialRef                         string `json:"credential_ref"`
+	ExternalStoreRef                      string `json:"external_store_ref,omitempty"`
 	BackupPolicyRef                       string `json:"backup_policy_ref,omitempty"`
 	RecoveryPointRef                      string `json:"recovery_point_ref,omitempty"`
 	ObjectReferenceManifestURI            string `json:"object_reference_manifest_uri"`
@@ -1084,6 +1085,15 @@ func (r *BackupSetValidationReport) validateExternalObjectStores(m BackupSetMani
 		if strings.TrimSpace(store.Usage) == "" || strings.TrimSpace(store.Provider) == "" || strings.TrimSpace(store.CredentialRef) == "" {
 			r.addError("external_object_store_fields_required", "usage, provider, and credential_ref are required", false, path)
 		}
+		if strings.TrimSpace(store.ExternalStoreRef) == "" {
+			r.addError("external_store_ref_required", "external_store_ref is required", false, path+".external_store_ref")
+		}
+		if secretReferenceLooksRaw(store.CredentialRef) {
+			r.addError("raw_secret_material", "external object-store credential_ref looks like raw credential material", false, path+".credential_ref")
+		}
+		if devOnlyCredentialReferenceRequired(store.CredentialRef) && !credentialReferenceMarkedDevOnly(store.CredentialRef) {
+			r.addError("dev_only_credential_ref_required", "external object-store env/file credential refs must be marked dev_only=true", false, path+".credential_ref")
+		}
 		if store.IncludePayloadBytes {
 			r.addWarning("external_payload_bytes_included", "external object-store payload bytes are marked included; ensure policy explicitly allows this", path+".include_payload_bytes")
 		} else if strings.TrimSpace(store.RecoveryPointRef) == "" {
@@ -1422,6 +1432,16 @@ var secretMaterialPattern = regexp.MustCompile(`(?i)(AKIA[0-9A-Z]{16}|ASIA[0-9A-
 
 func secretReferenceLooksRaw(value string) bool {
 	return secretMaterialPattern.MatchString(strings.TrimSpace(value))
+}
+
+func devOnlyCredentialReferenceRequired(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "env:") || strings.HasPrefix(value, "file-ref:")
+}
+
+func credentialReferenceMarkedDevOnly(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(value, "dev_only=true") || strings.Contains(value, "dev-only=true")
 }
 
 func SortBackupSetDerivedState(rows []BackupSetDerivedState) []BackupSetDerivedState {

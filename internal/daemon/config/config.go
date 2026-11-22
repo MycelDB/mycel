@@ -145,14 +145,17 @@ type GraphTransactionConfig struct {
 }
 
 type BlobConfig struct {
-	Backend             string
-	ObjectStoreProvider string
-	S3Bucket            string
-	S3Prefix            string
-	S3Region            string
-	S3KMSKeyID          string
-	S3EndpointURL       string
-	S3ForcePathStyle    bool
+	Backend                     string
+	ObjectStoreProvider         string
+	S3Bucket                    string
+	S3Prefix                    string
+	S3Region                    string
+	S3KMSKeyID                  string
+	S3EndpointURL               string
+	S3ForcePathStyle            bool
+	ObjectStoreCredentialRef    string
+	ObjectStoreBackupPolicyRef  string
+	ObjectStoreRecoveryPointRef string
 }
 
 type ClusterConfig struct {
@@ -269,14 +272,17 @@ func LoadFromEnv() (Config, error) {
 			MaxAge:          parseDurationEnv(os.Getenv("MYCELD_GRAPH_TRANSACTION_MAX_AGE"), DefaultGraphTransactionMaxAge),
 		},
 		Blob: BlobConfig{
-			Backend:             valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
-			ObjectStoreProvider: strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PROVIDER")),
-			S3Bucket:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET")),
-			S3Prefix:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX")),
-			S3Region:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION")),
-			S3KMSKeyID:          strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID")),
-			S3EndpointURL:       strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL")),
-			S3ForcePathStyle:    parseBoolEnv(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE")),
+			Backend:                     valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
+			ObjectStoreProvider:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PROVIDER")),
+			S3Bucket:                    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET")),
+			S3Prefix:                    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX")),
+			S3Region:                    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION")),
+			S3KMSKeyID:                  strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID")),
+			S3EndpointURL:               strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL")),
+			S3ForcePathStyle:            parseBoolEnv(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE")),
+			ObjectStoreCredentialRef:    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF")),
+			ObjectStoreBackupPolicyRef:  strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF")),
+			ObjectStoreRecoveryPointRef: strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF")),
 		},
 		Cluster: ClusterConfig{
 			Name:                           strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),

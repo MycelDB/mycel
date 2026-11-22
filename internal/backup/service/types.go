@@ -5,6 +5,7 @@ import (
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 )
 
 const ModuleName = "backup"
@@ -58,4 +59,12 @@ type ClusterRestoreManager interface {
 	ClusterRestoreStatus(string) (ClusterRestoreOperation, error)
 	ListClusterRestores() []ClusterRestoreOperation
 	CancelClusterRestore(context.Context, string, string) (ClusterRestoreOperation, error)
+}
+
+type ExternalObjectDependencyProvider interface {
+	BackupExternalObjectStoreDependencies(context.Context, clusterbackup.ExternalObjectDependencyRequest) ([]clusterbackup.ExternalObjectStoreDependency, error)
+}
+
+type ExternalObjectDependencyValidator interface {
+	ValidateExternalObjectStoreDependency(context.Context, clusterbackup.ExternalObjectStoreDependencyValidationInput) clusterbackup.ExternalObjectStoreDependencyValidationResult
 }
