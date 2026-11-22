@@ -30,6 +30,12 @@ mycel admin backup cluster validate --backup-set /mnt/mycel-backups
 ```
 
 ```sh
+mycel --output json admin backup cluster observability \
+  --repository-id repo-prod \
+  --include-retention-probe
+```
+
+```sh
 mycel admin backup cluster restore-plan --backup-set /mnt/mycel-backups/backup-set-...
 ```
 
@@ -43,6 +49,9 @@ mycel admin backup cluster restore-local \
 Coordinated cluster backup creates one backup set with one archive per pod/PVC,
 records raft barriers, requires raft freeze/checkpoint evidence in the final
 `backup-set.json`, and keeps full-system restore offline/operator-driven.
+`observability` returns credential-free metric rows and evaluated alert
+conditions for backup/restore monitoring; the retention probe is read-only and
+opt-in because it lists repository objects.
 `restore-plan` and `restore-local` are local/offline primitives and do not
 contact a running daemon; run them only while the target cluster is stopped and
 the target data directory is empty.

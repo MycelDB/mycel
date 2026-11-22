@@ -52,6 +52,7 @@ Related operation commands:
 
 ```sh
 mycel admin backup cluster status BACKUP_SET_ID
+mycel admin backup cluster observability --include-retention-probe
 mycel admin backup cluster cancel BACKUP_SET_ID --reason "operator requested"
 mycel admin backup cluster list
 mycel admin backup cluster validate --backup-set /backups/mycel/<backup-set-id>
@@ -137,6 +138,48 @@ non-terminal cluster backup or cluster restore operation is planned as `blocked`
 and is never deleted by retention. Apply responses include per-action deletion
 counts, retryability, partial-failure errors, and warnings so operators can audit
 exactly which repository prefixes were removed and which need follow-up.
+
+## Backup/restore observability
+
+`AdminBackupService.GetBackupObservability` returns a credential-free snapshot of
+backup and restore metrics, plus evaluated alert conditions. The CLI wrapper is:
+
+```sh
+mycel --daemon-addr <any-node>:9091 \
+  --username <operator> --password <password> \
+  admin backup cluster observability \
+  --repository-id <repo-id> \
+  --include-retention-probe \
+  --backup-freshness-after 24h \
+  --stale-operation-after 1h
+```
+
+Use `--output json` for automation. Without JSON, the CLI prints the summary
+state and currently firing alerts; the JSON output includes all metrics and all
+alert conditions. The retention probe is opt-in because it lists repository
+objects, but it is read-only and never applies pruning.
+
+Important metric families include operation counts by state/phase, latest
+successful backup age/timestamp, active operation age, backup/restore bytes and
+node progress, blocker counts by reason, restore cleanup task counts, retention
+dry-run action counts, retention warning counts, incomplete repository prefix
+counts, and latest retention apply warning/error/deletion counts. These metric
+rows are intentionally generic so deployments can bridge
+them into Prometheus, CloudWatch, or another backend without adding a daemon
+metrics listener.
+
+The alert conditions cover failed backups/restores, stale successful backup age,
+stale active backup/restore operations, backup and restore blockers, incomplete
+restore cleanup, incomplete repository backup prefixes, and retention warnings.
+The returned expressions are Prometheus-style documentation strings; the daemon
+evaluates the firing state from local operation history and repository-truth
+retention preview results.
+
+Metric labels and alert evidence must remain non-secret. Repository IDs,
+backup-set IDs, restore-operation IDs, states, phases, and blocker reasons are
+allowed. Raw S3/MinIO credentials, endpoint URLs containing credentials, KMS key
+material, TLS private keys, access tokens, passwords, and object-store payload
+bytes are not allowed.
 
 ## Backup set manifest
 

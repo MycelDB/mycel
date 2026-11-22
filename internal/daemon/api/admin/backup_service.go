@@ -541,6 +541,27 @@ func (s *AdminBackupService) ApplyRepositoryRetention(ctx context.Context, req *
 	return &adminv1.ApplyRepositoryRetentionResponse{Plan: mapRepositoryRetentionPlan(plan)}, nil
 }
 
+func (s *AdminBackupService) GetBackupObservability(ctx context.Context, req *adminv1.GetBackupObservabilityRequest) (*adminv1.GetBackupObservabilityResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	manager, ok := s.manager.(daemonbackup.BackupObservabilityManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "backup observability is not configured")
+	}
+	snapshot, err := manager.GetBackupObservability(ctx, daemonbackup.BackupObservabilityOptions{
+		RepositoryID:          req.GetRepositoryId(),
+		IncludeRetentionProbe: req.GetIncludeRetentionProbe(),
+		StaleOperationAfter:   time.Duration(req.GetStaleOperationAfterSeconds()) * time.Second,
+		BackupFreshnessAfter:  time.Duration(req.GetBackupFreshnessAfterSeconds()) * time.Second,
+		IncompleteBackupAfter: time.Duration(req.GetIncompleteBackupAfterSeconds()) * time.Second,
+	})
+	if err != nil {
+		return nil, mapBackupError(err, "get backup observability")
+	}
+	return &adminv1.GetBackupObservabilityResponse{Snapshot: mapBackupObservabilitySnapshot(snapshot)}, nil
+}
+
 func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv1.PlanClusterRestoreRequest) (*adminv1.PlanClusterRestoreResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
@@ -1496,6 +1517,28 @@ func mapRepositoryRetentionPlan(plan daemonbackup.RepositoryRetentionPlan) *admi
 	out := &adminv1.RepositoryRetentionPlan{RepositoryId: plan.RepositoryID, PlannedAt: formatBackupTime(plan.PlannedAt), RetentionPolicy: retentionPolicyToProto(plan.Policy), DryRun: plan.DryRun, Warnings: append([]string(nil), plan.Warnings...), DeletedObjects: int32(plan.DeletedObjects)}
 	for _, action := range plan.Actions {
 		out.Actions = append(out.Actions, &adminv1.RepositoryRetentionAction{BackupSetId: action.BackupSetID, Prefix: action.Prefix, Action: action.Action, Reason: action.Reason, CreatedAt: formatBackupTime(action.CreatedAt), CompletedAt: formatBackupTime(action.CompletedAt), ObjectCount: int32(action.ObjectCount), DeletedObjects: int32(action.DeletedObjects), Retryable: action.Retryable, Blocked: action.Blocked, Error: action.Error, RetentionCutoff: formatBackupTime(action.RetentionCutoff)})
+	}
+	return out
+}
+
+func mapBackupObservabilitySnapshot(snapshot daemonbackup.BackupObservabilitySnapshot) *adminv1.BackupObservabilitySnapshot {
+	out := &adminv1.BackupObservabilitySnapshot{ObservedAt: formatBackupTime(snapshot.ObservedAt), RepositoryId: snapshot.RepositoryID, SummaryState: snapshot.SummaryState}
+	for _, metric := range snapshot.Metrics {
+		out.Metrics = append(out.Metrics, &adminv1.BackupMetric{Name: metric.Name, Description: metric.Description, Unit: metric.Unit, Value: metric.Value, Labels: copyStringMapAdmin(metric.Labels)})
+	}
+	for _, alert := range snapshot.Alerts {
+		out.Alerts = append(out.Alerts, &adminv1.BackupAlertCondition{Name: alert.Name, Severity: alert.Severity, Firing: alert.Firing, Reason: alert.Reason, Expression: alert.Expression, Labels: copyStringMapAdmin(alert.Labels), Evidence: append([]string(nil), alert.Evidence...)})
+	}
+	return out
+}
+
+func copyStringMapAdmin(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
 	}
 	return out
 }
