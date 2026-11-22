@@ -360,12 +360,15 @@ func TestLoadFromEnvBlobObjectStoreOverrides(t *testing.T) {
 	t.Setenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID", "alias/mycel")
 	t.Setenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL", "http://minio:9000")
 	t.Setenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE", "true")
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF", "k8s-secret:mycel/blob-object-store#credentials")
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF", "aws-backup-plan:commonfolio-blobs")
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF", "aws-backup-recovery-point:rp-123")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
-	if cfg.Blob.Backend != "object_store" || cfg.Blob.ObjectStoreProvider != "s3-compatible" || cfg.Blob.S3Bucket != "mycel-minio" || cfg.Blob.S3Prefix != "prod/a" || cfg.Blob.S3Region != "us-east-1" || cfg.Blob.S3KMSKeyID != "alias/mycel" || cfg.Blob.S3EndpointURL != "http://minio:9000" || !cfg.Blob.S3ForcePathStyle {
+	if cfg.Blob.Backend != "object_store" || cfg.Blob.ObjectStoreProvider != "s3-compatible" || cfg.Blob.S3Bucket != "mycel-minio" || cfg.Blob.S3Prefix != "prod/a" || cfg.Blob.S3Region != "us-east-1" || cfg.Blob.S3KMSKeyID != "alias/mycel" || cfg.Blob.S3EndpointURL != "http://minio:9000" || !cfg.Blob.S3ForcePathStyle || cfg.Blob.ObjectStoreCredentialRef != "k8s-secret:mycel/blob-object-store#credentials" || cfg.Blob.ObjectStoreBackupPolicyRef != "aws-backup-plan:commonfolio-blobs" || cfg.Blob.ObjectStoreRecoveryPointRef != "aws-backup-recovery-point:rp-123" {
 		t.Fatalf("unexpected blob config: %+v", cfg.Blob)
 	}
 }

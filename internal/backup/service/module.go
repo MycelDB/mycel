@@ -22,46 +22,48 @@ var _ runtime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
 
 type Module struct {
-	mu                           sync.Mutex
-	manager                      *backupcore.Manager
-	policy                       backupcore.Policy
-	logger                       *slog.Logger
-	runCtx                       context.Context
-	cancel                       context.CancelFunc
-	running                      bool
-	startedAt                    time.Time
-	nextRunAt                    time.Time
-	lastError                    string
-	wg                           sync.WaitGroup
-	wal                          *wal.Manager
-	progress                     wal.AppliedLSNStore
-	checkpoint                   *wal.CheckpointStore
-	waiter                       *wal.ApplyWaiter
-	writeAllowed                 func() error
-	raftGroups                   *consensus.MultiGroup
-	raftEnabled                  bool
-	config                       Config
-	quiesce                      *quiesce.Coordinator
-	dataDir                      string
-	localIdentity                runtime.LocalRouteIdentity
-	activeClusterBackupID        string
-	clusterBackups               map[string]clusterBackupRun
-	clusterBackupCancels         map[string]context.CancelFunc
-	activeClusterRestoreID       string
-	clusterRestores              map[string]ClusterRestoreOperation
-	clusterRestoreCancels        map[string]context.CancelFunc
-	clusterBackupLeases          map[string]*quiesce.CompositeLease
-	clusterBackupFreeze          map[string]*clusterBackupFreezeLease
-	repositories                 map[string]BackupRepository
-	repositoryValidator          backupRepositoryValidator
-	repositoryObjectStoreFactory backupRepositoryObjectStoreFactory
-	clusterRestorePVCHelper      ClusterRestorePVCHelper
-	clusterBackendClient         backendClient
-	clusterNodeAddrs             []string
-	clusterLocalRaftNode         consensus.NodeID
-	encryption                   *encryption.Service
-	projectionRegistries         *projection.RegistryManager
-	projectionArtifacts          func(context.Context) ([]projection.ArtifactManifest, error)
+	mu                                sync.Mutex
+	manager                           *backupcore.Manager
+	policy                            backupcore.Policy
+	logger                            *slog.Logger
+	runCtx                            context.Context
+	cancel                            context.CancelFunc
+	running                           bool
+	startedAt                         time.Time
+	nextRunAt                         time.Time
+	lastError                         string
+	wg                                sync.WaitGroup
+	wal                               *wal.Manager
+	progress                          wal.AppliedLSNStore
+	checkpoint                        *wal.CheckpointStore
+	waiter                            *wal.ApplyWaiter
+	writeAllowed                      func() error
+	raftGroups                        *consensus.MultiGroup
+	raftEnabled                       bool
+	config                            Config
+	quiesce                           *quiesce.Coordinator
+	dataDir                           string
+	localIdentity                     runtime.LocalRouteIdentity
+	activeClusterBackupID             string
+	clusterBackups                    map[string]clusterBackupRun
+	clusterBackupCancels              map[string]context.CancelFunc
+	activeClusterRestoreID            string
+	clusterRestores                   map[string]ClusterRestoreOperation
+	clusterRestoreCancels             map[string]context.CancelFunc
+	clusterBackupLeases               map[string]*quiesce.CompositeLease
+	clusterBackupFreeze               map[string]*clusterBackupFreezeLease
+	repositories                      map[string]BackupRepository
+	repositoryValidator               backupRepositoryValidator
+	repositoryObjectStoreFactory      backupRepositoryObjectStoreFactory
+	clusterRestorePVCHelper           ClusterRestorePVCHelper
+	clusterBackendClient              backendClient
+	clusterNodeAddrs                  []string
+	clusterLocalRaftNode              consensus.NodeID
+	encryption                        *encryption.Service
+	projectionRegistries              *projection.RegistryManager
+	projectionArtifacts               func(context.Context) ([]projection.ArtifactManifest, error)
+	externalObjectDependencyProvider  ExternalObjectDependencyProvider
+	externalObjectDependencyValidator ExternalObjectDependencyValidator
 }
 
 func NewModule(config ...Config) *Module {
@@ -81,6 +83,19 @@ func (m *Module) WithProjectionRegistryManager(manager *projection.RegistryManag
 
 func (m *Module) WithProjectionArtifactProvider(provider func(context.Context) ([]projection.ArtifactManifest, error)) *Module {
 	m.projectionArtifacts = provider
+	return m
+}
+
+func (m *Module) WithExternalObjectDependencyProvider(provider ExternalObjectDependencyProvider) *Module {
+	m.externalObjectDependencyProvider = provider
+	if validator, ok := provider.(ExternalObjectDependencyValidator); ok {
+		m.externalObjectDependencyValidator = validator
+	}
+	return m
+}
+
+func (m *Module) WithExternalObjectDependencyValidator(validator ExternalObjectDependencyValidator) *Module {
+	m.externalObjectDependencyValidator = validator
 	return m
 }
 

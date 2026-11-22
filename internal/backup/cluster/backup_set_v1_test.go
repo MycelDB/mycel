@@ -140,13 +140,24 @@ func TestValidateProductionBackupSetRequiresOptionalDerivedOmissionRebuildRequir
 
 func TestValidateProductionBackupSetRequiresExternalPayloadRecoveryPoint(t *testing.T) {
 	dir := writeProductionBackupSetFixture(t, func(m *BackupSetManifestV1) {
-		m.ExternalObjectStores = []BackupSetExternalObjectStore{{Usage: "BLOB_PAYLOADS", Provider: "S3_COMPATIBLE", IncludePayloadBytes: false, Bucket: "payloads", Prefix: "objects/", EndpointFingerprint: "s3:example", CredentialRef: "k8s-secret:backup/payloads#credentials", ObjectReferenceManifestURI: "s3://mycel-backups/object-refs.json", ObjectReferenceManifestChecksumSHA256: strings.Repeat("f", 64), ObjectCount: "1", LogicalBytes: "10", ValidationState: "VERIFIED"}}
+		m.ExternalObjectStores = []BackupSetExternalObjectStore{{Usage: "BLOB_PAYLOADS", Provider: "S3_COMPATIBLE", IncludePayloadBytes: false, Bucket: "payloads", Prefix: "objects/", EndpointFingerprint: "s3:example", CredentialRef: "k8s-secret:backup/payloads#credentials", ExternalStoreRef: "s3-compatible:payloads/objects@sha256:example", ObjectReferenceManifestURI: "s3://mycel-backups/object-refs.json", ObjectReferenceManifestChecksumSHA256: strings.Repeat("f", 64), ObjectCount: "1", LogicalBytes: "10", ValidationState: "VERIFIED"}}
 	})
 	_, _, report, err := ValidateBackupSetPath(context.Background(), dir, BackupSetValidationOptions{RequireCompleteMarker: true})
 	if err != nil {
 		t.Fatalf("ValidateBackupSetPath() error = %v", err)
 	}
 	assertBackupSetIssue(t, report, "external_payload_recovery_point_required")
+}
+
+func TestValidateProductionBackupSetRequiresDevOnlyExternalEnvCredentialRef(t *testing.T) {
+	dir := writeProductionBackupSetFixture(t, func(m *BackupSetManifestV1) {
+		m.ExternalObjectStores = []BackupSetExternalObjectStore{{Usage: "BLOB_PAYLOADS", Provider: "S3_COMPATIBLE", IncludePayloadBytes: false, Bucket: "payloads", Prefix: "objects/", EndpointFingerprint: "s3:example", CredentialRef: "env:AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY", ExternalStoreRef: "s3-compatible:payloads/objects@sha256:example", RecoveryPointRef: "minio-snapshot:manual", ObjectReferenceManifestURI: "s3://mycel-backups/object-refs.json", ObjectReferenceManifestChecksumSHA256: strings.Repeat("f", 64), ObjectCount: "1", LogicalBytes: "10", ValidationState: "VERIFIED"}}
+	})
+	_, _, report, err := ValidateBackupSetPath(context.Background(), dir, BackupSetValidationOptions{RequireCompleteMarker: true})
+	if err != nil {
+		t.Fatalf("ValidateBackupSetPath() error = %v", err)
+	}
+	assertBackupSetIssue(t, report, "dev_only_credential_ref_required")
 }
 
 func TestValidateProductionBackupSetRejectsInsufficientCapacity(t *testing.T) {

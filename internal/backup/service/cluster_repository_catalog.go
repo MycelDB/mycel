@@ -148,6 +148,7 @@ func (m *Module) readRepositoryClusterBackupSet(ctx context.Context, repo Backup
 	if err := validateRepositoryCompleteMarkerBytes(marker, markerRaw, manifestRaw); err != nil {
 		return ClusterBackupSetValidationResult{Manifest: productionBackupSetManifestSummary(doc.Manifest), ProductionManifest: &doc.Manifest, ProductionMarker: &marker, ProductionReport: &report}, err
 	}
+	m.validateRepositoryExternalObjectDependencies(ctx, repo, store, doc.Manifest, &report)
 	summary := productionBackupSetManifestSummary(doc.Manifest)
 	if strings.TrimSpace(summary.ManifestURI) == "" {
 		summary.ManifestURI = repositoryObjectURI(repo, manifestKey)
@@ -157,6 +158,81 @@ func (m *Module) readRepositoryClusterBackupSet(ctx context.Context, repo Backup
 		return result, err
 	}
 	return result, nil
+}
+
+func (m *Module) validateRepositoryExternalObjectDependencies(ctx context.Context, repo BackupRepository, store backupRepositoryObjectStore, manifest clusterbackup.BackupSetManifestV1, report *clusterbackup.BackupSetValidationReport) {
+	if report == nil || len(manifest.ExternalObjectStores) == 0 {
+		return
+	}
+	for i, dependency := range manifest.ExternalObjectStores {
+		fieldPath := fmt.Sprintf("external_object_stores[%d].object_reference_manifest_uri", i)
+		key, err := repositoryKeyFromS3URI(repo, dependency.ObjectReferenceManifestURI)
+		if err != nil {
+			appendBackupSetReportError(report, "object_reference_manifest_uri_invalid", err.Error(), false, fieldPath)
+			continue
+		}
+		raw, _, err := store.GetBytes(ctx, key, 64<<20)
+		if err != nil {
+			appendBackupSetReportError(report, "object_reference_manifest_missing", fmt.Sprintf("read object reference manifest: %v", err), true, fieldPath)
+			continue
+		}
+		checksum := hashBytes(raw)
+		if strings.TrimSpace(dependency.ObjectReferenceManifestChecksumSHA256) != checksum {
+			appendBackupSetReportError(report, "object_reference_manifest_checksum_mismatch", fmt.Sprintf("checksum mismatch got %s want %s", checksum, dependency.ObjectReferenceManifestChecksumSHA256), true, fieldPath)
+			continue
+		}
+		objectManifest, err := clusterbackup.ParseObjectReferenceManifest(raw)
+		if err != nil {
+			appendBackupSetReportError(report, "object_reference_manifest_parse_failed", err.Error(), false, fieldPath)
+			continue
+		}
+		for _, issue := range clusterbackup.ValidateObjectReferenceManifest(ctx, raw, objectManifest, dependency) {
+			appendBackupSetReportIssue(report, issue)
+		}
+		if m == nil || m.externalObjectDependencyValidator == nil {
+			if !dependency.IncludePayloadBytes {
+				appendBackupSetReportError(report, "external_object_dependency_validator_unavailable", "restore validation requires an external object-store dependency validator for payload bytes omitted from the backup set", true, fmt.Sprintf("external_object_stores[%d]", i))
+			}
+			continue
+		}
+		result := m.externalObjectDependencyValidator.ValidateExternalObjectStoreDependency(ctx, clusterbackup.ExternalObjectStoreDependencyValidationInput{BackupSetID: manifest.BackupSetID, Store: dependency, Manifest: objectManifest})
+		for _, warning := range result.Warnings {
+			appendBackupSetReportWarning(report, warning)
+		}
+		for _, issue := range result.Errors {
+			appendBackupSetReportIssue(report, issue)
+		}
+	}
+	finishBackupSetReport(report)
+}
+
+func appendBackupSetReportError(report *clusterbackup.BackupSetValidationReport, reason, detail string, retryable bool, fieldPath string) {
+	appendBackupSetReportIssue(report, clusterbackup.BackupSetValidationIssue{Reason: reason, Detail: detail, Retryable: retryable, FieldPath: fieldPath})
+}
+
+func appendBackupSetReportWarning(report *clusterbackup.BackupSetValidationReport, issue clusterbackup.BackupSetValidationIssue) {
+	if issue.Reason == "" {
+		issue.Reason = "external_object_dependency_warning"
+	}
+	report.Warnings = append(report.Warnings, issue)
+}
+
+func appendBackupSetReportIssue(report *clusterbackup.BackupSetValidationReport, issue clusterbackup.BackupSetValidationIssue) {
+	if issue.Reason == "" {
+		issue.Reason = "external_object_dependency_invalid"
+	}
+	report.Errors = append(report.Errors, issue)
+}
+
+func finishBackupSetReport(report *clusterbackup.BackupSetValidationReport) {
+	if report == nil {
+		return
+	}
+	if len(report.Errors) > 0 {
+		report.State = clusterbackup.ProductionValidationStateFailed
+	} else {
+		report.State = clusterbackup.ProductionValidationStatePassed
+	}
 }
 
 func clusterRestoreTerminalState(state string) bool {

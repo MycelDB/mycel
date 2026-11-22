@@ -106,6 +106,9 @@ MYCELD_BLOB_OBJECT_STORE_BUCKET=<bucket>        # required for object_store
 MYCELD_BLOB_OBJECT_STORE_PREFIX=<prefix>        # optional
 MYCELD_BLOB_OBJECT_STORE_REGION=<region>        # optional but recommended
 MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID=<kms-key>   # optional SSE-KMS
+MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF=aws-irsa # non-secret backup/restore evidence
+MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF=<external-backup-policy-ref>
+MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF=<external-recovery-point-ref>
 ```
 
 MinIO, LocalStack, and S3-compatible testing can also use:
@@ -121,6 +124,14 @@ Authentication uses the AWS SDK default credential chain. In production that
 should normally be an EC2 instance profile, ECS task role, or EKS IRSA/web
 identity role. Standard AWS environment variables and profiles remain available
 for developer testing, but Mycel does not define separate access-key settings.
+
+The credential, backup-policy, and recovery-point refs are non-secret strings for
+cluster backup manifests. When a repository-backed cluster backup omits external
+blob payload bytes, Mycel publishes an object reference manifest and requires
+`MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF` to identify the external
+object-store backup/snapshot that covers the referenced keys. Restore planning
+must see the same recovery point ref and validates the object inventory before
+mutating the target.
 
 ## S3 object layout
 

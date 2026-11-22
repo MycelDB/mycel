@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
+- Added external object-store dependency manifests for repository-backed cluster backups: object-store blob payload inventories are published as checksum-bound object reference manifests, backup sets record non-secret external store/recovery-point evidence, and restore planning fails closed on missing manifests, mismatched recovery points, or unavailable external payload validation (#383).
 - Added restored-cluster derived subsystem readiness reporting: restore writes a durable local marker for preserved/discarded/rebuild-required derived artifacts, PVC helper restores publish the same marker, admin cluster readiness exposes derived subsystem state/evidence, and health reports degraded restored-derived rebuild requirements (#382).
 - Added repository-backed cluster backup retention planning and safe pruning: automatic post-backup retention, public retention preview/apply admin and CLI paths, keep-last-successful/keep-for semantics, age-gated incomplete-prefix cleanup, active backup/restore blockers, and partial-deletion warnings (#381).
 - Added restore operation hardening for repository-backed cluster restores: owner-gated restart resume for safe pre-apply phases, phase-aware cancel finalization, execution-time staging/target capacity blockers, durable per-node post-restore validation evidence, and bounded restore operation history pruning (#380).

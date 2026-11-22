@@ -22,11 +22,16 @@ export MYCELD_BLOB_OBJECT_STORE_PREFIX=clusters/prod-a
 export MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID=alias/mycel-blobs
 export MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=http://127.0.0.1:4566
 export MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
+export MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF=aws-irsa
+export MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF=aws-backup-plan:mycel-blobs
+export MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF=aws-backup-recovery-point:<recovery-point-id>
 ```
 
 `MYCELD_BLOB_OBJECT_STORE_PROVIDER` currently supports `s3-compatible`. When it is omitted, `s3-compatible` is assumed for `object_store`.
 
 Use `MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL` and `MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true` for MinIO, LocalStack, or S3-compatible endpoints that require path-style requests.
+
+`MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF`, `MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF`, and `MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF` are non-secret evidence strings used by cluster backup/restore. When cluster backups find object-store blob payload metadata, Mycel publishes an object reference manifest instead of copying those external payload bytes into the system backup set. The recovery point ref must name the external object-store backup/snapshot that is restorable alongside the Mycel backup set. Restore planning requires the target daemon to be configured with the same recovery point ref and validates every referenced object before target mutation.
 
 ## MinIO example
 
@@ -58,9 +63,11 @@ MYCELD_BLOB_OBJECT_STORE_PROVIDER=s3-compatible
 MYCELD_BLOB_OBJECT_STORE_BUCKET=mycel-compose-blobs
 MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL=http://minio:9000
 MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE=true
+MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF=env:AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY;dev_only=true
+MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF=minio-dev-snapshot:manual
 ```
 
-Override `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MYCELD_BLOB_OBJECT_STORE_BUCKET`, or the `MYCELD_BLOB_OBJECT_STORE_*` variables when invoking compose targets if a different local object-store setup is needed.
+Override `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MYCELD_BLOB_OBJECT_STORE_BUCKET`, or the `MYCELD_BLOB_OBJECT_STORE_*` variables when invoking compose targets if a different local object-store setup is needed. Local env/file credential refs should be marked `dev_only=true`; never put raw access keys or secret values in a Mycel backup repository, backup-set manifest, Lab artifact, or restore diagnostic.
 
 ## Removed legacy aliases
 

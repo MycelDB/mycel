@@ -215,6 +215,42 @@ backup-set manifest. The manifest should instead record non-sensitive names,
 fingerprints, or operator notes so restore procedures can verify that the correct
 secrets were supplied from a secret manager or vault.
 
+## External object-store dependencies
+
+Repository-backed cluster backups do not copy external blob payload bytes into the
+backup set. When blob metadata points at the S3-compatible `object_store` backend,
+the coordinator now publishes a checksum-bound object reference manifest under the
+backup-set prefix, records it in `artifacts.additional_manifests[]`, and mirrors
+non-secret dependency evidence in both `external_object_stores[]` and
+`consistency.barrier_set.object_references[]`.
+
+The object reference manifest contains bucket/key, logical size, checksum,
+metadata-raft barrier, external store fingerprint, and recovery-point evidence for
+every referenced blob payload. It must not contain S3/MinIO access keys, session
+tokens, raw credentials, or endpoint URLs. Credential evidence is a reference
+string only, for example `aws-irsa`, `k8s-secret:namespace/name#key`, or a local
+Lab/dev `env:...;dev_only=true` reference.
+
+Operators running object-store-backed blobs must coordinate a matching external
+object-store backup/snapshot and configure. For CommonFolio/Knot deployments,
+this is the handoff between the Mycel cluster backup and the application/object
+store backup policy: the object-store recovery point ref names the S3/MinIO
+snapshot or backup recovery point that will be restored with the Mycel PVCs.
+
+```sh
+MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF=aws-irsa
+MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF=aws-backup-plan:mycel-blobs
+MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF=aws-backup-recovery-point:<id>
+```
+
+If external blob payload metadata exists and `MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF`
+is absent, production cluster backup fails before publishing `COMPLETE`. During
+restore planning, the daemon fetches and checksum-validates each object reference
+manifest, verifies the configured object-store bucket/prefix/endpoint fingerprint
+and recovery point, and HEAD-checks every referenced payload before target
+mutation. Missing manifests, missing objects, unavailable validators, and
+mismatched recovery points become restore blockers.
+
 ## Preconditions
 
 Cluster backup fails before quiesce unless every required precondition is met:

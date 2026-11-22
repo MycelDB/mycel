@@ -536,6 +536,9 @@ func (m *Module) publishRepositoryClusterBackupSet(ctx context.Context, input St
 	if err != nil {
 		return clusterbackup.Manifest{}, err
 	}
+	if err := m.attachExternalObjectStoreDependencies(ctx, store, repo, input.RepositoryPrefix, &production); err != nil {
+		return clusterbackup.Manifest{}, err
+	}
 	raw, err := marshalProductionJSON(production)
 	if err != nil {
 		return clusterbackup.Manifest{}, err
@@ -630,6 +633,158 @@ func (m *Module) buildProductionBackupSetManifest(input StartClusterBackupInput,
 	}
 	manifest.DerivedState = clusterbackup.SortBackupSetDerivedState(manifest.DerivedState)
 	return manifest, nil
+}
+
+func (m *Module) attachExternalObjectStoreDependencies(ctx context.Context, store backupRepositoryObjectStore, repo BackupRepository, repositoryPrefix string, manifest *clusterbackup.BackupSetManifestV1) error {
+	if m == nil || m.externalObjectDependencyProvider == nil || manifest == nil {
+		return nil
+	}
+	request := clusterbackup.ExternalObjectDependencyRequest{BackupSetID: manifest.BackupSetID, ClusterID: manifest.Source.ClusterID, GeneratedAt: manifest.CompletedAt, RaftBarrierIndexes: barrierIndexMap(manifest.Consistency.BarrierSet)}
+	dependencies, err := m.externalObjectDependencyProvider.BackupExternalObjectStoreDependencies(ctx, request)
+	if err != nil {
+		return fmt.Errorf("collect external object-store dependencies: %w", err)
+	}
+	dependencies = normalizeExternalObjectStoreDependencies(dependencies)
+	if len(dependencies) == 0 {
+		return nil
+	}
+	for i := range dependencies {
+		dep := dependencies[i]
+		raw, err := clusterbackup.MarshalObjectReferenceManifest(dep.Manifest)
+		if err != nil {
+			return fmt.Errorf("marshal object reference manifest: %w", err)
+		}
+		issues := clusterbackup.ValidateObjectReferenceManifest(ctx, raw, dep.Manifest, dep.Store)
+		if len(issues) > 0 {
+			return fmt.Errorf("invalid object reference manifest for %s: %s", dep.Store.ExternalStoreRef, validationIssueSummary(issues))
+		}
+		key := joinRepositoryKey(repositoryPrefix, externalObjectReferenceManifestKey(dep, i))
+		info, err := store.PutBytes(ctx, key, raw, "application/json")
+		if err != nil {
+			return fmt.Errorf("upload object reference manifest: %w", err)
+		}
+		dep.Store.ObjectReferenceManifestURI = info.URI
+		dep.Store.ObjectReferenceManifestChecksumSHA256 = info.ChecksumSHA256
+		dep.Checkpoint.ObjectReferenceManifestURI = info.URI
+		dep.Checkpoint.ObjectReferenceManifestChecksumSHA256 = info.ChecksumSHA256
+		dep.Store.ObjectCount = firstNonEmptyString(dep.Store.ObjectCount, dep.Manifest.ObjectCount)
+		dep.Store.LogicalBytes = firstNonEmptyString(dep.Store.LogicalBytes, dep.Manifest.LogicalBytes)
+		dep.Checkpoint.ObjectCount = firstNonEmptyString(dep.Checkpoint.ObjectCount, dep.Manifest.ObjectCount)
+		dep.Checkpoint.LogicalBytes = firstNonEmptyString(dep.Checkpoint.LogicalBytes, dep.Manifest.LogicalBytes)
+		dep.Store.ValidationState = firstNonEmptyString(dep.Store.ValidationState, "VERIFIED")
+		dep.Checkpoint.ValidatedAt = firstNonZeroTime(dep.Checkpoint.ValidatedAt, manifest.CompletedAt)
+		manifest.ExternalObjectStores = append(manifest.ExternalObjectStores, dep.Store)
+		manifest.Consistency.BarrierSet.ObjectReferences = append(manifest.Consistency.BarrierSet.ObjectReferences, dep.Checkpoint)
+		manifest.Artifacts.AdditionalManifests = append(manifest.Artifacts.AdditionalManifests, clusterbackup.BackupSetArtifactRef{Purpose: "OBJECT_REFERENCE_MANIFEST", URI: info.URI, ChecksumSHA256: info.ChecksumSHA256, SizeBytes: decimalInt64(info.SizeBytes)})
+		appendUniqueString(&manifest.Restore.RequiredExternalDependencies, dep.Store.ExternalStoreRef)
+		appendUniqueString(&manifest.Restore.RequiredExternalDependencies, dep.Store.RecoveryPointRef)
+		appendUniqueString(&manifest.Restore.RequiredSecretRefs, dep.Store.CredentialRef)
+	}
+	sortBackupSetAdditionalManifests(manifest.Artifacts.AdditionalManifests)
+	sortBackupSetExternalObjectStores(manifest.ExternalObjectStores)
+	sortCheckpointObjectReferences(manifest.Consistency.BarrierSet.ObjectReferences)
+	sort.Strings(manifest.Restore.RequiredExternalDependencies)
+	sort.Strings(manifest.Restore.RequiredSecretRefs)
+	manifest.Validation.RequiredArtifactCount = len(manifest.Artifacts.Nodes) + len(manifest.Artifacts.AdditionalManifests)
+	manifest.Validation.ValidatedArtifactCount = manifest.Validation.RequiredArtifactCount
+	manifest.Validation.Checks = append(manifest.Validation.Checks, clusterbackup.BackupSetCheckResult{Name: "external_object_dependencies", Result: clusterbackup.ProductionValidationStatePassed, CheckedAt: manifest.CompletedAt, Detail: fmt.Sprintf("verified %d external object-store dependency manifest(s)", len(dependencies))})
+	return nil
+}
+
+func barrierIndexMap(barriers clusterbackup.CheckpointBarrierSetV1) map[string]string {
+	out := map[string]string{}
+	for _, group := range barriers.RaftGroups {
+		if strings.TrimSpace(group.GroupID) != "" {
+			out[group.GroupID] = group.BarrierIndex
+		}
+	}
+	return out
+}
+
+func normalizeExternalObjectStoreDependencies(in []clusterbackup.ExternalObjectStoreDependency) []clusterbackup.ExternalObjectStoreDependency {
+	out := append([]clusterbackup.ExternalObjectStoreDependency(nil), in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return externalObjectStoreDependencySortKey(out[i]) < externalObjectStoreDependencySortKey(out[j])
+	})
+	return out
+}
+
+func externalObjectStoreDependencySortKey(dep clusterbackup.ExternalObjectStoreDependency) string {
+	return strings.TrimSpace(dep.Store.Usage) + "\x00" + strings.TrimSpace(dep.Store.Provider) + "\x00" + strings.TrimSpace(dep.Store.Bucket) + "\x00" + strings.Trim(dep.Store.Prefix, "/") + "\x00" + strings.TrimSpace(dep.Store.ExternalStoreRef)
+}
+
+func externalObjectReferenceManifestKey(dep clusterbackup.ExternalObjectStoreDependency, index int) string {
+	usage := repositorySafePathComponent(strings.ToLower(strings.ReplaceAll(firstNonEmptyString(dep.Store.Usage, "object-store"), "_", "-")))
+	provider := repositorySafePathComponent(strings.ToLower(strings.ReplaceAll(firstNonEmptyString(dep.Store.Provider, "provider"), "_", "-")))
+	fingerprint := hashString(externalObjectStoreDependencySortKey(dep))
+	if len(fingerprint) > 12 {
+		fingerprint = fingerprint[:12]
+	}
+	return joinRepositoryKey("object-references", fmt.Sprintf("%02d-%s-%s-%s.json", index, usage, provider, fingerprint))
+}
+
+func validationIssueSummary(issues []clusterbackup.BackupSetValidationIssue) string {
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.FieldPath != "" {
+			parts = append(parts, issue.FieldPath+": "+issue.Detail)
+		} else {
+			parts = append(parts, issue.Detail)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func appendUniqueString(values *[]string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	for _, existing := range *values {
+		if existing == value {
+			return
+		}
+	}
+	*values = append(*values, value)
+}
+
+func sortBackupSetAdditionalManifests(refs []clusterbackup.BackupSetArtifactRef) {
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].Purpose != refs[j].Purpose {
+			return refs[i].Purpose < refs[j].Purpose
+		}
+		return refs[i].URI < refs[j].URI
+	})
+}
+
+func sortBackupSetExternalObjectStores(stores []clusterbackup.BackupSetExternalObjectStore) {
+	sort.SliceStable(stores, func(i, j int) bool {
+		if stores[i].Usage != stores[j].Usage {
+			return stores[i].Usage < stores[j].Usage
+		}
+		if stores[i].Provider != stores[j].Provider {
+			return stores[i].Provider < stores[j].Provider
+		}
+		if stores[i].Bucket != stores[j].Bucket {
+			return stores[i].Bucket < stores[j].Bucket
+		}
+		if stores[i].Prefix != stores[j].Prefix {
+			return stores[i].Prefix < stores[j].Prefix
+		}
+		return stores[i].ExternalStoreRef < stores[j].ExternalStoreRef
+	})
+}
+
+func sortCheckpointObjectReferences(refs []clusterbackup.CheckpointObjectReference) {
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].Usage != refs[j].Usage {
+			return refs[i].Usage < refs[j].Usage
+		}
+		if refs[i].Provider != refs[j].Provider {
+			return refs[i].Provider < refs[j].Provider
+		}
+		return refs[i].ExternalStoreRef < refs[j].ExternalStoreRef
+	})
 }
 
 func writeClusterBackupSetManifest(outputDir string, manifest clusterbackup.Manifest) error {
