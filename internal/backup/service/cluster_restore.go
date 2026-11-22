@@ -137,25 +137,34 @@ type ClusterRestorePVCHelperResult struct {
 }
 
 type ClusterRestoreOperation struct {
-	RestoreOperationID string
-	RestorePlanID      string
-	RepositoryID       string
-	BackupSetID        string
-	State              string
-	TargetMode         string
-	IdentityMode       string
-	AuthSessionPolicy  string
-	IdempotencyKey     string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	CompletedAt        time.Time
-	Blockers           []ValidationBlocker
-	CleanupTasks       []CleanupTask
-	Error              string
-	Target             ClusterRestoreTarget
-	Staging            ClusterRestoreStagingLocation
-	Preconditions      ClusterRestorePreconditionEvidence
-	Progress           ClusterRestoreProgress
+	RestoreOperationID   string
+	RestorePlanID        string
+	RepositoryID         string
+	BackupSetID          string
+	State                string
+	TargetMode           string
+	IdentityMode         string
+	AuthSessionPolicy    string
+	IdempotencyKey       string
+	ExecutorID           string
+	ExecutorNodeID       string
+	ExecutorNodeName     string
+	ExecutorRaftNodeID   uint64
+	ResumeCount          int
+	LastResumeAt         time.Time
+	CancelRequestedAt    time.Time
+	CancelRequestedState string
+	CancelReason         string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	CompletedAt          time.Time
+	Blockers             []ValidationBlocker
+	CleanupTasks         []CleanupTask
+	Error                string
+	Target               ClusterRestoreTarget
+	Staging              ClusterRestoreStagingLocation
+	Preconditions        ClusterRestorePreconditionEvidence
+	Progress             ClusterRestoreProgress
 }
 
 type CleanupTask struct {
