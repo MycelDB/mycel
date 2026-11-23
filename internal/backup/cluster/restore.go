@@ -19,6 +19,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	"github.com/myceldb/mycel/internal/fsperm"
 	semanticstorage "github.com/myceldb/mycel/internal/semantic/storage"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 )
 
 const BackupSetManifestName = "backup-set.json"
@@ -189,6 +190,13 @@ func RestoreLocal(ctx context.Context, in RestoreLocalInput) (RestoreLocalResult
 	}
 	if err := verifyRestoredDataDirForNode(absDataDir, node); err != nil {
 		return RestoreLocalResult{}, err
+	}
+	usageDoc, err := usageservice.BuildRestoredUsageState(ctx, absDataDir, usageservice.RestoredUsageStateOptions{BackupSetID: plan.BackupSetID, ClusterID: plan.ClusterID, Ordinal: in.Ordinal, NodeID: node.NodeID, PodName: node.PodName, RestoredAt: time.Now().UTC(), Evidence: map[string]string{"restore_helper": "restore-local"}})
+	if err != nil {
+		return RestoreLocalResult{}, fmt.Errorf("build restored usage accounting marker: %w", err)
+	}
+	if err := usageservice.WriteRestoredUsageState(absDataDir, usageDoc); err != nil {
+		return RestoreLocalResult{}, fmt.Errorf("write restored usage accounting marker: %w", err)
 	}
 	return RestoreLocalResult{BackupSetID: plan.BackupSetID, ClusterID: plan.ClusterID, Ordinal: in.Ordinal, PodName: node.PodName, ArchivePath: node.ArchivePath, DataDir: absDataDir}, nil
 }

@@ -43,6 +43,15 @@ func (f fakeGraphIdempotencyProvider) IdempotencyMetrics() graphservice.Idempote
 	return f.metrics
 }
 
+type fakeDerivedReadinessProvider struct {
+	rows []clustering.DerivedSubsystemReadiness
+	err  error
+}
+
+func (p fakeDerivedReadinessProvider) RestoredDerivedReadiness(context.Context) ([]clustering.DerivedSubsystemReadiness, error) {
+	return p.rows, p.err
+}
+
 type fakeGraphCheckpointProvider struct {
 	status graphservice.GraphCheckpointStatus
 	err    error
@@ -158,6 +167,29 @@ func TestAdminClusterServiceGetStatus(t *testing.T) {
 	}
 	if !res.GetReadiness().GetClientReady() || !res.GetReadiness().GetMetadataApplied() || !res.GetReadiness().GetMetadataValidated() || !res.GetReadiness().GetPartitionGroupsStarted() || res.GetReadiness().GetExpectedMemberCount() != 1 {
 		t.Fatalf("expected standalone manager to be client-ready with one expected member, got %#v", res.GetReadiness())
+	}
+}
+
+func TestAdminClusterServiceReportsRestoredDerivedReadiness(t *testing.T) {
+	svc := NewAdminClusterService(newBootstrapClusterManager(t), clusterAuthz{allow: true}).WithDerivedReadiness(fakeDerivedReadinessProvider{rows: []clustering.DerivedSubsystemReadiness{{Subsystem: "LEXICAL_SEARCH", State: "rebuild_required", RebuildRequired: true, Reason: "derived_artifact_omitted_rebuild_required", ArtifactID: "lexical:phase-6", PolicyMode: "INCLUDE_OPTIONAL", RestorePolicy: "REBUILD_REQUIRED", ValidationState: "REBUILD_REQUIRED", SourceFrontierValue: "42", Evidence: map[string]string{"backup_set_id": "backup-set-1"}, UpdatedAt: "2026-11-23T12:00:00Z"}, {Subsystem: "SEMANTIC_VECTOR_SEARCH", State: "ready", Ready: true, Reason: "preserved_from_backup"}}})
+	statusRes, err := svc.GetClusterStatus(authenticatedClusterContext(), &adminv1.GetClusterStatusRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterStatus() error = %v", err)
+	}
+	readiness := statusRes.GetReadiness()
+	if !readiness.GetClientReady() || readiness.GetDerivedReady() || readiness.GetRestoredClusterReady() || len(readiness.GetDerivedSubsystems()) != 2 {
+		t.Fatalf("unexpected derived readiness: %#v", readiness)
+	}
+	lexical := readiness.GetDerivedSubsystems()[0]
+	if lexical.GetSubsystem() != "LEXICAL_SEARCH" || !lexical.GetRebuildRequired() || lexical.GetEvidence()["backup_set_id"] != "backup-set-1" {
+		t.Fatalf("lexical readiness not mapped: %#v", lexical)
+	}
+	healthRes, err := svc.GetClusterHealth(authenticatedClusterContext(), &adminv1.GetClusterHealthRequest{})
+	if err != nil {
+		t.Fatalf("GetClusterHealth() error = %v", err)
+	}
+	if healthRes.GetStatus() != "degraded" || !containsSubstring(healthRes.GetWarnings(), "LEXICAL_SEARCH:rebuild_required") {
+		t.Fatalf("expected degraded health warning for derived rebuild, got %#v", healthRes)
 	}
 }
 

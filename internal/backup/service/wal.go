@@ -10,17 +10,25 @@ import (
 )
 
 const (
-	recordTypeBackupPolicyUpdate wal.RecordType = "daemon.backup.policy.update.v1"
-	recordTypeBackupDelete       wal.RecordType = "daemon.backup.delete.v1"
+	recordTypeBackupPolicyUpdate       wal.RecordType = "daemon.backup.policy.update.v1"
+	recordTypeBackupDelete             wal.RecordType = "daemon.backup.delete.v1"
+	recordTypeBackupRepositoryUpsert   wal.RecordType = "daemon.backup.repository.upsert.v1"
+	recordTypeBackupRepositoryDelete   wal.RecordType = "daemon.backup.repository.delete.v1"
+	recordTypeBackupRepositoryValidate wal.RecordType = "daemon.backup.repository.validate.v1"
 
 	recordTypeClusterBackupRequest    wal.RecordType = "daemon.backup.cluster.request.v1"
 	recordTypeClusterBackupPhase      wal.RecordType = "daemon.backup.cluster.phase.v1"
 	recordTypeClusterBackupBarrier    wal.RecordType = "daemon.backup.cluster.barrier.v1"
+	recordTypeClusterBackupCapture    wal.RecordType = "daemon.backup.cluster.capture.v1"
 	recordTypeClusterBackupNodeResult wal.RecordType = "daemon.backup.cluster.node_result.v1"
 	recordTypeClusterBackupComplete   wal.RecordType = "daemon.backup.cluster.complete.v1"
 	recordTypeClusterBackupFail       wal.RecordType = "daemon.backup.cluster.fail.v1"
 	recordTypeClusterBackupAbort      wal.RecordType = "daemon.backup.cluster.abort.v1"
 	recordTypeClusterBackupBlockers   wal.RecordType = "daemon.backup.cluster.blockers.v1"
+
+	recordTypeClusterRestoreRequest wal.RecordType = "daemon.backup.cluster_restore.request.v1"
+	recordTypeClusterRestoreUpdate  wal.RecordType = "daemon.backup.cluster_restore.update.v1"
+	recordTypeClusterRestorePrune   wal.RecordType = "daemon.backup.cluster_restore.prune.v1"
 )
 
 type backupPolicyRecord struct {
@@ -61,6 +69,7 @@ func (m *Module) clusterBackupWALAppliers() map[wal.RecordType]wal.Applier {
 		recordTypeClusterBackupRequest:    wal.ApplierFunc(m.applyClusterBackupRequest),
 		recordTypeClusterBackupPhase:      wal.ApplierFunc(m.applyClusterBackupPhase),
 		recordTypeClusterBackupBarrier:    wal.ApplierFunc(m.applyClusterBackupBarrier),
+		recordTypeClusterBackupCapture:    wal.ApplierFunc(m.applyClusterBackupCapture),
 		recordTypeClusterBackupNodeResult: wal.ApplierFunc(m.applyClusterBackupNodeResult),
 		recordTypeClusterBackupComplete:   wal.ApplierFunc(m.applyClusterBackupComplete),
 		recordTypeClusterBackupFail: wal.ApplierFunc(func(ctx context.Context, rec wal.Record) error {
@@ -89,7 +98,11 @@ func (m *Module) commitWAL(ctx context.Context, typ wal.RecordType, payload any)
 		err = m.applyBackupPolicyUpdate(ctx, wal.Record{Type: typ, Payload: raw})
 	} else if typ == recordTypeBackupDelete {
 		err = m.applyBackupDelete(ctx, wal.Record{Type: typ, Payload: raw})
+	} else if applier, ok := m.backupRepositoryWALAppliers()[typ]; ok {
+		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
 	} else if applier, ok := m.clusterBackupWALAppliers()[typ]; ok {
+		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
+	} else if applier, ok := m.clusterRestoreWALAppliers()[typ]; ok {
 		err = applier.ApplyWAL(ctx, wal.Record{Type: typ, Payload: raw})
 	} else {
 		err = errors.New("unsupported backup WAL record type")

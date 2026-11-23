@@ -68,6 +68,62 @@ Recommended evidence:
 - non-sensitive fingerprints of Kubernetes Secrets;
 - application-side configuration needed by clients such as Knot PKM.
 
+## Production EKS/S3/IRSA rollout checklist
+
+Use this checklist before enabling repository-backed backup/restore in an
+EKS-style production environment:
+
+1. Create a dedicated S3-compatible backup bucket/prefix with versioning,
+   lifecycle protection appropriate for the recovery objective, and server-side
+   encryption (`SSE-KMS` or deployment-approved equivalent).
+2. Bind the `myceld` service account through IRSA or an equivalent workload
+   identity. Production repository credential references should be non-secret
+   references such as `aws-irsa`, `k8s-secret:<namespace>/<name>#<key>`,
+   `external-secret:...`, or `vault:...`; raw access keys must not be stored in
+   Mycel metadata or backup manifests.
+3. Configure the daemon backup repository and default backup policy with the
+   repository ID, retention policy, and the default quiesce profile
+   (`CONTROL_ONLY`, no read-only client traffic during quiesce). Keep
+   `filesystem_immutable_copy` for the portable fallback path, or explicitly
+   request `csi_volume_snapshot` / `aws_ebs_snapshot` only after enabling the
+   Kubernetes snapshot provider.
+4. For CSI/EBS snapshot capture, enable the provider on the control daemon:
+   `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED=true`, set
+   `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS=<VolumeSnapshotClass>` when your
+   storage class requires it, and verify
+   `MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE` matches the StatefulSet
+   PVC names (default `myceld-data-{pod}`). Provider failures fail closed before
+   `COMPLETE`; successful snapshot-backed backups publish credential-free
+   snapshot/readiness/cleanup evidence in `backup-set.json` while repository
+   archives remain the restore authority.
+5. If blob payloads live in an external object store, set non-secret refs for
+   `MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF`,
+   `MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF`, and especially
+   `MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF`. Backups that omit external
+   payload bytes must bind to a recoverable external object-store snapshot or
+   recovery point.
+6. For Kubernetes PVC restore orchestration, run the restore control daemon
+   outside the target StatefulSet and set the helper/controller environment only
+   after reviewing RBAC:
+   `MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED=true`,
+   `MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE=<mycel image>`, plus optional
+   namespace/service-account overrides. Existing PVC replacement is destructive
+   and remains disabled unless explicitly opted in.
+7. Create alert rules from `mycel admin backup cluster observability --output json`
+   or the `GetBackupObservability` RPC before enabling scheduled backups. At
+   minimum alert on stale latest success, failed backup/restore, restore blockers,
+   incomplete repository prefixes, retention warnings/apply failures, and
+   incomplete restore cleanup.
+8. Run one staging backup, validate repository truth (`backup-set.json` plus
+   `COMPLETE`), run a restore drill to fresh PVCs, and capture the observability
+   snapshot as rollout evidence.
+
+Local development and Mycel Lab may use env/file credential references only when
+marked `dev_only=true`, for example
+`env:AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY;dev_only=true`. Production rollout
+must not use `dev_only=true` credential references; use workload identity or a
+secret-manager reference instead.
+
 ## Backup procedure
 
 ### 1. Prepare backup storage
@@ -179,6 +235,26 @@ Validation should reject:
 - missing or inconsistent raft freeze/checkpoint evidence when raft barriers are
   present;
 - incomplete/degraded backup sets.
+
+### 6. Monitor backup/restore health
+
+Poll a healthy node with the observability command or RPC:
+
+```sh
+mycel --daemon-addr <any-healthy-node>:9091 \
+  --username <operator> --password <password> \
+  --output json \
+  admin backup cluster observability \
+  --repository-id <repo-id> \
+  --include-retention-probe \
+  --backup-freshness-after 24h \
+  --stale-operation-after 1h
+```
+
+The JSON response contains `metrics`, `alerts`, and a `summary_state` of
+`healthy`, `warning`, or `critical`. Monitoring bridges should publish the metric
+rows as gauges and alert on firing alert conditions. The retention probe is
+read-only; enable it at a cadence that is acceptable for the backup repository.
 
 ## Restore procedure
 
@@ -327,6 +403,73 @@ each pod archive to its matching ordinal PVC:
 ```sh
 make test-k3s-system-backup-restore
 ```
+
+## Operational runbooks
+
+### Alert: failed backup
+
+1. Run `mycel admin backup cluster status <backup-set-id> --output json` and
+   capture `state`, `failed_phase`, `error`, and `blockers`.
+2. If a repository was used, run `mycel admin backup cluster retention plan` with
+   the same repository and check for an incomplete prefix. Do not delete a prefix
+   referenced by an active operation.
+3. Fix the blocker class: cluster convergence/quorum, storage capacity,
+   repository credentials/RBAC, external object-store recovery-point refs, or
+   validation/checksum mismatches.
+4. Re-run the backup with a new idempotency key or wait for the previous
+   terminal state to be visible in `ListClusterBackupOperations`.
+
+### Alert: stale backup freshness
+
+1. Confirm the backup schedule and expected recovery point objective.
+2. Start an on-demand repository-backed backup with `--wait`.
+3. Validate that the repository contains both `backup-set.json` and `COMPLETE`.
+4. Confirm `mycel_backup_cluster_latest_success_age_seconds` falls below the
+   threshold after completion.
+
+### Alert: restore failed or restore blockers present
+
+1. Stop target rollout. Do not start restored pods until the operation state is
+   `SUCCEEDED` and post-restore validation evidence is present.
+2. Query `GetClusterRestoreStatus` / `ListClusterRestores` through an SDK or
+   admin automation and capture blockers, cleanup tasks, node evidence, and
+   current phase. If only the CLI is available, use
+   `mycel admin backup cluster observability --output json` to identify firing
+   restore alerts and operation IDs before collecting daemon support evidence.
+3. For external object-store blockers, verify that the target object store uses
+   the expected bucket/prefix/endpoint fingerprint and that the external recovery
+   point named by `MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF` has been restored.
+4. For Kubernetes helper/controller failures, inspect helper pod logs/events and
+   confirm target PVCs are empty or intentionally replaced under the documented
+   destructive opt-in flags.
+5. If the operation is `FAILED_REQUIRES_OPERATOR`, preserve PVCs and evidence
+   before retrying or cleaning up.
+
+### Cancel and cleanup
+
+- Cancel active backups with
+  `mycel admin backup cluster cancel <backup-set-id> --reason <reason>`.
+  Pre-mutation backup/restore cancellation can become terminal without operator
+  intervention; cancellation during restore target preparation, artifact apply,
+  or post-restore validation may require manual validation.
+- Use `mycel admin backup cluster retention plan --repository-id <repo-id>`
+  before deletion. Apply only after confirming blocked actions do not reference
+  active backup or restore operations.
+- Delete transient restore helper pods/secrets only after `cleanup_tasks` are
+  complete or after their evidence has been captured for incident review.
+
+### Rollback after a failed rollout
+
+1. Freeze application writes and preserve current target PVCs with a cloud/PVC
+   snapshot if possible.
+2. Select the latest validated repository backup set and matching external
+   object-store recovery point.
+3. Run `PlanClusterRestore`/`restore-plan` and review blockers before target
+   mutation.
+4. Restore to fresh PVCs using `PRESERVE_BACKUP_ID` unless a future logical
+   identity transform is explicitly implemented.
+5. Validate cluster health, auth/session behavior, representative application
+   reads, blob downloads, and restored-derived readiness before reopening writes.
 
 ## Safety notes
 

@@ -170,6 +170,16 @@ func capabilityFromInternal(capability string) commonv1.Capability {
 		return commonv1.Capability_CAPABILITY_MESH_MANAGE
 	case "backup.manage":
 		return commonv1.Capability_CAPABILITY_SYSTEM_BACKUP_SPACE
+	case "usage.read":
+		return commonv1.Capability_CAPABILITY_USAGE_READ
+	case "usage.diagnostic.read":
+		return commonv1.Capability_CAPABILITY_USAGE_DIAGNOSTIC_READ
+	case "usage.reconcile":
+		return commonv1.Capability_CAPABILITY_USAGE_RECONCILE
+	case "usage.limit.manage":
+		return commonv1.Capability_CAPABILITY_USAGE_LIMIT_MANAGE
+	case "usage.limit.override":
+		return commonv1.Capability_CAPABILITY_USAGE_LIMIT_OVERRIDE
 	default:
 		return commonv1.Capability_CAPABILITY_UNSPECIFIED
 	}

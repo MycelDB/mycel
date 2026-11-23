@@ -45,6 +45,7 @@ type graphCommitTiming struct {
 	GraphEvent            time.Duration
 	RecordBuild           time.Duration
 	BlobReferenceValidate time.Duration
+	UsageAdmission        time.Duration
 	WALMarshal            time.Duration
 	WALAppend             time.Duration
 	WALSync               time.Duration
@@ -125,6 +126,7 @@ func (m *Module) logGraphCommitTiming(tx sessionmodel.GraphTransaction, counts m
 		"graph_event_ms", writetrace.MS(timing.GraphEvent),
 		"record_build_ms", writetrace.MS(timing.RecordBuild),
 		"blob_reference_validate_ms", writetrace.MS(timing.BlobReferenceValidate),
+		"usage_admission_ms", writetrace.MS(timing.UsageAdmission),
 		"wal_marshal_ms", writetrace.MS(timing.WALMarshal),
 		"wal_append_ms", writetrace.MS(timing.WALAppend),
 		"wal_sync_ms", writetrace.MS(timing.WALSync),

@@ -142,7 +142,11 @@ func (m *Module) enterWrite(ctx context.Context) (func(), error) {
 	if m.gate == nil {
 		return func() {}, nil
 	}
-	return m.gate.Enter(ctx)
+	release, err := m.gate.Enter(ctx)
+	if err != nil {
+		return nil, quiesce.GRPCError(err)
+	}
+	return release, nil
 }
 
 func (m *Module) ListPrincipals(ctx context.Context) ([]PrincipalSummary, error) {

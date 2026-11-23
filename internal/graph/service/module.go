@@ -92,6 +92,7 @@ type Module struct {
 	walWaiter                        *wal.ApplyWaiter
 	encryption                       *encryption.Service
 	writeAllowed                     func() error
+	usageAccounting                  graphUsageDeltaApplier
 	checkpointPolicy                 CheckpointPolicyConfig
 	checkpointStates                 map[domainStoreKey]checkpointRuntimeState
 	checkpointWorkerCancel           context.CancelFunc
@@ -1947,6 +1948,13 @@ func (m *Module) CommitTransactionGraphWithRevisionFences(ctx context.Context, t
 		return graphchange.CommitResult{}, err
 	}
 	timing.BlobReferenceValidate = time.Since(stepStart)
+	stepStart = time.Now()
+	releaseUsageAdmission, err := m.reserveGraphUsageAdmission(ctx, record, changes)
+	if err != nil {
+		return graphchange.CommitResult{}, err
+	}
+	defer releaseUsageAdmission()
+	timing.UsageAdmission = time.Since(stepStart)
 	var committedRevision int64
 	var info graphstorage.CommitInfo
 	if m.raftGroups != nil {
@@ -2045,6 +2053,11 @@ func (m *Module) CommitTransactionGraphWithRevisionFences(ctx context.Context, t
 		committedRevision = int64(store.Revision())
 		timing.DirectStorage = time.Since(stepStart)
 		timing.StorageCommit = info.Timing
+		if !info.IdempotentReplay {
+			if err := m.applyGraphUsageDelta(ctx, record, changes, info.NextRevision); err != nil {
+				return graphchange.CommitResult{}, err
+			}
+		}
 	} else {
 		timing.StorageMode = "wal"
 		stepStart = time.Now()

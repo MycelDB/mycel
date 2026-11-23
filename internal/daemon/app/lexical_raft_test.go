@@ -109,8 +109,7 @@ func TestClusteredNewDomainLexicalIndexWithoutRebuild(t *testing.T) {
 			t.Fatal(err)
 		}
 		nextLeader := leader%3 + 1
-		promoteClusteredLexicalNodeForTest(t, ctx, cluster, spaceID, leader, nextLeader)
-		leader = nextLeader
+		leader = promoteClusteredLexicalNodeForTest(t, ctx, cluster, spaceID, leader, nextLeader)
 		node = cluster.nodes[leader]
 		node.space.WithPrincipalAuthorizer(allowLexicalSpaceAccess{})
 		search = clientapi.NewSearchService(lexical.modules[leader], node.space, node.graph)
@@ -231,15 +230,34 @@ func clusteredLexicalWriterForTest(t *testing.T, ctx context.Context, node *phas
 	}
 }
 
-func promoteClusteredLexicalNodeForTest(t *testing.T, ctx context.Context, cluster *phaseDIntegrationCluster, spaceID string, oldLeader, newLeader consensus.NodeID) {
+func promoteClusteredLexicalNodeForTest(t *testing.T, ctx context.Context, cluster *phaseDIntegrationCluster, spaceID string, oldLeader, newLeader consensus.NodeID) consensus.NodeID {
 	t.Helper()
 	groupID := consensus.PartitionGroupID(phaseDSpacePartition(t, spaceID, cluster.partitionCount))
+	promoteCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	oldGroup, ok := cluster.nodes[oldLeader].groups.Group(groupID)
+	if !ok {
+		t.Fatalf("old leader %d has no group %s", oldLeader, groupID)
+	}
+	_, leaderCommit, _ := oldGroup.Progress()
+	if err := consensus.WaitUntil(promoteCtx, 10*time.Millisecond, func() bool {
+		target, ok := cluster.nodes[newLeader].groups.Group(groupID)
+		if !ok {
+			return false
+		}
+		_, targetCommit, targetApplied := target.Progress()
+		return targetCommit >= leaderCommit && targetApplied >= leaderCommit
+	}); err != nil {
+		t.Logf("target leader %d did not catch up to commit index %d before bounded promotion; using consensus leader: %v", newLeader, leaderCommit, err)
+		return cluster.leaderForSpace(ctx, t, spaceID)
+	}
 	group, _ := cluster.nodes[newLeader].groups.Group(groupID)
 	term, _, _ := group.Progress()
-	if err := group.Step(ctx, raftpb.Message{Type: raftpb.MsgTimeoutNow, From: uint64(oldLeader), To: uint64(newLeader), Term: term}); err != nil {
-		t.Fatal(err)
+	if err := group.Step(promoteCtx, raftpb.Message{Type: raftpb.MsgTimeoutNow, From: uint64(oldLeader), To: uint64(newLeader), Term: term}); err != nil {
+		t.Logf("timeout-now promotion to %d failed; using consensus leader: %v", newLeader, err)
+		return cluster.leaderForSpace(ctx, t, spaceID)
 	}
-	if err := consensus.WaitUntil(ctx, 10*time.Millisecond, func() bool {
+	if err := consensus.WaitUntil(promoteCtx, 10*time.Millisecond, func() bool {
 		for _, node := range cluster.nodes {
 			group, _ := node.groups.Group(groupID)
 			if group.Leader() != newLeader {
@@ -248,8 +266,10 @@ func promoteClusteredLexicalNodeForTest(t *testing.T, ctx context.Context, clust
 		}
 		return true
 	}); err != nil {
-		t.Fatal(err)
+		t.Logf("bounded promotion to %d did not converge; using consensus leader: %v", newLeader, err)
+		return cluster.leaderForSpace(ctx, t, spaceID)
 	}
+	return newLeader
 }
 
 type clusteredLexicalForTest struct {

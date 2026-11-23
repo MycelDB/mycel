@@ -1768,9 +1768,9 @@ covered by the backup policy.
     "namespace": "commonfolio-prod",
     "statefulset": "myceld",
     "data_dir": "/data/mycel",
-    "mycel_version": "v0.23.1",
-    "mycel_api_version": "v0.23.0",
-    "image": "docker.io/myceldb/mycel:v0.23.1",
+    "mycel_version": "v0.24.0",
+    "mycel_api_version": "v0.24.0",
+    "image": "docker.io/myceldb/mycel:v0.24.0",
     "image_digest": "sha256:327b98d979854fc15f17219f3e7727883ebc2d2542e0ef66779aa05f1c55b722",
     "storage_format_versions": {
       "system_raft": "1",
@@ -1861,7 +1861,7 @@ covered by the backup policy.
       "semantic_vector_search": "1",
       "blob_metadata": "1"
     },
-    "min_restore_mycel_version": "v0.23.1",
+    "min_restore_mycel_version": "v0.24.0",
     "supported_restore_target_modes": [
       "NEW_CLUSTER_BOOTSTRAP",
       "EXISTING_CLUSTER_REPLACE"
@@ -3138,7 +3138,7 @@ The first production matrix should be conservative:
 | Backup source | Restore binary | Default result | Notes |
 | --- | --- | --- | --- |
 | Same version/image digest | Same version/image digest | Allowed if manifest, topology, credentials, and artifacts validate. | Preferred for drills and emergency restore. |
-| Same minor line, newer patch | Newer patch in same minor line | Allowed when storage format versions and required features are supported. | Normal patch-level restore path, e.g. a `v0.23.1` backup restored by `v0.23.2`. |
+| Same minor line, newer patch | Newer patch in same minor line | Allowed when storage format versions and required features are supported. | Normal patch-level restore path, e.g. a `v0.24.0` backup restored by `v0.24.1`. |
 | Same minor line, older patch | Older patch in same minor line | Blocked unless the older binary declares support for all recorded storage/artifact formats and required features. | Do not assume patch downgrade safety after storage/manifest changes. |
 | Older minor line backup | Newer minor line binary | Allowed only through an explicit migration/compatibility declaration. | The restore operation may upgrade storage formats after successful apply, but must record that it crossed a compatibility boundary. |
 | Newer minor line backup | Older minor line binary | Blocked. | Requires restore with a newer/same-capability binary or a logical export path designed for downgrade. |

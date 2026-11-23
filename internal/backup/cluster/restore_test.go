@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 )
 
 func TestBuildRestorePlanValidatesLocalSetAndMapsOrdinals(t *testing.T) {
@@ -89,6 +90,9 @@ func TestRestoreLocalExtractsOnlyRequestedOrdinal(t *testing.T) {
 	}
 	if got := string(mustReadFile(t, filepath.Join(dest, "ordinal.txt"))); strings.TrimSpace(got) != "1" {
 		t.Fatalf("restored ordinal.txt = %q, want 1", got)
+	}
+	if marker, ok, err := usageservice.ReadRestoredUsageState(dest); err != nil || !ok || marker.DesiredAccountingState != usageservice.AccountingStateRebuilding {
+		t.Fatalf("restored usage marker = %#v ok=%t err=%v, want rebuilding marker", marker, ok, err)
 	}
 }
 

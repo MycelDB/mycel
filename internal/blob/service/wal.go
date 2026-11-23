@@ -21,6 +21,7 @@ const (
 type blobMetaPutRecord struct {
 	Meta              blobmodel.BlobMeta          `json:"meta"`
 	PayloadDescriptor blobmodel.PayloadDescriptor `json:"payload_descriptor,omitempty"`
+	UsageMutationID   string                      `json:"usage_mutation_id,omitempty"`
 }
 type blobMetaDeleteRecord struct {
 	SpaceID  string `json:"space_id"`
@@ -37,7 +38,11 @@ func (m *Module) applyBlobMetaPut(ctx context.Context, rec wal.Record) error {
 		desc := payload.PayloadDescriptor
 		payload.Meta.Payload = &desc
 	}
-	return m.applyMetaPut(ctx, payload.Meta)
+	mutationID := strings.TrimSpace(payload.UsageMutationID)
+	if mutationID == "" {
+		mutationID = blobUsageWALMutationID("put", rec)
+	}
+	return m.applyMetaPutWithUsage(ctx, payload.Meta, mutationID)
 }
 
 func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error {
@@ -45,7 +50,7 @@ func (m *Module) applyBlobMetaDelete(ctx context.Context, rec wal.Record) error 
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		return err
 	}
-	return m.applyMetaDelete(ctx, payload.SpaceID, payload.DomainID, payload.BlobID)
+	return m.applyMetaDeleteWithUsage(ctx, payload.SpaceID, payload.DomainID, payload.BlobID, blobUsageWALMutationID("delete", rec))
 }
 
 func (m *Module) commitMetaPutRaft(ctx context.Context, meta blobmodel.BlobMeta) (blobmodel.BlobMeta, error) {
@@ -53,11 +58,18 @@ func (m *Module) commitMetaPutRaft(ctx context.Context, meta blobmodel.BlobMeta)
 	if err := m.ensureRaftPayloadWritePolicy(ctx, desc); err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
-	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: desc})
+	commandID := "blob-meta-put-" + meta.SpaceID + "-" + meta.BlobID + "-" + uuid.NewString()
+	mutationID := blobUsageRaftMutationID("put", commandID)
+	release, err := m.reserveBlobUsagePutAdmission(ctx, meta, mutationID)
 	if err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
-	cmd, err := m.buildBlobRaftCommand(meta.SpaceID, recordTypeBlobMetaPut, payload, "blob-meta-put-"+meta.SpaceID+"-"+meta.BlobID+"-"+uuid.NewString())
+	defer release()
+	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: desc, UsageMutationID: mutationID})
+	if err != nil {
+		return blobmodel.BlobMeta{}, err
+	}
+	cmd, err := m.buildBlobRaftCommand(meta.SpaceID, recordTypeBlobMetaPut, payload, commandID)
 	if err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
@@ -68,7 +80,13 @@ func (m *Module) commitMetaPutRaft(ctx context.Context, meta blobmodel.BlobMeta)
 }
 
 func (m *Module) commitMetaPut(ctx context.Context, meta blobmodel.BlobMeta) (blobmodel.BlobMeta, error) {
-	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta)})
+	mutationID := "blob-usage:put:wal-command:" + uuid.NewString()
+	release, err := m.reserveBlobUsagePutAdmission(ctx, meta, mutationID)
+	if err != nil {
+		return blobmodel.BlobMeta{}, err
+	}
+	defer release()
+	payload, err := json.Marshal(blobMetaPutRecord{Meta: meta, PayloadDescriptor: descriptorFromMeta(meta), UsageMutationID: mutationID})
 	if err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
@@ -79,7 +97,7 @@ func (m *Module) commitMetaPut(ctx context.Context, meta blobmodel.BlobMeta) (bl
 	if err := m.wal.Sync(ctx, lsn); err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
-	if err := m.applyMetaPut(ctx, meta); err != nil {
+	if err := m.applyMetaPutWithUsage(ctx, meta, mutationID); err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
 	if err := m.markWALApplied(ctx, lsn); err != nil {
@@ -112,13 +130,25 @@ func (m *Module) commitMetaDelete(ctx context.Context, spaceID string, domainID 
 	if err := m.wal.Sync(ctx, lsn); err != nil {
 		return err
 	}
-	if err := m.applyMetaDelete(ctx, spaceID, domainID, blobID); err != nil {
+	if err := m.applyMetaDeleteWithUsage(ctx, spaceID, domainID, blobID, blobUsageWALLSNMutationID("delete", lsn)); err != nil {
 		return err
 	}
 	return m.markWALApplied(ctx, lsn)
 }
 
 func (m *Module) applyMetaPut(ctx context.Context, meta blobmodel.BlobMeta) error {
+	return m.applyMetaPutWithUsage(ctx, meta, "")
+}
+
+func (m *Module) applyMetaPutWithUsage(ctx context.Context, meta blobmodel.BlobMeta, mutationID string) error {
+	return m.applyMetaPutWithUsageInternal(ctx, meta, mutationID, false)
+}
+
+func (m *Module) applyMetaPutWithUsageAdmission(ctx context.Context, meta blobmodel.BlobMeta, mutationID string) error {
+	return m.applyMetaPutWithUsageInternal(ctx, meta, mutationID, true)
+}
+
+func (m *Module) applyMetaPutWithUsageInternal(ctx context.Context, meta blobmodel.BlobMeta, mutationID string, enforceAdmission bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -128,11 +158,31 @@ func (m *Module) applyMetaPut(ctx context.Context, meta blobmodel.BlobMeta) erro
 	if err != nil {
 		return err
 	}
+	old, hadOld := metas[blobMetaStorageKey(meta)]
+	var releaseAdmission func()
+	if enforceAdmission {
+		var reserveErr error
+		releaseAdmission, reserveErr = m.reserveBlobUsagePutAdmissionLocked(ctx, old, hadOld, meta, mutationID)
+		if reserveErr != nil {
+			return reserveErr
+		}
+		defer releaseAdmission()
+	}
 	metas[blobMetaStorageKey(meta)] = meta
-	return m.saveSpaceMetaLocked(meta.SpaceID, metas)
+	if err := m.saveSpaceMetaLocked(meta.SpaceID, metas); err != nil {
+		return err
+	}
+	if err := m.applyBlobUsagePutDelta(ctx, old, hadOld, meta, mutationID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, domainID string, blobID string) error {
+	return m.applyMetaDeleteWithUsage(ctx, spaceID, domainID, blobID, "")
+}
+
+func (m *Module) applyMetaDeleteWithUsage(ctx context.Context, spaceID string, domainID string, blobID string, mutationID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -174,6 +224,11 @@ func (m *Module) applyMetaDelete(ctx context.Context, spaceID string, domainID s
 	}
 	if err := m.saveSpaceMetaLocked(spaceID, metas); err != nil {
 		return err
+	}
+	if metaErr == nil {
+		if err := m.applyBlobUsageDeleteDelta(ctx, meta, mutationID); err != nil {
+			return err
+		}
 	}
 	if metaErr == nil && isObjectStoreBackend(payloadBackend(desc)) {
 		if err := m.deletePayload(ctx, desc); err != nil {

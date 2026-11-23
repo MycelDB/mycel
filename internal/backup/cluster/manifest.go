@@ -48,18 +48,21 @@ type Manifest struct {
 
 // NodeArtifact describes one pod/PVC archive in a backup set.
 type NodeArtifact struct {
-	PodName        string             `json:"pod_name"`
-	NodeID         string             `json:"node_id"`
-	Ordinal        int                `json:"ordinal"`
-	RaftNodeID     uint64             `json:"raft_node_id,omitempty"`
-	ArchiveName    string             `json:"archive_name"`
-	ArchiveURI     string             `json:"archive_uri,omitempty"`
-	ManifestName   string             `json:"manifest_name"`
-	ManifestURI    string             `json:"manifest_uri,omitempty"`
-	SizeBytes      int64              `json:"size_bytes"`
-	ChecksumSHA256 string             `json:"checksum_sha256"`
-	AppliedIndexes map[string]uint64  `json:"applied_indexes,omitempty"`
-	RaftFreeze     RaftFreezeEvidence `json:"raft_freeze,omitempty"`
+	PodName                 string             `json:"pod_name"`
+	NodeID                  string             `json:"node_id"`
+	Ordinal                 int                `json:"ordinal"`
+	RaftNodeID              uint64             `json:"raft_node_id,omitempty"`
+	ArchiveName             string             `json:"archive_name"`
+	ArchiveURI              string             `json:"archive_uri,omitempty"`
+	ManifestName            string             `json:"manifest_name"`
+	ManifestURI             string             `json:"manifest_uri,omitempty"`
+	InventoryName           string             `json:"inventory_name,omitempty"`
+	InventoryURI            string             `json:"inventory_uri,omitempty"`
+	InventoryChecksumSHA256 string             `json:"inventory_checksum_sha256,omitempty"`
+	SizeBytes               int64              `json:"size_bytes"`
+	ChecksumSHA256          string             `json:"checksum_sha256"`
+	AppliedIndexes          map[string]uint64  `json:"applied_indexes,omitempty"`
+	RaftFreeze              RaftFreezeEvidence `json:"raft_freeze,omitempty"`
 }
 
 type RaftFreezeEvidence struct {
@@ -108,13 +111,29 @@ func NewArchiveName(ts time.Time, podName string, backupSetID string, format bac
 }
 
 func NewNodeManifestName(archiveName string) (string, error) {
+	base, err := archiveNameWithoutExtension(archiveName)
+	if err != nil {
+		return "", err
+	}
+	return base + ".manifest.json", nil
+}
+
+func NewNodeInventoryName(archiveName string) (string, error) {
+	base, err := archiveNameWithoutExtension(archiveName)
+	if err != nil {
+		return "", err
+	}
+	return base + ".inventory.json", nil
+}
+
+func archiveNameWithoutExtension(archiveName string) (string, error) {
 	archiveName = strings.TrimSpace(archiveName)
 	if archiveName == "" {
 		return "", fmt.Errorf("archive_name is required")
 	}
 	for _, suffix := range []string{".tar.zst", ".tar.gz", ".tar", ".zip"} {
 		if strings.HasSuffix(archiveName, suffix) {
-			return strings.TrimSuffix(archiveName, suffix) + ".manifest.json", nil
+			return strings.TrimSuffix(archiveName, suffix), nil
 		}
 	}
 	return "", fmt.Errorf("archive_name %q has unsupported extension", archiveName)

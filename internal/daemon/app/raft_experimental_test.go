@@ -336,6 +336,9 @@ func TestCompositeStateMachineRecordOwnershipIsUnique(t *testing.T) {
 		"semantic.global.mutation.v1":           "semantic",
 		"daemon.backup.policy.update.v1":        "backup",
 		"daemon.backup.delete.v1":               "backup",
+		"daemon.backup.repository.upsert.v1":    "backup",
+		"daemon.backup.repository.delete.v1":    "backup",
+		"daemon.backup.repository.validate.v1":  "backup",
 	}
 	partitionRecords := map[wal.RecordType]string{
 		"space.create_with_default_domain.v1":    "space",

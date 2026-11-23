@@ -40,12 +40,15 @@ type UploadInput struct {
 }
 
 type Config struct {
-	Backend             string
-	ObjectStoreProvider string
-	S3Bucket            string
-	S3Prefix            string
-	S3Region            string
-	S3KMSKeyID          string
-	S3EndpointURL       string
-	S3ForcePathStyle    bool
+	Backend                     string
+	ObjectStoreProvider         string
+	S3Bucket                    string
+	S3Prefix                    string
+	S3Region                    string
+	S3KMSKeyID                  string
+	S3EndpointURL               string
+	S3ForcePathStyle            bool
+	ObjectStoreCredentialRef    string
+	ObjectStoreBackupPolicyRef  string
+	ObjectStoreRecoveryPointRef string
 }

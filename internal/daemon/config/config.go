@@ -100,17 +100,31 @@ type SearchConfig struct {
 }
 
 type BackupConfig struct {
-	Enabled                bool
-	BackupDir              string
-	Interval               time.Duration
-	RetentionCount         int
-	IncludeLogs            bool
-	Compression            string
-	QuiesceDrainTimeout    time.Duration
-	BackupTimeout          time.Duration
-	RetryAfter             time.Duration
-	StatusHistoryLimit     int
-	AllowReadsDuringBackup bool
+	Enabled                               bool
+	BackupDir                             string
+	Interval                              time.Duration
+	RetentionCount                        int
+	IncludeLogs                           bool
+	Compression                           string
+	QuiesceDrainTimeout                   time.Duration
+	BackupTimeout                         time.Duration
+	RetryAfter                            time.Duration
+	StatusHistoryLimit                    int
+	AllowReadsDuringBackup                bool
+	KubernetesRestoreHelperEnabled        bool
+	KubernetesRestoreHelperImage          string
+	KubernetesRestoreHelperNamespace      string
+	KubernetesRestoreHelperServiceAccount string
+	KubernetesRestoreScaleDownStatefulSet bool
+	KubernetesRestoreProvisionPVCs        bool
+	KubernetesRestoreReplaceExistingPVCs  bool
+	KubernetesRestorePVCStorageClassName  string
+	KubernetesRestorePVCStorageRequest    string
+	KubernetesRestorePVCAccessModes       []string
+	KubernetesSnapshotCaptureEnabled      bool
+	KubernetesSnapshotClassName           string
+	KubernetesSnapshotSourcePVCTemplate   string
+	KubernetesSnapshotDeleteOnCompletion  bool
 }
 
 type WALConfig struct {
@@ -135,14 +149,17 @@ type GraphTransactionConfig struct {
 }
 
 type BlobConfig struct {
-	Backend             string
-	ObjectStoreProvider string
-	S3Bucket            string
-	S3Prefix            string
-	S3Region            string
-	S3KMSKeyID          string
-	S3EndpointURL       string
-	S3ForcePathStyle    bool
+	Backend                     string
+	ObjectStoreProvider         string
+	S3Bucket                    string
+	S3Prefix                    string
+	S3Region                    string
+	S3KMSKeyID                  string
+	S3EndpointURL               string
+	S3ForcePathStyle            bool
+	ObjectStoreCredentialRef    string
+	ObjectStoreBackupPolicyRef  string
+	ObjectStoreRecoveryPointRef string
 }
 
 type ClusterConfig struct {
@@ -259,14 +276,17 @@ func LoadFromEnv() (Config, error) {
 			MaxAge:          parseDurationEnv(os.Getenv("MYCELD_GRAPH_TRANSACTION_MAX_AGE"), DefaultGraphTransactionMaxAge),
 		},
 		Blob: BlobConfig{
-			Backend:             valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
-			ObjectStoreProvider: strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PROVIDER")),
-			S3Bucket:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET")),
-			S3Prefix:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX")),
-			S3Region:            strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION")),
-			S3KMSKeyID:          strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID")),
-			S3EndpointURL:       strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL")),
-			S3ForcePathStyle:    parseBoolEnv(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE")),
+			Backend:                     valueOrDefault(os.Getenv("MYCELD_BLOB_BACKEND"), DefaultBlobBackend),
+			ObjectStoreProvider:         strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PROVIDER")),
+			S3Bucket:                    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BUCKET")),
+			S3Prefix:                    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_PREFIX")),
+			S3Region:                    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_REGION")),
+			S3KMSKeyID:                  strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID")),
+			S3EndpointURL:               strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL")),
+			S3ForcePathStyle:            parseBoolEnv(os.Getenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE")),
+			ObjectStoreCredentialRef:    strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF")),
+			ObjectStoreBackupPolicyRef:  strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF")),
+			ObjectStoreRecoveryPointRef: strings.TrimSpace(os.Getenv("MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF")),
 		},
 		Cluster: ClusterConfig{
 			Name:                           strings.TrimSpace(os.Getenv("MYCELD_CLUSTER_NAME")),
@@ -300,17 +320,31 @@ func LoadFromEnv() (Config, error) {
 			HybridRRFK: parseFloatEnv(os.Getenv("MYCELD_SEARCH_HYBRID_RRF_K"), DefaultSearchHybridRRFK),
 		},
 		Backup: BackupConfig{
-			Enabled:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
-			BackupDir:              strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
-			Interval:               parseDurationEnv(os.Getenv("MYCELD_BACKUP_INTERVAL"), DefaultBackupInterval),
-			RetentionCount:         parseIntEnv(os.Getenv("MYCELD_BACKUP_RETENTION_COUNT"), DefaultBackupRetentionCount),
-			IncludeLogs:            parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_INCLUDE_LOGS"), false),
-			Compression:            valueOrDefault(os.Getenv("MYCELD_BACKUP_COMPRESSION"), DefaultBackupCompression),
-			QuiesceDrainTimeout:    parseDurationEnv(os.Getenv("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT"), DefaultBackupQuiesceDrainTimeout),
-			BackupTimeout:          parseDurationEnv(os.Getenv("MYCELD_BACKUP_TIMEOUT"), DefaultBackupTimeout),
-			RetryAfter:             parseDurationEnv(os.Getenv("MYCELD_BACKUP_RETRY_AFTER"), DefaultBackupRetryAfter),
-			StatusHistoryLimit:     parseIntEnv(os.Getenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT"), DefaultBackupStatusHistoryLimit),
-			AllowReadsDuringBackup: parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP"), false),
+			Enabled:                               parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ENABLED"), false),
+			BackupDir:                             strings.TrimSpace(os.Getenv("MYCELD_BACKUP_DIR")),
+			Interval:                              parseDurationEnv(os.Getenv("MYCELD_BACKUP_INTERVAL"), DefaultBackupInterval),
+			RetentionCount:                        parseIntEnv(os.Getenv("MYCELD_BACKUP_RETENTION_COUNT"), DefaultBackupRetentionCount),
+			IncludeLogs:                           parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_INCLUDE_LOGS"), false),
+			Compression:                           valueOrDefault(os.Getenv("MYCELD_BACKUP_COMPRESSION"), DefaultBackupCompression),
+			QuiesceDrainTimeout:                   parseDurationEnv(os.Getenv("MYCELD_BACKUP_QUIESCE_DRAIN_TIMEOUT"), DefaultBackupQuiesceDrainTimeout),
+			BackupTimeout:                         parseDurationEnv(os.Getenv("MYCELD_BACKUP_TIMEOUT"), DefaultBackupTimeout),
+			RetryAfter:                            parseDurationEnv(os.Getenv("MYCELD_BACKUP_RETRY_AFTER"), DefaultBackupRetryAfter),
+			StatusHistoryLimit:                    parseIntEnv(os.Getenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT"), DefaultBackupStatusHistoryLimit),
+			AllowReadsDuringBackup:                parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP"), false),
+			KubernetesRestoreHelperEnabled:        parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED"), false),
+			KubernetesRestoreHelperImage:          strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE")),
+			KubernetesRestoreHelperNamespace:      strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE")),
+			KubernetesRestoreHelperServiceAccount: strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT")),
+			KubernetesRestoreScaleDownStatefulSet: parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED"), true),
+			KubernetesRestoreProvisionPVCs:        parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED"), true),
+			KubernetesRestoreReplaceExistingPVCs:  parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED"), false),
+			KubernetesRestorePVCStorageClassName:  strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS")),
+			KubernetesRestorePVCStorageRequest:    strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST")),
+			KubernetesRestorePVCAccessModes:       parseCSVEnv(os.Getenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES")),
+			KubernetesSnapshotCaptureEnabled:      parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED"), false),
+			KubernetesSnapshotClassName:           strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS")),
+			KubernetesSnapshotSourcePVCTemplate:   strings.TrimSpace(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE")),
+			KubernetesSnapshotDeleteOnCompletion:  parseBoolEnvDefault(os.Getenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_DELETE_ON_COMPLETION"), true),
 		},
 		SemanticMaintenance: SemanticMaintenanceConfig{
 			Enabled:                    parseBoolEnvDefault(os.Getenv("MYCELD_SEMANTIC_MAINTENANCE_ENABLED"), true),
@@ -699,6 +733,23 @@ func (c BackupConfig) Validate() error {
 	}
 	if compression := strings.ToLower(strings.TrimSpace(c.Compression)); compression != "" && compression != "zip" {
 		return fmt.Errorf("MYCELD_BACKUP_COMPRESSION must be zip")
+	}
+	if c.KubernetesRestoreHelperEnabled && strings.TrimSpace(c.KubernetesRestoreHelperImage) == "" {
+		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE is required when MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED=true")
+	}
+	if c.KubernetesRestoreHelperEnabled && len(c.KubernetesRestorePVCAccessModes) == 0 {
+		c.KubernetesRestorePVCAccessModes = []string{"ReadWriteOnce"}
+	}
+	for _, mode := range c.KubernetesRestorePVCAccessModes {
+		if strings.TrimSpace(mode) == "" {
+			return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES must not contain empty values")
+		}
+	}
+	if c.KubernetesRestoreReplaceExistingPVCs && !c.KubernetesRestoreProvisionPVCs {
+		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED requires MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED=true")
+	}
+	if c.KubernetesRestoreReplaceExistingPVCs && !c.KubernetesRestoreScaleDownStatefulSet {
+		return fmt.Errorf("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED requires MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED=true")
 	}
 	return nil
 }

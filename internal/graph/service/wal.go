@@ -88,6 +88,10 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 		err := store.MarkIdempotencyPublicationAcknowledged(ctx, ack.Scope, ack.Key, ack.Digest, ack.Metadata)
 		return int64(store.Revision()), payload, graphstorage.CommitInfo{}, mapStorageError(err)
 	}
+	usageChanges, err := m.graphUsageChangesForRecord(ctx, store, payload)
+	if err != nil {
+		return 0, payload, graphstorage.CommitInfo{}, err
+	}
 	stepStart = time.Now()
 	storageTx, err := store.Begin(ctx)
 	if err != nil {
@@ -145,6 +149,11 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 	timing.StorageCommit = time.Since(stepStart)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
+	}
+	if !info.IdempotentReplay {
+		if err := m.applyGraphUsageDelta(ctx, payload, usageChanges, info.NextRevision); err != nil {
+			return 0, payload, graphstorage.CommitInfo{}, err
+		}
 	}
 	timing.CommitTiming = info.Timing
 	timing.Total = time.Since(totalStart)

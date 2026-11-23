@@ -48,14 +48,21 @@ var phaseDRaftRecordCoverage = map[string]raftRecordCoverage{
 	"projection.replica.status.v1":             {Subsystem: "projection registry", Scope: "partition raft", Status: "covered", Tranche: "projection materialization phase 1"},
 	"daemon.backup.policy.update.v1":           {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
 	"daemon.backup.delete.v1":                  {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "D5 verify"},
+	"daemon.backup.repository.upsert.v1":       {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "backup repository foundation"},
+	"daemon.backup.repository.delete.v1":       {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "backup repository foundation"},
+	"daemon.backup.repository.validate.v1":     {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "backup repository validation"},
 	"daemon.backup.cluster.request.v1":         {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.phase.v1":           {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.barrier.v1":         {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
+	"daemon.backup.cluster.capture.v1":         {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "snapshot backup providers"},
 	"daemon.backup.cluster.node_result.v1":     {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.complete.v1":        {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.fail.v1":            {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.abort.v1":           {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup plan phase 2"},
 	"daemon.backup.cluster.blockers.v1":        {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster backup async operation"},
+	"daemon.backup.cluster_restore.request.v1": {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster restore async operation"},
+	"daemon.backup.cluster_restore.update.v1":  {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster restore async operation"},
+	"daemon.backup.cluster_restore.prune.v1":   {Subsystem: "backup", Scope: "system raft", Status: "covered", Tranche: "cluster restore async operation"},
 }
 
 func TestPhaseDRaftRecordCoverageClassifiesAllRecordTypes(t *testing.T) {

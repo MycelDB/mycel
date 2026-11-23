@@ -8,8 +8,10 @@ import (
 	"time"
 
 	backupcore "github.com/myceldb/mycel/internal/backup"
+	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	"github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -159,6 +161,110 @@ func TestAdminBackupPolicyRejectsInvalidSchedule(t *testing.T) {
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("UpdateBackupPolicy(%#v) code = %v, want InvalidArgument (err=%v)", tt, status.Code(err), err)
 		}
+	}
+}
+
+func TestAdminBackupPolicyPreservesRepositoryContractFields(t *testing.T) {
+	dataDir := backupAPIFixtureDataDir(t)
+	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: dataDir, Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+	backupDir := t.TempDir()
+	policy := &adminv1.BackupPolicy{
+		Enabled:                    true,
+		BackupDir:                  backupDir,
+		IntervalHours:              1,
+		RetentionCount:             2,
+		ArchiveFormat:              adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP,
+		QuiesceDrainTimeoutSeconds: 5,
+		BackupTimeoutSeconds:       30,
+		RetryAfterSeconds:          10,
+		StatusHistoryLimit:         4,
+		DefaultRepositoryId:        "repo-prod",
+		CaptureProvider:            adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_FILESYSTEM_IMMUTABLE_COPY,
+		QuiesceReadProfile:         adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_CONTROL_ONLY,
+		DerivedSubsystems: []*adminv1.DerivedSubsystemPolicy{{
+			Subsystem: adminv1.BackupDerivedSubsystem_BACKUP_DERIVED_SUBSYSTEM_SEMANTIC_VECTOR_SEARCH,
+			Mode:      adminv1.BackupDerivedPolicyMode_BACKUP_DERIVED_POLICY_MODE_INCLUDE_REQUIRED,
+		}},
+		RetentionPolicy:   &adminv1.RetentionPolicy{KeepLastSuccessful: 3, DeleteIncompleteAfterSeconds: 3600},
+		ValidationOptions: &adminv1.ValidationOptions{IncludeArtifactChecks: true, RequireCompleteMarker: true},
+	}
+	res, err := svc.UpdateBackupPolicy(authenticatedContext(), &adminv1.UpdateBackupPolicyRequest{Policy: policy})
+	if err != nil {
+		t.Fatalf("UpdateBackupPolicy() error = %v", err)
+	}
+	got := res.GetPolicy()
+	if got.GetDefaultRepositoryId() != "repo-prod" || got.GetCaptureProvider() != adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_FILESYSTEM_IMMUTABLE_COPY || got.GetQuiesceReadProfile() != adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_CONTROL_ONLY {
+		t.Fatalf("repository policy fields not preserved: %#v", got)
+	}
+	if len(got.GetDerivedSubsystems()) != 1 || got.GetDerivedSubsystems()[0].GetMode() != adminv1.BackupDerivedPolicyMode_BACKUP_DERIVED_POLICY_MODE_INCLUDE_REQUIRED {
+		t.Fatalf("derived subsystem policy not preserved: %#v", got.GetDerivedSubsystems())
+	}
+	if got.GetRetentionPolicy().GetKeepLastSuccessful() != 3 || !got.GetValidationOptions().GetIncludeArtifactChecks() || !got.GetValidationOptions().GetRequireCompleteMarker() {
+		t.Fatalf("retention/validation policy not preserved: %#v", got)
+	}
+}
+
+func TestAdminBackupRepositoryCRUD(t *testing.T) {
+	manager := daemonbackup.NewModule()
+	if result := manager.Init(context.Background(), runtimetest.New(backupAPIFixtureDataDir(t), nil)); !result.OK {
+		t.Fatalf("backup module init failed: %#v", result)
+	}
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+	repo := &adminv1.BackupRepository{
+		RepositoryId: "repo-prod",
+		DisplayName:  "Production backups",
+		Provider:     adminv1.BackupRepositoryProvider_BACKUP_REPOSITORY_PROVIDER_S3_COMPATIBLE,
+		S3:           &adminv1.S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "/clusters/prod/", Region: "us-east-1", EndpointUri: "https://minio.example", ForcePathStyle: true},
+		CredentialRef: &adminv1.SecretReference{Scheme: adminv1.SecretReferenceScheme_SECRET_REFERENCE_SCHEME_ENV, Keys: map[string]string{
+			"access_key_id":     "MINIO_ACCESS_KEY",
+			"secret_access_key": "MINIO_SECRET_KEY",
+		}},
+		Encryption: &adminv1.EncryptionPolicy{Mode: adminv1.EncryptionMode_ENCRYPTION_MODE_SSE_S3},
+		DevOnly:    true,
+	}
+	created, err := svc.CreateBackupRepository(authenticatedContext(), &adminv1.CreateBackupRepositoryRequest{Repository: repo})
+	if err != nil {
+		t.Fatalf("CreateBackupRepository() error = %v", err)
+	}
+	if created.GetRepository().GetS3().GetPrefix() != "clusters/prod" || created.GetRepository().GetCreateTime() == "" {
+		t.Fatalf("created repository not normalized/timestamped: %#v", created.GetRepository())
+	}
+	list, err := svc.ListBackupRepositories(authenticatedContext(), &adminv1.ListBackupRepositoriesRequest{})
+	if err != nil || len(list.GetRepositories()) != 1 {
+		t.Fatalf("ListBackupRepositories() = (%#v, %v)", list, err)
+	}
+	created.Repository.DisplayName = "Updated backups"
+	updated, err := svc.UpdateBackupRepository(authenticatedContext(), &adminv1.UpdateBackupRepositoryRequest{Repository: created.Repository})
+	if err != nil {
+		t.Fatalf("UpdateBackupRepository() error = %v", err)
+	}
+	if updated.GetRepository().GetDisplayName() != "Updated backups" {
+		t.Fatalf("display name not updated: %#v", updated.GetRepository())
+	}
+	deleted, err := svc.DeleteBackupRepository(authenticatedContext(), &adminv1.DeleteBackupRepositoryRequest{RepositoryId: repo.GetRepositoryId()})
+	if err != nil {
+		t.Fatalf("DeleteBackupRepository() error = %v", err)
+	}
+	if deleted.GetState() != adminv1.BackupDeletionState_BACKUP_DELETION_STATE_DELETED {
+		t.Fatalf("unexpected delete state: %#v", deleted)
+	}
+}
+
+func TestAdminBackupRepositoryBackedClusterOperationsRequireConfiguredManagers(t *testing.T) {
+	manager := backupcore.NewManager(backupcore.ManagerConfig{DataDir: backupAPIFixtureDataDir(t), Policy: backupcore.Policy{BackupDir: t.TempDir()}})
+	svc := NewAdminBackupService(manager, quiesce.NewCoordinator(), &fakeOperatorManager{systemAdmin: true})
+	if _, err := svc.StartClusterBackup(authenticatedContext(), &adminv1.StartClusterBackupRequest{RepositoryId: "repo-prod"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("StartClusterBackup(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if _, err := svc.ListClusterBackupSets(authenticatedContext(), &adminv1.ListClusterBackupSetsRequest{RepositoryId: "repo-prod"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ListClusterBackupSets(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if _, err := svc.ValidateClusterBackupSet(authenticatedContext(), &adminv1.ValidateClusterBackupSetRequest{RepositoryId: "repo-prod", BackupSetId: "backup-set-1"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ValidateClusterBackupSet(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if _, err := svc.PlanClusterRestore(authenticatedContext(), &adminv1.PlanClusterRestoreRequest{RepositoryId: "repo-prod", BackupSetId: "backup-set-1"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("PlanClusterRestore(repository) code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
 	}
 }
 

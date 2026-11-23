@@ -154,6 +154,16 @@ func canonicalCapability(capability string) string {
 		return "system.maintain_space"
 	case "CAPABILITY_SYSTEM_BACKUP_SPACE", "backup.manage":
 		return "backup.manage"
+	case "CAPABILITY_USAGE_READ", "usage.read":
+		return "usage.read"
+	case "CAPABILITY_USAGE_DIAGNOSTIC_READ", "usage.diagnostic.read":
+		return "usage.diagnostic.read"
+	case "CAPABILITY_USAGE_RECONCILE", "usage.reconcile":
+		return "usage.reconcile"
+	case "CAPABILITY_USAGE_LIMIT_MANAGE", "usage.limit.manage":
+		return "usage.limit.manage"
+	case "CAPABILITY_USAGE_LIMIT_OVERRIDE", "usage.limit.override":
+		return "usage.limit.override"
 	default:
 		return strings.TrimSpace(capability)
 	}

@@ -39,6 +39,7 @@ import (
 	daemonsemantic "github.com/myceldb/mycel/internal/semantic/service"
 	sessionservice "github.com/myceldb/mycel/internal/session/service"
 	spaceservice "github.com/myceldb/mycel/internal/space/service"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
@@ -173,6 +174,11 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: backup service is not registered\n")
 		return 1
 	}
+	usageService, ok := daemonruntime.ServiceAs[*usageservice.Module](rt, usageservice.ModuleName)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "myceld initialization failed: usage service is not registered\n")
+		return 1
+	}
 	tlsConfig, err := server.LoadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSClientCAFile, cfg.TLSRequireClientCert)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld TLS config error: %v\n", err)
@@ -188,7 +194,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: inference service is not registered\n")
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, DataDir: cfg.DataDir, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, SearchConfig: cfg.Search, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, DataDir: cfg.DataDir, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, UsageManager: usageService, UsageAdmissionManager: usageService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, SearchConfig: cfg.Search, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -310,16 +316,22 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 	graphNotificationService := graphnotification.NewModule()
 	inferenceService := inferenceservice.NewModule().WithPrincipalStatusChecker(principalService)
 	automationService := automationservice.NewModule("").WithGraphRuntime(sessionService, graphService).WithQueryEngine(queryengine.New(queryengine.Ports{Entities: graphService, Traversals: graphService, Indexes: graphService, Catalog: schemaService, Mutations: graphService})).WithSchemaReader(schemaService).WithInferenceInvoker(inferenceService).WithWorkerConfig(automationservice.WorkerConfig{Enabled: cfg.Automation.WorkerEnabled, Interval: cfg.Automation.WorkerInterval, BatchSize: cfg.Automation.WorkerBatchSize, MaxInputTokens: cfg.Automation.MaxInputTokens, MaxOutputTokens: cfg.Automation.MaxOutputTokens, Concurrency: cfg.Automation.WorkerConcurrency})
+	usageService := usageservice.NewModule()
+	graphService.WithUsageAccounting(usageService)
 	blobService := blobservice.NewModule(graphService, blobservice.Config{
-		Backend:             cfg.Blob.Backend,
-		ObjectStoreProvider: cfg.Blob.ObjectStoreProvider,
-		S3Bucket:            cfg.Blob.S3Bucket,
-		S3Prefix:            cfg.Blob.S3Prefix,
-		S3Region:            cfg.Blob.S3Region,
-		S3KMSKeyID:          cfg.Blob.S3KMSKeyID,
-		S3EndpointURL:       cfg.Blob.S3EndpointURL,
-		S3ForcePathStyle:    cfg.Blob.S3ForcePathStyle,
-	})
+		Backend:                     cfg.Blob.Backend,
+		ObjectStoreProvider:         cfg.Blob.ObjectStoreProvider,
+		S3Bucket:                    cfg.Blob.S3Bucket,
+		S3Prefix:                    cfg.Blob.S3Prefix,
+		S3Region:                    cfg.Blob.S3Region,
+		S3KMSKeyID:                  cfg.Blob.S3KMSKeyID,
+		S3EndpointURL:               cfg.Blob.S3EndpointURL,
+		S3ForcePathStyle:            cfg.Blob.S3ForcePathStyle,
+		ObjectStoreCredentialRef:    cfg.Blob.ObjectStoreCredentialRef,
+		ObjectStoreBackupPolicyRef:  cfg.Blob.ObjectStoreBackupPolicyRef,
+		ObjectStoreRecoveryPointRef: cfg.Blob.ObjectStoreRecoveryPointRef,
+	}).WithUsageAccounting(usageService)
+	usageService.WithReconciliationProviders(graphService, blobService)
 	automationService.WithBlobReader(blobService)
 	inferenceService.SetSecretResolver(inferenceservice.NewEnvelopeSecretResolver(enc))
 	lexicalService := lexicalservice.NewModule()
@@ -371,7 +383,41 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		RetryAfter:             cfg.Backup.RetryAfter,
 		StatusHistoryLimit:     cfg.Backup.StatusHistoryLimit,
 		AllowReadsDuringBackup: cfg.Backup.AllowReadsDuringBackup,
-	})
+	}).WithExternalObjectDependencyProvider(blobService)
+	if cfg.Backup.KubernetesSnapshotCaptureEnabled {
+		provider, err := backupservice.NewInClusterKubernetesSnapshotCaptureProvider(backupservice.KubernetesSnapshotCaptureProviderConfig{
+			Namespace:          cfg.Backup.KubernetesRestoreHelperNamespace,
+			SnapshotClassName:  cfg.Backup.KubernetesSnapshotClassName,
+			SourcePVCTemplate:  cfg.Backup.KubernetesSnapshotSourcePVCTemplate,
+			DeleteOnCompletion: cfg.Backup.KubernetesSnapshotDeleteOnCompletion,
+		})
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("configure Kubernetes snapshot capture provider: %w", err)
+		}
+		backupService.WithClusterSnapshotCaptureProvider(provider)
+		logger.Info("Kubernetes snapshot capture provider enabled", "namespace", cfg.Backup.KubernetesRestoreHelperNamespace, "snapshot_class", cfg.Backup.KubernetesSnapshotClassName, "delete_on_completion", cfg.Backup.KubernetesSnapshotDeleteOnCompletion)
+	}
+	if cfg.Backup.KubernetesRestoreHelperEnabled {
+		helper, err := backupservice.NewInClusterKubernetesPVCRestoreHelper(backupservice.KubernetesPVCRestoreHelperConfig{
+			Namespace:            cfg.Backup.KubernetesRestoreHelperNamespace,
+			HelperImage:          cfg.Backup.KubernetesRestoreHelperImage,
+			ServiceAccountName:   cfg.Backup.KubernetesRestoreHelperServiceAccount,
+			DeleteOnCompletion:   true,
+			ScaleDownStatefulSet: cfg.Backup.KubernetesRestoreScaleDownStatefulSet,
+			ProvisionPVCs:        cfg.Backup.KubernetesRestoreProvisionPVCs,
+			ReplaceExistingPVCs:  cfg.Backup.KubernetesRestoreReplaceExistingPVCs,
+			PVCStorageClassName:  cfg.Backup.KubernetesRestorePVCStorageClassName,
+			PVCStorageRequest:    cfg.Backup.KubernetesRestorePVCStorageRequest,
+			PVCAccessModes:       cfg.Backup.KubernetesRestorePVCAccessModes,
+		})
+		if err != nil {
+			_ = rt.Close()
+			return nil, fmt.Errorf("configure Kubernetes PVC restore helper: %w", err)
+		}
+		backupService.WithClusterRestorePVCHelper(helper)
+		logger.Info("Kubernetes PVC restore helper enabled", "namespace", cfg.Backup.KubernetesRestoreHelperNamespace, "service_account", cfg.Backup.KubernetesRestoreHelperServiceAccount)
+	}
 	if rt.ProjectionRegistries != nil {
 		backupService.WithProjectionRegistryManager(rt.ProjectionRegistries)
 		backupService.WithProjectionArtifactProvider(func(ctx context.Context) ([]projection.ArtifactManifest, error) {
@@ -394,7 +440,7 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 			return artifacts, nil
 		})
 	}
-	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, graphService, graphNotificationService, blobService, inferenceService, semanticService, lexicalService, backupService}); err != nil {
+	if err := rt.InitServices(ctx, []daemonruntime.Service{principalService, activityService, spaceService, sessionService, schemaService, automationService, usageService, graphService, graphNotificationService, blobService, inferenceService, semanticService, lexicalService, backupService}); err != nil {
 		_ = rt.Close()
 		return nil, err
 	}

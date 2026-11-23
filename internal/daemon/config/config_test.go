@@ -360,12 +360,15 @@ func TestLoadFromEnvBlobObjectStoreOverrides(t *testing.T) {
 	t.Setenv("MYCELD_BLOB_OBJECT_STORE_KMS_KEY_ID", "alias/mycel")
 	t.Setenv("MYCELD_BLOB_OBJECT_STORE_ENDPOINT_URL", "http://minio:9000")
 	t.Setenv("MYCELD_BLOB_OBJECT_STORE_FORCE_PATH_STYLE", "true")
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_CREDENTIAL_REF", "k8s-secret:mycel/blob-object-store#credentials")
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_BACKUP_POLICY_REF", "aws-backup-plan:commonfolio-blobs")
+	t.Setenv("MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF", "aws-backup-recovery-point:rp-123")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
-	if cfg.Blob.Backend != "object_store" || cfg.Blob.ObjectStoreProvider != "s3-compatible" || cfg.Blob.S3Bucket != "mycel-minio" || cfg.Blob.S3Prefix != "prod/a" || cfg.Blob.S3Region != "us-east-1" || cfg.Blob.S3KMSKeyID != "alias/mycel" || cfg.Blob.S3EndpointURL != "http://minio:9000" || !cfg.Blob.S3ForcePathStyle {
+	if cfg.Blob.Backend != "object_store" || cfg.Blob.ObjectStoreProvider != "s3-compatible" || cfg.Blob.S3Bucket != "mycel-minio" || cfg.Blob.S3Prefix != "prod/a" || cfg.Blob.S3Region != "us-east-1" || cfg.Blob.S3KMSKeyID != "alias/mycel" || cfg.Blob.S3EndpointURL != "http://minio:9000" || !cfg.Blob.S3ForcePathStyle || cfg.Blob.ObjectStoreCredentialRef != "k8s-secret:mycel/blob-object-store#credentials" || cfg.Blob.ObjectStoreBackupPolicyRef != "aws-backup-plan:commonfolio-blobs" || cfg.Blob.ObjectStoreRecoveryPointRef != "aws-backup-recovery-point:rp-123" {
 		t.Fatalf("unexpected blob config: %+v", cfg.Blob)
 	}
 }
@@ -425,12 +428,26 @@ func TestLoadFromEnvBackupOverrides(t *testing.T) {
 	t.Setenv("MYCELD_BACKUP_RETRY_AFTER", "7s")
 	t.Setenv("MYCELD_BACKUP_STATUS_HISTORY_LIMIT", "12")
 	t.Setenv("MYCELD_BACKUP_ALLOW_READS_DURING_BACKUP", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_IMAGE", "registry.example/mycel:restore")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_NAMESPACE", "restore-system")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_HELPER_SERVICE_ACCOUNT", "mycel-restore")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_STATEFULSET_SCALE_DOWN_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_PROVISIONING_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_REPLACEMENT_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_CLASS", "gp3")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_STORAGE_REQUEST", "20Gi")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_RESTORE_PVC_ACCESS_MODES", "ReadWriteOnce, ReadWriteMany")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CAPTURE_ENABLED", "true")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_CLASS", "ebs-csi")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_SOURCE_PVC_TEMPLATE", "data-{pod}")
+	t.Setenv("MYCELD_BACKUP_KUBERNETES_SNAPSHOT_DELETE_ON_COMPLETION", "false")
 	cfg, err := LoadFromEnv()
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
 	backup := cfg.Backup
-	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup {
+	if !backup.Enabled || backup.BackupDir != "/tmp/mycel-backups" || backup.Interval != 2*time.Hour || backup.RetentionCount != 9 || !backup.IncludeLogs || backup.Compression != "zip" || backup.QuiesceDrainTimeout != 3*time.Minute || backup.BackupTimeout != 45*time.Minute || backup.RetryAfter != 7*time.Second || backup.StatusHistoryLimit != 12 || !backup.AllowReadsDuringBackup || !backup.KubernetesRestoreHelperEnabled || backup.KubernetesRestoreHelperImage != "registry.example/mycel:restore" || backup.KubernetesRestoreHelperNamespace != "restore-system" || backup.KubernetesRestoreHelperServiceAccount != "mycel-restore" || !backup.KubernetesRestoreScaleDownStatefulSet || !backup.KubernetesRestoreProvisionPVCs || !backup.KubernetesRestoreReplaceExistingPVCs || backup.KubernetesRestorePVCStorageClassName != "gp3" || backup.KubernetesRestorePVCStorageRequest != "20Gi" || len(backup.KubernetesRestorePVCAccessModes) != 2 || backup.KubernetesRestorePVCAccessModes[0] != "ReadWriteOnce" || backup.KubernetesRestorePVCAccessModes[1] != "ReadWriteMany" || !backup.KubernetesSnapshotCaptureEnabled || backup.KubernetesSnapshotClassName != "ebs-csi" || backup.KubernetesSnapshotSourcePVCTemplate != "data-{pod}" || backup.KubernetesSnapshotDeleteOnCompletion {
 		t.Fatalf("unexpected backup overrides: %+v", backup)
 	}
 }
@@ -452,6 +469,9 @@ func TestConfigValidateRejectsBadValues(t *testing.T) {
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Interval: -1}},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{RetentionCount: -1}},
 		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{Compression: "tar.gz"}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true, KubernetesRestoreHelperImage: "registry.example/mycel:restore", KubernetesRestoreReplaceExistingPVCs: true, KubernetesRestoreProvisionPVCs: false, KubernetesRestoreScaleDownStatefulSet: true}},
+		{DataDir: "/tmp/mycel", Mode: "standalone", LogLevel: "info", LogFormat: "text", GRPCAddr: DefaultGRPCAddr, Backup: BackupConfig{KubernetesRestoreHelperEnabled: true, KubernetesRestoreHelperImage: "registry.example/mycel:restore", KubernetesRestoreReplaceExistingPVCs: true, KubernetesRestoreProvisionPVCs: true, KubernetesRestoreScaleDownStatefulSet: false}},
 	}
 	for _, tc := range cases {
 		if err := tc.Validate(); err == nil {

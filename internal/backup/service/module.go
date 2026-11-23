@@ -20,41 +20,53 @@ var _ runtime.Starter = (*Module)(nil)
 var _ runtime.Stopper = (*Module)(nil)
 var _ runtime.StatusReporter = (*Module)(nil)
 var _ Manager = (*Module)(nil)
+var _ BackupObservabilityManager = (*Module)(nil)
 
 type Module struct {
-	mu                    sync.Mutex
-	manager               *backupcore.Manager
-	policy                backupcore.Policy
-	logger                *slog.Logger
-	runCtx                context.Context
-	cancel                context.CancelFunc
-	running               bool
-	startedAt             time.Time
-	nextRunAt             time.Time
-	lastError             string
-	wg                    sync.WaitGroup
-	wal                   *wal.Manager
-	progress              wal.AppliedLSNStore
-	checkpoint            *wal.CheckpointStore
-	waiter                *wal.ApplyWaiter
-	writeAllowed          func() error
-	raftGroups            *consensus.MultiGroup
-	raftEnabled           bool
-	config                Config
-	quiesce               *quiesce.Coordinator
-	dataDir               string
-	localIdentity         runtime.LocalRouteIdentity
-	activeClusterBackupID string
-	clusterBackups        map[string]clusterBackupRun
-	clusterBackupCancels  map[string]context.CancelFunc
-	clusterBackupLeases   map[string]*quiesce.CompositeLease
-	clusterBackupFreeze   map[string]*clusterBackupFreezeLease
-	clusterBackendClient  backendClient
-	clusterNodeAddrs      []string
-	clusterLocalRaftNode  consensus.NodeID
-	encryption            *encryption.Service
-	projectionRegistries  *projection.RegistryManager
-	projectionArtifacts   func(context.Context) ([]projection.ArtifactManifest, error)
+	mu                                 sync.Mutex
+	manager                            *backupcore.Manager
+	policy                             backupcore.Policy
+	logger                             *slog.Logger
+	runCtx                             context.Context
+	cancel                             context.CancelFunc
+	running                            bool
+	startedAt                          time.Time
+	nextRunAt                          time.Time
+	lastError                          string
+	wg                                 sync.WaitGroup
+	wal                                *wal.Manager
+	progress                           wal.AppliedLSNStore
+	checkpoint                         *wal.CheckpointStore
+	waiter                             *wal.ApplyWaiter
+	writeAllowed                       func() error
+	raftGroups                         *consensus.MultiGroup
+	raftEnabled                        bool
+	config                             Config
+	quiesce                            *quiesce.Coordinator
+	dataDir                            string
+	localIdentity                      runtime.LocalRouteIdentity
+	activeClusterBackupID              string
+	clusterBackups                     map[string]clusterBackupRun
+	clusterBackupCancels               map[string]context.CancelFunc
+	activeClusterRestoreID             string
+	clusterRestores                    map[string]ClusterRestoreOperation
+	clusterRestoreCancels              map[string]context.CancelFunc
+	clusterBackupLeases                map[string]*quiesce.CompositeLease
+	clusterBackupFreeze                map[string]*clusterBackupFreezeLease
+	repositories                       map[string]BackupRepository
+	repositoryValidator                backupRepositoryValidator
+	repositoryObjectStoreFactory       backupRepositoryObjectStoreFactory
+	lastRepositoryRetentionObservation repositoryRetentionObservation
+	clusterRestorePVCHelper            ClusterRestorePVCHelper
+	clusterSnapshotCaptureProvider     ClusterSnapshotCaptureProvider
+	clusterBackendClient               backendClient
+	clusterNodeAddrs                   []string
+	clusterLocalRaftNode               consensus.NodeID
+	encryption                         *encryption.Service
+	projectionRegistries               *projection.RegistryManager
+	projectionArtifacts                func(context.Context) ([]projection.ArtifactManifest, error)
+	externalObjectDependencyProvider   ExternalObjectDependencyProvider
+	externalObjectDependencyValidator  ExternalObjectDependencyValidator
 }
 
 func NewModule(config ...Config) *Module {
@@ -77,6 +89,29 @@ func (m *Module) WithProjectionArtifactProvider(provider func(context.Context) (
 	return m
 }
 
+func (m *Module) WithExternalObjectDependencyProvider(provider ExternalObjectDependencyProvider) *Module {
+	m.externalObjectDependencyProvider = provider
+	if validator, ok := provider.(ExternalObjectDependencyValidator); ok {
+		m.externalObjectDependencyValidator = validator
+	}
+	return m
+}
+
+func (m *Module) WithExternalObjectDependencyValidator(validator ExternalObjectDependencyValidator) *Module {
+	m.externalObjectDependencyValidator = validator
+	return m
+}
+
+func (m *Module) WithClusterRestorePVCHelper(helper ClusterRestorePVCHelper) *Module {
+	m.clusterRestorePVCHelper = helper
+	return m
+}
+
+func (m *Module) WithClusterSnapshotCaptureProvider(provider ClusterSnapshotCaptureProvider) *Module {
+	m.clusterSnapshotCaptureProvider = provider
+	return m
+}
+
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	config := m.config
 	if config == (Config{}) {
@@ -89,6 +124,9 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 	}
 	m.quiesce = quiesceCoordinator
 	m.dataDir = host.DataDir()
+	if err := m.loadBackupRepositoryCatalog(); err != nil {
+		return runtime.Abort(ModuleName, "repository", "load backup repository catalog", err)
+	}
 	if provider, ok := host.(runtime.LocalRouteIdentityProvider); ok {
 		m.localIdentity = provider.LocalRouteIdentity()
 	}
@@ -115,9 +153,19 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 			if err := registry.Register(recordTypeBackupDelete, wal.ApplierFunc(m.applyBackupDelete)); err != nil {
 				return runtime.Abort(ModuleName, "wal", "register backup delete WAL applier", err)
 			}
+			for typ, applier := range m.backupRepositoryWALAppliers() {
+				if err := registry.Register(typ, applier); err != nil {
+					return runtime.Abort(ModuleName, "wal", "register backup repository WAL applier", err)
+				}
+			}
 			for typ, applier := range m.clusterBackupWALAppliers() {
 				if err := registry.Register(typ, applier); err != nil {
 					return runtime.Abort(ModuleName, "wal", "register cluster backup WAL applier", err)
+				}
+			}
+			for typ, applier := range m.clusterRestoreWALAppliers() {
+				if err := registry.Register(typ, applier); err != nil {
+					return runtime.Abort(ModuleName, "wal", "register cluster restore WAL applier", err)
 				}
 			}
 		}
@@ -138,6 +186,15 @@ func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult
 }
 
 func (m *Module) Start(ctx context.Context) error {
+	if err := m.reconcileInterruptedClusterRestores(ctx); err != nil {
+		if m.raftMode() {
+			if m.logger != nil {
+				m.logger.Warn("cluster restore restart reconciliation deferred", "error", err)
+			}
+		} else {
+			return err
+		}
+	}
 	if !m.policy.Enabled {
 		return nil
 	}

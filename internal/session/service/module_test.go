@@ -303,4 +303,38 @@ func TestModuleQuiesceRejectsOpenSession(t *testing.T) {
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("OpenSession() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
 	}
+	if reason, ok := quiesce.ErrorInfoReason(err); !ok || reason != quiesce.ReasonClusterQuiesced {
+		t.Fatalf("OpenSession quiesce reason = %q, %v; want %q, true", reason, ok, quiesce.ReasonClusterQuiesced)
+	}
+}
+
+func TestModuleQuiesceMarksCommitTransactionAbortedByQuiesce(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule()
+	if result := m.Init(ctx, testHost{dataDir: t.TempDir(), logger: slog.Default(), quiesce: quiesce.NewCoordinator()}); !result.OK {
+		t.Fatalf("init failed: %v", result.Error)
+	}
+	principalID := uuid.NewString()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	session, err := m.OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: principalID, SpaceID: spaceID, DomainID: domainID, IdleTimeout: time.Minute})
+	if err != nil {
+		t.Fatalf("OpenSession() error = %v", err)
+	}
+	tx, err := m.BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: principalID, SessionID: session.ID, Mode: sessionmodel.TransactionModeReadWrite})
+	if err != nil {
+		t.Fatalf("BeginTransaction() error = %v", err)
+	}
+	lease, err := m.gate.Quiesce(ctx, quiesce.Request{Reason: "test backup", Source: "test"})
+	if err != nil {
+		t.Fatalf("Quiesce() error = %v", err)
+	}
+	defer lease.Release(ctx)
+	_, err = m.CommitTransaction(ctx, principalID, tx.ID, 1)
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("CommitTransaction() code = %v, want %v (err=%v)", status.Code(err), codes.Unavailable, err)
+	}
+	if reason, ok := quiesce.ErrorInfoReason(err); !ok || reason != quiesce.ReasonTransactionAbortedByQuiesce {
+		t.Fatalf("CommitTransaction quiesce reason = %q, %v; want %q, true", reason, ok, quiesce.ReasonTransactionAbortedByQuiesce)
+	}
 }

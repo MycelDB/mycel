@@ -41,6 +41,12 @@ func TestEffectivePolicyAppliesDefaults(t *testing.T) {
 	if policy.Timezone != DefaultTimezone {
 		t.Fatalf("Timezone = %q, want %q", policy.Timezone, DefaultTimezone)
 	}
+	if policy.Retention.KeepFor != DefaultKeepFor || policy.Retention.DeleteIncompleteAfter != DefaultDeleteIncompleteAfter {
+		t.Fatalf("retention defaults not applied: %#v", policy.Retention)
+	}
+	if len(policy.DerivedSubsystems) != len(DefaultDerivedSubsystemPolicies()) {
+		t.Fatalf("derived subsystem defaults not applied: %#v", policy.DerivedSubsystems)
+	}
 }
 
 func TestEffectivePolicyPreservesConfiguredValues(t *testing.T) {
