@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	blobmodel "github.com/myceldb/mycel/internal/blob/model"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	clientv1 "github.com/myceldb/mycel/internal/gen/mycel/client/v1"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -174,5 +177,22 @@ func mapBlobError(err error, action string) error {
 	if errors.Is(err, daemonblob.ErrReferenced) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
+	var admissionErr *usageservice.AdmissionError
+	if errors.As(err, &admissionErr) {
+		return usageAdmissionResourceExhaustedError(admissionErr)
+	}
 	return status.Errorf(codes.Internal, "%s: %v", action, err)
+}
+
+func usageAdmissionResourceExhaustedError(err *usageservice.AdmissionError) error {
+	st := status.New(codes.ResourceExhausted, "usage admission rejected: "+err.Error())
+	metadata := map[string]string{"reason": err.Reason, "metric_name": err.MetricName, "metric_version": fmt.Sprint(err.MetricVersion), "current": fmt.Sprint(err.Current), "reserved": fmt.Sprint(err.Reserved), "attempted": fmt.Sprint(err.Attempted), "limit": fmt.Sprint(err.Limit), "state": string(err.State)}
+	if err.LimitID != "" {
+		metadata["limit_id"] = err.LimitID
+	}
+	withDetails, detailErr := st.WithDetails(&errdetails.ErrorInfo{Reason: err.Reason, Domain: usageservice.AdmissionErrorInfoDomain, Metadata: metadata})
+	if detailErr == nil {
+		return withDetails.Err()
+	}
+	return st.Err()
 }

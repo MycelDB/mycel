@@ -20,6 +20,7 @@ import (
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 )
 
 type backendClient interface {
@@ -632,7 +633,7 @@ func (m *Module) buildProductionBackupSetManifest(input StartClusterBackupInput,
 		sourceNodes = append(sourceNodes, clusterbackup.BackupSetSourceNode{NodeID: node.NodeID, NodeName: firstNonEmptyString(node.NodeID, node.PodName), PodName: node.PodName, Ordinal: node.Ordinal, RaftNodeID: decimalUint64(node.RaftNodeID), PVCRef: "pvc/myceld-data-" + node.PodName})
 	}
 	sort.Slice(sourceNodes, func(i, j int) bool { return sourceNodes[i].Ordinal < sourceNodes[j].Ordinal })
-	storageVersions := map[string]string{"backup_set": "1", "system_raft": "1", "graph": "1", "semantic_records": "1"}
+	storageVersions := map[string]string{"backup_set": "1", "system_raft": "1", "graph": "1", "semantic_records": "1", "usage_counters": "1"}
 	membershipHash := hashJSON(sourceNodes)
 	placementHash := hashJSON(struct {
 		ClusterID string                              `json:"cluster_id"`
@@ -973,7 +974,20 @@ func (m *Module) productionBarrierSet(input StartClusterBackupInput, backupSetID
 	if len(artifactNodes) > 0 && strings.TrimSpace(artifactNodes[0].RaftFreeze.LeaseID) != "" {
 		quiesceLease = artifactNodes[0].RaftFreeze.LeaseID
 	}
-	return clusterbackup.CheckpointBarrierSetV1{SchemaVersion: 1, BarrierSetID: "barrier-" + backupSetID, BackupOperationID: backupSetID, BackupSetID: backupSetID, ClusterID: clusterID, QuiesceLeaseID: quiesceLease, EstablishedAt: createdAt, CoordinatorNodeID: coordinatorNodeID, CoordinatorRaftNodeID: coordinatorRaftNodeID, ReadAllowlistProfile: productionEnum(input.QuiesceReadProfile), WriteGateClosedAt: createdAt, Participants: []json.RawMessage{mustJSONRaw(map[string]any{"name": "mycel-runtime", "state": "quiesced"})}, RaftGroups: groups, SystemMetadata: clusterbackup.CheckpointSystemMetadata{ClusterID: clusterID, ClusterName: firstNonEmptyString(input.ClusterName, clusterID), BootstrapEpoch: "1", NodeCount: len(sourceNodes), PartitionCount: maxInt(1, len(groups)), ReplicaFactor: maxInt(1, len(sourceNodes)), SystemRaftGroupID: string(consensus.SystemGroupID), SystemRaftBarrierIndex: systemBarrier, MembershipHashSHA256: membershipHash, PlacementHashSHA256: placementHash, ExpectedNodes: sourceNodes}, Identity: clusterbackup.CheckpointIdentity{IdentityRaftGroupID: string(consensus.SystemGroupID), IdentityRaftBarrierIndex: systemBarrier, AuthorizationRevision: systemBarrier, PrincipalStoreChecksumSHA256: hashString("principal-store:" + backupSetID), RoleBindingChecksumSHA256: hashString("role-bindings:" + backupSetID), CapabilityGrantChecksumSHA256: hashString("capability-grants:" + backupSetID), RefreshSessionStoreChecksumSHA256: hashString("refresh-sessions:" + backupSetID), AuthSessionPolicy: "PRESERVE_RESTORED_SESSIONS"}}
+	return clusterbackup.CheckpointBarrierSetV1{SchemaVersion: 1, BarrierSetID: "barrier-" + backupSetID, BackupOperationID: backupSetID, BackupSetID: backupSetID, ClusterID: clusterID, QuiesceLeaseID: quiesceLease, EstablishedAt: createdAt, CoordinatorNodeID: coordinatorNodeID, CoordinatorRaftNodeID: coordinatorRaftNodeID, ReadAllowlistProfile: productionEnum(input.QuiesceReadProfile), WriteGateClosedAt: createdAt, Participants: []json.RawMessage{mustJSONRaw(map[string]any{"name": "mycel-runtime", "state": "quiesced"})}, RaftGroups: groups, SystemMetadata: clusterbackup.CheckpointSystemMetadata{ClusterID: clusterID, ClusterName: firstNonEmptyString(input.ClusterName, clusterID), BootstrapEpoch: "1", NodeCount: len(sourceNodes), PartitionCount: maxInt(1, len(groups)), ReplicaFactor: maxInt(1, len(sourceNodes)), SystemRaftGroupID: string(consensus.SystemGroupID), SystemRaftBarrierIndex: systemBarrier, MembershipHashSHA256: membershipHash, PlacementHashSHA256: placementHash, ExpectedNodes: sourceNodes}, Identity: clusterbackup.CheckpointIdentity{IdentityRaftGroupID: string(consensus.SystemGroupID), IdentityRaftBarrierIndex: systemBarrier, AuthorizationRevision: systemBarrier, PrincipalStoreChecksumSHA256: hashString("principal-store:" + backupSetID), RoleBindingChecksumSHA256: hashString("role-bindings:" + backupSetID), CapabilityGrantChecksumSHA256: hashString("capability-grants:" + backupSetID), RefreshSessionStoreChecksumSHA256: hashString("refresh-sessions:" + backupSetID), AuthSessionPolicy: "PRESERVE_RESTORED_SESSIONS"}, UsageAccounting: m.productionUsageAccountingBarriers(systemBarrier)}
+}
+
+func (m *Module) productionUsageAccountingBarriers(systemBarrier string) []clusterbackup.CheckpointSubsystemBarrier {
+	state := "REBUILD_REQUIRED"
+	checksum := ""
+	if strings.TrimSpace(m.dataDir) != "" {
+		statePath := usageservice.UsageCounterStatePath(m.dataDir)
+		if raw, err := os.ReadFile(statePath); err == nil {
+			state = "INCLUDED_AND_VALIDATED"
+			checksum = hashBytes(raw)
+		}
+	}
+	return []clusterbackup.CheckpointSubsystemBarrier{{Subsystem: "USAGE_ACCOUNTING", Scope: "cluster", OwnerRaftGroupID: string(consensus.SystemGroupID), OwnerRaftBarrierIndex: systemBarrier, SourceFrontierKind: "metric_versions", SourceFrontierValue: usageservice.MetricVersionsEvidence(), ChecksumSHA256: checksum, ValidationState: state}}
 }
 
 func productionNodeRaftFreeze(in clusterbackup.RaftFreezeEvidence) clusterbackup.BackupSetNodeRaftFreeze {

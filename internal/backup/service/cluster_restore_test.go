@@ -10,6 +10,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/encryption"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 )
 
 func TestRestoreArchiveExtractionPathDecryptsEncryptedArchive(t *testing.T) {
@@ -209,11 +210,14 @@ func TestValidateRestoredDataDirForOperationEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateRestoredDataDirForOperation() error=%v", err)
 	}
-	if evidence["post_restore_validation"] != "passed" || evidence["restored_node_id"] != "node-1" || evidence["refresh_session_checksum_present"] != "true" || evidence["derived_rebuild_required_subsystems"] != "lexical_search" || evidence["restored_derived_readiness_marker"] == "" || evidence["restored_derived_ready"] != "false" {
+	if evidence["post_restore_validation"] != "passed" || evidence["restored_node_id"] != "node-1" || evidence["refresh_session_checksum_present"] != "true" || evidence["derived_rebuild_required_subsystems"] != "lexical_search" || evidence["restored_derived_readiness_marker"] == "" || evidence["restored_derived_ready"] != "false" || evidence["restored_usage_accounting_marker"] == "" || evidence["restored_usage_counter_state"] != "rebuilding" {
 		t.Fatalf("evidence=%#v", evidence)
 	}
 	if marker, ok, err := clusterbackup.ReadRestoredDerivedReadiness(dataDir); err != nil || !ok || marker.DerivedReady || marker.Subsystems[0].State != "rebuild_required" {
 		t.Fatalf("restored derived readiness marker = %#v ok=%t err=%v", marker, ok, err)
+	}
+	if marker, ok, err := usageservice.ReadRestoredUsageState(dataDir); err != nil || !ok || marker.DesiredAccountingState != usageservice.AccountingStateRebuilding {
+		t.Fatalf("restored usage marker = %#v ok=%t err=%v, want rebuilding because counters are absent", marker, ok, err)
 	}
 	_, err = validateRestoredDataDirForOperation(dataDir, plan, ClusterRestoreNodeMapping{Ordinal: 0, SourceNodeID: "other-node"}, clusterbackup.BackupSetNodeArtifact{Ordinal: 0, NodeID: "other-node"}, "restore-2")
 	if err == nil {

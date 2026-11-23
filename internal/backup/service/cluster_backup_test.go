@@ -159,6 +159,13 @@ func TestClusterBackupSnapshotCaptureRecordAndManifestEvidence(t *testing.T) {
 	}
 	node := clusterbackup.NodeArtifact{PodName: "myceld-0", NodeID: "node-1", Ordinal: 0, RaftNodeID: 1, ArchiveName: archiveName, ArchiveURI: "s3://mycel-backups/clusters/test/nodes/myceld-0/" + archiveName, ManifestName: manifestName, ManifestURI: "s3://mycel-backups/clusters/test/nodes/myceld-0/" + manifestName, InventoryName: inventoryName, InventoryURI: "s3://mycel-backups/clusters/test/nodes/myceld-0/" + inventoryName, InventoryChecksumSHA256: shaHex("inventory"), SizeBytes: 123, ChecksumSHA256: shaHex("archive"), AppliedIndexes: map[string]uint64{"system": 10}, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: "lease-1", AcquiredAt: createdAt, ReleasedAt: createdAt.Add(time.Second), ExpiresAt: createdAt.Add(time.Minute), Groups: map[string]clusterbackup.RaftFreezeGroup{"system": {GroupID: "system", BarrierIndex: 10, AppliedIndex: 10, CommitIndex: 10}}}}
 	applyClusterRecord(t, ctx, m, recordTypeClusterBackupNodeResult, clusterBackupNodeResultRecord{BackupSetID: backupSetID, Node: node, UpdatedAt: createdAt}, "node-result")
+	usageRaw := []byte(`{"version":1,"accounting_state":"ready","updated_at":"2026-11-22T10:00:00Z","sequence":1}`)
+	if err := os.MkdirAll(filepath.Join(m.dataDir, "meta", "usage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.dataDir, "meta", "usage", "counters.json"), usageRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	repo := normalizeBackupRepository(BackupRepository{RepositoryID: "repo-snap", Provider: RepositoryProviderS3Compatible, S3: S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "clusters/test"}, CredentialRef: SecretReference{Scheme: SecretSchemeEnv, Keys: map[string]string{"access_key_id": "MINIO_ACCESS_KEY", "secret_access_key": "MINIO_SECRET_KEY"}}, DevOnly: true})
 	input := StartClusterBackupInput{ArchiveFormat: backupcore.ArchiveFormatTar, ClusterID: "cluster-test", ClusterName: "cluster-test", RepositoryID: repo.RepositoryID, RepositoryPrefix: repositoryBackupSetPrefix(repo, backupSetID), CaptureProvider: clusterCaptureProviderCSI, QuiesceReadProfile: backupcore.DefaultProductionQuiesceReadProfile}
 	manifest, err := m.buildProductionBackupSetManifest(input, repo, backupSetID, "cluster-test", createdAt, createdAt.Add(time.Minute), "s3://mycel-backups/clusters/test/backup-set.json")
@@ -173,6 +180,9 @@ func TestClusterBackupSnapshotCaptureRecordAndManifestEvidence(t *testing.T) {
 	}
 	if manifest.Audit.Labels["capture_provider"] != clusterCaptureProviderCSI {
 		t.Fatalf("audit labels=%v, want csi capture provider", manifest.Audit.Labels)
+	}
+	if manifest.Source.StorageFormatVersions["usage_counters"] != "1" || len(manifest.Consistency.BarrierSet.UsageAccounting) != 1 || manifest.Consistency.BarrierSet.UsageAccounting[0].ValidationState != "INCLUDED_AND_VALIDATED" || manifest.Consistency.BarrierSet.UsageAccounting[0].ChecksumSHA256 != hashBytes(usageRaw) {
+		t.Fatalf("usage accounting barrier=%#v storage_versions=%v, want included v1 marker", manifest.Consistency.BarrierSet.UsageAccounting, manifest.Source.StorageFormatVersions)
 	}
 	raw, err := marshalProductionJSON(manifest)
 	if err != nil {

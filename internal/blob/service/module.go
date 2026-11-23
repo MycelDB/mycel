@@ -23,10 +23,16 @@ import (
 	domaingraph "github.com/myceldb/mycel/internal/graph/model"
 	runtime "github.com/myceldb/mycel/internal/runtime"
 	"github.com/myceldb/mycel/internal/runtime/quiesce"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 	"github.com/myceldb/mycel/internal/wal"
 )
 
 const sniffLen = 512
+
+type usageDeltaApplier interface {
+	ApplyDelta(context.Context, usageservice.Delta) error
+	ReserveDeltaForAdmission(context.Context, usageservice.Delta) (func(), error)
+}
 
 type Module struct {
 	mu                   sync.Mutex
@@ -43,6 +49,7 @@ type Module struct {
 	walWaiter            *wal.ApplyWaiter
 	encryption           *encryption.Service
 	writeAllowed         func() error
+	usageAccounting      usageDeltaApplier
 	raftGroups           *consensus.MultiGroup
 	raftPartitionCount   uint32
 	raftLocalNode        consensus.NodeID
@@ -61,6 +68,11 @@ func NewModule(refCounter RefCounter, configs ...Config) *Module {
 }
 
 func (m *Module) Name() string { return ModuleName }
+
+func (m *Module) WithUsageAccounting(usage usageDeltaApplier) *Module {
+	m.usageAccounting = usage
+	return m
+}
 
 func (m *Module) Init(ctx context.Context, host runtime.Host) runtime.InitResult {
 	m.logger = host.Log()
@@ -173,7 +185,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (blobmodel.B
 		if m.wal != nil {
 			return m.commitMetaPut(ctx, existing)
 		}
-		if err := m.applyMetaPut(ctx, existing); err != nil {
+		if err := m.applyMetaPutWithUsageAdmission(ctx, existing, blobUsageLocalMutationID("put", existing)); err != nil {
 			return blobmodel.BlobMeta{}, err
 		}
 		return existing, nil
@@ -185,7 +197,7 @@ func (m *Module) UploadBlob(ctx context.Context, input UploadInput) (blobmodel.B
 	if m.wal != nil {
 		return m.commitMetaPut(ctx, meta)
 	}
-	if err := m.applyMetaPut(ctx, meta); err != nil {
+	if err := m.applyMetaPutWithUsageAdmission(ctx, meta, blobUsageLocalMutationID("put", meta)); err != nil {
 		return blobmodel.BlobMeta{}, err
 	}
 	return meta, nil
@@ -301,7 +313,7 @@ func (m *Module) deleteBlob(ctx context.Context, spaceID string, domainID string
 		}
 		return meta.BlobID, nil
 	}
-	if err := m.applyMetaDelete(ctx, meta.SpaceID, meta.DomainID, meta.BlobID); err != nil {
+	if err := m.applyMetaDeleteWithUsage(ctx, meta.SpaceID, meta.DomainID, meta.BlobID, blobUsageLocalMutationID("delete", meta)); err != nil {
 		return "", err
 	}
 	return meta.BlobID, nil

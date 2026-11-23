@@ -19,6 +19,7 @@ import (
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
 	daemonsession "github.com/myceldb/mycel/internal/session/service"
 	daemonspace "github.com/myceldb/mycel/internal/space/service"
+	daemonusage "github.com/myceldb/mycel/internal/usage/service"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -832,6 +833,10 @@ func mapGraphError(err error, action string) error {
 	}
 	if errors.Is(err, daegraph.ErrIdempotencyCapacity) {
 		return status.Error(codes.ResourceExhausted, "graph idempotency retention capacity is exhausted")
+	}
+	var usageAdmissionErr *daemonusage.AdmissionError
+	if errors.As(err, &usageAdmissionErr) {
+		return usageAdmissionResourceExhaustedError(usageAdmissionErr)
 	}
 	var limitErr *daegraph.TransactionLimitError
 	if errors.As(err, &limitErr) {

@@ -218,7 +218,6 @@ func (m *Module) applyBlobRaftCommand(ctx context.Context, cmd consensus.RaftCom
 	if m.raftCommandApplied(cmd.CommandID) {
 		return nil
 	}
-	rec := wal.Record{Type: cmd.RecordType, SchemaVersion: cmd.SchemaVersion, Encoding: cmd.Encoding, Payload: cmd.Payload}
 	var err error
 	switch cmd.RecordType {
 	case recordTypeBlobMetaPut:
@@ -236,7 +235,7 @@ func (m *Module) applyBlobRaftCommand(ctx context.Context, cmd consensus.RaftCom
 		if err := m.ensureRaftPayloadAvailableForApply(ctx, descriptorFromMeta(payload.Meta)); err != nil {
 			return err
 		}
-		err = m.applyBlobMetaPut(ctx, rec)
+		err = m.applyMetaPutWithUsage(ctx, payload.Meta, blobUsageRaftMutationID("put", cmd.CommandID))
 	case recordTypeBlobMetaDelete:
 		var payload blobMetaDeleteRecord
 		if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
@@ -245,7 +244,7 @@ func (m *Module) applyBlobRaftCommand(ctx context.Context, cmd consensus.RaftCom
 		if strings.TrimSpace(payload.SpaceID) != strings.TrimSpace(cmd.SpaceID) {
 			return fmt.Errorf("blob raft command space_id mismatch: command=%s payload=%s", cmd.SpaceID, payload.SpaceID)
 		}
-		err = m.applyBlobMetaDelete(ctx, rec)
+		err = m.applyMetaDeleteWithUsage(ctx, payload.SpaceID, payload.DomainID, payload.BlobID, blobUsageRaftMutationID("delete", cmd.CommandID))
 	default:
 		return fmt.Errorf("unsupported blob raft record type %s", cmd.RecordType)
 	}
