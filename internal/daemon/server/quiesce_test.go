@@ -118,6 +118,12 @@ func TestDefaultQuiesceReadOnlyMethodsUseExplicitReviewedAllowlist(t *testing.T)
 	if isQuiesceReadOnlyMethod(clientv1.TransactionService_CommitTransaction_FullMethodName, readOnly) {
 		t.Fatalf("CommitTransaction should not be read-only during backup")
 	}
+	if !isQuiesceReadOnlyMethod(adminv1.AdminUsageAccountingService_GetUsage_FullMethodName, readOnly) || !isQuiesceReadOnlyMethod(adminv1.AdminUsageAccountingService_ListUsage_FullMethodName, readOnly) {
+		t.Fatalf("usage accounting snapshot/list RPCs should be explicitly read-only during backup")
+	}
+	if isQuiesceReadOnlyMethod(adminv1.AdminUsageAccountingService_GetUsageAccountingHealth_FullMethodName, readOnly) {
+		t.Fatalf("usage accounting health can trigger reconciliation readiness updates and should not be treated as quiesce read-only")
+	}
 	if isQuiesceReadOnlyMethod("/svc/GetNotReviewed", readOnly) {
 		t.Fatalf("unreviewed Get-prefixed methods must not be admitted by naming convention")
 	}

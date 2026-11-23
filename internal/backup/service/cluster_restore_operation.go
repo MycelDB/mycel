@@ -14,6 +14,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/encryption"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 	"github.com/myceldb/mycel/internal/wal"
 	"golang.org/x/sys/unix"
 )
@@ -883,12 +884,22 @@ func validateRestoredDataDirForOperation(dataDir string, plan ClusterRestorePlan
 		return nil, err
 	}
 	if plan.ProductionManifest != nil {
-		doc := clusterbackup.BuildRestoredDerivedReadiness(*plan.ProductionManifest, clusterbackup.RestoredDerivedReadinessOptions{RestoreOperationID: restoreOperationID, RestorePlanID: plan.RestorePlanID, Ordinal: mapping.Ordinal, NodeID: restoredNodeID, PodName: artifact.PodName, RestoredAt: time.Now().UTC(), Evidence: map[string]string{"post_restore_validation": "passed"}})
+		restoredAt := time.Now().UTC()
+		doc := clusterbackup.BuildRestoredDerivedReadiness(*plan.ProductionManifest, clusterbackup.RestoredDerivedReadinessOptions{RestoreOperationID: restoreOperationID, RestorePlanID: plan.RestorePlanID, Ordinal: mapping.Ordinal, NodeID: restoredNodeID, PodName: artifact.PodName, RestoredAt: restoredAt, Evidence: map[string]string{"post_restore_validation": "passed"}})
 		if err := clusterbackup.WriteRestoredDerivedReadiness(dataDir, doc); err != nil {
 			return nil, fmt.Errorf("write restored derived readiness marker: %w", err)
 		}
 		evidence["restored_derived_readiness_marker"] = clusterbackup.RestoredDerivedReadinessRelativePath
 		evidence["restored_derived_ready"] = fmt.Sprintf("%t", doc.DerivedReady)
+		usageDoc, err := usageservice.BuildRestoredUsageState(context.Background(), dataDir, usageservice.RestoredUsageStateOptions{BackupSetID: plan.BackupSetID, RestoreOperationID: restoreOperationID, RestorePlanID: plan.RestorePlanID, ClusterID: plan.ProductionManifest.Source.ClusterID, Ordinal: mapping.Ordinal, NodeID: restoredNodeID, PodName: artifact.PodName, RestoredAt: restoredAt, Evidence: map[string]string{"post_restore_validation": "passed"}})
+		if err != nil {
+			return nil, fmt.Errorf("build restored usage accounting marker: %w", err)
+		}
+		if err := usageservice.WriteRestoredUsageState(dataDir, usageDoc); err != nil {
+			return nil, fmt.Errorf("write restored usage accounting marker: %w", err)
+		}
+		evidence["restored_usage_accounting_marker"] = usageservice.RestoredUsageStateRelativePath
+		evidence["restored_usage_counter_state"] = string(usageDoc.DesiredAccountingState)
 	}
 	return evidence, nil
 }

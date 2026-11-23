@@ -10,6 +10,7 @@ Authentication mode: **principal auth with admin capabilities**.
 - Create/delete spaces as an admin-capable principal.
 - Run node-local daemon backup, raft-storage-safe coordinated cluster backup, and principal-scoped backup/restore commands.
 - Inspect and append curated Activity Events with `mycel admin activity`.
+- Inspect quota-safe usage accounting snapshots and health with `mycel admin usage`.
 
 ## Examples
 
@@ -63,6 +64,55 @@ mycel admin user-backup validate --file user.tar.zst
 ```sh
 mycel admin activity list --category lifecycle
 ```
+
+```sh
+mycel admin usage get \
+  --space-id <space-id> \
+  --require-quota-safe
+```
+
+```sh
+mycel admin usage list \
+  --mode space_with_domain_breakdown \
+  --space-id <space-id>
+```
+
+```sh
+mycel admin usage health --space-id <space-id>
+```
+
+```sh
+mycel admin usage health \
+  --space-id <space-id> \
+  --include-reconciliation
+```
+
+```sh
+mycel admin usage get \
+  --space-id <space-id> \
+  --include-diagnostic-physical
+```
+
+```sh
+mycel admin usage limits upsert \
+  --space-id <space-id> \
+  --domain-id <domain-id> \
+  --metric blob.active_logical_bytes \
+  --hard-limit 10737418240 \
+  --policy-ref plan/prod-10g
+```
+
+```sh
+mycel admin usage limits list --space-id <space-id>
+mycel admin usage limits delete --limit-id <limit-id>
+```
+
+Usage snapshot/list/health reads require `usage.read`; reconciliation health also
+requires `usage.reconcile`, and diagnostic physical/collector output requires
+`usage.diagnostic.read`. Hard usage limit CRUD requires `usage.limit.manage`.
+Health with reconciliation may clear restored `RECONCILING`/`REBUILDING`
+readiness after counters match durable metadata, so it is not treated as a
+backup-quiesce read-only RPC.
 
 ## Related docs
 

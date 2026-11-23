@@ -9,6 +9,12 @@ func TestCanonicalCapabilityPreservesSemanticManage(t *testing.T) {
 	if got := CanonicalCapability("CAPABILITY_SEMANTIC_SEARCH"); got != "semantic.search" {
 		t.Fatalf("CanonicalCapability(CAPABILITY_SEMANTIC_SEARCH) = %q, want semantic.search", got)
 	}
+	if got := CanonicalCapability("CAPABILITY_USAGE_DIAGNOSTIC_READ"); got != "usage.diagnostic.read" {
+		t.Fatalf("CanonicalCapability(CAPABILITY_USAGE_DIAGNOSTIC_READ) = %q, want usage.diagnostic.read", got)
+	}
+	if got := CanonicalCapability("CAPABILITY_USAGE_RECONCILE"); got != "usage.reconcile" {
+		t.Fatalf("CanonicalCapability(CAPABILITY_USAGE_RECONCILE) = %q, want usage.reconcile", got)
+	}
 }
 
 func TestRoleCapabilitiesIncludeSemanticManage(t *testing.T) {

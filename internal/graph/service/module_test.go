@@ -25,6 +25,7 @@ import (
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	schemamodel "github.com/myceldb/mycel/internal/schema/model"
 	sessionmodel "github.com/myceldb/mycel/internal/session/model"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 	"github.com/myceldb/mycel/internal/wal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -1147,6 +1148,264 @@ func TestScanAdjacencyOverlayMakesBoundedProgressAndPreservesOrder(t *testing.T)
 func graphTx(spaceID string, domainID string, baseRevision int64) sessionmodel.GraphTransaction {
 	now := time.Now().UTC()
 	return sessionmodel.GraphTransaction{ID: uuid.NewString(), SessionID: uuid.NewString(), PrincipalID: uuid.NewString(), SpaceID: spaceID, DomainID: domainID, Mode: sessionmodel.TransactionModeReadWrite, State: sessionmodel.TransactionStateActive, BaseRevision: baseRevision, CreatedAt: now, LastSeen: now, ExpiresAt: now.Add(time.Hour)}
+}
+
+func TestModuleGraphUsageAccountingTracksNodeEdgeCommitUpdateAndDelete(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	createTx := graphTx(spaceID, domainID, 0)
+	parent, err := m.CreateNode(ctx, createTx, domaingraph.NodeInput{Content: "usage parent"})
+	if err != nil {
+		t.Fatalf("CreateNode(parent) error = %v", err)
+	}
+	child, err := m.CreateNode(ctx, createTx, domaingraph.NodeInput{Content: "usage child"})
+	if err != nil {
+		t.Fatalf("CreateNode(child) error = %v", err)
+	}
+	edge, err := m.CreateEdge(ctx, createTx, domaingraph.EdgeInput{FromNodeID: parent.ID.String(), ToNodeID: child.ID.String(), Labels: []string{"REFERENCES"}})
+	if err != nil {
+		t.Fatalf("CreateEdge() error = %v", err)
+	}
+	createCommit, err := m.CommitTransactionGraph(ctx, createTx)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph(create) error = %v", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 2)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphEdgeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphNodeCount, 2)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphEdgeCount, 1)
+
+	updatedContent := "usage parent updated"
+	updateTx := graphTx(spaceID, domainID, createCommit.CommittedRevision)
+	if _, err := m.UpdateNode(ctx, updateTx, domaingraph.UpdateNodeInput{NodeID: parent.ID.String(), Content: &updatedContent}); err != nil {
+		t.Fatalf("UpdateNode() error = %v", err)
+	}
+	if _, err := m.UpdateEdge(ctx, updateTx, domaingraph.UpdateEdgeInput{EdgeID: edge.ID.String(), Properties: map[string]any{"updated": true}}); err != nil {
+		t.Fatalf("UpdateEdge() error = %v", err)
+	}
+	updateCommit, err := m.CommitTransactionGraph(ctx, updateTx)
+	if err != nil {
+		t.Fatalf("CommitTransactionGraph(update) error = %v", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 2)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphEdgeCount, 1)
+
+	deleteTx := graphTx(spaceID, domainID, updateCommit.CommittedRevision)
+	if _, err := m.DeleteEdge(ctx, deleteTx, edge.ID.String()); err != nil {
+		t.Fatalf("DeleteEdge() error = %v", err)
+	}
+	if _, _, err := m.DeleteNode(ctx, deleteTx, child.ID.String(), false); err != nil {
+		t.Fatalf("DeleteNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, deleteTx); err != nil {
+		t.Fatalf("CommitTransactionGraph(delete) error = %v", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphEdgeCount, 0)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphNodeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphEdgeCount, 0)
+}
+
+func TestModuleGraphUsageReconciliationDetectsCounterDrift(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	usage.WithReconciliationProviders(m)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "reconcile parent"}); err != nil {
+		t.Fatalf("CreateNode(parent) error = %v", err)
+	}
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "reconcile child"}); err != nil {
+		t.Fatalf("CreateNode(child) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	healthy := usage.Health(ctx, usageservice.HealthRequest{Scope: usageservice.DomainScope(spaceID, domainID), IncludeReconciliation: true})
+	if healthy.State != usageservice.AccountingStateReady || len(healthy.Blockers) != 0 {
+		t.Fatalf("healthy reconciliation = %#v, want ready without blockers", healthy)
+	}
+	if err := usage.ApplyDelta(ctx, usageservice.Delta{MutationID: "inject-graph-drift", Scope: usageservice.DomainScope(spaceID, domainID), Metrics: []usageservice.MetricDelta{{Name: usageservice.MetricGraphNodeCount, Delta: -1}}}); err != nil {
+		t.Fatalf("inject graph drift: %v", err)
+	}
+	drifted := usage.Health(ctx, usageservice.HealthRequest{Scope: usageservice.DomainScope(spaceID, domainID), IncludeReconciliation: true})
+	if drifted.State != usageservice.AccountingStateDriftDetected || drifted.QuotaSafeReady {
+		t.Fatalf("drifted reconciliation = %#v, want drift_detected and not quota-safe", drifted)
+	}
+	if len(drifted.Blockers) != 1 || drifted.Blockers[0].Reason != usageservice.StatusReasonReconciliationDrift || drifted.Blockers[0].Metric != usageservice.MetricGraphNodeCount {
+		t.Fatalf("drifted blockers = %#v, want graph node drift", drifted.Blockers)
+	}
+}
+
+func TestModuleGraphUsageAdmissionRejectsCommitOverLimit(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	if _, err := usage.UpsertUsageLimit(ctx, usageservice.LimitMutationRequest{Limit: usageservice.UsageLimit{Scope: usageservice.DomainScope(spaceID, domainID), MetricName: usageservice.MetricGraphNodeCount, HardLimit: 1, Enabled: true}}); err != nil {
+		t.Fatalf("UpsertUsageLimit() error = %v", err)
+	}
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "within-limit"}); err != nil {
+		t.Fatalf("CreateNode(first) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph(first) error = %v", err)
+	}
+	over := graphTx(spaceID, domainID, 1)
+	if _, err := m.CreateNode(ctx, over, domaingraph.NodeInput{Content: "over-limit"}); err != nil {
+		t.Fatalf("CreateNode(second) error = %v", err)
+	}
+	_, err := m.CommitTransactionGraph(ctx, over)
+	var admissionErr *usageservice.AdmissionError
+	if !errors.As(err, &admissionErr) || admissionErr.Reason != usageservice.ReasonUsageLimitExceeded {
+		t.Fatalf("CommitTransactionGraph(second) error = %v, want usage limit exceeded", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+}
+
+func TestModuleGraphUsageAccountingIgnoresAbortAndCommitRetry(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	discarded := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, discarded, domaingraph.NodeInput{Content: "discarded"}); err != nil {
+		t.Fatalf("CreateNode(discarded) error = %v", err)
+	}
+	if err := m.DiscardTransactionGraph(ctx, discarded.ID); err != nil {
+		t.Fatalf("DiscardTransactionGraph() error = %v", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 0)
+
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "retry-counted-once"}); err != nil {
+		t.Fatalf("CreateNode(retry) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph(first) error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph(retry) error = %v", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphNodeCount, 1)
+}
+
+func TestModuleGraphUsageAccountingWALReplayIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+	dataDir := t.TempDir()
+	walManager, err := wal.Open(ctx, wal.Options{Dir: filepath.Join(dataDir, "wal"), SegmentBytes: 1024 * 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer walManager.Close()
+	progress := wal.NewFileProgressStore(filepath.Join(dataDir, "meta", "wal", "progress.json"))
+	usage := usageservice.NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), WALValue: walManager, RegistryValue: wal.NewRegistry(), ProgressValue: progress, WaiterValue: wal.NewApplyWaiter()}
+	if result := usage.Init(ctx, rt); !result.OK {
+		t.Fatalf("init usage module: %v", result.Error)
+	}
+	if err := usage.CompleteRebuild(ctx, nil, usageservice.Revision{}); err != nil {
+		t.Fatalf("CompleteRebuild() error = %v", err)
+	}
+	m := NewModule().WithUsageAccounting(usage)
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	tx := graphTx(spaceID, domainID, 0)
+	created, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "wal replay"})
+	if err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+
+	it, err := walManager.ReadFrom(ctx, 1)
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	rec, ok, err := it.Next()
+	if closeErr := it.Close(); closeErr != nil {
+		t.Fatalf("close WAL iterator: %v", closeErr)
+	}
+	if err != nil || !ok {
+		t.Fatalf("read WAL record = (%+v, %v, %v), want one record", rec, ok, err)
+	}
+	if rec.Type != recordTypeGraphCommit {
+		t.Fatalf("WAL record type = %s, want %s", rec.Type, recordTypeGraphCommit)
+	}
+
+	replayDir := t.TempDir()
+	usageState, err := os.ReadFile(filepath.Join(dataDir, "meta", "usage", "counters.json"))
+	if err != nil {
+		t.Fatalf("read usage state: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(replayDir, "meta", "usage"), 0o700); err != nil {
+		t.Fatalf("create replay usage dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(replayDir, "meta", "usage", "counters.json"), usageState, 0o600); err != nil {
+		t.Fatalf("write replay usage state: %v", err)
+	}
+	replayUsage := usageservice.NewModule()
+	replayRT := &daemonruntime.Runtime{Config: config.Config{DataDir: replayDir}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := replayUsage.Init(ctx, replayRT); !result.OK {
+		t.Fatalf("init replay usage module: %v", result.Error)
+	}
+	replayGraph := NewModule().WithUsageAccounting(replayUsage)
+	if result := replayGraph.Init(ctx, replayRT); !result.OK {
+		t.Fatalf("init replay graph module: %v", result.Error)
+	}
+	if err := replayGraph.applyGraphCommit(ctx, rec); err != nil {
+		t.Fatalf("applyGraphCommit(replay) error = %v", err)
+	}
+	readTx := graphTx(spaceID, domainID, 1)
+	if got, err := replayGraph.GetNode(ctx, readTx, created.ID.String()); err != nil || got.ID != created.ID {
+		t.Fatalf("replayed GetNode() = %+v, %v; want %s", got, err, created.ID)
+	}
+	assertGraphUsageMetric(t, ctx, replayUsage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+}
+
+func newTestGraphModuleWithUsage(t *testing.T, ctx context.Context) (*Module, *usageservice.Module) {
+	t.Helper()
+	dataDir := t.TempDir()
+	usage := usageservice.NewModule()
+	rt := &daemonruntime.Runtime{Config: config.Config{DataDir: dataDir}, LoggerValue: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	if result := usage.Init(ctx, rt); !result.OK {
+		t.Fatalf("init usage module: %v", result.Error)
+	}
+	if err := usage.CompleteRebuild(ctx, nil, usageservice.Revision{}); err != nil {
+		t.Fatalf("CompleteRebuild() error = %v", err)
+	}
+	m := NewModule().WithUsageAccounting(usage)
+	if result := m.Init(ctx, rt); !result.OK {
+		t.Fatalf("init graph module: %v", result.Error)
+	}
+	return m, usage
+}
+
+func assertGraphUsageMetric(t *testing.T, ctx context.Context, usage *usageservice.Module, scope usageservice.Scope, metric string, want uint64) {
+	t.Helper()
+	snapshot, err := usage.Snapshot(ctx, usageservice.SnapshotRequest{Scope: scope, MetricNames: []string{metric}})
+	if err != nil {
+		t.Fatalf("Snapshot(%+v, %s) error = %v", scope, metric, err)
+	}
+	if len(snapshot.Metrics) != 1 {
+		t.Fatalf("Snapshot(%+v, %s) returned %d metrics, want 1: %+v", scope, metric, len(snapshot.Metrics), snapshot.Metrics)
+	}
+	if got := snapshot.Metrics[0].Value; got != want {
+		t.Fatalf("usage metric %s for %+v = %d, want %d (snapshot=%+v)", metric, scope, got, want, snapshot)
+	}
 }
 
 func sameStringSet(got []string, want []string) bool {

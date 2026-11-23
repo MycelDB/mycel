@@ -47,6 +47,8 @@ type Config struct {
 	PrincipalManager         adminapi.PrincipalManager
 	ActivityManager          activityservice.Manager
 	BackupManager            daemonbackup.Manager
+	UsageManager             adminapi.UsageAccountingManager
+	UsageAdmissionManager    adminapi.UsageAdmissionManager
 	SpaceManager             daemonspace.Manager
 	SessionManager           daemonsession.Manager
 	GraphManager             daegraph.Manager
@@ -205,6 +207,12 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	if cfg.BackupManager != nil {
 		adminv1.RegisterAdminBackupServiceServer(grpcServer, adminapi.NewAdminBackupService(cfg.BackupManager, cfg.Quiesce, cfg.PrincipalManager, cfg.ActivityManager).WithClusterRuntime(cfg.ClusteringManager, cfg.ClusterConfig))
 	}
+	if cfg.UsageManager != nil {
+		adminv1.RegisterAdminUsageAccountingServiceServer(grpcServer, adminapi.NewAdminUsageAccountingService(cfg.UsageManager, cfg.PrincipalManager))
+	}
+	if cfg.UsageAdmissionManager != nil {
+		adminv1.RegisterAdminUsageAdmissionServiceServer(grpcServer, adminapi.NewAdminUsageAdmissionService(cfg.UsageAdmissionManager, cfg.PrincipalManager, cfg.ActivityManager))
+	}
 	var clientRouter clientapi.ClientRequestRouter
 	localNode := consensus.NodeID(cfg.ClusterConfig.RaftLocalNodeID)
 	if cfg.ClusteringManager != nil {
@@ -316,6 +324,9 @@ func defaultQuiesceReadOnlyMethods() map[string]bool {
 		clientv1.MetadataCatalogService_ListTags_FullMethodName:          true,
 		clientv1.MetadataCatalogService_ListPropertyNames_FullMethodName: true,
 		clientv1.TransactionService_GetTransaction_FullMethodName:        true,
+		adminv1.AdminUsageAccountingService_GetUsage_FullMethodName:      true,
+		adminv1.AdminUsageAccountingService_BatchGetUsage_FullMethodName: true,
+		adminv1.AdminUsageAccountingService_ListUsage_FullMethodName:     true,
 	}
 }
 

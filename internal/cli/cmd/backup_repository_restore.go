@@ -20,6 +20,7 @@ import (
 	backupcore "github.com/myceldb/mycel/internal/backup"
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/cli/app"
+	usageservice "github.com/myceldb/mycel/internal/usage/service"
 	"github.com/spf13/cobra"
 )
 
@@ -184,9 +185,17 @@ func restoreRepositoryBackupOrdinalLocal(ctx context.Context, in repositoryResto
 	if err := clusterbackup.VerifyRestoredDataDir(dataDir); err != nil {
 		return repositoryRestoreLocalResult{}, fmt.Errorf("verify restored data dir: %w", err)
 	}
-	markerDoc := clusterbackup.BuildRestoredDerivedReadiness(manifest, clusterbackup.RestoredDerivedReadinessOptions{Ordinal: artifact.Ordinal, NodeID: artifact.NodeID, PodName: artifact.PodName, TargetPVCName: strings.TrimSpace(in.TargetPVCName), RestoredAt: time.Now().UTC(), Evidence: map[string]string{"restore_helper": "restore-repository-local"}})
+	restoredAt := time.Now().UTC()
+	markerDoc := clusterbackup.BuildRestoredDerivedReadiness(manifest, clusterbackup.RestoredDerivedReadinessOptions{Ordinal: artifact.Ordinal, NodeID: artifact.NodeID, PodName: artifact.PodName, TargetPVCName: strings.TrimSpace(in.TargetPVCName), RestoredAt: restoredAt, Evidence: map[string]string{"restore_helper": "restore-repository-local"}})
 	if err := clusterbackup.WriteRestoredDerivedReadiness(dataDir, markerDoc); err != nil {
 		return repositoryRestoreLocalResult{}, fmt.Errorf("write restored derived readiness marker: %w", err)
+	}
+	usageDoc, err := usageservice.BuildRestoredUsageState(ctx, dataDir, usageservice.RestoredUsageStateOptions{BackupSetID: manifest.BackupSetID, ClusterID: manifest.Source.ClusterID, Ordinal: artifact.Ordinal, NodeID: artifact.NodeID, PodName: artifact.PodName, RestoredAt: restoredAt, Evidence: map[string]string{"restore_helper": "restore-repository-local"}})
+	if err != nil {
+		return repositoryRestoreLocalResult{}, fmt.Errorf("build restored usage accounting marker: %w", err)
+	}
+	if err := usageservice.WriteRestoredUsageState(dataDir, usageDoc); err != nil {
+		return repositoryRestoreLocalResult{}, fmt.Errorf("write restored usage accounting marker: %w", err)
 	}
 	return repositoryRestoreLocalResult{BackupSetID: manifest.BackupSetID, RepositoryBucket: bucket, BackupSetPrefix: prefix, Ordinal: artifact.Ordinal, PodName: artifact.PodName, TargetPVCName: strings.TrimSpace(in.TargetPVCName), DataDir: dataDir, ArchiveURI: artifact.ArchiveURI, ArchiveChecksum: checksum, ArchiveSizeBytes: size, CompleteMarkerURI: "s3://" + bucket + "/" + markerKey}, nil
 }
