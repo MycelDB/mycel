@@ -6,6 +6,8 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ## [Unreleased]
 
+## [v0.24.0] - 2026-11-23
+
 ### Added
 
 - Added the internal usage-accounting counter core for quota-safe space/domain usage metrics: versioned metric definitions, durable materialized counters, idempotent mutation-delta application, explicit domain-inclusion aggregation, rebuild health state, and runtime registration.
@@ -39,6 +41,17 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 - Hardened production backup-set validation for Phase 8 derived/external dependency policy: omitted optional derived artifacts must publish no partial artifact evidence and must be marked rebuild-required, discarded derived artifacts must be explicitly discarded, and external object-store payload dependencies that exclude payload bytes must include recovery-point evidence.
 - Hardened gRPC quiesce read allowance to use only explicitly registered read-only methods; method-name prefixes such as `Get*`/`List*` no longer admit work during backup quiesce.
 - Extended backup policy persistence to retain repository-backed backup/restore contract fields such as default repository, capture provider, quiesce read profile, derived-subsystem policy, retention policy, and validation options.
+
+### Compatibility
+
+- Coordinated minor release with `mycel-api`, `mycel-go-sdk`, and `mycel-rust-sdk` v0.24.0. Operators should update the daemon and v0.24 clients together for repository-backed production backup/restore, backup observability, restored-derived readiness, usage accounting, and hard usage admission behavior.
+- Backup-set compatibility metadata now requires the v0.24.0 restore line for newly generated production repository backup sets. Existing older backup sets retain their recorded compatibility evidence and still fail closed on unsupported features or missing dependencies.
+- Physical diagnostic usage metrics remain non-quota-safe; hard usage limits are enforced only for metrics marked hard-limit eligible. Product policy, pricing, and warning thresholds remain outside Mycel.
+
+### Validation
+
+- Affected daemon packages, CLI/admin API packages, SDK/API contract CI, and post-merge develop CI passed before release preparation.
+- Release qualification uses the `cluster-release-gate` Mycel Lab suite with a v0.24.0 release-candidate image before publication.
 
 ## [v0.23.1] - 2026-11-18
 

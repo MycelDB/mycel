@@ -556,7 +556,7 @@ defaults to `myceld-data-{pod}`. The provider preflights the Kubernetes
 `VolumeSnapshot` per source PVC while cluster backup quiescence and Raft freeze
 are held, waits for every snapshot to report `readyToUse=true`, and records
 credential-free provider evidence in `backup-set.json`. Repository archive
-artifacts remain the v0.23.x restore authority; snapshot evidence lets restore
+artifacts remain the v0.24.x restore authority; snapshot evidence lets restore
 planning and operators distinguish CSI/EBS-backed capture from portable
 filesystem-copy capture. Provider creation/readiness failures fail closed and no
 `COMPLETE` marker is published.
