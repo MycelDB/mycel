@@ -120,11 +120,11 @@ for unimplemented flows.
   - `BackupRepository` and S3-compatible repository config;
   - `BackupPolicy`, retention classes, capture provider, derived subsystem
     policy, validation options, and quiesce profile;
-  - `ClusterBackupOperation`, backup states, blockers, cleanup tasks, and node
+  - `BackupOperation`, backup states, blockers, cleanup tasks, and node
     artifact status;
-  - `ClusterBackupSetSummary`, manifest summary, compatibility summary,
+  - `BackupSetSummary`, manifest summary, compatibility summary,
     validation summary, and deletion state;
-  - `PlanClusterRestore`, restore plan summary, restore target modes, identity
+  - `PlanRestore`, restore plan summary, restore target modes, identity
     modes, auth-session policy, degraded derived-state policy, and restore
     operation states;
   - common `SecretReference`, `EncryptionPolicy`, `CapacityEstimate`, and
@@ -132,7 +132,7 @@ for unimplemented flows.
 - Add service methods as additive API where possible:
   - repository CRUD/validation;
   - policy get/update;
-  - cluster backup start/status/list/cancel;
+  - deployment backup start/status/list/cancel;
   - backup-set list/get/validate/delete;
   - restore plan/start/status/list/cancel.
 - Preserve legacy fields/methods long enough for existing users unless a
@@ -386,8 +386,8 @@ primarily for Lab and non-AWS portability.
 
 ### `mycel-api`
 
-- Complete `StartClusterBackup`, status/list/cancel, backup-set list/get/validate
-  fields needed by the MVP.
+- Complete `StartBackup`, `GetBackupOperation`, list/cancel, and backup-set
+  list/get/validate fields needed by the MVP.
 - Add repository-backed request fields and deprecate/avoid path-only
   `output_dir` semantics for production paths.
 
@@ -402,7 +402,7 @@ primarily for Lab and non-AWS portability.
 - Upload node artifacts, node manifests, inventories, validation reports,
   `backup-set.json`, and `COMPLETE` to S3/MinIO.
 - Implement cancel before finalization and fail-closed incomplete prefixes.
-- Implement `ValidateClusterBackupSet` against repository truth.
+- Implement `ValidateBackupSet` against repository truth.
 
 ### SDKs
 
@@ -441,13 +441,13 @@ existing-cluster replacement yet.
 ### `mycel-api`
 
 - Add/complete restore planning and restore operation methods:
-  `PlanClusterRestore`, `StartClusterRestore`, status/list/cancel.
+  `PlanRestore`, `StartRestore`, status/list/cancel.
 - Include identity plan, required secret refs, node mapping, capacity blockers,
   compatibility blockers, and derived-state actions in plan responses.
 
 ### `mycel`
 
-- Implement restore planning for `NEW_CLUSTER_BOOTSTRAP` with
+- Implement restore planning for `NEW_DEPLOYMENT_BOOTSTRAP` with
   `PRESERVE_BACKUP_ID` only.
 - Validate manifest, `COMPLETE`, repository credentials, KMS/decrypt, topology,
   capacity, and required external dependencies before mutation.
@@ -459,11 +459,11 @@ existing-cluster replacement yet.
 ### SDKs
 
 - Add restore plan/start/status/cancel helpers and terminal-state polling.
-- Add examples for planning a new-cluster restore.
+- Add examples for planning a new-deployment restore.
 
 ### `mycel-console`
 
-- Add restore planning UI for new-cluster restore:
+- Add restore planning UI for new-deployment restore:
   - select backup set;
   - show compatibility/capacity/secret blockers;
   - show identity plan and required node mapping;
@@ -552,7 +552,7 @@ safe retention/deletion lifecycle.
 ### `mycel`
 
 - Implement target-wide restore lock stricter than backup quiescence.
-- Implement `EXISTING_CLUSTER_REPLACE` planning and start gates:
+- Implement `EXISTING_DEPLOYMENT_REPLACE` planning and start gates:
   elevated authorization, explicit destructive confirmation, compatible topology,
   node/PVC mapping, no active operation, source fencing, required safety backup or
   waiver, and capacity checks.
@@ -770,7 +770,7 @@ implementation ticket. A practical issue split is:
 - daemon: manifest/checkpoint/path-inventory validators;
 - daemon: quiesce hardening;
 - daemon: filesystem-copy backup execution;
-- daemon: new-cluster restore;
+- daemon: new-deployment restore;
 - daemon: semantic/derived/external-object completeness;
 - daemon: existing-cluster replacement;
 - daemon: retention/deletion/janitor;

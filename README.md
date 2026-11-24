@@ -199,20 +199,20 @@ Keep access-token TTLs short; prefer refresh sessions over increasing the TTL fo
 
 ## Backups
 
-Backups are owned by `myceld`, not by applications copying the data directory. Operators manage policy and manual runs through the Admin Backup API or CLI:
+Backups are owned by `myceld`, not by applications copying the data directory. Repository-backed backup sets are the only public durable daemon backup model. Operators manage policy, start operations, validate backup sets, and plan safe restores through the Admin Backup API or CLI:
 
 ```sh
 bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup policy get
-bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup policy set --enabled --schedule daily --time-of-day 22:00 --timezone UTC --archive-format tar.zst
-bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup trigger --reason 'before upgrade'
-bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup status
+bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup policy set --default-repository-id repo-prod --capture-provider filesystem_immutable_copy --quiesce-read-profile control_only
+bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup start --repository-id repo-prod --reason 'before upgrade' --archive-format tar.zst --wait
+bin/mycel --daemon-addr 127.0.0.1:9091 -u admin -p '<operator-password>' admin backup validate --repository-id repo-prod --backup-set-id backup-set-...
 ```
 
 Backups quiesce daemon work before snapshotting. New non-exempt RPCs during quiesce, including reads unless explicitly exempted/proven safe, may fail transiently with gRPC `codes.Unavailable`; applications should retry with bounded backoff. Users are not logged out by default.
 
-Scheduled backups are disabled by default. Policies support interval, daily, and weekly schedules; daily/weekly schedules use wall-clock `time_of_day` plus an IANA timezone. Supported archive formats are `zip`, `tar`, `tar.gz`, and `tar.zst` through the `archive_format` policy/CLI flag. Key daemon settings include `MYCELD_BACKUP_ENABLED`, `MYCELD_BACKUP_DIR`, `MYCELD_BACKUP_INTERVAL`, `MYCELD_BACKUP_RETENTION_COUNT`, `MYCELD_BACKUP_INCLUDE_LOGS`, and the legacy archive-format seed `MYCELD_BACKUP_COMPRESSION`. When `MYCELD_BACKUP_INCLUDE_LOGS=true`, backups include the active log and all retained numeric rotated logs; when false, the entire log directory remains excluded. The backup directory must be outside `MYCELD_DATA_DIR`. Restore is offline-only in the MVP: stop `myceld`, verify and extract the archive into an empty/restored data directory, then start `myceld` against that directory.
+Standalone deployments are represented as one-node repository backup sets. Clustered deployments include all authoritative members, convergence barriers, and per-node artifact evidence. Restore planning is safe/read-only; destructive restore execution remains explicit/offline or controller-helper driven.
 
-See [`docs/design/admin/backup.md`](docs/design/admin/backup.md) and [`docs/design/backup-restore/quiesce-and-backup.md`](docs/design/backup-restore/quiesce-and-backup.md).
+See [`docs/operations/procedures/backup-restore.md`](docs/operations/procedures/backup-restore.md) and [`docs/operations/cli/admin.md`](docs/operations/cli/admin.md).
 
 ## CLI
 

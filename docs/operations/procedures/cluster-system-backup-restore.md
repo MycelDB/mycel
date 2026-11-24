@@ -2,11 +2,14 @@
 
 ## Status
 
-Operator procedure for coordinated full-cluster backup sets and offline restore.
-The implemented backup command coordinates backup intent, quiesce, raft barriers,
-a raft freeze/checkpoint archive window, per-pod archive creation, and
-`backup-set.json` through system raft. See
-[Cluster system backup design](../../design/backup-restore/cluster-system-backup.md).
+Historical operator procedure for the original local-filesystem cluster backup
+flow. The current public operator contract is repository-backed and
+deployment-wide via `mycel admin backup start/list/validate/restore-plan`; local
+`--output-dir` and durable `--backup-set` path flows are retired from public
+API/CLI surfaces. Clustered repository backups still coordinate intent, quiesce,
+raft barriers, a raft freeze/checkpoint archive window, per-pod artifact
+creation, and `backup-set.json`/`COMPLETE` publishing through system raft. See
+[Backup and restore procedures](backup-restore.md).
 
 ## What a cluster backup contains
 
@@ -176,9 +179,9 @@ Target command shape:
 ```sh
 mycel --daemon-addr <any-healthy-node>:9091 \
   --username <operator> --password <password> \
-  admin backup cluster start \
+  admin backup start \
   --reason "before upgrade" \
-  --output-dir /mnt/mycel-backups \
+  --repository-id repo-prod \
   --archive-format tar.zst \
   --wait
 ```
@@ -201,28 +204,20 @@ Expected coordinator behavior:
 No partial backup set should be reported as successful. The coordinator must not
 write system raft records while the raft freeze is held.
 
-### 4. Copy or retain the backup set
+### 4. Retain the backup set
 
-If each pod wrote to a different mounted path, collect the artifacts into a
-single retained backup-set location while preserving pod directories or filenames.
-For example:
-
-```text
-/backups/mycel/backup-set-.../myceld-0/...
-/backups/mycel/backup-set-.../myceld-1/...
-/backups/mycel/backup-set-.../myceld-2/...
-/backups/mycel/backup-set-.../backup-set.json
-```
-
-Verify every archive checksum after copying.
+Repository-backed backup sets publish per-node artifacts, `backup-set.json`, and
+`COMPLETE` under the configured repository prefix. Do not copy local scratch
+files as durable backup artifacts.
 
 ### 5. Validate the backup set
 
 Target command shape:
 
 ```sh
-mycel admin backup cluster validate \
-  --backup-set /backups/mycel/backup-set-20260803T183500Z-cluster_7d42d6ab
+mycel admin backup validate \
+  --repository-id repo-prod \
+  --backup-set-id backup-set-20260803T183500Z-cluster_7d42d6ab
 ```
 
 Validation should reject:
@@ -317,20 +312,21 @@ Make each pod archive available to a restore pod/job. Common approaches:
 The restore pod/job should mount exactly one target data PVC and the source
 backup artifact for the same ordinal.
 
-### 5. Generate and review the offline restore plan
+### 5. Generate and review the restore plan
 
-Before touching target PVCs, run the local/offline restore planner against the
-retained backup-set directory or its `backup-set.json` file:
+Before touching target PVCs, run restore planning against repository truth:
 
 ```sh
-mycel admin backup cluster restore-plan \
-  --backup-set /backups/mycel/backup-set-20260803T183500Z-cluster_7d42d6ab
+mycel admin backup restore-plan \
+  --repository-id repo-prod \
+  --backup-set-id backup-set-20260803T183500Z-cluster_7d42d6ab \
+  --target-mode new-deployment-bootstrap \
+  --identity-mode preserve-backup-id
 ```
 
-The command does not contact a daemon. It validates that the backup set is
-complete and restore-eligible, verifies local archive checksums and per-pod
-manifests when available, and prints the exact ordinal-to-archive mapping. Use
-`--output json` if automation needs structured fields.
+The command validates that the backup set is complete and restore-eligible and
+prints the exact ordinal-to-artifact mapping. Use `--output json` if automation
+needs structured fields.
 
 Review the plan and confirm that each ordinal maps to the target PVC you intend
 to restore:
@@ -344,19 +340,22 @@ ordinal 2 -> myceld-2 archive -> myceld-data-myceld-2 PVC
 ### 6. Restore each ordinal archive locally
 
 For each ordinal, mount exactly one target data PVC at the restore data path and
-run `restore-local` for the matching ordinal:
+run the repository restore helper for the matching ordinal (normally orchestrated
+by the Kubernetes PVC restore helper/controller):
 
 ```sh
-mycel admin backup cluster restore-local \
-  --backup-set /backups/mycel/backup-set-20260803T183500Z-cluster_7d42d6ab \
+mycel admin backup restore-repository-local \
+  --bucket mycel-backups \
+  --repository-prefix clusters/prod \
+  --backup-set-id backup-set-20260803T183500Z-cluster_7d42d6ab \
   --ordinal 0 \
   --data-dir /data/mycel
 ```
 
-`restore-local` is also local/offline. It refuses to restore into a non-empty
-`--data-dir`, verifies the archive checksum and per-pod manifest, extracts only
-the selected ordinal archive, then verifies restored clustering metadata and raft
-metadata. Repeat for every ordinal/PVC using the mapping from `restore-plan`.
+The helper refuses to restore into a non-empty `--data-dir`, verifies the
+`COMPLETE` marker, manifest, archive checksum, and per-pod manifest, extracts
+only the selected ordinal archive, then writes restored-readiness markers.
+Repeat for every ordinal/PVC using the mapping from `restore-plan`.
 
 The restore pod/job should mount exactly one target data PVC and the source
 backup artifact for the same ordinal. Delete the restore pod/job after each
@@ -408,16 +407,16 @@ make test-k3s-system-backup-restore
 
 ### Alert: failed backup
 
-1. Run `mycel admin backup cluster status <backup-set-id> --output json` and
-   capture `state`, `failed_phase`, `error`, and `blockers`.
-2. If a repository was used, run `mycel admin backup cluster retention plan` with
-   the same repository and check for an incomplete prefix. Do not delete a prefix
+1. Run `mycel admin backup status <backup-set-id> --output json` and capture
+   `state`, `failed_phase`, `error`, and `blockers`.
+2. If a repository was used, run `mycel admin backup retention plan` with the
+   same repository and check for an incomplete prefix. Do not delete a prefix
    referenced by an active operation.
 3. Fix the blocker class: cluster convergence/quorum, storage capacity,
    repository credentials/RBAC, external object-store recovery-point refs, or
    validation/checksum mismatches.
 4. Re-run the backup with a new idempotency key or wait for the previous
-   terminal state to be visible in `ListClusterBackupOperations`.
+   terminal state to be visible in `ListBackupOperations`.
 
 ### Alert: stale backup freshness
 
@@ -431,11 +430,11 @@ make test-k3s-system-backup-restore
 
 1. Stop target rollout. Do not start restored pods until the operation state is
    `SUCCEEDED` and post-restore validation evidence is present.
-2. Query `GetClusterRestoreStatus` / `ListClusterRestores` through an SDK or
-   admin automation and capture blockers, cleanup tasks, node evidence, and
-   current phase. If only the CLI is available, use
-   `mycel admin backup cluster observability --output json` to identify firing
-   restore alerts and operation IDs before collecting daemon support evidence.
+2. Query `GetRestoreOperation` / `ListRestoreOperations` through an SDK or admin
+   automation and capture blockers, cleanup tasks, node evidence, and current
+   phase. If only the CLI is available, use
+   `mycel admin backup observability --output json` to identify firing restore
+   alerts and operation IDs before collecting daemon support evidence.
 3. For external object-store blockers, verify that the target object store uses
    the expected bucket/prefix/endpoint fingerprint and that the external recovery
    point named by `MYCELD_BLOB_OBJECT_STORE_RECOVERY_POINT_REF` has been restored.
@@ -464,7 +463,7 @@ make test-k3s-system-backup-restore
    snapshot if possible.
 2. Select the latest validated repository backup set and matching external
    object-store recovery point.
-3. Run `PlanClusterRestore`/`restore-plan` and review blockers before target
+3. Run `PlanRestore`/`restore-plan` and review blockers before target
    mutation.
 4. Restore to fresh PVCs using `PRESERVE_BACKUP_ID` unless a future logical
    identity transform is explicitly implemented.

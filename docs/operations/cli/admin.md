@@ -8,7 +8,7 @@ Authentication mode: **principal auth with admin capabilities**.
 
 - Legacy aliases for principal identity management.
 - Create/delete spaces as an admin-capable principal.
-- Run node-local daemon backup, raft-storage-safe coordinated cluster backup, and principal-scoped backup/restore commands.
+- Run repository-backed deployment backup and safe restore-planning commands.
 - Inspect and append curated Activity Events with `mycel admin activity`.
 - Inspect quota-safe usage accounting snapshots and health with `mycel admin usage`.
 
@@ -19,43 +19,53 @@ mycel --output json admin list
 ```
 
 ```sh
-mycel admin backup cluster start \
+mycel admin backup policy set \
+  --default-repository-id repo-prod \
+  --capture-provider filesystem_immutable_copy \
+  --quiesce-read-profile control_only \
+  --keep-last-successful 7 \
+  --require-complete-marker
+```
+
+```sh
+mycel admin backup start \
   --reason "before maintenance" \
-  --output-dir /mnt/mycel-backups \
+  --repository-id repo-prod \
   --archive-format tar.zst \
   --wait
 ```
 
 ```sh
-mycel admin backup cluster validate --backup-set /mnt/mycel-backups
+mycel admin backup validate \
+  --repository-id repo-prod \
+  --backup-set-id backup-set-...
 ```
 
 ```sh
-mycel --output json admin backup cluster observability \
+mycel --output json admin backup observability \
   --repository-id repo-prod \
   --include-retention-probe
 ```
 
 ```sh
-mycel admin backup cluster restore-plan --backup-set /mnt/mycel-backups/backup-set-...
+mycel admin backup restore-plan \
+  --repository-id repo-prod \
+  --backup-set-id backup-set-... \
+  --target-mode new-deployment-bootstrap \
+  --identity-mode preserve-backup-id
 ```
 
-```sh
-mycel admin backup cluster restore-local \
-  --backup-set /mnt/mycel-backups/backup-set-... \
-  --ordinal 0 \
-  --data-dir /data/mycel
-```
+Repository-backed backups are the only public durable daemon backup model.
+Standalone daemons are represented as one-node backup sets; clustered
+deployments include one artifact per authoritative member plus raft convergence
+evidence. Local filesystem paths remain internal scratch/staging/restore targets
+only and are not public durable backup artifacts.
 
-Coordinated cluster backup creates one backup set with one archive per pod/PVC,
-records raft barriers, requires raft freeze/checkpoint evidence in the final
-`backup-set.json`, and keeps full-system restore offline/operator-driven.
 `observability` returns credential-free metric rows and evaluated alert
 conditions for backup/restore monitoring; the retention probe is read-only and
-opt-in because it lists repository objects.
-`restore-plan` and `restore-local` are local/offline primitives and do not
-contact a running daemon; run them only while the target cluster is stopped and
-the target data directory is empty.
+opt-in because it lists repository objects. `restore-plan` is a safe daemon RPC
+that validates repository truth and reports blockers. Destructive restore
+execution remains explicit/offline or controller-helper driven.
 
 ```sh
 mycel admin user-backup validate --file user.tar.zst

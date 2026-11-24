@@ -915,7 +915,9 @@ func (r *BackupSetValidationReport) validateBarrierSet(m BackupSetManifestV1) {
 	r.checkTime("consistency.barrier_set.established_at", b.EstablishedAt)
 	r.checkTime("consistency.barrier_set.write_gate_closed_at", b.WriteGateClosedAt)
 	if len(b.RaftGroups) == 0 {
-		r.addError("raft_groups_required", "barrier_set.raft_groups must not be empty", false, "consistency.barrier_set.raft_groups")
+		if !backupSetManifestIsStandalone(m) {
+			r.addError("raft_groups_required", "barrier_set.raft_groups must not be empty for clustered backup sets", false, "consistency.barrier_set.raft_groups")
+		}
 	}
 	for i, group := range b.RaftGroups {
 		path := fmt.Sprintf("consistency.barrier_set.raft_groups[%d]", i)
@@ -1030,7 +1032,9 @@ func (r *BackupSetValidationReport) validateArtifacts(m BackupSetManifestV1, opt
 			r.addError("inventory_checksum_invalid", "inventory_checksum_sha256 must be lowercase hex SHA-256", false, path+".inventory_checksum_sha256")
 		}
 		if len(node.AppliedIndexes) == 0 {
-			r.addError("applied_indexes_required", "node applied_indexes are required", false, path+".applied_indexes")
+			if !backupSetManifestIsStandalone(m) {
+				r.addError("applied_indexes_required", "node applied_indexes are required for clustered backup sets", false, path+".applied_indexes")
+			}
 		}
 		for groupID, value := range node.AppliedIndexes {
 			applied, appliedOK := r.checkDecimalString(path+".applied_indexes."+groupID, value, true)
@@ -1059,6 +1063,9 @@ func (r *BackupSetValidationReport) validateArtifacts(m BackupSetManifestV1, opt
 
 func (r *BackupSetValidationReport) validateNodeRaftFreeze(m BackupSetManifestV1, node BackupSetNodeArtifact, path string) {
 	freeze := node.RaftFreeze
+	if backupSetManifestIsStandalone(m) && strings.TrimSpace(freeze.LeaseID) == "" && len(freeze.Groups) == 0 {
+		return
+	}
 	if strings.TrimSpace(freeze.LeaseID) == "" {
 		r.addError("raft_freeze_lease_required", "node raft_freeze.lease_id is required", false, path+".raft_freeze.lease_id")
 	}
@@ -1364,6 +1371,10 @@ func validateSortedSourceNodes(r *BackupSetValidationReport, field string, nodes
 			r.addError("source_node_identity_required", "source node_id, pod_name, and raft_node_id are required", false, path)
 		}
 	}
+}
+
+func backupSetManifestIsStandalone(m BackupSetManifestV1) bool {
+	return m.Source.Topology.NodeCount == 1 && len(m.Source.Topology.Nodes) == 1 && len(m.Consistency.BarrierSet.RaftGroups) == 0
 }
 
 func raftBarrier(set CheckpointBarrierSetV1, groupID string) (uint64, bool) {

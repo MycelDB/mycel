@@ -164,7 +164,7 @@ func (c *MycelClient) CountChaos(ctx context.Context, scope TestScope) (int64, e
 	return c.CountGQL(ctx, scope, gql)
 }
 
-func (c *MycelClient) StartClusterBackupAndWait(ctx context.Context, reason, outputDir, archiveFormat string) (*adminv1.GetClusterBackupStatusResponse, error) {
+func (c *MycelClient) StartClusterBackupAndWait(ctx context.Context, reason, repositoryID, archiveFormat string) (*adminv1.GetBackupOperationResponse, error) {
 	rpcCtx, cancel := rpcContext(ctx, 10*time.Minute)
 	defer cancel()
 	format := adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_TAR
@@ -177,23 +177,23 @@ func (c *MycelClient) StartClusterBackupAndWait(ctx context.Context, reason, out
 	}
 	client := adminv1.NewAdminBackupServiceClient(c.conn)
 	authCtx := c.authContext(rpcCtx)
-	started, err := client.StartClusterBackup(authCtx, &adminv1.StartClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format})
+	started, err := client.StartBackup(authCtx, &adminv1.StartBackupRequest{Reason: reason, RepositoryId: repositoryID, ArchiveFormat: format})
 	if err != nil {
 		return nil, err
 	}
-	backupSetID := started.GetStatus().GetBackupSetId()
+	backupSetID := started.GetOperation().GetBackupSetId()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
-		statusRes, err := client.GetClusterBackupStatus(authCtx, &adminv1.GetClusterBackupStatusRequest{BackupSetId: backupSetID})
+		statusRes, err := client.GetBackupOperation(authCtx, &adminv1.GetBackupOperationRequest{BackupSetId: backupSetID})
 		if err != nil {
 			return nil, err
 		}
-		switch statusRes.GetStatus().GetStateCode() {
-		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_SUCCEEDED:
+		switch statusRes.GetOperation().GetState() {
+		case adminv1.BackupOperationState_BACKUP_OPERATION_STATE_SUCCEEDED:
 			return statusRes, nil
-		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_FAILED, adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELED:
-			return statusRes, fmt.Errorf("cluster backup %s finished with state %s: %s", backupSetID, statusRes.GetStatus().GetState(), statusRes.GetStatus().GetError())
+		case adminv1.BackupOperationState_BACKUP_OPERATION_STATE_FAILED, adminv1.BackupOperationState_BACKUP_OPERATION_STATE_CANCELED:
+			return statusRes, fmt.Errorf("cluster backup %s finished with state %s: %s", backupSetID, statusRes.GetOperation().GetState(), statusRes.GetOperation().GetError())
 		}
 		select {
 		case <-rpcCtx.Done():
@@ -203,10 +203,10 @@ func (c *MycelClient) StartClusterBackupAndWait(ctx context.Context, reason, out
 	}
 }
 
-func (c *MycelClient) ValidateClusterBackupSet(ctx context.Context, backupSetPath string) (*adminv1.ValidateClusterBackupSetResponse, error) {
+func (c *MycelClient) ValidateClusterBackupSet(ctx context.Context, backupSetPath string) (*adminv1.ValidateBackupSetResponse, error) {
 	rpcCtx, cancel := rpcContext(ctx, time.Minute)
 	defer cancel()
-	return adminv1.NewAdminBackupServiceClient(c.conn).ValidateClusterBackupSet(c.authContext(rpcCtx), &adminv1.ValidateClusterBackupSetRequest{BackupSetPath: backupSetPath})
+	return adminv1.NewAdminBackupServiceClient(c.conn).ValidateBackupSet(c.authContext(rpcCtx), &adminv1.ValidateBackupSetRequest{BackupSetId: backupSetPath})
 }
 
 func (c *MycelClient) LocalConsistencyCounts(ctx context.Context, scopes []TestScope) (WorkloadCounts, error) {

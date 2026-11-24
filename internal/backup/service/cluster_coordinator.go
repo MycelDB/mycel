@@ -160,7 +160,7 @@ func (m *Module) StartClusterBackup(ctx context.Context, input StartClusterBacku
 	for _, node := range nodes {
 		expected = append(expected, clusterBackupExpectedNode{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: node.RaftNodeID})
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupRequest, clusterBackupRequestRecord{BackupSetID: backupSetID, ClusterID: clusterID, Reason: input.Reason, IdempotencyKey: input.IdempotencyKey, RepositoryID: repositoryID, RepositoryPrefix: repositoryPrefix, CaptureProvider: input.CaptureProvider, CreatedAt: createdAt, Expected: expected}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupRequest, clusterBackupRequestRecord{BackupSetID: backupSetID, ClusterID: clusterID, Reason: input.Reason, IdempotencyKey: input.IdempotencyKey, RepositoryID: repositoryID, RepositoryPrefix: repositoryPrefix, CaptureProvider: input.CaptureProvider, CreatedAt: createdAt, Expected: expected}); err != nil {
 		return ClusterBackupRunStatus{}, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -196,7 +196,7 @@ func (m *Module) CancelClusterBackup(ctx context.Context, backupSetID, reason st
 	msg := firstNonEmptyString(reason, "cluster backup canceled")
 	if cancel != nil {
 		cancel()
-		if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCanceling, UpdatedAt: time.Now().UTC()}); err != nil {
+		if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCanceling, UpdatedAt: time.Now().UTC()}); err != nil {
 			st, statusErr := m.ClusterBackupStatus(backupSetID)
 			if statusErr == nil && (st.Phase == string(clusterBackupPhaseSucceeded) || st.Phase == string(clusterBackupPhaseFailed) || st.Phase == string(clusterBackupPhaseCanceled)) {
 				return st, nil
@@ -205,7 +205,7 @@ func (m *Module) CancelClusterBackup(ctx context.Context, backupSetID, reason st
 		}
 		return m.ClusterBackupStatus(backupSetID)
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupAbort, clusterBackupFailureRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCanceling, Message: msg, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupAbort, clusterBackupFailureRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCanceling, Message: msg, UpdatedAt: time.Now().UTC()}); err != nil {
 		st, statusErr := m.ClusterBackupStatus(backupSetID)
 		if statusErr == nil && (st.Phase == string(clusterBackupPhaseSucceeded) || st.Phase == string(clusterBackupPhaseFailed) || st.Phase == string(clusterBackupPhaseCanceled)) {
 			return st, nil
@@ -235,9 +235,9 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 				m.logger.Info("cleaned incomplete repository backup set", "backup_set_id", backupSetID, "repository_id", input.RepositoryID, "prefix", input.RepositoryPrefix, "deleted_objects", deleted)
 			}
 		}
-		_ = m.commitRaft(context.Background(), failRecord, clusterBackupFailureRecord{BackupSetID: backupSetID, Phase: phase, Message: err.Error(), UpdatedAt: time.Now().UTC()})
+		_ = m.commitClusterBackupRecord(context.Background(), failRecord, clusterBackupFailureRecord{BackupSetID: backupSetID, Phase: phase, Message: err.Error(), UpdatedAt: time.Now().UTC()})
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhasePrechecking, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhasePrechecking, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhasePrechecking, err)
 		return
 	}
@@ -255,16 +255,16 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 			fail(clusterBackupPhasePrechecking, err)
 			return
 		}
-		precheck := m.EvaluateClusterBackupPreconditions(buildCoordinatorPrecheck(backupSetID, clusterID, nodes, input.OutputDir, groups, readiness))
+		precheck := m.EvaluateClusterBackupPreconditions(buildCoordinatorPrecheck(backupSetID, clusterID, nodes, input.OutputDir, groups, readiness, !m.raftMode()))
 		if precheck.OK {
-			_ = m.commitRaft(context.Background(), recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, UpdatedAt: time.Now().UTC()})
+			_ = m.commitClusterBackupRecord(context.Background(), recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, UpdatedAt: time.Now().UTC()})
 			break
 		}
 		blockers := clusterBackupBlockersFromPrecheck(groups, nodes)
 		if len(blockers) == 0 {
 			blockers = []ClusterBackupBlocker{{Reason: "precheck_failed", Detail: strings.Join(precheck.Failures, "; ")}}
 		}
-		_ = m.commitRaft(context.Background(), recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, Blockers: blockers, UpdatedAt: time.Now().UTC()})
+		_ = m.commitClusterBackupRecord(context.Background(), recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, Blockers: blockers, UpdatedAt: time.Now().UTC()})
 		if time.Now().After(deadline) {
 			fail(clusterBackupPhasePrechecking, precheck.Error())
 			return
@@ -276,11 +276,11 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		case <-time.After(2 * time.Second):
 		}
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseReady, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseReady, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseReady, err)
 		return
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseQuiescing, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseQuiescing, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseQuiescing, err)
 		return
 	}
@@ -301,38 +301,46 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		fail(clusterBackupPhaseBarrierWait, err)
 		return
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseBarrierWait, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseBarrierWait, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseBarrierWait, err)
 		return
 	}
 	barriers := clusterBackupBarriersFromPrecheckGroups(barrierGroups)
-	if err := m.commitRaft(ctx, recordTypeClusterBackupBarrier, clusterBackupBarrierRecord{BackupSetID: backupSetID, Barriers: barriers, UpdatedAt: time.Now().UTC()}); err != nil {
-		fail(clusterBackupPhaseBarrierWait, err)
-		return
+	if len(barriers) > 0 {
+		if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupBarrier, clusterBackupBarrierRecord{BackupSetID: backupSetID, Barriers: barriers, UpdatedAt: time.Now().UTC()}); err != nil {
+			fail(clusterBackupPhaseBarrierWait, err)
+			return
+		}
 	}
 	barrierList := make([]backend.BackupRaftBarrier, 0, len(barriers))
 	for groupID, index := range barriers {
 		barrierList = append(barrierList, backend.BackupRaftBarrier{GroupID: groupID, Index: index})
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseArchiving, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseArchiving, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseArchiving, err)
 		return
 	}
 	frozen := []clusterBackupFrozenNode{}
-	for _, node := range nodes {
-		freezeIn := backendInput(input, backupSetID, clusterID, createdAt, node, barrierList)
-		freezeIn.TTL = 10 * time.Minute
-		var freeze backend.BackupRaftFreeze
-		if err := retryClusterBackupPeer(ctx, func() error {
-			var err error
-			freeze, err = m.clusterPeerClient().AcquireLocalRaftBackupFreeze(ctx, node.BackendAdvertiseAddr, freezeIn)
-			return err
-		}); err != nil {
-			m.releaseClusterRaftFreeze(context.Background(), input, backupSetID, clusterID, createdAt, frozen)
-			fail(clusterBackupPhaseArchiving, fmt.Errorf("acquire raft freeze on %s: %w", node.PodName, err))
-			return
+	if m.raftMode() {
+		for _, node := range nodes {
+			freezeIn := backendInput(input, backupSetID, clusterID, createdAt, node, barrierList)
+			freezeIn.TTL = 10 * time.Minute
+			var freeze backend.BackupRaftFreeze
+			if err := retryClusterBackupPeer(ctx, func() error {
+				var err error
+				freeze, err = m.clusterPeerClient().AcquireLocalRaftBackupFreeze(ctx, node.BackendAdvertiseAddr, freezeIn)
+				return err
+			}); err != nil {
+				m.releaseClusterRaftFreeze(context.Background(), input, backupSetID, clusterID, createdAt, frozen)
+				fail(clusterBackupPhaseArchiving, fmt.Errorf("acquire raft freeze on %s: %w", node.PodName, err))
+				return
+			}
+			frozen = append(frozen, clusterBackupFrozenNode{node: node, freeze: freeze})
 		}
-		frozen = append(frozen, clusterBackupFrozenNode{node: node, freeze: freeze})
+	} else {
+		for _, node := range nodes {
+			frozen = append(frozen, clusterBackupFrozenNode{node: node})
+		}
 	}
 	var snapshotProvider ClusterSnapshotCaptureProvider
 	var snapshotCapture *ClusterSnapshotCaptureResult
@@ -379,15 +387,17 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		}
 		results = append(results, result)
 	}
-	if err := m.releaseClusterRaftFreeze(context.Background(), input, backupSetID, clusterID, createdAt, frozen); err != nil {
-		fail(clusterBackupPhaseArchiving, err)
-		return
+	if m.raftMode() {
+		if err := m.releaseClusterRaftFreeze(context.Background(), input, backupSetID, clusterID, createdAt, frozen); err != nil {
+			fail(clusterBackupPhaseArchiving, err)
+			return
+		}
 	}
 	releasedAt := time.Now().UTC()
 	if snapshotCapture != nil {
 		cleanupSnapshotCapture()
 		capture := *snapshotCapture
-		if err := m.commitRaft(ctx, recordTypeClusterBackupCapture, clusterBackupCaptureRecord{BackupSetID: backupSetID, Provider: capture.Provider, ProviderVersion: capture.ProviderVersion, FallbackUsed: capture.FallbackUsed, SnapshotClassName: capture.SnapshotClassName, DataMover: capture.DataMover, ProviderEvidence: capture.Evidence, NodeSources: capture.NodeSources, Cleanup: capture.Cleanup, UpdatedAt: time.Now().UTC()}); err != nil {
+		if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupCapture, clusterBackupCaptureRecord{BackupSetID: backupSetID, Provider: capture.Provider, ProviderVersion: capture.ProviderVersion, FallbackUsed: capture.FallbackUsed, SnapshotClassName: capture.SnapshotClassName, DataMover: capture.DataMover, ProviderEvidence: capture.Evidence, NodeSources: capture.NodeSources, Cleanup: capture.Cleanup, UpdatedAt: time.Now().UTC()}); err != nil {
 			fail(clusterBackupPhaseArchiving, err)
 			return
 		}
@@ -397,12 +407,12 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 			result.RaftFreeze.ReleasedAt = releasedAt
 		}
 		artifact := clusterbackup.NodeArtifact{PodName: result.PodName, NodeID: result.NodeID, Ordinal: result.Ordinal, RaftNodeID: result.RaftNodeID, ArchiveName: result.ArchiveName, ArchiveURI: result.ArchiveURI, ManifestName: result.ManifestName, ManifestURI: result.ManifestURI, InventoryName: result.InventoryName, InventoryURI: result.InventoryURI, InventoryChecksumSHA256: result.InventoryChecksumSHA256, SizeBytes: result.SizeBytes, ChecksumSHA256: result.ChecksumSHA256, AppliedIndexes: result.AppliedIndexes, RaftFreeze: clusterbackup.RaftFreezeEvidence{LeaseID: result.RaftFreeze.LeaseID, AcquiredAt: result.RaftFreeze.AcquiredAt, ReleasedAt: result.RaftFreeze.ReleasedAt, ExpiresAt: result.RaftFreeze.ExpiresAt, Groups: clusterFreezeGroupsFromBackend(result.RaftFreeze.Groups)}}
-		if err := m.commitRaft(ctx, recordTypeClusterBackupNodeResult, clusterBackupNodeResultRecord{BackupSetID: backupSetID, Node: artifact, UpdatedAt: time.Now().UTC()}); err != nil {
+		if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupNodeResult, clusterBackupNodeResultRecord{BackupSetID: backupSetID, Node: artifact, UpdatedAt: time.Now().UTC()}); err != nil {
 			fail(clusterBackupPhaseArchiving, err)
 			return
 		}
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseValidating, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseValidating, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseValidating, err)
 		return
 	}
@@ -413,7 +423,7 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 	}
 	completedAt := time.Now().UTC()
 	if strings.TrimSpace(input.RepositoryID) != "" {
-		if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseUploading, UpdatedAt: time.Now().UTC()}); err != nil {
+		if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseUploading, UpdatedAt: time.Now().UTC()}); err != nil {
 			fail(clusterBackupPhaseUploading, err)
 			return
 		}
@@ -435,11 +445,11 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 			return
 		}
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCommittingManifest, UpdatedAt: time.Now().UTC()}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseCommittingManifest, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseCommittingManifest, err)
 		return
 	}
-	if err := m.commitRaft(ctx, recordTypeClusterBackupComplete, clusterBackupCompleteRecord{BackupSetID: backupSetID, Manifest: manifest, CompletedAt: completedAt}); err != nil {
+	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupComplete, clusterBackupCompleteRecord{BackupSetID: backupSetID, Manifest: manifest, CompletedAt: completedAt}); err != nil {
 		fail(clusterBackupPhaseCommittingManifest, err)
 		return
 	}
@@ -469,7 +479,38 @@ func (m *Module) clusterPeerClient() backendClient {
 	if m.clusterBackendClient != nil {
 		return m.clusterBackendClient
 	}
+	if !m.raftMode() {
+		return localClusterBackupBackendClient{module: m}
+	}
 	return backend.Client{}
+}
+
+type localClusterBackupBackendClient struct {
+	module *Module
+}
+
+func (c localClusterBackupBackendClient) CheckLocalBackupReadiness(ctx context.Context, addr string, in backend.CreateLocalBackupArchiveInput) (map[string]uint64, map[string]uint64, error) {
+	return c.module.CheckLocalClusterBackupReadiness(ctx, in)
+}
+
+func (c localClusterBackupBackendClient) AcquireLocalBackupQuiesce(ctx context.Context, addr string, in backend.CreateLocalBackupArchiveInput) error {
+	return c.module.AcquireLocalClusterBackupQuiesce(ctx, in)
+}
+
+func (c localClusterBackupBackendClient) ReleaseLocalBackupQuiesce(ctx context.Context, addr string, in backend.CreateLocalBackupArchiveInput) error {
+	return c.module.ReleaseLocalClusterBackupQuiesce(ctx, in)
+}
+
+func (c localClusterBackupBackendClient) AcquireLocalRaftBackupFreeze(ctx context.Context, addr string, in backend.CreateLocalBackupArchiveInput) (backend.BackupRaftFreeze, error) {
+	return c.module.AcquireLocalRaftBackupFreeze(ctx, in)
+}
+
+func (c localClusterBackupBackendClient) ReleaseLocalRaftBackupFreeze(ctx context.Context, addr string, in backend.CreateLocalBackupArchiveInput) error {
+	return c.module.ReleaseLocalRaftBackupFreeze(ctx, in)
+}
+
+func (c localClusterBackupBackendClient) CreateLocalBackupArchive(ctx context.Context, addr string, in backend.CreateLocalBackupArchiveInput) (backend.CreateLocalBackupArchiveResult, error) {
+	return c.module.CreateLocalClusterBackupArchive(ctx, in)
 }
 
 func retryClusterBackupPeer(ctx context.Context, fn func() error) error {
@@ -668,7 +709,7 @@ func (m *Module) buildProductionBackupSetManifest(input StartClusterBackupInput,
 		Source:               clusterbackup.BackupSetSource{ClusterID: clusterID, ClusterName: firstNonEmptyString(input.ClusterName, clusterID), Namespace: strings.TrimSpace(input.Namespace), StatefulSet: firstNonEmptyString(input.StatefulSet, "myceld"), DataDir: m.dataDir, MycelVersion: firstNonEmptyString(strings.TrimSpace(input.Image), "development"), MycelAPIVersion: "v1", Image: strings.TrimSpace(input.Image), ImageDigest: strings.TrimSpace(input.ImageDigest), StorageFormatVersions: storageVersions, Topology: clusterbackup.BackupSetSourceTopology{NodeCount: len(sourceNodes), PartitionCount: maxInt(1, len(run.Barriers)), ReplicaFactor: maxInt(1, len(sourceNodes)), Nodes: sourceNodes}, MembershipHashSHA256: membershipHash, PlacementHashSHA256: placementHash},
 		Repository:           clusterbackup.BackupSetRepository{RepositoryID: repo.RepositoryID, Type: "S3_COMPATIBLE", URI: repositoryURI, Bucket: repo.S3.Bucket, Prefix: input.RepositoryPrefix, EndpointFingerprint: repositoryEndpointFingerprint(repo), CredentialRef: credentialReferenceManifestString(repo.CredentialRef), Encryption: clusterbackup.BackupSetEncryptionPolicy{Mode: encryptionModeManifestString(repo.Encryption.Mode), KMSKeyRef: secretReferenceManifestString(repo.Encryption.KeyRef), KeyFingerprint: hashOptionalString(repo.Encryption.KMSKeyID)}, LayoutVersion: 1},
 		Policy:               clusterbackup.BackupSetPolicy{PolicyID: "policy-default", PolicyRevision: "1", PolicyHashSHA256: policyHash, RetentionClass: "DEFAULT", Consistency: mustJSONRaw(map[string]any{"quiesce_required": true, "read_allowlist_profile": productionEnum(input.QuiesceReadProfile), "allow_read_only_during_quiesce": false}), Capture: captureSpec.policyCapture(input.ArchiveFormat), Upload: mustJSONRaw(map[string]any{"repository_id": repo.RepositoryID, "layout_version": 1, "complete_marker": true}), Validation: mustJSONRaw(map[string]any{"checksum_algorithm": clusterbackup.ProductionChecksumAlgorithmSHA256, "require_complete_marker": true}), DerivedSubsystems: productionDerivedPolicies(policy.DerivedSubsystems)},
-		Compatibility:        clusterbackup.BackupSetCompatibility{RequiredFeatures: []string{}, StorageFormatVersions: storageVersions, MinRestoreMycelVersion: "v0.24.0", SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, RequiresSameTopology: true, RequiresSourceFencingForPreservedIdentity: true},
+		Compatibility:        clusterbackup.BackupSetCompatibility{RequiredFeatures: []string{}, StorageFormatVersions: storageVersions, MinRestoreMycelVersion: "v0.23.0", SupportedRestoreTargetModes: []string{"NEW_CLUSTER_BOOTSTRAP", "EXISTING_CLUSTER_REPLACE"}, SupportedIdentityModes: []string{"PRESERVE_BACKUP_ID"}, RequiresSameTopology: true, RequiresSourceFencingForPreservedIdentity: true},
 		Consistency:          clusterbackup.BackupSetConsistency{Quiescence: mustJSONRaw(map[string]any{"mode": "BACKUP", "read_allowlist_profile": productionEnum(input.QuiesceReadProfile)}), BarrierSet: barrierSet},
 		Capture:              clusterbackup.BackupSetCapture{Provider: captureSpec.Provider, ProviderVersion: captureSpec.ProviderVersion, FallbackUsed: captureSpec.FallbackUsed, SnapshotClassName: captureSpec.SnapshotClassName, DataMover: captureSpec.DataMover, ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), TemporaryProviderRefsRedacted: true, ProviderEvidence: captureSpec.ProviderEvidence},
 		Artifacts:            clusterbackup.BackupSetArtifacts{ArchiveFormat: productionArchiveFormat(input.ArchiveFormat), ChecksumAlgorithm: clusterbackup.ProductionChecksumAlgorithmSHA256, Nodes: artifactNodes, AdditionalManifests: []clusterbackup.BackupSetArtifactRef{}},
@@ -716,7 +757,7 @@ func productionClusterCaptureSpec(run clusterBackupRun, input StartClusterBackup
 			spec.NodeSources[key] = append(json.RawMessage(nil), value...)
 		}
 	}
-	spec.OperatorNotes = "Snapshot capture provider evidence is included. Repository archive artifacts remain the restore authority for v0.24.x; snapshot and cleanup evidence validate the immutable capture source and Kubernetes/AWS compatibility."
+	spec.OperatorNotes = "Snapshot capture provider evidence is included. Repository archive artifacts remain the restore authority for v0.23.x; snapshot and cleanup evidence validate the immutable capture source and Kubernetes/AWS compatibility."
 	for _, warning := range run.Capture.Cleanup.Warnings {
 		if strings.TrimSpace(warning) != "" {
 			spec.ValidationWarnings = append(spec.ValidationWarnings, "snapshot cleanup warning: "+strings.TrimSpace(warning))
@@ -1440,7 +1481,9 @@ func (m *Module) collectCoordinatorReadiness(ctx context.Context, input StartClu
 			return nil, nil, fmt.Errorf("precheck %s: %w", node.PodName, err)
 		}
 		if len(applied) == 0 {
-			return nil, nil, fmt.Errorf("precheck %s returned no raft apply evidence", node.PodName)
+			if m.raftMode() {
+				return nil, nil, fmt.Errorf("precheck %s returned no raft apply evidence", node.PodName)
+			}
 		}
 		readiness[node.PodName] = coordinatorReadiness{applied: applied, commits: commits}
 		for groupID, commit := range commits {
@@ -1510,15 +1553,15 @@ func clusterBackupBlockersFromPrecheck(groups []ClusterBackupPrecheckRaftGroup, 
 	return blockers
 }
 
-func buildCoordinatorPrecheck(backupSetID, clusterID string, nodes []ClusterBackupNode, outputDir string, groups []ClusterBackupPrecheckRaftGroup, readiness map[string]coordinatorReadiness) ClusterBackupPrecheckInput {
+func buildCoordinatorPrecheck(backupSetID, clusterID string, nodes []ClusterBackupNode, outputDir string, groups []ClusterBackupPrecheckRaftGroup, readiness map[string]coordinatorReadiness, standalone bool) ClusterBackupPrecheckInput {
 	preNodes := make([]ClusterBackupPrecheckNode, 0, len(nodes))
 	dests := make([]ClusterBackupDestinationCheck, 0, len(nodes))
 	for _, node := range nodes {
 		_, ok := readiness[node.PodName]
-		preNodes = append(preNodes, ClusterBackupPrecheckNode{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: node.RaftNodeID, BackendAdvertiseAddr: node.BackendAdvertiseAddr, ClusterID: clusterID, Reachable: ok && node.BackendAdvertiseAddr != "", Ready: ok, Admitted: ok, CaughtUp: ok})
+		preNodes = append(preNodes, ClusterBackupPrecheckNode{PodName: node.PodName, NodeID: node.NodeID, Ordinal: node.Ordinal, RaftNodeID: node.RaftNodeID, BackendAdvertiseAddr: node.BackendAdvertiseAddr, ClusterID: clusterID, Reachable: ok && (standalone || node.BackendAdvertiseAddr != ""), Ready: ok, Admitted: ok, CaughtUp: ok})
 		dests = append(dests, ClusterBackupDestinationCheck{PodName: node.PodName, Path: outputDir, Writable: ok, OutsideDataDir: ok})
 	}
-	return ClusterBackupPrecheckInput{BackupSetID: backupSetID, ClusterID: clusterID, ExpectedNodeCount: len(nodes), Nodes: preNodes, RaftGroups: groups, Destinations: dests}
+	return ClusterBackupPrecheckInput{BackupSetID: backupSetID, ClusterID: clusterID, ExpectedNodeCount: len(nodes), Nodes: preNodes, RaftGroups: groups, Standalone: standalone, Destinations: dests}
 }
 
 func clusterBackupBarriersFromPrecheckGroups(groups []ClusterBackupPrecheckRaftGroup) map[string]uint64 {

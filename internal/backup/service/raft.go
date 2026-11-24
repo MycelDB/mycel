@@ -129,6 +129,21 @@ func (m *Module) applyBackupRaftCommand(ctx context.Context, cmd consensus.RaftC
 	}
 }
 
+func (m *Module) commitClusterBackupRecord(ctx context.Context, typ wal.RecordType, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	cmd, err := m.buildBackupRaftCommand(typ, raw, "backup-"+string(typ)+"-"+uuid.NewString())
+	if err != nil {
+		return err
+	}
+	if m.raftMode() {
+		return m.proposeBackupRaftCommand(ctx, cmd)
+	}
+	return m.applyBackupRaftCommand(ctx, cmd)
+}
+
 func (m *Module) commitRaft(ctx context.Context, typ wal.RecordType, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
