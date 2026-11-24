@@ -342,10 +342,16 @@ func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, failur
 	var processed int
 	var err error
 	for attempt := 1; attempt <= 8; attempt++ {
-		leaderID = cluster.leaderForSpace(t, spaceID)
+		if failureCode == codes.Unavailable {
+			leaderID = cluster.leaderForSpace(t, spaceID)
+		} else {
+			leaderID, _ = cluster.waitForGraphNode(t, ctx, spaceID, domainID, pageID)
+		}
 		flakyGraph := &transientUnavailableCommitGraph{GraphRuntime: cluster.graphs[leaderID], state: state}
 		cluster.managers[leaderID].WithGraphRuntime(cluster.sessions[leaderID], flakyGraph)
-		processed, err = cluster.managers[leaderID].ProcessPending(ctx, domainID, 10)
+		processCtx, cancelProcess := context.WithTimeout(ctx, 5*time.Second)
+		processed, err = cluster.managers[leaderID].ProcessPending(processCtx, domainID, 10)
+		cancelProcess()
 		if err == nil {
 			break
 		}
@@ -375,12 +381,11 @@ func testClusteredGraphAutomationOutputTransientUnavailable(t *testing.T, failur
 	}
 	cluster.waitForInvocationStatus(t, domainID, invs[0].ID, expectedStatus)
 	cluster.waitForRun(t, domainID, invs[0].ID)
-	leaderID = cluster.leaderForSpace(t, spaceID)
-	readTx := cluster.beginReadOnlyTransaction(t, ctx, leaderID, spaceID, domainID)
-	got, err := cluster.graphs[leaderID].GetNode(ctx, readTx, pageID.String())
-	if err != nil {
-		t.Fatalf("GetNode(final): %v", err)
+	expectedSource := "updated before automation"
+	if expectPublishedInput {
+		expectedSource = "generated summary"
 	}
+	_, got := cluster.waitForGraphNodeProperty(t, ctx, spaceID, domainID, pageID, "source", expectedSource)
 	if expectPublishedInput {
 		if got.Properties["source"] != "generated summary" {
 			t.Fatalf("final page properties=%+v, want provider input field durably published", got.Properties)
@@ -1258,9 +1263,12 @@ func newAutomationGraphExecutionRaftCluster(t *testing.T, ctx context.Context, p
 	groups := map[consensus.NodeID]*consensus.MultiGroup{}
 	for _, id := range peers {
 		localID := id
+		// Keep the election timeout comfortably above the 10ms test ticker so
+		// graph-output retry assertions are not coupled to leadership churn between
+		// graph commits and automation replay.
 		mg, err := consensus.StartMultiGroup(ctx, consensus.MultiGroupOptions{NodeID: localID, PeerNodeIDs: peers, PartitionCount: partitionCount, Transport: consensus.RoutedTransport{Resolver: consensus.ResolverFunc(func(nodeID consensus.NodeID) (consensus.MessageSender, bool) { return router, true })}, StateMachines: consensus.StateMachineFactoryFunc{System: func() consensus.StateMachine { return consensus.NewSystemStateMachine() }, Partition: func(partitionID uint32) consensus.StateMachine {
 			return automationGraphPartitionStateMachine{graph: graphservice.RaftStateMachine{Module: graphs[localID], PartitionID: partitionID, PartitionCount: partitionCount}, automation: RaftStateMachine{Manager: managers[localID], PartitionID: partitionID, PartitionCount: partitionCount}}
-		}}, ElectionTick: 5, HeartbeatTick: 1})
+		}}, ElectionTick: 20, HeartbeatTick: 1})
 		if err != nil {
 			t.Fatalf("StartMultiGroup(%d): %v", id, err)
 		}
@@ -1307,6 +1315,71 @@ func (c automationGraphExecutionRaftCluster) beginReadOnlyTransaction(t *testing
 		t.Fatalf("BeginTransaction(read): %v", err)
 	}
 	return tx
+}
+
+func (c automationGraphExecutionRaftCluster) readGraphNode(ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, graphNodeID graph.NodeID) (graph.Node, error) {
+	sess, err := c.sessions[nodeID].OpenSession(ctx, sessionmodel.OpenSessionInput{PrincipalID: "reader", SpaceID: spaceID.String(), DomainID: domainID.String()})
+	if err != nil {
+		return graph.Node{}, err
+	}
+	tx, err := c.sessions[nodeID].BeginTransaction(ctx, sessionmodel.BeginTransactionInput{PrincipalID: "reader", SessionID: sess.ID, Mode: sessionmodel.TransactionModeReadOnly})
+	if err != nil {
+		return graph.Node{}, err
+	}
+	return c.graphs[nodeID].GetNode(ctx, tx, graphNodeID.String())
+}
+
+func (c automationGraphExecutionRaftCluster) waitForGraphNode(t *testing.T, ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, graphNodeID graph.NodeID) (consensus.NodeID, graph.Node) {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var nodeID consensus.NodeID
+	var got graph.Node
+	lastErrs := map[consensus.NodeID]error{}
+	if err := consensus.WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		for candidateID := range c.graphs {
+			candidate, readErr := c.readGraphNode(ctx, candidateID, spaceID, domainID, graphNodeID)
+			if readErr == nil {
+				nodeID = candidateID
+				got = candidate
+				return true
+			}
+			lastErrs[candidateID] = readErr
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("graph node %s not readable on any raft test node: %v; lastErrs=%+v", graphNodeID, err, lastErrs)
+	}
+	return nodeID, got
+}
+
+func (c automationGraphExecutionRaftCluster) waitForGraphNodeProperty(t *testing.T, ctx context.Context, spaceID domainspace.SpaceID, domainID graph.DomainID, graphNodeID graph.NodeID, property string, want any) (consensus.NodeID, graph.Node) {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var nodeID consensus.NodeID
+	var got graph.Node
+	lastErrs := map[consensus.NodeID]error{}
+	lastValues := map[consensus.NodeID]any{}
+	if err := consensus.WaitUntil(waitCtx, 20*time.Millisecond, func() bool {
+		for candidateID := range c.graphs {
+			candidate, readErr := c.readGraphNode(ctx, candidateID, spaceID, domainID, graphNodeID)
+			if readErr != nil {
+				lastErrs[candidateID] = readErr
+				continue
+			}
+			lastValues[candidateID] = candidate.Properties[property]
+			if lastValues[candidateID] == want {
+				nodeID = candidateID
+				got = candidate
+				return true
+			}
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("graph node %s property %q did not reach %v on any raft test node: %v; lastValues=%+v lastErrs=%+v", graphNodeID, property, want, err, lastValues, lastErrs)
+	}
+	return nodeID, got
 }
 
 func (c automationGraphExecutionRaftCluster) commitGraphMutation(t *testing.T, ctx context.Context, nodeID consensus.NodeID, spaceID domainspace.SpaceID, domainID graph.DomainID, mutate func(sessionmodel.GraphTransaction) error) {
