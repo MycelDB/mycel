@@ -8,6 +8,7 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 
 ### Added
 
+- Updated daemon/CLI backup handling for the `mycel-api v0.25.0` repository-only contract: public backup RPCs are deployment-wide (`StartBackup`, `ListBackupSets`, `PlanRestore`, etc.), local backup file trigger/status/list/delete RPCs and CLI commands were removed, backup policy now exposes repository-backed defaults only, and standalone deployments can publish one-node repository-backed backup sets (#404).
 - Added the internal usage-accounting counter core for quota-safe space/domain usage metrics: versioned metric definitions, durable materialized counters, idempotent mutation-delta application, explicit domain-inclusion aggregation, rebuild health state, and runtime registration.
 - Wired blob metadata commits/deletes into usage accounting so local and object-store blob logical bytes/counts update only after metadata commits, while failed uploads and object-store orphan candidates do not increase active logical usage.
 - Wired graph commits into usage accounting so committed node/edge creates and deletes update quota-safe domain and space count counters exactly once across direct, WAL, and replay paths, while updates, aborts, and commit retries do not double count.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/fsperm"
+	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 
 	backupcluster "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/clustering/disrupttest"
@@ -350,12 +351,12 @@ func (r *runState) captureBackup(ctx context.Context) (*backupResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := res.GetStatus()
-	if strings.ToLower(st.GetState()) != "succeeded" {
+	st := res.GetOperation()
+	if st.GetState() != adminv1.BackupOperationState_BACKUP_OPERATION_STATE_SUCCEEDED {
 		return nil, fmt.Errorf("cluster backup state %q phase=%s error=%s", st.GetState(), st.GetFailedPhase(), st.GetError())
 	}
-	if st.GetExpectedNodes() != int32(r.cfg.NodeCount) || len(st.GetNodes()) != r.cfg.NodeCount {
-		return nil, fmt.Errorf("backup expected %d nodes, status expected=%d artifacts=%d", r.cfg.NodeCount, st.GetExpectedNodes(), len(st.GetNodes()))
+	if st.GetExpectedNodeCount() != int32(r.cfg.NodeCount) || len(st.GetNodes()) != r.cfg.NodeCount {
+		return nil, fmt.Errorf("backup expected %d nodes, status expected=%d artifacts=%d", r.cfg.NodeCount, st.GetExpectedNodeCount(), len(st.GetNodes()))
 	}
 	if len(st.GetRaftBarriers()) == 0 {
 		return nil, fmt.Errorf("backup status missing raft barrier evidence")

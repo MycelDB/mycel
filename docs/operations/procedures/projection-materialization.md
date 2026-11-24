@@ -29,12 +29,12 @@ If readiness is blocked, record only the bounded blocker names, node/leader
 identities, term, and revision values. Do not copy graph payloads, provider
 bodies, credentials, or local filesystem paths into incident artifacts.
 
-For a backup or restore qualification, validate the cluster backup set before
-extracting any ordinal:
+For a backup or restore qualification, validate the repository-backed backup set
+before extracting or restoring any ordinal:
 
 ```sh
-mycel admin backup cluster validate --backup-set <backup-set>
-mycel admin backup cluster restore-plan --backup-set <backup-set>
+mycel admin backup validate --repository-id <repo> --backup-set-id <backup-set-id>
+mycel admin backup restore-plan --repository-id <repo> --backup-set-id <backup-set-id>
 ```
 
 The restore preflight must reject mismatched projection generations, source

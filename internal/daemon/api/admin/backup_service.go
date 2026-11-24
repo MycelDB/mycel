@@ -192,148 +192,77 @@ func (s *AdminBackupService) DeleteBackupRepository(ctx context.Context, req *ad
 	return &adminv1.DeleteBackupRepositoryResponse{RepositoryId: req.GetRepositoryId(), State: adminv1.BackupDeletionState_BACKUP_DELETION_STATE_DELETED}, nil
 }
 
-func (s *AdminBackupService) TriggerBackup(ctx context.Context, req *adminv1.TriggerBackupRequest) (*adminv1.TriggerBackupResponse, error) {
+func (s *AdminBackupService) StartBackup(ctx context.Context, req *adminv1.StartBackupRequest) (*adminv1.StartBackupResponse, error) {
 	principal, err := s.requireBackupManage(ctx)
 	if err != nil {
 		return nil, err
 	}
-	reason := firstNonEmptyAdmin(req.GetReason(), "manual backup")
-	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryBackup, "backup.started", "Backup started", func(event *activitymodel.Event) {
-		event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
-		event.IdempotencyKey = "backup.started:" + reason
-	})
-	result, err := s.manager.Trigger(ctx, backupcore.TriggerInput{Source: principal.PrincipalID, Reason: reason})
-	if err != nil {
-		s.emit(ctx, activitymodel.SeverityError, activitymodel.CategoryBackup, "backup.failed", "Backup failed", func(event *activitymodel.Event) {
-			event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
-		})
-		return nil, mapBackupError(err, "trigger backup")
+	if strings.TrimSpace(req.GetRepositoryId()) == "" && strings.TrimSpace(s.manager.Policy().DefaultRepositoryID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "repository_id is required unless a default backup repository is configured")
 	}
-	statusValue := s.manager.RunStatus()
-	s.emit(ctx, activitymodel.SeverityInfo, activitymodel.CategoryBackup, "backup.completed", "Backup completed", func(event *activitymodel.Event) {
-		event.Actor = activitymodel.Actor{PrincipalID: principal.PrincipalID, Username: principal.Username}
-		event.Resource = activitymodel.Resource{Kind: "backup", ID: result.Manifest.BackupID, Name: result.Manifest.ArchiveName}
-	})
-	return &adminv1.TriggerBackupResponse{Status: s.mapStatus(statusValue), Backup: mapBackupSummary(result.Manifest)}, nil
-}
-
-func (s *AdminBackupService) GetBackupStatus(ctx context.Context, req *adminv1.GetBackupStatusRequest) (*adminv1.GetBackupStatusResponse, error) {
-	if _, err := s.requireBackupManage(ctx); err != nil {
-		return nil, err
-	}
-	quiesceStatus := s.mapQuiesceStatus()
-	return &adminv1.GetBackupStatusResponse{Status: s.mapStatus(s.manager.RunStatus()), Quiesce: quiesceStatus}, nil
-}
-
-func (s *AdminBackupService) ListBackups(ctx context.Context, req *adminv1.ListBackupsRequest) (*adminv1.ListBackupsResponse, error) {
-	if _, err := s.requireBackupManage(ctx); err != nil {
-		return nil, err
-	}
-	manifests, err := s.manager.ListBackups(ctx)
-	if err != nil {
-		return nil, mapBackupError(err, "list backups")
-	}
-	items := make([]*adminv1.BackupSummary, 0, len(manifests))
-	for _, manifest := range manifests {
-		items = append(items, mapBackupSummary(manifest))
-	}
-	pageSize := normalizePageSize(req.GetPageSize())
-	offset, err := parsePageToken(req.GetPageToken())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if offset > len(items) {
-		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the backup list")
-	}
-	end := offset + pageSize
-	if end > len(items) {
-		end = len(items)
-	}
-	next := ""
-	if end < len(items) {
-		next = strconv.Itoa(end)
-	}
-	return &adminv1.ListBackupsResponse{Backups: items[offset:end], NextPageToken: next}, nil
-}
-
-func (s *AdminBackupService) DeleteBackup(ctx context.Context, req *adminv1.DeleteBackupRequest) (*adminv1.DeleteBackupResponse, error) {
-	if _, err := s.requireBackupManage(ctx); err != nil {
-		return nil, err
-	}
-	if err := s.manager.DeleteBackup(ctx, req.GetBackupId()); err != nil {
-		return nil, mapBackupError(err, "delete backup")
-	}
-	return &adminv1.DeleteBackupResponse{BackupId: req.GetBackupId()}, nil
-}
-
-func (s *AdminBackupService) StartClusterBackup(ctx context.Context, req *adminv1.StartClusterBackupRequest) (*adminv1.StartClusterBackupResponse, error) {
-	principal, err := s.requireBackupManage(ctx)
-	if err != nil {
-		return nil, err
-	}
-	nodes, clusterID, err := s.clusterBackupNodes()
+	nodes, deploymentID, deploymentMode, err := s.backupNodes()
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+		return nil, status.Error(codes.FailedPrecondition, "backup coordinator is not configured")
 	}
-	input := daemonbackup.StartClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "cluster system backup by "+principal.PrincipalID), OutputDir: req.GetOutputDir(), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: clusterID, ClusterName: s.clusterConfig.Name, StatefulSet: "myceld", Nodes: nodes, IdempotencyKey: req.GetIdempotencyKey(), RepositoryID: req.GetRepositoryId(), CaptureProvider: captureProviderFromProto(req.GetCaptureProvider()), QuiesceReadProfile: quiesceReadProfileFromProto(req.GetQuiesceReadProfile()), Validation: validationOptionsFromProto(req.GetValidationOptions())}
+	input := daemonbackup.StartClusterBackupInput{Reason: firstNonEmptyAdmin(req.GetReason(), "repository backup by "+principal.PrincipalID), ArchiveFormat: archiveFormatFromProto(req.GetArchiveFormat()), ClusterID: deploymentID, ClusterName: s.clusterConfig.Name, StatefulSet: "myceld", Nodes: nodes, IdempotencyKey: req.GetIdempotencyKey(), RepositoryID: s.effectiveRepositoryID(req.GetRepositoryId()), CaptureProvider: captureProviderFromProto(req.GetCaptureProvider()), QuiesceReadProfile: quiesceReadProfileFromProto(req.GetQuiesceReadProfile()), Validation: validationOptionsFromProto(req.GetValidationOptions())}
 	if req.GetConvergenceTimeoutSeconds() > 0 {
 		input.ConvergenceTimeout = time.Duration(req.GetConvergenceTimeoutSeconds()) * time.Second
 	}
 	st, err := clusterManager.StartClusterBackup(ctx, input)
 	if err != nil {
-		return nil, mapBackupError(err, "start cluster backup")
+		return nil, mapBackupError(err, "start backup")
 	}
-	return &adminv1.StartClusterBackupResponse{Status: mapClusterBackupStatus(st), BackupSet: mapClusterBackupSetSummary(st)}, nil
+	return &adminv1.StartBackupResponse{Operation: mapBackupOperation(st, deploymentMode), BackupSet: mapBackupSetSummary(st, deploymentMode)}, nil
 }
 
-func (s *AdminBackupService) GetClusterBackupStatus(ctx context.Context, req *adminv1.GetClusterBackupStatusRequest) (*adminv1.GetClusterBackupStatusResponse, error) {
+func (s *AdminBackupService) GetBackupOperation(ctx context.Context, req *adminv1.GetBackupOperationRequest) (*adminv1.GetBackupOperationResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
 	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+		return nil, status.Error(codes.FailedPrecondition, "backup coordinator is not configured")
 	}
 	backupSetID := firstNonEmptyAdmin(req.GetBackupSetId(), req.GetBackupOperationId())
 	st, err := clusterManager.ClusterBackupStatus(backupSetID)
 	if err != nil {
-		return nil, mapBackupError(err, "get cluster backup status")
+		return nil, mapBackupError(err, "get backup operation")
 	}
-	return &adminv1.GetClusterBackupStatusResponse{Status: mapClusterBackupStatus(st)}, nil
+	return &adminv1.GetBackupOperationResponse{Operation: mapBackupOperation(st, inferBackupDeploymentMode(st))}, nil
 }
 
-func (s *AdminBackupService) CancelClusterBackup(ctx context.Context, req *adminv1.CancelClusterBackupRequest) (*adminv1.CancelClusterBackupResponse, error) {
+func (s *AdminBackupService) CancelBackupOperation(ctx context.Context, req *adminv1.CancelBackupOperationRequest) (*adminv1.CancelBackupOperationResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
 	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+		return nil, status.Error(codes.FailedPrecondition, "backup coordinator is not configured")
 	}
 	backupSetID := firstNonEmptyAdmin(req.GetBackupSetId(), req.GetBackupOperationId())
 	st, err := clusterManager.CancelClusterBackup(ctx, backupSetID, req.GetReason())
 	if err != nil {
-		return nil, mapBackupError(err, "cancel cluster backup")
+		return nil, mapBackupError(err, "cancel backup operation")
 	}
-	return &adminv1.CancelClusterBackupResponse{Status: mapClusterBackupStatus(st)}, nil
+	return &adminv1.CancelBackupOperationResponse{Operation: mapBackupOperation(st, inferBackupDeploymentMode(st))}, nil
 }
 
-func (s *AdminBackupService) ListClusterBackups(ctx context.Context, req *adminv1.ListClusterBackupsRequest) (*adminv1.ListClusterBackupsResponse, error) {
+func (s *AdminBackupService) ListBackupOperations(ctx context.Context, req *adminv1.ListBackupOperationsRequest) (*adminv1.ListBackupOperationsResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
 	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+		return nil, status.Error(codes.FailedPrecondition, "backup coordinator is not configured")
 	}
 	statuses := clusterManager.ListClusterBackups()
-	items := make([]*adminv1.ClusterBackupSetSummary, 0, len(statuses))
+	items := make([]*adminv1.BackupOperation, 0, len(statuses))
 	for _, st := range statuses {
-		items = append(items, mapClusterBackupSetSummary(st))
+		items = append(items, mapBackupOperation(st, inferBackupDeploymentMode(st)))
 	}
 	pageSize := normalizePageSize(req.GetPageSize())
 	offset, err := parsePageToken(req.GetPageToken())
@@ -341,7 +270,7 @@ func (s *AdminBackupService) ListClusterBackups(ctx context.Context, req *adminv
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if offset > len(items) {
-		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the cluster backup list")
+		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the backup operation list")
 	}
 	end := offset + pageSize
 	if end > len(items) {
@@ -351,141 +280,78 @@ func (s *AdminBackupService) ListClusterBackups(ctx context.Context, req *adminv
 	if end < len(items) {
 		next = strconv.Itoa(end)
 	}
-	return &adminv1.ListClusterBackupsResponse{BackupSets: items[offset:end], NextPageToken: next}, nil
+	return &adminv1.ListBackupOperationsResponse{Operations: items[offset:end], NextPageToken: next}, nil
 }
 
-func (s *AdminBackupService) ListClusterBackupOperations(ctx context.Context, req *adminv1.ListClusterBackupOperationsRequest) (*adminv1.ListClusterBackupOperationsResponse, error) {
+func (s *AdminBackupService) ListBackupSets(ctx context.Context, req *adminv1.ListBackupSetsRequest) (*adminv1.ListBackupSetsResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
+	repositoryID := s.effectiveRepositoryID(req.GetRepositoryId())
+	if strings.TrimSpace(repositoryID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "repository_id is required unless a default backup repository is configured")
+	}
+	repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
 	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
+		return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
 	}
-	statuses := clusterManager.ListClusterBackups()
-	items := make([]*adminv1.ClusterBackupStatus, 0, len(statuses))
-	for _, st := range statuses {
-		items = append(items, mapClusterBackupStatus(st))
-	}
-	pageSize := normalizePageSize(req.GetPageSize())
-	offset, err := parsePageToken(req.GetPageToken())
+	sets, err := repositoryManager.ListRepositoryClusterBackupSets(ctx, repositoryID)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, mapBackupError(err, "list backup sets")
 	}
-	if offset > len(items) {
-		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the cluster backup operation list")
-	}
-	end := offset + pageSize
-	if end > len(items) {
-		end = len(items)
-	}
-	next := ""
-	if end < len(items) {
-		next = strconv.Itoa(end)
-	}
-	return &adminv1.ListClusterBackupOperationsResponse{Operations: items[offset:end], NextPageToken: next}, nil
-}
-
-func (s *AdminBackupService) ListClusterBackupSets(ctx context.Context, req *adminv1.ListClusterBackupSetsRequest) (*adminv1.ListClusterBackupSetsResponse, error) {
-	if _, err := s.requireBackupManage(ctx); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(req.GetRepositoryId()) != "" {
-		repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
-		if !ok {
-			return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
-		}
-		sets, err := repositoryManager.ListRepositoryClusterBackupSets(ctx, req.GetRepositoryId())
-		if err != nil {
-			return nil, mapBackupError(err, "list repository backup sets")
-		}
-		items := make([]*adminv1.ClusterBackupSetSummary, 0, len(sets))
-		for _, set := range sets {
-			summary := mapClusterManifestSummary(set.Manifest)
-			if set.ProductionManifest != nil {
-				applyProductionBackupSetSummary(summary, *set.ProductionManifest, set.ProductionMarker, set.ProductionReport)
-			}
-			items = append(items, summary)
-		}
-		return paginateClusterBackupSetSummaries(items, req.GetPageSize(), req.GetPageToken())
-	}
-	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
-	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
-	}
-	statuses := clusterManager.ListClusterBackups()
-	items := make([]*adminv1.ClusterBackupSetSummary, 0, len(statuses))
-	for _, st := range statuses {
-		items = append(items, mapClusterBackupSetSummary(st))
-	}
-	pageSize := normalizePageSize(req.GetPageSize())
-	offset, err := parsePageToken(req.GetPageToken())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if offset > len(items) {
-		return nil, status.Error(codes.InvalidArgument, "page_token offset is beyond the cluster backup set list")
-	}
-	end := offset + pageSize
-	if end > len(items) {
-		end = len(items)
-	}
-	next := ""
-	if end < len(items) {
-		next = strconv.Itoa(end)
-	}
-	return &adminv1.ListClusterBackupSetsResponse{BackupSets: items[offset:end], NextPageToken: next}, nil
-}
-
-func (s *AdminBackupService) GetClusterBackupSet(ctx context.Context, req *adminv1.GetClusterBackupSetRequest) (*adminv1.GetClusterBackupSetResponse, error) {
-	if _, err := s.requireBackupManage(ctx); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(req.GetRepositoryId()) != "" {
-		repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
-		if !ok {
-			return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
-		}
-		set, err := repositoryManager.GetRepositoryClusterBackupSet(ctx, req.GetRepositoryId(), req.GetBackupSetId())
-		if err != nil {
-			return nil, mapBackupError(err, "get repository backup set")
-		}
+	items := make([]*adminv1.BackupSetSummary, 0, len(sets))
+	for _, set := range sets {
 		summary := mapClusterManifestSummary(set.Manifest)
 		if set.ProductionManifest != nil {
 			applyProductionBackupSetSummary(summary, *set.ProductionManifest, set.ProductionMarker, set.ProductionReport)
 		}
-		return &adminv1.GetClusterBackupSetResponse{BackupSet: summary}, nil
+		items = append(items, summary)
 	}
-	clusterManager, ok := s.manager.(daemonbackup.ClusterBackupManager)
-	if !ok {
-		return nil, status.Error(codes.FailedPrecondition, "cluster backup coordinator is not configured")
-	}
-	for _, st := range clusterManager.ListClusterBackups() {
-		if st.BackupSetID == req.GetBackupSetId() {
-			return &adminv1.GetClusterBackupSetResponse{BackupSet: mapClusterBackupSetSummary(st)}, nil
-		}
-	}
-	return nil, status.Error(codes.NotFound, "cluster backup set not found")
+	return paginateBackupSetSummaries(items, req.GetPageSize(), req.GetPageToken())
 }
 
-func (s *AdminBackupService) DeleteClusterBackupSet(ctx context.Context, req *adminv1.DeleteClusterBackupSetRequest) (*adminv1.DeleteClusterBackupSetResponse, error) {
+func (s *AdminBackupService) GetBackupSet(ctx context.Context, req *adminv1.GetBackupSetRequest) (*adminv1.GetBackupSetResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
+	}
+	repositoryID := s.effectiveRepositoryID(req.GetRepositoryId())
+	if strings.TrimSpace(repositoryID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "repository_id is required unless a default backup repository is configured")
+	}
+	repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
+	}
+	set, err := repositoryManager.GetRepositoryClusterBackupSet(ctx, repositoryID, req.GetBackupSetId())
+	if err != nil {
+		return nil, mapBackupError(err, "get backup set")
+	}
+	summary := mapClusterManifestSummary(set.Manifest)
+	if set.ProductionManifest != nil {
+		applyProductionBackupSetSummary(summary, *set.ProductionManifest, set.ProductionMarker, set.ProductionReport)
+	}
+	return &adminv1.GetBackupSetResponse{BackupSet: summary}, nil
+}
+
+func (s *AdminBackupService) DeleteBackupSet(ctx context.Context, req *adminv1.DeleteBackupSetRequest) (*adminv1.DeleteBackupSetResponse, error) {
+	if _, err := s.requireBackupManage(ctx); err != nil {
+		return nil, err
+	}
+	repositoryID := s.effectiveRepositoryID(req.GetRepositoryId())
+	if strings.TrimSpace(repositoryID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "repository_id is required unless a default backup repository is configured")
+	}
+	if strings.TrimSpace(req.GetBackupSetId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "backup_set_id is required")
 	}
 	repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "repository backup-set catalog is not configured")
 	}
-	if strings.TrimSpace(req.GetRepositoryId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "repository_id is required")
+	if _, err := repositoryManager.DeleteRepositoryClusterBackupSet(ctx, repositoryID, req.GetBackupSetId()); err != nil {
+		return nil, mapBackupError(err, "delete backup set")
 	}
-	if strings.TrimSpace(req.GetBackupSetId()) == "" {
-		return nil, status.Error(codes.InvalidArgument, "backup_set_id is required")
-	}
-	if _, err := repositoryManager.DeleteRepositoryClusterBackupSet(ctx, req.GetRepositoryId(), req.GetBackupSetId()); err != nil {
-		return nil, mapBackupError(err, "delete repository backup set")
-	}
-	return &adminv1.DeleteClusterBackupSetResponse{RepositoryId: req.GetRepositoryId(), BackupSetId: req.GetBackupSetId(), State: adminv1.BackupDeletionState_BACKUP_DELETION_STATE_DELETED}, nil
+	return &adminv1.DeleteBackupSetResponse{RepositoryId: repositoryID, BackupSetId: req.GetBackupSetId(), State: adminv1.BackupDeletionState_BACKUP_DELETION_STATE_DELETED}, nil
 }
 
 func (s *AdminBackupService) PlanRepositoryRetention(ctx context.Context, req *adminv1.PlanRepositoryRetentionRequest) (*adminv1.PlanRepositoryRetentionResponse, error) {
@@ -562,7 +428,7 @@ func (s *AdminBackupService) GetBackupObservability(ctx context.Context, req *ad
 	return &adminv1.GetBackupObservabilityResponse{Snapshot: mapBackupObservabilitySnapshot(snapshot)}, nil
 }
 
-func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv1.PlanClusterRestoreRequest) (*adminv1.PlanClusterRestoreResponse, error) {
+func (s *AdminBackupService) PlanRestore(ctx context.Context, req *adminv1.PlanRestoreRequest) (*adminv1.PlanRestoreResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
@@ -574,10 +440,10 @@ func (s *AdminBackupService) PlanClusterRestore(ctx context.Context, req *adminv
 	if err != nil {
 		return nil, mapBackupError(err, "plan cluster restore")
 	}
-	return &adminv1.PlanClusterRestoreResponse{Plan: mapRestorePlanSummary(plan)}, nil
+	return &adminv1.PlanRestoreResponse{Plan: mapRestorePlanSummary(plan)}, nil
 }
 
-func (s *AdminBackupService) StartClusterRestore(ctx context.Context, req *adminv1.StartClusterRestoreRequest) (*adminv1.StartClusterRestoreResponse, error) {
+func (s *AdminBackupService) StartRestore(ctx context.Context, req *adminv1.StartRestoreRequest) (*adminv1.StartRestoreResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
@@ -589,10 +455,10 @@ func (s *AdminBackupService) StartClusterRestore(ctx context.Context, req *admin
 	if err != nil {
 		return nil, mapBackupError(err, "start cluster restore")
 	}
-	return &adminv1.StartClusterRestoreResponse{Operation: mapClusterRestoreOperation(op)}, nil
+	return &adminv1.StartRestoreResponse{Operation: mapClusterRestoreOperation(op)}, nil
 }
 
-func (s *AdminBackupService) GetClusterRestoreStatus(ctx context.Context, req *adminv1.GetClusterRestoreStatusRequest) (*adminv1.GetClusterRestoreStatusResponse, error) {
+func (s *AdminBackupService) GetRestoreOperation(ctx context.Context, req *adminv1.GetRestoreOperationRequest) (*adminv1.GetRestoreOperationResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
@@ -604,10 +470,10 @@ func (s *AdminBackupService) GetClusterRestoreStatus(ctx context.Context, req *a
 	if err != nil {
 		return nil, mapBackupError(err, "get cluster restore status")
 	}
-	return &adminv1.GetClusterRestoreStatusResponse{Operation: mapClusterRestoreOperation(op)}, nil
+	return &adminv1.GetRestoreOperationResponse{Operation: mapClusterRestoreOperation(op)}, nil
 }
 
-func (s *AdminBackupService) ListClusterRestores(ctx context.Context, req *adminv1.ListClusterRestoresRequest) (*adminv1.ListClusterRestoresResponse, error) {
+func (s *AdminBackupService) ListRestoreOperations(ctx context.Context, req *adminv1.ListRestoreOperationsRequest) (*adminv1.ListRestoreOperationsResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
@@ -616,7 +482,7 @@ func (s *AdminBackupService) ListClusterRestores(ctx context.Context, req *admin
 		return nil, status.Error(codes.FailedPrecondition, "cluster restore manager is not configured")
 	}
 	operations := manager.ListClusterRestores()
-	items := make([]*adminv1.ClusterRestoreOperation, 0, len(operations))
+	items := make([]*adminv1.RestoreOperation, 0, len(operations))
 	for _, op := range operations {
 		items = append(items, mapClusterRestoreOperation(op))
 	}
@@ -636,10 +502,10 @@ func (s *AdminBackupService) ListClusterRestores(ctx context.Context, req *admin
 	if end < len(items) {
 		next = strconv.Itoa(end)
 	}
-	return &adminv1.ListClusterRestoresResponse{Operations: items[offset:end], NextPageToken: next}, nil
+	return &adminv1.ListRestoreOperationsResponse{Operations: items[offset:end], NextPageToken: next}, nil
 }
 
-func (s *AdminBackupService) CancelClusterRestore(ctx context.Context, req *adminv1.CancelClusterRestoreRequest) (*adminv1.CancelClusterRestoreResponse, error) {
+func (s *AdminBackupService) CancelRestoreOperation(ctx context.Context, req *adminv1.CancelRestoreOperationRequest) (*adminv1.CancelRestoreOperationResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
@@ -651,28 +517,26 @@ func (s *AdminBackupService) CancelClusterRestore(ctx context.Context, req *admi
 	if err != nil {
 		return nil, mapBackupError(err, "cancel cluster restore")
 	}
-	return &adminv1.CancelClusterRestoreResponse{Operation: mapClusterRestoreOperation(op)}, nil
+	return &adminv1.CancelRestoreOperationResponse{Operation: mapClusterRestoreOperation(op)}, nil
 }
 
-func (s *AdminBackupService) ValidateClusterBackupSet(ctx context.Context, req *adminv1.ValidateClusterBackupSetRequest) (*adminv1.ValidateClusterBackupSetResponse, error) {
+func (s *AdminBackupService) ValidateBackupSet(ctx context.Context, req *adminv1.ValidateBackupSetRequest) (*adminv1.ValidateBackupSetResponse, error) {
 	if _, err := s.requireBackupManage(ctx); err != nil {
 		return nil, err
 	}
-	var result daemonbackup.ClusterBackupSetValidationResult
-	var err error
-	if strings.TrimSpace(req.GetRepositoryId()) != "" || strings.TrimSpace(req.GetBackupSetId()) != "" {
-		if strings.TrimSpace(req.GetRepositoryId()) == "" || strings.TrimSpace(req.GetBackupSetId()) == "" {
-			return nil, status.Error(codes.InvalidArgument, "repository_id and backup_set_id are required together")
-		}
-		repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
-		if !ok {
-			return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
-		}
-		result, err = repositoryManager.ValidateRepositoryClusterBackupSet(ctx, req.GetRepositoryId(), req.GetBackupSetId(), validationOptionsForBackupSet(req.GetValidationOptions()))
-	} else {
-		result, err = daemonbackup.ValidateClusterBackupSetDetailed(ctx, req.GetBackupSetPath())
+	repositoryID := s.effectiveRepositoryID(req.GetRepositoryId())
+	if strings.TrimSpace(repositoryID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "repository_id is required unless a default backup repository is configured")
 	}
-	res := &adminv1.ValidateClusterBackupSetResponse{Valid: err == nil}
+	if strings.TrimSpace(req.GetBackupSetId()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "backup_set_id is required")
+	}
+	repositoryManager, ok := s.manager.(daemonbackup.RepositoryClusterBackupSetManager)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "repository-backed backup-set catalog is not configured")
+	}
+	result, err := repositoryManager.ValidateRepositoryClusterBackupSet(ctx, repositoryID, req.GetBackupSetId(), validationOptionsForBackupSet(req.GetValidationOptions()))
+	res := &adminv1.ValidateBackupSetResponse{Valid: err == nil}
 	if result.Manifest.BackupSetID != "" {
 		res.BackupSet = mapClusterManifestSummary(result.Manifest)
 		if result.ProductionManifest != nil {
@@ -708,27 +572,6 @@ func (s *AdminBackupService) requireBackupManage(ctx context.Context) (daemonaut
 		return daemonauth.Principal{}, status.Error(codes.PermissionDenied, "operator lacks required backup capability")
 	}
 	return principal, nil
-}
-
-func (s *AdminBackupService) mapStatus(in backupcore.RunStatus) *adminv1.BackupStatus {
-	out := &adminv1.BackupStatus{BackupId: in.BackupID, State: string(in.State), StartedAt: formatBackupTime(in.StartedAt), CompletedAt: formatBackupTime(in.CompletedAt), ArchivePath: in.ArchivePath, ManifestPath: in.ManifestPath, Error: in.Error, LastSuccessAt: formatBackupTime(in.LastSuccessAt), NextRunAt: formatBackupTime(in.NextRunAt)}
-	if s.quiesce != nil {
-		for _, participant := range s.quiesce.Status().Participants {
-			out.Participants = append(out.Participants, mapQuiesceParticipant(participant))
-		}
-	}
-	return out
-}
-
-func (s *AdminBackupService) mapQuiesceStatus() *adminv1.QuiesceStatus {
-	out := &adminv1.QuiesceStatus{}
-	if s.quiesce == nil {
-		return out
-	}
-	for _, participant := range s.quiesce.Status().Participants {
-		out.Participants = append(out.Participants, mapQuiesceParticipant(participant))
-	}
-	return out
 }
 
 func mapBackupRepository(repo daemonbackup.BackupRepository) *adminv1.BackupRepository {
@@ -818,7 +661,7 @@ func validationOptionsForBackupSet(options *adminv1.ValidationOptions) clusterba
 	return clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: options.GetRequireCompleteMarker(), ValidateLocalArtifactBytes: options.GetIncludeArtifactChecks(), AllowS3ArtifactURIs: true, AllowLocalArtifactURIs: true}
 }
 
-func paginateClusterBackupSetSummaries(items []*adminv1.ClusterBackupSetSummary, pageSizeValue int32, pageToken string) (*adminv1.ListClusterBackupSetsResponse, error) {
+func paginateBackupSetSummaries(items []*adminv1.BackupSetSummary, pageSizeValue int32, pageToken string) (*adminv1.ListBackupSetsResponse, error) {
 	pageSize := normalizePageSize(pageSizeValue)
 	offset, err := parsePageToken(pageToken)
 	if err != nil {
@@ -835,7 +678,7 @@ func paginateClusterBackupSetSummaries(items []*adminv1.ClusterBackupSetSummary,
 	if end < len(items) {
 		next = strconv.Itoa(end)
 	}
-	return &adminv1.ListClusterBackupSetsResponse{BackupSets: items[offset:end], NextPageToken: next}, nil
+	return &adminv1.ListBackupSetsResponse{BackupSets: items[offset:end], NextPageToken: next}, nil
 }
 
 func mapBackupSetValidationReport(report clusterbackup.BackupSetValidationReport) *adminv1.ValidationSummary {
@@ -885,29 +728,29 @@ func mapRestorePlanSummary(plan daemonbackup.ClusterRestorePlan) *adminv1.Restor
 	return out
 }
 
-func restoreTargetFromProto(in *adminv1.ClusterRestoreTarget) daemonbackup.ClusterRestoreTarget {
+func restoreTargetFromProto(in *adminv1.RestoreTarget) daemonbackup.ClusterRestoreTarget {
 	if in == nil {
 		return daemonbackup.ClusterRestoreTarget{}
 	}
-	out := daemonbackup.ClusterRestoreTarget{TargetClusterID: in.GetTargetClusterId(), TargetClusterName: in.GetTargetClusterName(), Namespace: in.GetNamespace(), StatefulSet: in.GetStatefulSet(), ExpectedNodeCount: int(in.GetExpectedNodeCount()), Labels: copyStringMap(in.GetLabels()), Annotations: copyStringMap(in.GetAnnotations())}
+	out := daemonbackup.ClusterRestoreTarget{TargetClusterID: in.GetTargetDeploymentId(), TargetClusterName: in.GetTargetDeploymentName(), Namespace: in.GetNamespace(), StatefulSet: in.GetStatefulSet(), ExpectedNodeCount: int(in.GetExpectedNodeCount()), Labels: copyStringMap(in.GetLabels()), Annotations: copyStringMap(in.GetAnnotations())}
 	for _, node := range in.GetNodes() {
 		out.Nodes = append(out.Nodes, restoreNodeMappingFromProto(node))
 	}
 	return out
 }
 
-func restoreTargetToProto(in daemonbackup.ClusterRestoreTarget) *adminv1.ClusterRestoreTarget {
+func restoreTargetToProto(in daemonbackup.ClusterRestoreTarget) *adminv1.RestoreTarget {
 	if in.TargetClusterID == "" && in.TargetClusterName == "" && in.Namespace == "" && in.StatefulSet == "" && in.ExpectedNodeCount == 0 && len(in.Nodes) == 0 && len(in.Labels) == 0 && len(in.Annotations) == 0 {
 		return nil
 	}
-	out := &adminv1.ClusterRestoreTarget{TargetClusterId: in.TargetClusterID, TargetClusterName: in.TargetClusterName, Namespace: in.Namespace, StatefulSet: in.StatefulSet, ExpectedNodeCount: int32(in.ExpectedNodeCount), Labels: copyStringMap(in.Labels), Annotations: copyStringMap(in.Annotations)}
+	out := &adminv1.RestoreTarget{TargetDeploymentId: in.TargetClusterID, TargetDeploymentName: in.TargetClusterName, Namespace: in.Namespace, StatefulSet: in.StatefulSet, ExpectedNodeCount: int32(in.ExpectedNodeCount), Labels: copyStringMap(in.Labels), Annotations: copyStringMap(in.Annotations)}
 	for _, node := range in.Nodes {
-		out.Nodes = append(out.Nodes, &adminv1.ClusterRestoreNodeMapping{Ordinal: int32(node.Ordinal), SourcePodName: node.SourcePodName, SourceNodeId: node.SourceNodeID, SourceArchiveUri: node.SourceArchiveURI, TargetPodName: node.TargetPodName, TargetNodeName: node.TargetNodeName, TargetPvcName: node.TargetPVCName, TargetDataDir: node.TargetDataDir, StagingPath: node.StagingPath})
+		out.Nodes = append(out.Nodes, &adminv1.RestoreNodeMapping{Ordinal: int32(node.Ordinal), SourcePodName: node.SourcePodName, SourceNodeId: node.SourceNodeID, SourceArchiveUri: node.SourceArchiveURI, TargetPodName: node.TargetPodName, TargetNodeName: node.TargetNodeName, TargetPvcName: node.TargetPVCName, TargetDataDir: node.TargetDataDir, StagingPath: node.StagingPath})
 	}
 	return out
 }
 
-func restoreStagingFromProto(in *adminv1.ClusterRestoreStagingLocation) daemonbackup.ClusterRestoreStagingLocation {
+func restoreStagingFromProto(in *adminv1.RestoreStagingLocation) daemonbackup.ClusterRestoreStagingLocation {
 	if in == nil {
 		return daemonbackup.ClusterRestoreStagingLocation{}
 	}
@@ -918,18 +761,18 @@ func restoreStagingFromProto(in *adminv1.ClusterRestoreStagingLocation) daemonba
 	return out
 }
 
-func restoreStagingToProto(in daemonbackup.ClusterRestoreStagingLocation) *adminv1.ClusterRestoreStagingLocation {
+func restoreStagingToProto(in daemonbackup.ClusterRestoreStagingLocation) *adminv1.RestoreStagingLocation {
 	if in.StagingURI == "" && in.StorageClass == "" && in.RequiredBytes == 0 && in.AvailableBytes == 0 && !in.CleanBeforeUse && len(in.Blockers) == 0 {
 		return nil
 	}
-	out := &adminv1.ClusterRestoreStagingLocation{StagingUri: in.StagingURI, StorageClass: in.StorageClass, RequiredBytes: in.RequiredBytes, AvailableBytes: in.AvailableBytes, CleanBeforeUse: in.CleanBeforeUse}
+	out := &adminv1.RestoreStagingLocation{StagingUri: in.StagingURI, StorageClass: in.StorageClass, RequiredBytes: in.RequiredBytes, AvailableBytes: in.AvailableBytes, CleanBeforeUse: in.CleanBeforeUse}
 	for _, blocker := range in.Blockers {
 		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
 	}
 	return out
 }
 
-func restorePreconditionsFromProto(in *adminv1.ClusterRestorePreconditionEvidence) daemonbackup.ClusterRestorePreconditionEvidence {
+func restorePreconditionsFromProto(in *adminv1.RestorePreconditionEvidence) daemonbackup.ClusterRestorePreconditionEvidence {
 	if in == nil {
 		return daemonbackup.ClusterRestorePreconditionEvidence{}
 	}
@@ -940,7 +783,7 @@ func restorePreconditionsFromProto(in *adminv1.ClusterRestorePreconditionEvidenc
 	return out
 }
 
-func restoreCleanTargetProofFromProto(in *adminv1.ClusterRestoreCleanTargetProof) daemonbackup.ClusterRestoreCleanTargetProof {
+func restoreCleanTargetProofFromProto(in *adminv1.RestoreCleanTargetProof) daemonbackup.ClusterRestoreCleanTargetProof {
 	if in == nil {
 		return daemonbackup.ClusterRestoreCleanTargetProof{}
 	}
@@ -954,42 +797,42 @@ func restoreCleanTargetProofFromProto(in *adminv1.ClusterRestoreCleanTargetProof
 	return out
 }
 
-func restoreSourceFencingFromProto(in *adminv1.ClusterRestoreSourceFencingEvidence) daemonbackup.ClusterRestoreSourceFencingEvidence {
+func restoreSourceFencingFromProto(in *adminv1.RestoreSourceFencingEvidence) daemonbackup.ClusterRestoreSourceFencingEvidence {
 	if in == nil {
 		return daemonbackup.ClusterRestoreSourceFencingEvidence{}
 	}
-	out := daemonbackup.ClusterRestoreSourceFencingEvidence{SourceClusterFenced: in.GetSourceClusterFenced(), FenceTokenRef: in.GetFenceTokenRef(), FencedEndpoints: append([]string(nil), in.GetFencedEndpoints()...)}
+	out := daemonbackup.ClusterRestoreSourceFencingEvidence{SourceClusterFenced: in.GetSourceDeploymentFenced(), FenceTokenRef: in.GetFenceTokenRef(), FencedEndpoints: append([]string(nil), in.GetFencedEndpoints()...)}
 	for _, blocker := range in.GetBlockers() {
 		out.Blockers = append(out.Blockers, validationBlockerFromProto(blocker))
 	}
 	return out
 }
 
-func restoreNodeMappingFromProto(node *adminv1.ClusterRestoreNodeMapping) daemonbackup.ClusterRestoreNodeMapping {
+func restoreNodeMappingFromProto(node *adminv1.RestoreNodeMapping) daemonbackup.ClusterRestoreNodeMapping {
 	if node == nil {
 		return daemonbackup.ClusterRestoreNodeMapping{}
 	}
 	return daemonbackup.ClusterRestoreNodeMapping{Ordinal: int(node.GetOrdinal()), SourcePodName: node.GetSourcePodName(), SourceNodeID: node.GetSourceNodeId(), SourceArchiveURI: node.GetSourceArchiveUri(), TargetPodName: node.GetTargetPodName(), TargetNodeName: node.GetTargetNodeName(), TargetPVCName: node.GetTargetPvcName(), TargetDataDir: node.GetTargetDataDir(), StagingPath: node.GetStagingPath()}
 }
 
-func restorePreconditionsToProto(in daemonbackup.ClusterRestorePreconditionEvidence) *adminv1.ClusterRestorePreconditionEvidence {
+func restorePreconditionsToProto(in daemonbackup.ClusterRestorePreconditionEvidence) *adminv1.RestorePreconditionEvidence {
 	if len(in.Blockers) == 0 && len(in.CleanTarget.Blockers) == 0 && len(in.CleanTarget.CheckedNodes) == 0 && !in.CleanTarget.TargetEmpty && len(in.SourceFencing.Blockers) == 0 && !in.SourceFencing.SourceClusterFenced {
 		return nil
 	}
-	out := &adminv1.ClusterRestorePreconditionEvidence{CleanTarget: restoreCleanTargetProofToProto(in.CleanTarget), SourceFencing: restoreSourceFencingToProto(in.SourceFencing)}
+	out := &adminv1.RestorePreconditionEvidence{CleanTarget: restoreCleanTargetProofToProto(in.CleanTarget), SourceFencing: restoreSourceFencingToProto(in.SourceFencing)}
 	for _, blocker := range in.Blockers {
 		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
 	}
 	return out
 }
 
-func restoreCleanTargetProofToProto(in daemonbackup.ClusterRestoreCleanTargetProof) *adminv1.ClusterRestoreCleanTargetProof {
+func restoreCleanTargetProofToProto(in daemonbackup.ClusterRestoreCleanTargetProof) *adminv1.RestoreCleanTargetProof {
 	if in.ProofID == "" && in.CheckedAt.IsZero() && !in.TargetEmpty && len(in.CheckedNodes) == 0 && len(in.Blockers) == 0 && in.OperatorAttestation == "" {
 		return nil
 	}
-	out := &adminv1.ClusterRestoreCleanTargetProof{ProofId: in.ProofID, CheckedAt: formatBackupTime(in.CheckedAt), TargetEmpty: in.TargetEmpty, OperatorAttestation: in.OperatorAttestation}
+	out := &adminv1.RestoreCleanTargetProof{ProofId: in.ProofID, CheckedAt: formatBackupTime(in.CheckedAt), TargetEmpty: in.TargetEmpty, OperatorAttestation: in.OperatorAttestation}
 	for _, node := range in.CheckedNodes {
-		out.CheckedNodes = append(out.CheckedNodes, &adminv1.ClusterRestoreNodeMapping{Ordinal: int32(node.Ordinal), SourcePodName: node.SourcePodName, SourceNodeId: node.SourceNodeID, SourceArchiveUri: node.SourceArchiveURI, TargetPodName: node.TargetPodName, TargetNodeName: node.TargetNodeName, TargetPvcName: node.TargetPVCName, TargetDataDir: node.TargetDataDir, StagingPath: node.StagingPath})
+		out.CheckedNodes = append(out.CheckedNodes, &adminv1.RestoreNodeMapping{Ordinal: int32(node.Ordinal), SourcePodName: node.SourcePodName, SourceNodeId: node.SourceNodeID, SourceArchiveUri: node.SourceArchiveURI, TargetPodName: node.TargetPodName, TargetNodeName: node.TargetNodeName, TargetPvcName: node.TargetPVCName, TargetDataDir: node.TargetDataDir, StagingPath: node.StagingPath})
 	}
 	for _, blocker := range in.Blockers {
 		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
@@ -997,11 +840,11 @@ func restoreCleanTargetProofToProto(in daemonbackup.ClusterRestoreCleanTargetPro
 	return out
 }
 
-func restoreSourceFencingToProto(in daemonbackup.ClusterRestoreSourceFencingEvidence) *adminv1.ClusterRestoreSourceFencingEvidence {
+func restoreSourceFencingToProto(in daemonbackup.ClusterRestoreSourceFencingEvidence) *adminv1.RestoreSourceFencingEvidence {
 	if !in.SourceClusterFenced && in.FencedAt.IsZero() && in.FenceTokenRef == "" && len(in.FencedEndpoints) == 0 && len(in.Blockers) == 0 {
 		return nil
 	}
-	out := &adminv1.ClusterRestoreSourceFencingEvidence{SourceClusterFenced: in.SourceClusterFenced, FencedAt: formatBackupTime(in.FencedAt), FenceTokenRef: in.FenceTokenRef, FencedEndpoints: append([]string(nil), in.FencedEndpoints...)}
+	out := &adminv1.RestoreSourceFencingEvidence{SourceDeploymentFenced: in.SourceClusterFenced, FencedAt: formatBackupTime(in.FencedAt), FenceTokenRef: in.FenceTokenRef, FencedEndpoints: append([]string(nil), in.FencedEndpoints...)}
 	for _, blocker := range in.Blockers {
 		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
 	}
@@ -1015,8 +858,8 @@ func validationBlockerFromProto(in *adminv1.ValidationBlocker) daemonbackup.Vali
 	return daemonbackup.ValidationBlocker{Reason: in.GetReason(), Detail: in.GetDetail(), Retryable: in.GetRetryable(), FieldPath: in.GetFieldPath()}
 }
 
-func mapClusterRestoreOperation(op daemonbackup.ClusterRestoreOperation) *adminv1.ClusterRestoreOperation {
-	out := &adminv1.ClusterRestoreOperation{RestoreOperationId: op.RestoreOperationID, RestorePlanId: op.RestorePlanID, RepositoryId: op.RepositoryID, BackupSetId: op.BackupSetID, State: restoreStateToProto(op.State), TargetMode: restoreTargetModeToProto(op.TargetMode), IdentityMode: restoreIdentityModeToProto(op.IdentityMode), AuthSessionPolicy: restoreAuthSessionPolicyToProto(op.AuthSessionPolicy), CreatedAt: formatBackupTime(op.CreatedAt), UpdatedAt: formatBackupTime(op.UpdatedAt), CompletedAt: formatBackupTime(op.CompletedAt), Error: op.Error, Target: restoreTargetToProto(op.Target), Staging: restoreStagingToProto(op.Staging), Preconditions: restorePreconditionsToProto(op.Preconditions), Progress: restoreProgressToProto(op.Progress)}
+func mapClusterRestoreOperation(op daemonbackup.ClusterRestoreOperation) *adminv1.RestoreOperation {
+	out := &adminv1.RestoreOperation{RestoreOperationId: op.RestoreOperationID, RestorePlanId: op.RestorePlanID, RepositoryId: op.RepositoryID, BackupSetId: op.BackupSetID, State: restoreStateToProto(op.State), TargetMode: restoreTargetModeToProto(op.TargetMode), IdentityMode: restoreIdentityModeToProto(op.IdentityMode), AuthSessionPolicy: restoreAuthSessionPolicyToProto(op.AuthSessionPolicy), CreatedAt: formatBackupTime(op.CreatedAt), UpdatedAt: formatBackupTime(op.UpdatedAt), CompletedAt: formatBackupTime(op.CompletedAt), Error: op.Error, Target: restoreTargetToProto(op.Target), Staging: restoreStagingToProto(op.Staging), Preconditions: restorePreconditionsToProto(op.Preconditions), Progress: restoreProgressToProto(op.Progress)}
 	for _, blocker := range op.Blockers {
 		out.Blockers = append(out.Blockers, mapValidationBlocker(blocker))
 	}
@@ -1026,59 +869,59 @@ func mapClusterRestoreOperation(op daemonbackup.ClusterRestoreOperation) *adminv
 	return out
 }
 
-func restoreStateToProto(state string) adminv1.ClusterRestoreState {
+func restoreStateToProto(state string) adminv1.RestoreOperationState {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
 	case "PENDING":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_PENDING
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_PENDING
 	case "PLANNING":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_PLANNING
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_PLANNING
 	case "VALIDATING_BACKUP_SET":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_VALIDATING_BACKUP_SET
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_VALIDATING_BACKUP_SET
 	case "VALIDATING_TARGET":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_VALIDATING_TARGET
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_VALIDATING_TARGET
 	case "ACQUIRING_RESTORE_LOCK":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_ACQUIRING_RESTORE_LOCK
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_ACQUIRING_RESTORE_LOCK
 	case "STAGING_ARTIFACTS":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_STAGING_ARTIFACTS
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_STAGING_ARTIFACTS
 	case "READY_TO_APPLY":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_READY_TO_APPLY
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_READY_TO_APPLY
 	case "PREPARING_TARGET":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_PREPARING_TARGET
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_PREPARING_TARGET
 	case "APPLYING_ARTIFACTS":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_APPLYING_ARTIFACTS
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_APPLYING_ARTIFACTS
 	case "NORMALIZING_RESTORED_STATE":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_NORMALIZING_RESTORED_STATE
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_NORMALIZING_RESTORED_STATE
 	case "POST_RESTORE_VALIDATING":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_POST_RESTORE_VALIDATING
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_POST_RESTORE_VALIDATING
 	case "RESUMING_SERVICE":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_RESUMING_SERVICE
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_RESUMING_SERVICE
 	case "SUCCEEDED":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_SUCCEEDED
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_SUCCEEDED
 	case "CANCELING":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_CANCELING
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_CANCELING
 	case "CANCELED":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_CANCELED
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_CANCELED
 	case "FAILED":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_FAILED
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_FAILED
 	case "FAILED_REQUIRES_OPERATOR":
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_FAILED_REQUIRES_OPERATOR
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_FAILED_REQUIRES_OPERATOR
 	default:
-		return adminv1.ClusterRestoreState_CLUSTER_RESTORE_STATE_UNSPECIFIED
+		return adminv1.RestoreOperationState_RESTORE_OPERATION_STATE_UNSPECIFIED
 	}
 }
 
-func restoreProgressToProto(in daemonbackup.ClusterRestoreProgress) *adminv1.ClusterRestoreProgress {
+func restoreProgressToProto(in daemonbackup.ClusterRestoreProgress) *adminv1.RestoreProgress {
 	if in.TotalNodes == 0 && in.StagedNodes == 0 && in.AppliedNodes == 0 && in.VerifiedNodes == 0 && in.BytesTotal == 0 && in.BytesCompleted == 0 && in.CurrentPhase == "" && len(in.Nodes) == 0 {
 		return nil
 	}
-	out := &adminv1.ClusterRestoreProgress{TotalNodes: int32(in.TotalNodes), StagedNodes: int32(in.StagedNodes), AppliedNodes: int32(in.AppliedNodes), VerifiedNodes: int32(in.VerifiedNodes), BytesTotal: in.BytesTotal, BytesCompleted: in.BytesCompleted, CurrentPhase: in.CurrentPhase, CurrentNode: in.CurrentNode}
+	out := &adminv1.RestoreProgress{TotalNodes: int32(in.TotalNodes), StagedNodes: int32(in.StagedNodes), AppliedNodes: int32(in.AppliedNodes), VerifiedNodes: int32(in.VerifiedNodes), BytesTotal: in.BytesTotal, BytesCompleted: in.BytesCompleted, CurrentPhase: in.CurrentPhase, CurrentNode: in.CurrentNode}
 	for _, node := range in.Nodes {
-		out.Nodes = append(out.Nodes, &adminv1.ClusterRestoreNodeProgress{Ordinal: int32(node.Ordinal), State: node.State, SourceArchiveUri: node.SourceArchiveURI, StagingUri: node.StagingURI, BytesTotal: node.BytesTotal, BytesCompleted: node.BytesCompleted, ChecksumSha256: node.ChecksumSHA256, LastError: node.LastError, Evidence: copyStringMap(node.Evidence)})
+		out.Nodes = append(out.Nodes, &adminv1.RestoreNodeProgress{Ordinal: int32(node.Ordinal), State: node.State, SourceArchiveUri: node.SourceArchiveURI, StagingUri: node.StagingURI, BytesTotal: node.BytesTotal, BytesCompleted: node.BytesCompleted, ChecksumSha256: node.ChecksumSHA256, LastError: node.LastError, Evidence: copyStringMap(node.Evidence)})
 	}
 	return out
 }
 
-func applyProductionBackupSetSummary(out *adminv1.ClusterBackupSetSummary, manifest clusterbackup.BackupSetManifestV1, marker *clusterbackup.CompleteMarkerV1, report *clusterbackup.BackupSetValidationReport) {
+func applyProductionBackupSetSummary(out *adminv1.BackupSetSummary, manifest clusterbackup.BackupSetManifestV1, marker *clusterbackup.CompleteMarkerV1, report *clusterbackup.BackupSetValidationReport) {
 	if out == nil {
 		return
 	}
@@ -1319,70 +1162,70 @@ func validationOptionsFromProto(options *adminv1.ValidationOptions) backupcore.V
 	return backupcore.ValidationOptions{IncludeArtifactChecks: options.GetIncludeArtifactChecks(), IncludeExternalDependencyChecks: options.GetIncludeExternalDependencyChecks(), IncludeCapacityEstimates: options.GetIncludeCapacityEstimates(), RequireCompleteMarker: options.GetRequireCompleteMarker()}
 }
 
-func restoreTargetModeToProto(mode string) adminv1.ClusterRestoreTargetMode {
+func restoreTargetModeToProto(mode string) adminv1.RestoreTargetMode {
 	switch strings.ToUpper(strings.TrimSpace(mode)) {
 	case daemonbackup.ClusterRestoreTargetModeNewClusterBootstrap:
-		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP
+		return adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_NEW_DEPLOYMENT_BOOTSTRAP
 	case daemonbackup.ClusterRestoreTargetModeExistingClusterReplace:
-		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE
+		return adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_EXISTING_DEPLOYMENT_REPLACE
 	default:
-		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_UNSPECIFIED
+		return adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_UNSPECIFIED
 	}
 }
 
-func restoreTargetModeFromProto(mode adminv1.ClusterRestoreTargetMode) string {
+func restoreTargetModeFromProto(mode adminv1.RestoreTargetMode) string {
 	switch mode {
-	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP:
+	case adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_NEW_DEPLOYMENT_BOOTSTRAP:
 		return daemonbackup.ClusterRestoreTargetModeNewClusterBootstrap
-	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE:
+	case adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_EXISTING_DEPLOYMENT_REPLACE:
 		return daemonbackup.ClusterRestoreTargetModeExistingClusterReplace
 	default:
 		return ""
 	}
 }
 
-func restoreIdentityModeToProto(mode string) adminv1.ClusterRestoreIdentityMode {
+func restoreIdentityModeToProto(mode string) adminv1.RestoreIdentityMode {
 	switch strings.ToUpper(strings.TrimSpace(mode)) {
 	case daemonbackup.ClusterRestoreIdentityModePreserveBackupID:
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID
 	case daemonbackup.ClusterRestoreIdentityModeAdoptTargetID:
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID
 	case daemonbackup.ClusterRestoreIdentityModeGenerateNewID:
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID
 	default:
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_UNSPECIFIED
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_UNSPECIFIED
 	}
 }
 
-func restoreIdentityModeFromProto(mode adminv1.ClusterRestoreIdentityMode) string {
+func restoreIdentityModeFromProto(mode adminv1.RestoreIdentityMode) string {
 	switch mode {
-	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID:
+	case adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID:
 		return daemonbackup.ClusterRestoreIdentityModePreserveBackupID
-	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID:
+	case adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID:
 		return daemonbackup.ClusterRestoreIdentityModeAdoptTargetID
-	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID:
+	case adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID:
 		return daemonbackup.ClusterRestoreIdentityModeGenerateNewID
 	default:
 		return ""
 	}
 }
 
-func restoreAuthSessionPolicyToProto(policy string) adminv1.ClusterRestoreAuthSessionPolicy {
+func restoreAuthSessionPolicyToProto(policy string) adminv1.RestoreAuthSessionPolicy {
 	switch strings.ToUpper(strings.TrimSpace(policy)) {
 	case daemonbackup.ClusterRestoreAuthSessionPolicyPreserveRestoredSessions:
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS
 	case daemonbackup.ClusterRestoreAuthSessionPolicyRevokeAllSessions:
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS
 	default:
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
 	}
 }
 
-func restoreAuthSessionPolicyFromProto(policy adminv1.ClusterRestoreAuthSessionPolicy) string {
+func restoreAuthSessionPolicyFromProto(policy adminv1.RestoreAuthSessionPolicy) string {
 	switch policy {
-	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS:
+	case adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS:
 		return daemonbackup.ClusterRestoreAuthSessionPolicyPreserveRestoredSessions
-	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS:
+	case adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS:
 		return daemonbackup.ClusterRestoreAuthSessionPolicyRevokeAllSessions
 	default:
 		return ""
@@ -1466,32 +1309,11 @@ func cloneStringMap(in map[string]string) map[string]string {
 
 func mapBackupPolicy(policy backupcore.Policy) *adminv1.BackupPolicy {
 	policy = backupcore.EffectivePolicy("", policy)
-	weekdays := make([]int32, 0, len(policy.Weekdays))
-	for _, weekday := range policy.Weekdays {
-		weekdays = append(weekdays, int32(weekday))
-	}
 	derived := make([]*adminv1.DerivedSubsystemPolicy, 0, len(policy.DerivedSubsystems))
 	for _, row := range policy.DerivedSubsystems {
 		derived = append(derived, &adminv1.DerivedSubsystemPolicy{Subsystem: derivedSubsystemToProto(row.Subsystem), Mode: derivedPolicyModeToProto(row.Mode)})
 	}
 	return &adminv1.BackupPolicy{
-		Enabled:                    policy.Enabled,
-		BackupDir:                  policy.BackupDir,
-		IntervalHours:              int32(policy.Interval / time.Hour),
-		RetentionCount:             int32(policy.RetentionCount),
-		IncludeLogs:                policy.IncludeLogs,
-		Compression:                policy.Compression,
-		ArchiveFormat:              archiveFormatToProto(policy.ArchiveFormat),
-		QuiesceDrainTimeoutSeconds: int64(policy.QuiesceDrainTimeout.Seconds()),
-		BackupTimeoutSeconds:       int64(policy.BackupTimeout.Seconds()),
-		RetryAfterSeconds:          int64(policy.RetryAfter.Seconds()),
-		StatusHistoryLimit:         int32(policy.StatusHistoryLimit),
-		AllowReadsDuringBackup:     policy.AllowReadsDuringBackup,
-		ScheduleKind:               policy.ScheduleKind,
-		TimeOfDay:                  policy.TimeOfDay,
-		Timezone:                   policy.Timezone,
-		Weekdays:                   weekdays,
-		RunMissed:                  policy.RunMissed,
 		DefaultRepositoryId:        policy.DefaultRepositoryID,
 		CaptureProvider:            captureProviderToProto(policy.CaptureProvider),
 		QuiesceReadProfile:         quiesceReadProfileToProto(policy.QuiesceReadProfile),
@@ -1547,34 +1369,41 @@ func backupPolicyFromProto(policy *adminv1.BackupPolicy) backupcore.Policy {
 	if policy == nil {
 		return backupcore.Policy{}
 	}
-	weekdays := make([]int, 0, len(policy.GetWeekdays()))
-	for _, weekday := range policy.GetWeekdays() {
-		weekdays = append(weekdays, int(weekday))
-	}
 	derived := make([]backupcore.DerivedSubsystemPolicy, 0, len(policy.GetDerivedSubsystems()))
 	for _, row := range policy.GetDerivedSubsystems() {
 		derived = append(derived, backupcore.DerivedSubsystemPolicy{Subsystem: derivedSubsystemFromProto(row.GetSubsystem()), Mode: derivedPolicyModeFromProto(row.GetMode())})
 	}
-	retention := retentionPolicyFromProto(policy.GetRetentionPolicy())
 	validation := backupcore.ValidationOptions{}
 	if policy.GetValidationOptions() != nil {
 		validation = backupcore.ValidationOptions{IncludeArtifactChecks: policy.GetValidationOptions().GetIncludeArtifactChecks(), IncludeExternalDependencyChecks: policy.GetValidationOptions().GetIncludeExternalDependencyChecks(), IncludeCapacityEstimates: policy.GetValidationOptions().GetIncludeCapacityEstimates(), RequireCompleteMarker: policy.GetValidationOptions().GetRequireCompleteMarker()}
 	}
-	return backupcore.Policy{Enabled: policy.GetEnabled(), BackupDir: policy.GetBackupDir(), Interval: time.Duration(policy.GetIntervalHours()) * time.Hour, RetentionCount: int(policy.GetRetentionCount()), IncludeLogs: policy.GetIncludeLogs(), Compression: policy.GetCompression(), ArchiveFormat: archiveFormatFromProto(policy.GetArchiveFormat()), QuiesceDrainTimeout: time.Duration(policy.GetQuiesceDrainTimeoutSeconds()) * time.Second, BackupTimeout: time.Duration(policy.GetBackupTimeoutSeconds()) * time.Second, RetryAfter: time.Duration(policy.GetRetryAfterSeconds()) * time.Second, StatusHistoryLimit: int(policy.GetStatusHistoryLimit()), AllowReadsDuringBackup: policy.GetAllowReadsDuringBackup(), ScheduleKind: policy.GetScheduleKind(), TimeOfDay: policy.GetTimeOfDay(), Timezone: policy.GetTimezone(), Weekdays: weekdays, RunMissed: policy.GetRunMissed(), DefaultRepositoryID: policy.GetDefaultRepositoryId(), CaptureProvider: captureProviderFromProto(policy.GetCaptureProvider()), QuiesceReadProfile: quiesceReadProfileFromProto(policy.GetQuiesceReadProfile()), AllowReadOnlyDuringQuiesce: policy.GetAllowReadOnlyDuringQuiesce(), DerivedSubsystems: derived, Retention: retention, Validation: validation}
+	return backupcore.Policy{DefaultRepositoryID: policy.GetDefaultRepositoryId(), CaptureProvider: captureProviderFromProto(policy.GetCaptureProvider()), QuiesceReadProfile: quiesceReadProfileFromProto(policy.GetQuiesceReadProfile()), AllowReadOnlyDuringQuiesce: policy.GetAllowReadOnlyDuringQuiesce(), DerivedSubsystems: derived, Retention: retentionPolicyFromProto(policy.GetRetentionPolicy()), Validation: validation}
 }
 
-func mapBackupSummary(manifest backupcore.Manifest) *adminv1.BackupSummary {
-	return &adminv1.BackupSummary{BackupId: manifest.BackupID, ArchiveName: manifest.ArchiveName, CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), SizeBytes: manifest.SizeBytes, ChecksumSha256: manifest.ChecksumSHA256, Compression: manifest.Policy.Compression, ArchiveFormat: archiveFormatToProto(backupcore.ArchiveFormat(manifest.Policy.ArchiveFormat)), IncludeLogs: manifest.Policy.IncludeLogs}
-}
-
-func (s *AdminBackupService) clusterBackupNodes() ([]daemonbackup.ClusterBackupNode, string, error) {
-	if s.cluster == nil {
-		return nil, "", fmt.Errorf("clustering manager is not configured")
+func (s *AdminBackupService) effectiveRepositoryID(requested string) string {
+	if strings.TrimSpace(requested) != "" {
+		return strings.TrimSpace(requested)
 	}
+	if s == nil || s.manager == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.manager.Policy().DefaultRepositoryID)
+}
+
+func (s *AdminBackupService) backupNodes() ([]daemonbackup.ClusterBackupNode, string, adminv1.BackupDeploymentMode, error) {
+	if s.cluster == nil {
+		return nil, "", adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_UNSPECIFIED, fmt.Errorf("clustering manager is not configured")
+	}
+	identity := s.cluster.Identity()
 	meta := s.cluster.SystemMetadata()
-	clusterID := firstNonEmptyAdmin(meta.ClusterID, s.cluster.Identity().ClusterID)
-	if strings.TrimSpace(clusterID) == "" {
-		return nil, "", fmt.Errorf("cluster_id is not available")
+	deploymentID := firstNonEmptyAdmin(meta.ClusterID, identity.ClusterID)
+	if strings.TrimSpace(deploymentID) == "" {
+		return nil, "", adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_UNSPECIFIED, fmt.Errorf("deployment_id is not available")
+	}
+	if !s.cluster.RaftRuntimeConfigured() && len(meta.Nodes) == 0 {
+		nodeName := firstNonEmptyAdmin(identity.NodeName, "standalone")
+		node := daemonbackup.ClusterBackupNode{PodName: nodeName, NodeID: identity.NodeID, Ordinal: 0, RaftNodeID: 0, BackendAdvertiseAddr: identity.BackendAdvertiseAddr}
+		return []daemonbackup.ClusterBackupNode{node}, deploymentID, adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_STANDALONE, nil
 	}
 	nodes := make([]daemonbackup.ClusterBackupNode, 0, len(meta.Nodes))
 	for _, node := range meta.Nodes {
@@ -1589,13 +1418,13 @@ func (s *AdminBackupService) clusterBackupNodes() ([]daemonbackup.ClusterBackupN
 		nodes = append(nodes, daemonbackup.ClusterBackupNode{PodName: podName, NodeID: node.NodeID, Ordinal: ordinal, RaftNodeID: node.RaftNodeID, BackendAdvertiseAddr: node.BackendAdvertiseAddr})
 	}
 	if len(nodes) == 0 {
-		return nil, "", fmt.Errorf("authoritative cluster membership is not available")
+		return nil, "", adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_UNSPECIFIED, fmt.Errorf("authoritative cluster membership is not available")
 	}
 	if s.clusterConfig.RaftNodeCount > 0 && len(nodes) != s.clusterConfig.RaftNodeCount {
-		return nil, "", fmt.Errorf("authoritative cluster membership has %d nodes, expected %d", len(nodes), s.clusterConfig.RaftNodeCount)
+		return nil, "", adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_UNSPECIFIED, fmt.Errorf("authoritative cluster membership has %d nodes, expected %d", len(nodes), s.clusterConfig.RaftNodeCount)
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Ordinal < nodes[j].Ordinal })
-	return nodes, clusterID, nil
+	return nodes, deploymentID, adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_CLUSTERED, nil
 }
 
 var podOrdinalPattern = regexp.MustCompile(`-(\d+)$`)
@@ -1626,56 +1455,82 @@ func ordinalFromPodName(name string) int {
 	return ordinal
 }
 
-func mapClusterBackupStatus(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupStatus {
-	out := &adminv1.ClusterBackupStatus{BackupSetId: st.BackupSetID, State: st.Phase, StateCode: mapClusterBackupStateCode(st.Phase), ClusterId: st.ClusterID, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), FailedPhase: st.FailurePhase, Error: st.Error, RaftBarriers: st.Barriers, CancelRequested: st.Cancel, CurrentPhase: st.Phase, RepositoryId: st.RepositoryID, BackupOperationId: st.BackupSetID}
-	if st.Phase == "waiting_for_cluster_convergence" {
-		out.RetryAfterSeconds = 2
+func inferBackupDeploymentMode(st daemonbackup.ClusterBackupRunStatus) adminv1.BackupDeploymentMode {
+	if len(st.Expected) == 1 && len(st.Barriers) == 0 {
+		return adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_STANDALONE
 	}
+	return adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_CLUSTERED
+}
+
+func mapBackupOperation(st daemonbackup.ClusterBackupRunStatus, mode adminv1.BackupDeploymentMode) *adminv1.BackupOperation {
+	out := &adminv1.BackupOperation{BackupOperationId: st.BackupSetID, BackupSetId: st.BackupSetID, RepositoryId: st.RepositoryID, DeploymentId: st.ClusterID, DeploymentMode: mode, State: mapBackupOperationState(st.Phase), Phase: st.Phase, Reason: st.Reason, CreatedAt: formatBackupTime(st.CreatedAt), UpdatedAt: formatBackupTime(st.UpdatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodeCount: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapBackupNodeArtifacts(st.Nodes), RaftBarriers: st.Barriers, CancelRequested: st.Cancel, RetryAfterSeconds: backupRetryAfterSeconds(st.Phase), FailedPhase: st.FailurePhase, Error: st.Error}
 	for _, blocker := range st.Blockers {
-		out.Blockers = append(out.Blockers, &adminv1.ClusterBackupBlocker{NodeName: blocker.NodeName, NodeId: blocker.NodeID, RaftNodeId: blocker.RaftNodeID, RaftGroup: blocker.RaftGroup, Reason: blocker.Reason, AppliedIndex: blocker.AppliedIndex, CommitIndex: blocker.CommitIndex, Detail: blocker.Detail})
+		out.Blockers = append(out.Blockers, &adminv1.BackupOperationBlocker{NodeName: blocker.NodeName, NodeId: blocker.NodeID, RaftNodeId: blocker.RaftNodeID, RaftGroup: blocker.RaftGroup, Reason: blocker.Reason, AppliedIndex: blocker.AppliedIndex, CommitIndex: blocker.CommitIndex, Detail: blocker.Detail})
 	}
 	return out
 }
 
-func mapClusterBackupStateCode(phase string) adminv1.ClusterBackupState {
+func backupRetryAfterSeconds(phase string) int64 {
+	if phase == "waiting_for_cluster_convergence" || phase == "prechecking" {
+		return 2
+	}
+	return 0
+}
+
+func mapBackupOperationState(phase string) adminv1.BackupOperationState {
 	switch phase {
 	case "pending", "requested":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_PENDING
-	case "waiting_for_cluster_convergence", "prechecking":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_WAITING_FOR_CLUSTER_CONVERGENCE
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_PENDING
+	case "waiting_for_cluster_convergence":
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_WAITING_FOR_CONVERGENCE
+	case "prechecking":
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_PREFLIGHTING
 	case "ready":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_READY
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_READY
 	case "quiescing":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_QUIESCING
-	case "capturing", "archiving", "barrier_wait", "uploading", "committing_manifest":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CAPTURING
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_QUIESCING
+	case "barrier_wait":
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_CHECKPOINTING
+	case "capturing", "archiving":
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_CAPTURING
+	case "uploading":
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_UPLOADING
+	case "committing_manifest":
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_FINALIZING
 	case "validating":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_VALIDATING
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_VALIDATING
 	case "succeeded":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_SUCCEEDED
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_SUCCEEDED
 	case "failed", "aborted":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_FAILED
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_FAILED
 	case "canceling":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELING
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_CANCELING
 	case "canceled":
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELED
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_CANCELED
 	default:
-		return adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_UNSPECIFIED
+		return adminv1.BackupOperationState_BACKUP_OPERATION_STATE_UNSPECIFIED
 	}
 }
 
-func mapClusterBackupSetSummary(st daemonbackup.ClusterBackupRunStatus) *adminv1.ClusterBackupSetSummary {
-	return &adminv1.ClusterBackupSetSummary{BackupSetId: st.BackupSetID, State: st.Phase, ClusterId: st.ClusterID, CreatedAt: formatBackupTime(st.CreatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodes: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(st.Nodes), RepositoryId: st.RepositoryID}
+func mapBackupSetSummary(st daemonbackup.ClusterBackupRunStatus, mode adminv1.BackupDeploymentMode) *adminv1.BackupSetSummary {
+	return &adminv1.BackupSetSummary{BackupSetId: st.BackupSetID, RepositoryId: st.RepositoryID, DeploymentId: st.ClusterID, DeploymentMode: mode, State: mapBackupOperationState(st.Phase), CreatedAt: formatBackupTime(st.CreatedAt), CompletedAt: formatBackupTime(st.CompletedAt), ExpectedNodeCount: int32(len(st.Expected)), ManifestUri: st.ManifestURI, Nodes: mapBackupNodeArtifacts(st.Nodes)}
 }
 
-func mapClusterManifestSummary(manifest clusterbackup.Manifest) *adminv1.ClusterBackupSetSummary {
-	return &adminv1.ClusterBackupSetSummary{BackupSetId: manifest.BackupSetID, State: manifest.State, ClusterId: manifest.ClusterID, CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), ExpectedNodes: int32(manifest.ExpectedNodes), ManifestUri: manifest.ManifestURI, Nodes: mapClusterBackupNodeArtifacts(manifest.Nodes)}
+func mapClusterManifestSummary(manifest clusterbackup.Manifest) *adminv1.BackupSetSummary {
+	return &adminv1.BackupSetSummary{BackupSetId: manifest.BackupSetID, DeploymentId: manifest.ClusterID, DeploymentMode: backupDeploymentModeFromManifest(manifest), State: mapBackupOperationState(manifest.State), CreatedAt: formatBackupTime(manifest.CreatedAt), CompletedAt: formatBackupTime(manifest.CompletedAt), ExpectedNodeCount: int32(manifest.ExpectedNodes), ManifestUri: manifest.ManifestURI, Nodes: mapBackupNodeArtifacts(manifest.Nodes)}
 }
 
-func mapClusterBackupNodeArtifacts(nodes []clusterbackup.NodeArtifact) []*adminv1.ClusterBackupNodeArtifact {
-	out := make([]*adminv1.ClusterBackupNodeArtifact, 0, len(nodes))
+func backupDeploymentModeFromManifest(manifest clusterbackup.Manifest) adminv1.BackupDeploymentMode {
+	if manifest.ExpectedNodes == 1 && len(manifest.RaftBarriers) == 0 {
+		return adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_STANDALONE
+	}
+	return adminv1.BackupDeploymentMode_BACKUP_DEPLOYMENT_MODE_CLUSTERED
+}
+
+func mapBackupNodeArtifacts(nodes []clusterbackup.NodeArtifact) []*adminv1.BackupNodeArtifact {
+	out := make([]*adminv1.BackupNodeArtifact, 0, len(nodes))
 	for _, node := range nodes {
-		out = append(out, &adminv1.ClusterBackupNodeArtifact{PodName: node.PodName, NodeId: node.NodeID, Ordinal: int32(node.Ordinal), RaftNodeId: node.RaftNodeID, ArchiveName: node.ArchiveName, ArchiveUri: node.ArchiveURI, ManifestName: node.ManifestName, ManifestUri: node.ManifestURI, SizeBytes: node.SizeBytes, ChecksumSha256: node.ChecksumSHA256, AppliedIndexes: node.AppliedIndexes})
+		out = append(out, &adminv1.BackupNodeArtifact{PodName: node.PodName, NodeId: node.NodeID, Ordinal: int32(node.Ordinal), RaftNodeId: node.RaftNodeID, ArchiveName: node.ArchiveName, ArchiveUri: node.ArchiveURI, ManifestName: node.ManifestName, ManifestUri: node.ManifestURI, SizeBytes: node.SizeBytes, ChecksumSha256: node.ChecksumSHA256, AppliedIndexes: node.AppliedIndexes})
 	}
 	return out
 }
@@ -1710,10 +1565,6 @@ func archiveFormatFromProto(format adminv1.BackupArchiveFormat) backupcore.Archi
 	default:
 		return backupcore.ArchiveFormat(fmt.Sprintf("unknown:%d", format.Number()))
 	}
-}
-
-func mapQuiesceParticipant(in quiesce.ParticipantStatus) *adminv1.QuiesceParticipantStatus {
-	return &adminv1.QuiesceParticipantStatus{Name: in.Name, Quiesced: in.Quiesced, Active: int32(in.Active), Reason: in.Reason, Mode: string(in.Mode), Source: in.Source, Since: formatBackupTime(in.Since), LastError: in.LastError, ActiveReadOnly: int32(in.ActiveReadOnly), ActiveWrites: int32(in.ActiveWrites), ReadAllowlistProfile: in.ReadAllowlistProfile, Deadline: formatBackupTime(in.Deadline), AcceptingReadOnly: in.AcceptingReadOnly, AcceptingWrites: in.AcceptingWrites}
 }
 
 func parseOptionalBackupTime(value, field string) (time.Time, error) {

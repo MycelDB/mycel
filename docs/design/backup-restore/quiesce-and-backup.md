@@ -390,18 +390,19 @@ If `MYCELD_BACKUP_DIR` is unset, the daemon may derive a sibling directory from 
 
 ## Admin API surface
 
-Implemented Admin APIs in `mycel-api` and `myceld`:
+The original daemon-local backup-file RPCs (`TriggerBackup`, `GetBackupStatus`,
+`ListBackups`, and `DeleteBackup`) have been retired from the public Admin API.
+The current public contract is repository-backed and deployment-wide:
 
 ```text
-GetBackupPolicy
-UpdateBackupPolicy
-TriggerBackup
-GetBackupStatus
-ListBackups
-DeleteBackup
+GetBackupPolicy / UpdateBackupPolicy
+StartBackup / GetBackupOperation / CancelBackupOperation / ListBackupOperations
+ListBackupSets / GetBackupSet / ValidateBackupSet / DeleteBackupSet
+PlanRestore / GetRestoreOperation / ListRestoreOperations / CancelRestoreOperation
 ```
 
-`GetBackupStatus` includes quiesce participant status plus current/last backup status, including `last_success_at` and `next_run_at`. `ListBackups` returns completed backups and pagination metadata.
+Standalone daemons publish one-node repository backup sets. Clustered
+deployments publish multi-node sets with convergence evidence.
 
 ## Restore
 

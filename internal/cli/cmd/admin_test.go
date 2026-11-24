@@ -226,9 +226,8 @@ func TestAdminGrantAndSessionCommands(t *testing.T) {
 }
 
 func TestAdminBackupCommandsUseDaemonGRPC(t *testing.T) {
-	dataDir, addr, password, cleanup := startDaemonAdminGRPC(t)
+	_, addr, password, cleanup := startDaemonAdminGRPC(t)
 	defer cleanup()
-	backupDir := filepath.Join(filepath.Dir(dataDir), "cli-backups")
 	base := []string{"--daemon-addr", addr, "--username", "admin", "--password", password, "--output", "json"}
 
 	out, err := runCLI(t, append(base, "admin", "backup", "policy", "get")...)
@@ -239,65 +238,19 @@ func TestAdminBackupCommandsUseDaemonGRPC(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &policy); err != nil {
 		t.Fatalf("decode policy: %v\n%s", err, out)
 	}
-	if policy.GetCompression() != "zip" || policy.GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP {
-		t.Fatalf("unexpected default policy: %#v", &policy)
+	if policy.GetCaptureProvider() == adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_UNSPECIFIED || policy.GetQuiesceReadProfile() == adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_UNSPECIFIED {
+		t.Fatalf("unexpected default repository policy: %#v", &policy)
 	}
 
-	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--enabled", "--dir", backupDir, "--interval-hours", "1", "--keep", "2", "--archive-format", "zip", "--include-logs", "--schedule", "weekly", "--time-of-day", "22:00", "--timezone", "America/Toronto", "--weekday", "sun", "--weekday", "wed", "--run-missed")...)
+	out, err = runCLI(t, append(base, "admin", "backup", "policy", "set", "--default-repository-id", "repo-prod", "--capture-provider", "filesystem_immutable_copy", "--quiesce-read-profile", "control_only", "--allow-read-only-during-quiesce", "--keep-last-successful", "2", "--keep-for", "14d", "--delete-incomplete-after", "24h", "--include-artifact-checks", "--require-complete-marker")...)
 	if err != nil {
 		t.Fatalf("backup policy set failed: %v\n%s", err, out)
 	}
 	if err := json.Unmarshal([]byte(out), &policy); err != nil {
 		t.Fatalf("decode updated policy: %v\n%s", err, out)
 	}
-	if !policy.GetEnabled() || policy.GetBackupDir() != backupDir || policy.GetIntervalHours() != 1 || policy.GetRetentionCount() != 2 || policy.GetArchiveFormat() != adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP || policy.GetCompression() != "zip" || !policy.GetIncludeLogs() || policy.GetScheduleKind() != "weekly" || policy.GetTimeOfDay() != "22:00" || policy.GetTimezone() != "America/Toronto" || len(policy.GetWeekdays()) != 2 || policy.GetWeekdays()[0] != 0 || policy.GetWeekdays()[1] != 3 || !policy.GetRunMissed() {
+	if policy.GetDefaultRepositoryId() != "repo-prod" || policy.GetCaptureProvider() != adminv1.BackupCaptureProvider_BACKUP_CAPTURE_PROVIDER_FILESYSTEM_IMMUTABLE_COPY || policy.GetQuiesceReadProfile() != adminv1.BackupQuiesceReadProfile_BACKUP_QUIESCE_READ_PROFILE_CONTROL_ONLY || !policy.GetAllowReadOnlyDuringQuiesce() || policy.GetRetentionPolicy().GetKeepLastSuccessful() != 2 || policy.GetRetentionPolicy().GetKeepForSeconds() != int64((14*24*time.Hour).Seconds()) || !policy.GetValidationOptions().GetIncludeArtifactChecks() || !policy.GetValidationOptions().GetRequireCompleteMarker() {
 		t.Fatalf("unexpected updated policy: %#v", &policy)
-	}
-
-	out, err = runCLI(t, append(base, "admin", "backup", "trigger", "--reason", "cli-test")...)
-	if err != nil {
-		t.Fatalf("backup trigger failed: %v\n%s", err, out)
-	}
-	var trigger adminv1.TriggerBackupResponse
-	if err := json.Unmarshal([]byte(out), &trigger); err != nil {
-		t.Fatalf("decode trigger: %v\n%s", err, out)
-	}
-	backupID := trigger.GetBackup().GetBackupId()
-	if backupID == "" || trigger.GetStatus().GetState() != "succeeded" {
-		t.Fatalf("unexpected trigger response: %#v", &trigger)
-	}
-
-	out, err = runCLI(t, append(base, "admin", "backup", "status")...)
-	if err != nil {
-		t.Fatalf("backup status failed: %v\n%s", err, out)
-	}
-	var statusRes adminv1.GetBackupStatusResponse
-	if err := json.Unmarshal([]byte(out), &statusRes); err != nil {
-		t.Fatalf("decode status: %v\n%s", err, out)
-	}
-	if statusRes.GetStatus().GetBackupId() != backupID || statusRes.GetStatus().GetLastSuccessAt() == "" {
-		t.Fatalf("unexpected status: %#v", &statusRes)
-	}
-
-	out, err = runCLI(t, append(base, "admin", "backup", "list")...)
-	if err != nil {
-		t.Fatalf("backup list failed: %v\n%s", err, out)
-	}
-	var backups adminv1.ListBackupsResponse
-	if err := json.Unmarshal([]byte(out), &backups); err != nil {
-		t.Fatalf("decode list: %v\n%s", err, out)
-	}
-	if len(backups.GetBackups()) != 1 || backups.GetBackups()[0].GetBackupId() != backupID {
-		t.Fatalf("unexpected backups: %#v", &backups)
-	}
-
-	out, err = runCLI(t, append(base, "admin", "backup", "delete", backupID)...)
-	if err != nil {
-		t.Fatalf("backup delete failed: %v\n%s", err, out)
-	}
-	var deleted adminv1.DeleteBackupResponse
-	if err := json.Unmarshal([]byte(out), &deleted); err != nil || deleted.GetBackupId() != backupID {
-		t.Fatalf("unexpected delete output err=%v deleted=%#v raw=%s", err, &deleted, out)
 	}
 }
 

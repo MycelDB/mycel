@@ -2,10 +2,13 @@
 
 ## Status
 
-Implemented for the initial coordinated full-system cluster backup path. The
-cluster backup command creates one complete, auditable backup set for all
-StatefulSet ordinals/PVCs and captures raw raft metadata/storage under a
-TTL-bound raft freeze/checkpoint window.
+Historical design for the first coordinated cluster backup path. The current
+public operator contract is repository-backed and deployment-wide via
+`mycel admin backup start/list/validate/restore-plan`; local `--output-dir` and
+`--backup-set` durable backup flows are retired from public API/CLI surfaces.
+Clustered deployments still create one complete, auditable backup set for all
+StatefulSet ordinals/PVCs and capture raft metadata/storage under a TTL-bound
+raft freeze/checkpoint window.
 
 Implementation plan: [Cluster system backup implementation plan](../../implementation/v0.7/cluster-system-backup-implementation-plan.md).
 
@@ -35,12 +38,12 @@ Raft freeze/checkpoint follow-up plan: [Cluster system backup raft freeze implem
 
 ## Operator command shape
 
-Command:
+Current command:
 
 ```sh
-mycel admin backup cluster start \
+mycel admin backup start \
   --reason "before upgrade" \
-  --output-dir /backups/mycel \
+  --repository-id repo-prod \
   --archive-format tar.zst \
   --wait
 ```
@@ -51,11 +54,11 @@ system raft owner/coordinator as needed.
 Related operation commands:
 
 ```sh
-mycel admin backup cluster status BACKUP_SET_ID
-mycel admin backup cluster observability --include-retention-probe
-mycel admin backup cluster cancel BACKUP_SET_ID --reason "operator requested"
-mycel admin backup cluster list
-mycel admin backup cluster validate --backup-set /backups/mycel/<backup-set-id>
+mycel admin backup status BACKUP_SET_ID
+mycel admin backup observability --repository-id repo-prod --include-retention-probe
+mycel admin backup cancel BACKUP_SET_ID --reason "operator requested"
+mycel admin backup list --repository-id repo-prod
+mycel admin backup validate --repository-id repo-prod --backup-set-id <backup-set-id>
 ```
 
 ## Backup set layout
@@ -455,10 +458,10 @@ be explicit and auditable.
 ## Restore model
 
 Full-system restore remains offline. For production Kubernetes deployments the
-recommended path is daemon-managed `NEW_CLUSTER_BOOTSTRAP` restore into
+recommended path is daemon-managed `NEW_DEPLOYMENT_BOOTSTRAP` restore into
 controller-prepared PVCs:
 
-1. the operator starts `StartClusterRestore` against a repository-backed backup
+1. the operator starts `StartRestore` against a repository-backed backup
    set, preserving backup identity and supplying the target namespace,
    StatefulSet name, and per-ordinal target PVC names;
 2. the daemon validates repository truth using both `backup-set.json` and
@@ -572,7 +575,7 @@ non-secret but should still be handled as infrastructure identifiers.
 
 The same in-cluster helper is both the PVC restore helper and the first
 production Kubernetes restore controller. The control daemon that receives
-`StartClusterRestore` must run outside the target StatefulSet; a daemon pod whose
+`StartRestore` must run outside the target StatefulSet; a daemon pod whose
 `HOSTNAME` is one of the target StatefulSet pods fails closed instead of scaling
 itself down midway through PVC replacement. The helper/controller is opt-in and
 must be configured on the control daemon pod:
