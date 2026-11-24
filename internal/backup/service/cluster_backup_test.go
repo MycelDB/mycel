@@ -20,6 +20,7 @@ import (
 	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
+	runtimemodel "github.com/myceldb/mycel/internal/runtime"
 	config "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	daemonruntime "github.com/myceldb/mycel/internal/runtime/runtimetest"
 	"github.com/myceldb/mycel/internal/wal"
@@ -317,6 +318,55 @@ func TestClusterBackupBarriersRejectDuplicates(t *testing.T) {
 	_, err := clusterBackupBarriersFromInput([]backend.BackupRaftBarrier{{GroupID: "system", Index: 1}, {GroupID: "system", Index: 2}})
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("clusterBackupBarriersFromInput() error=%v, want duplicate", err)
+	}
+}
+
+func TestStandaloneRepositoryBackupProducesOneNodeBackupSet(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "standalone.txt"), []byte("standalone-data\n"), 0o600); err != nil {
+		t.Fatalf("write data fixture: %v", err)
+	}
+	m := NewModule()
+	if result := m.Init(ctx, daemonruntime.New(daemonruntime.Config{DataDir: dataDir, Backup: daemonruntime.BackupConfig{BackupDir: t.TempDir()}}, slog.Default())); !result.OK {
+		t.Fatalf("Init() error=%v", result.Error)
+	}
+	m.localIdentity = runtimemodel.LocalRouteIdentity{NodeID: "node-standalone", NodeName: "standalone", ClusterID: "deployment-standalone"}
+	store := newMemoryRepositoryObjectStore()
+	m.repositoryObjectStoreFactory = func(context.Context, BackupRepository) (backupRepositoryObjectStore, error) { return store, nil }
+	repo := normalizeBackupRepository(BackupRepository{RepositoryID: "repo-standalone", Provider: RepositoryProviderS3Compatible, S3: S3CompatibleRepositoryConfig{Bucket: "mycel-backups", Prefix: "standalone/test"}, CredentialRef: SecretReference{Scheme: SecretSchemeEnv, Keys: map[string]string{"access_key_id": "MINIO_ACCESS_KEY", "secret_access_key": "MINIO_SECRET_KEY"}}, Encryption: EncryptionPolicy{Mode: EncryptionModeSSES3}, DevOnly: true, Validation: BackupRepositoryValidationSummary{State: ValidationStateValid, CheckedAt: time.Now().UTC()}})
+	m.mu.Lock()
+	m.ensureBackupRepositoriesLocked()
+	m.repositories[repo.RepositoryID] = repo
+	m.mu.Unlock()
+
+	started, err := m.StartClusterBackup(ctx, StartClusterBackupInput{Reason: "standalone repository backup", ArchiveFormat: backupcore.ArchiveFormatTar, ClusterID: "deployment-standalone", ClusterName: "standalone", Nodes: []ClusterBackupNode{{PodName: "standalone", NodeID: "node-standalone", Ordinal: 0}}, RepositoryID: repo.RepositoryID, CaptureProvider: "filesystem_immutable_copy", QuiesceReadProfile: backupcore.DefaultProductionQuiesceReadProfile})
+	if err != nil {
+		t.Fatalf("StartClusterBackup() error = %v", err)
+	}
+	var status ClusterBackupRunStatus
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		status, err = m.ClusterBackupStatus(started.BackupSetID)
+		if err != nil {
+			t.Fatalf("ClusterBackupStatus() error = %v", err)
+		}
+		if status.Phase == string(clusterBackupPhaseSucceeded) || status.Phase == string(clusterBackupPhaseFailed) || status.Phase == string(clusterBackupPhaseCanceled) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if status.Phase != string(clusterBackupPhaseSucceeded) {
+		t.Fatalf("standalone backup phase=%s error=%s failed_phase=%s", status.Phase, status.Error, status.FailurePhase)
+	}
+	if len(status.Expected) != 1 || len(status.Nodes) != 1 || len(status.Barriers) != 0 {
+		t.Fatalf("unexpected standalone status: %#v", status)
+	}
+	validated, err := m.ValidateRepositoryClusterBackupSet(ctx, repo.RepositoryID, status.BackupSetID, clusterbackup.BackupSetValidationOptions{RequireCompleteMarker: true, AllowS3ArtifactURIs: true})
+	if err != nil {
+		t.Fatalf("ValidateRepositoryClusterBackupSet() error = %v", err)
+	}
+	if validated.ProductionManifest == nil || validated.ProductionManifest.Source.Topology.NodeCount != 1 || len(validated.ProductionManifest.Consistency.BarrierSet.RaftGroups) != 0 {
+		t.Fatalf("unexpected standalone manifest: %#v", validated.ProductionManifest)
 	}
 }
 

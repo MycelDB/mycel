@@ -16,6 +16,7 @@ type ClusterBackupPrecheckInput struct {
 	IncompatibleQuiesce bool
 	Nodes               []ClusterBackupPrecheckNode
 	RaftGroups          []ClusterBackupPrecheckRaftGroup
+	Standalone          bool
 	Destinations        []ClusterBackupDestinationCheck
 }
 
@@ -118,7 +119,9 @@ func EvaluateClusterBackupPreconditions(input ClusterBackupPrecheckInput) Cluste
 			seenOrdinals[node.Ordinal] = struct{}{}
 		}
 		if node.RaftNodeID == 0 {
-			failures = append(failures, label+": raft_node_id is required")
+			if !input.Standalone {
+				failures = append(failures, label+": raft_node_id is required")
+			}
 		} else {
 			if other, ok := seenRaftNodeIDs[node.RaftNodeID]; ok {
 				failures = append(failures, fmt.Sprintf("duplicate raft_node_id %d for %s and %s", node.RaftNodeID, other, label))
@@ -142,7 +145,7 @@ func EvaluateClusterBackupPreconditions(input ClusterBackupPrecheckInput) Cluste
 		} else if strings.TrimSpace(input.ClusterID) != "" && strings.TrimSpace(node.ClusterID) != strings.TrimSpace(input.ClusterID) {
 			failures = append(failures, fmt.Sprintf("%s: cluster_id %s does not match %s", label, node.ClusterID, input.ClusterID))
 		}
-		if strings.TrimSpace(node.BackendAdvertiseAddr) == "" {
+		if strings.TrimSpace(node.BackendAdvertiseAddr) == "" && !input.Standalone {
 			failures = append(failures, label+": backend advertise address is missing")
 		}
 		for _, blocker := range node.ReadinessBlockers {
@@ -155,7 +158,9 @@ func EvaluateClusterBackupPreconditions(input ClusterBackupPrecheckInput) Cluste
 		}
 	}
 	if len(input.RaftGroups) == 0 {
-		failures = append(failures, "raft group status is required")
+		if !input.Standalone {
+			failures = append(failures, "raft group status is required")
+		}
 	}
 	for _, group := range input.RaftGroups {
 		groupID := strings.TrimSpace(string(group.GroupID))

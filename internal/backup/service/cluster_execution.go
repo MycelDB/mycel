@@ -36,6 +36,9 @@ func (m *Module) CheckLocalClusterBackupReadiness(ctx context.Context, in backen
 	if err := validateLocalClusterBackupDestination(m.dataDir, in.OutputDir); err != nil {
 		return nil, nil, err
 	}
+	if !m.raftMode() {
+		return map[string]uint64{}, map[string]uint64{}, nil
+	}
 	applied, commits, err := m.localRaftBackupApplyStatus(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -316,7 +319,7 @@ func (m *Module) validateLocalClusterBackupIdentity(in backend.CreateLocalBackup
 	if identity.NodeName != "" && strings.TrimSpace(in.PodName) != identity.NodeName {
 		return fmt.Errorf("pod_name does not match local node")
 	}
-	if in.RaftNodeID == 0 {
+	if in.RaftNodeID == 0 && m.raftMode() {
 		return fmt.Errorf("raft_node_id is required")
 	}
 	if identity.RaftNodeID != 0 && in.RaftNodeID != identity.RaftNodeID {
@@ -371,9 +374,13 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 		return backend.CreateLocalBackupArchiveResult{}, err
 	}
 	backupID := strings.TrimSuffix(archiveName, ext)
-	barriers, err := clusterBackupBarriersFromInput(in.Barriers)
-	if err != nil {
-		return backend.CreateLocalBackupArchiveResult{}, err
+	barriers := map[string]uint64{}
+	if len(in.Barriers) > 0 || m.raftMode() {
+		var err error
+		barriers, err = clusterBackupBarriersFromInput(in.Barriers)
+		if err != nil {
+			return backend.CreateLocalBackupArchiveResult{}, err
+		}
 	}
 	if err := m.validateRecordedLocalClusterBackupRequest(in, barriers); err != nil {
 		return backend.CreateLocalBackupArchiveResult{}, err
@@ -400,24 +407,26 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 	m.mu.Lock()
 	heldFreeze := m.clusterBackupFreeze[in.BackupSetID]
 	m.mu.Unlock()
-	if heldFreeze == nil {
-		return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze lease is required before local archive")
-	}
-	if strings.TrimSpace(in.FreezeLeaseID) == "" || heldFreeze.freeze.LeaseID != strings.TrimSpace(in.FreezeLeaseID) {
-		return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze lease_id does not match active lease")
-	}
 	applied := map[string]uint64{}
-	for groupID, group := range heldFreeze.freeze.Groups {
-		if group.BarrierIndex != barriers[groupID] {
-			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze barrier for group %s does not match request", groupID)
+	if m.raftMode() {
+		if heldFreeze == nil {
+			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze lease is required before local archive")
 		}
-		if group.AppliedIndex < barriers[groupID] {
-			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze applied index for group %s is behind barrier", groupID)
+		if strings.TrimSpace(in.FreezeLeaseID) == "" || heldFreeze.freeze.LeaseID != strings.TrimSpace(in.FreezeLeaseID) {
+			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze lease_id does not match active lease")
 		}
-		applied[groupID] = group.AppliedIndex
-	}
-	if len(applied) != len(barriers) {
-		return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze groups do not match recorded barriers")
+		for groupID, group := range heldFreeze.freeze.Groups {
+			if group.BarrierIndex != barriers[groupID] {
+				return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze barrier for group %s does not match request", groupID)
+			}
+			if group.AppliedIndex < barriers[groupID] {
+				return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze applied index for group %s is behind barrier", groupID)
+			}
+			applied[groupID] = group.AppliedIndex
+		}
+		if len(applied) != len(barriers) {
+			return backend.CreateLocalBackupArchiveResult{}, fmt.Errorf("raft freeze groups do not match recorded barriers")
+		}
 	}
 	result, err := m.manager.CreateLocalArchive(ctx, backupcore.LocalArchiveInput{
 		BackupID:      backupID,
@@ -505,8 +514,15 @@ func (m *Module) CreateLocalClusterBackupArchive(ctx context.Context, in backend
 		SizeBytes:               result.Manifest.SizeBytes,
 		ChecksumSHA256:          result.Manifest.ChecksumSHA256,
 		AppliedIndexes:          applied,
-		RaftFreeze:              heldFreeze.freeze,
+		RaftFreeze:              backupRaftFreezeFromLease(heldFreeze),
 	}, nil
+}
+
+func backupRaftFreezeFromLease(lease *clusterBackupFreezeLease) backend.BackupRaftFreeze {
+	if lease == nil {
+		return backend.BackupRaftFreeze{}
+	}
+	return lease.freeze
 }
 
 type clusterNodeInventory struct {
@@ -633,6 +649,9 @@ func (m *Module) validateRecordedLocalClusterBackupRequestWithMode(in backend.Cr
 		return nil
 	}
 	if len(run.Barriers) == 0 {
+		if !m.raftMode() && len(barriers) == 0 {
+			return nil
+		}
 		return fmt.Errorf("cluster backup %s has no recorded raft barriers", backupSetID)
 	}
 	if len(barriers) != len(run.Barriers) {

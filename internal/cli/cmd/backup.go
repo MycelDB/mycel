@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	clusterbackup "github.com/myceldb/mycel/internal/backup/cluster"
 	"github.com/myceldb/mycel/internal/cli/app"
 	adminv1 "github.com/myceldb/mycel/internal/gen/mycel/admin/v1"
 	"github.com/spf13/cobra"
@@ -16,14 +15,18 @@ import (
 )
 
 func NewAdminBackupCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "backup", Short: "Manage daemon backups"}
-	policy := &cobra.Command{Use: "policy", Short: "Manage backup policy"}
+	cmd := &cobra.Command{Use: "backup", Short: "Manage repository-backed deployment backups"}
+	policy := &cobra.Command{Use: "policy", Short: "Manage repository-backed backup policy"}
 	policy.AddCommand(NewAdminBackupPolicyGetCommand(a), NewAdminBackupPolicySetCommand(a))
-	cluster := &cobra.Command{Use: "cluster", Short: "Manage coordinated cluster backup sets"}
-	retention := &cobra.Command{Use: "retention", Short: "Preview and apply repository backup retention"}
-	retention.AddCommand(NewAdminBackupClusterRetentionPlanCommand(a), NewAdminBackupClusterRetentionApplyCommand(a))
-	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterObservabilityCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), retention, NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreLocalCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
-	cmd.AddCommand(policy, cluster, NewAdminBackupTriggerCommand(a), NewAdminBackupStatusCommand(a), NewAdminBackupListCommand(a), NewAdminBackupDeleteCommand(a))
+	newRetention := func() *cobra.Command {
+		retention := &cobra.Command{Use: "retention", Short: "Preview and apply repository backup retention"}
+		retention.AddCommand(NewAdminBackupClusterRetentionPlanCommand(a), NewAdminBackupClusterRetentionApplyCommand(a))
+		return retention
+	}
+	cmd.AddCommand(policy, NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterObservabilityCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), newRetention(), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
+	cluster := &cobra.Command{Use: "cluster", Hidden: true, Short: "Deprecated alias for repository-backed backup commands"}
+	cluster.AddCommand(NewAdminBackupClusterStartCommand(a), NewAdminBackupClusterStatusCommand(a), NewAdminBackupClusterObservabilityCommand(a), NewAdminBackupClusterCancelCommand(a), NewAdminBackupClusterListCommand(a), NewAdminBackupClusterDeleteCommand(a), NewAdminBackupClusterValidateCommand(a), newRetention(), NewAdminBackupClusterRestorePlanCommand(a), NewAdminBackupClusterRestoreRepositoryLocalCommand(a))
+	cmd.AddCommand(cluster)
 	return cmd
 }
 
@@ -43,18 +46,12 @@ func NewAdminBackupPolicyGetCommand(a *app.App) *cobra.Command {
 }
 
 func NewAdminBackupPolicySetCommand(a *app.App) *cobra.Command {
-	var enabled, disabled, includeLogs, allowReads, runMissed, noRunMissed bool
-	var backupDir, quiesceTimeout, backupTimeout, retryAfter string
-	var scheduleKind, timeOfDay, timezone, archiveFormat string
-	var weekdays []string
-	var intervalHours, retention, historyLimit int32
-	cmd := &cobra.Command{Use: "set", Short: "Update backup policy", RunE: func(cmd *cobra.Command, args []string) error {
-		if enabled && disabled {
-			return fmt.Errorf("--enabled and --disabled are mutually exclusive")
-		}
-		if runMissed && noRunMissed {
-			return fmt.Errorf("--run-missed and --no-run-missed are mutually exclusive")
-		}
+	var repositoryID, captureProvider, quiesceReadProfile string
+	var allowReadOnly bool
+	var keepLastSuccessful int32
+	var keepFor, deleteIncompleteAfter string
+	var includeArtifactChecks, includeExternalDependencyChecks, includeCapacityEstimates, requireCompleteMarker bool
+	cmd := &cobra.Command{Use: "set", Short: "Update repository-backed backup policy", RunE: func(cmd *cobra.Command, args []string) error {
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -66,89 +63,65 @@ func NewAdminBackupPolicySetCommand(a *app.App) *cobra.Command {
 		}
 		policy := current.GetPolicy()
 		if policy == nil {
-			policy = &adminv1.BackupPolicy{Compression: "zip"}
+			policy = &adminv1.BackupPolicy{}
 		}
-		if enabled {
-			policy.Enabled = true
+		if cmd.Flags().Changed("default-repository-id") {
+			policy.DefaultRepositoryId = strings.TrimSpace(repositoryID)
 		}
-		if disabled {
-			policy.Enabled = false
-		}
-		if cmd.Flags().Changed("dir") {
-			policy.BackupDir = backupDir
-		}
-		if cmd.Flags().Changed("interval-hours") {
-			if intervalHours <= 0 {
-				return fmt.Errorf("invalid --interval-hours %d: must be positive", intervalHours)
-			}
-			policy.IntervalHours = intervalHours
-		}
-		if cmd.Flags().Changed("keep") {
-			policy.RetentionCount = retention
-		}
-		if cmd.Flags().Changed("archive-format") {
-			format, err := parseBackupArchiveFormat(archiveFormat)
+		if cmd.Flags().Changed("capture-provider") {
+			provider, err := parseBackupCaptureProvider(captureProvider)
 			if err != nil {
 				return err
 			}
-			policy.ArchiveFormat = format
-			policy.Compression = formatBackupArchiveFormat(format, "")
+			policy.CaptureProvider = provider
 		}
-		if cmd.Flags().Changed("include-logs") {
-			policy.IncludeLogs = includeLogs
-		}
-		if cmd.Flags().Changed("allow-reads-during-backup") {
-			policy.AllowReadsDuringBackup = allowReads
-		}
-		if cmd.Flags().Changed("quiesce-timeout") {
-			seconds, err := parseDurationSeconds(quiesceTimeout)
-			if err != nil {
-				return fmt.Errorf("invalid --quiesce-timeout: %w", err)
-			}
-			policy.QuiesceDrainTimeoutSeconds = seconds
-		}
-		if cmd.Flags().Changed("backup-timeout") {
-			seconds, err := parseDurationSeconds(backupTimeout)
-			if err != nil {
-				return fmt.Errorf("invalid --backup-timeout: %w", err)
-			}
-			policy.BackupTimeoutSeconds = seconds
-		}
-		if cmd.Flags().Changed("retry-after") {
-			seconds, err := parseDurationSeconds(retryAfter)
-			if err != nil {
-				return fmt.Errorf("invalid --retry-after: %w", err)
-			}
-			policy.RetryAfterSeconds = seconds
-		}
-		if cmd.Flags().Changed("history-limit") {
-			policy.StatusHistoryLimit = historyLimit
-		}
-		if cmd.Flags().Changed("schedule") {
-			policy.ScheduleKind = strings.ToLower(strings.TrimSpace(scheduleKind))
-		}
-		if cmd.Flags().Changed("time-of-day") {
-			policy.TimeOfDay = strings.TrimSpace(timeOfDay)
-		}
-		if cmd.Flags().Changed("timezone") {
-			policy.Timezone = strings.TrimSpace(timezone)
-		}
-		if cmd.Flags().Changed("weekday") {
-			parsed, err := parseBackupWeekdays(weekdays)
+		if cmd.Flags().Changed("quiesce-read-profile") {
+			profile, err := parseBackupQuiesceReadProfile(quiesceReadProfile)
 			if err != nil {
 				return err
 			}
-			policy.Weekdays = parsed
+			policy.QuiesceReadProfile = profile
 		}
-		if runMissed {
-			policy.RunMissed = true
+		if cmd.Flags().Changed("allow-read-only-during-quiesce") {
+			policy.AllowReadOnlyDuringQuiesce = allowReadOnly
 		}
-		if noRunMissed {
-			policy.RunMissed = false
+		if policy.RetentionPolicy == nil && (cmd.Flags().Changed("keep-last-successful") || cmd.Flags().Changed("keep-for") || cmd.Flags().Changed("delete-incomplete-after")) {
+			policy.RetentionPolicy = &adminv1.RetentionPolicy{}
 		}
-		if strings.TrimSpace(policy.Compression) == "" && policy.GetArchiveFormat() == adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_UNSPECIFIED {
-			policy.Compression = "zip"
-			policy.ArchiveFormat = adminv1.BackupArchiveFormat_BACKUP_ARCHIVE_FORMAT_ZIP
+		if cmd.Flags().Changed("keep-last-successful") {
+			if keepLastSuccessful < 0 {
+				return fmt.Errorf("--keep-last-successful must not be negative")
+			}
+			policy.RetentionPolicy.KeepLastSuccessful = keepLastSuccessful
+		}
+		if cmd.Flags().Changed("keep-for") {
+			seconds, err := parseRetentionDurationSeconds(keepFor)
+			if err != nil {
+				return fmt.Errorf("invalid --keep-for: %w", err)
+			}
+			policy.RetentionPolicy.KeepForSeconds = seconds
+		}
+		if cmd.Flags().Changed("delete-incomplete-after") {
+			seconds, err := parseRetentionDurationSeconds(deleteIncompleteAfter)
+			if err != nil {
+				return fmt.Errorf("invalid --delete-incomplete-after: %w", err)
+			}
+			policy.RetentionPolicy.DeleteIncompleteAfterSeconds = seconds
+		}
+		if policy.ValidationOptions == nil && (cmd.Flags().Changed("include-artifact-checks") || cmd.Flags().Changed("include-external-dependency-checks") || cmd.Flags().Changed("include-capacity-estimates") || cmd.Flags().Changed("require-complete-marker")) {
+			policy.ValidationOptions = &adminv1.ValidationOptions{}
+		}
+		if cmd.Flags().Changed("include-artifact-checks") {
+			policy.ValidationOptions.IncludeArtifactChecks = includeArtifactChecks
+		}
+		if cmd.Flags().Changed("include-external-dependency-checks") {
+			policy.ValidationOptions.IncludeExternalDependencyChecks = includeExternalDependencyChecks
+		}
+		if cmd.Flags().Changed("include-capacity-estimates") {
+			policy.ValidationOptions.IncludeCapacityEstimates = includeCapacityEstimates
+		}
+		if cmd.Flags().Changed("require-complete-marker") {
+			policy.ValidationOptions.RequireCompleteMarker = requireCompleteMarker
 		}
 		res, err := client.UpdateBackupPolicy(authCtx, &adminv1.UpdateBackupPolicyRequest{Policy: policy})
 		if err != nil {
@@ -156,120 +129,27 @@ func NewAdminBackupPolicySetCommand(a *app.App) *cobra.Command {
 		}
 		return printBackupPolicy(a, res.GetPolicy())
 	}}
-	cmd.Flags().BoolVar(&enabled, "enabled", false, "enable scheduled backups")
-	cmd.Flags().BoolVar(&disabled, "disabled", false, "disable scheduled backups")
-	cmd.Flags().StringVar(&backupDir, "dir", "", "backup directory")
-	cmd.Flags().Int32Var(&intervalHours, "interval-hours", 0, "backup interval in whole hours")
-	cmd.Flags().Int32Var(&retention, "keep", 0, "number of backups to retain")
-	cmd.Flags().StringVar(&archiveFormat, "archive-format", "", "backup archive format: zip, tar, tar.gz, or tar.zst")
-	cmd.Flags().BoolVar(&includeLogs, "include-logs", false, "include daemon logs in backups")
-	cmd.Flags().BoolVar(&allowReads, "allow-reads-during-backup", false, "allow proven-safe reads during backup")
-	cmd.Flags().StringVar(&quiesceTimeout, "quiesce-timeout", "", "quiesce drain timeout duration")
-	cmd.Flags().StringVar(&backupTimeout, "backup-timeout", "", "backup timeout duration")
-	cmd.Flags().StringVar(&retryAfter, "retry-after", "", "retry delay after scheduled backup failure")
-	cmd.Flags().Int32Var(&historyLimit, "history-limit", 0, "backup status history limit")
-	cmd.Flags().StringVar(&scheduleKind, "schedule", "", "backup schedule kind: interval, daily, or weekly")
-	cmd.Flags().StringVar(&timeOfDay, "time-of-day", "", "wall-clock backup time in HH:MM format for daily/weekly schedules")
-	cmd.Flags().StringVar(&timezone, "timezone", "", "IANA timezone for daily/weekly schedules, e.g. UTC or America/Toronto")
-	cmd.Flags().StringArrayVar(&weekdays, "weekday", nil, "weekday for weekly schedules; repeat for multiple values (sun..sat or 0..6)")
-	cmd.Flags().BoolVar(&runMissed, "run-missed", false, "run a missed calendar backup after daemon restart")
-	cmd.Flags().BoolVar(&noRunMissed, "no-run-missed", false, "disable running missed calendar backups after daemon restart")
-	return cmd
-}
-
-func NewAdminBackupTriggerCommand(a *app.App) *cobra.Command {
-	var reason string
-	cmd := &cobra.Command{Use: "trigger", Short: "Trigger a backup", RunE: func(cmd *cobra.Command, args []string) error {
-		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		defer closeConn()
-		res, err := client.TriggerBackup(authCtx, &adminv1.TriggerBackupRequest{Reason: reason})
-		if err != nil {
-			return backupCLIError("trigger backup", err)
-		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		return a.Print(res, fmt.Sprintf("backup triggered: %s\nstate: %s\n", res.GetBackup().GetBackupId(), res.GetStatus().GetState()))
-	}}
-	cmd.Flags().StringVar(&reason, "reason", "", "backup reason")
-	return cmd
-}
-
-func NewAdminBackupStatusCommand(a *app.App) *cobra.Command {
-	return &cobra.Command{Use: "status", Short: "Show backup status", RunE: func(cmd *cobra.Command, args []string) error {
-		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		defer closeConn()
-		res, err := client.GetBackupStatus(authCtx, &adminv1.GetBackupStatusRequest{})
-		if err != nil {
-			return backupCLIError("get backup status", err)
-		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		st := res.GetStatus()
-		return a.Print(res, fmt.Sprintf("backup status: %s\nbackup_id: %s\nlast_success_at: %s\nnext_run_at: %s\n", st.GetState(), st.GetBackupId(), st.GetLastSuccessAt(), st.GetNextRunAt()))
-	}}
-}
-
-func NewAdminBackupListCommand(a *app.App) *cobra.Command {
-	var pageSize int32
-	var pageToken string
-	cmd := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List backups", RunE: func(cmd *cobra.Command, args []string) error {
-		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		defer closeConn()
-		res, err := client.ListBackups(authCtx, &adminv1.ListBackupsRequest{PageSize: pageSize, PageToken: pageToken})
-		if err != nil {
-			return backupCLIError("list backups", err)
-		}
-		if a.Output == "json" {
-			return a.Print(res, "")
-		}
-		var b strings.Builder
-		for _, backup := range res.GetBackups() {
-			fmt.Fprintf(&b, "%s\t%s\t%d bytes\n", backup.GetBackupId(), backup.GetCompletedAt(), backup.GetSizeBytes())
-		}
-		return a.Print(res.GetBackups(), b.String())
-	}}
-	cmd.Flags().Int32Var(&pageSize, "page-size", 0, "page size")
-	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
-	return cmd
-}
-
-func NewAdminBackupDeleteCommand(a *app.App) *cobra.Command {
-	cmd := &cobra.Command{Use: "delete BACKUP_ID", Aliases: []string{"del", "rm"}, Short: "Delete a backup", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
-		if err != nil {
-			return err
-		}
-		defer closeConn()
-		res, err := client.DeleteBackup(authCtx, &adminv1.DeleteBackupRequest{BackupId: args[0]})
-		if err != nil {
-			return backupCLIError("delete backup", err)
-		}
-		return a.Print(res, fmt.Sprintf("backup deleted: %s\n", res.GetBackupId()))
-	}}
+	cmd.Flags().StringVar(&repositoryID, "default-repository-id", "", "default repository ID used when backup commands omit --repository-id")
+	cmd.Flags().StringVar(&captureProvider, "capture-provider", "auto", "capture provider: auto, filesystem_immutable_copy, csi_volume_snapshot, or aws_ebs_snapshot")
+	cmd.Flags().StringVar(&quiesceReadProfile, "quiesce-read-profile", "control_only", "backup quiesce read profile: control_only or strict_read_only")
+	cmd.Flags().BoolVar(&allowReadOnly, "allow-read-only-during-quiesce", false, "allow configured read-only RPCs while backup quiesce is held")
+	cmd.Flags().Int32Var(&keepLastSuccessful, "keep-last-successful", 0, "number of newest successful backup sets to retain")
+	cmd.Flags().StringVar(&keepFor, "keep-for", "", "age duration for successful backup sets to retain, for example 336h or 14d")
+	cmd.Flags().StringVar(&deleteIncompleteAfter, "delete-incomplete-after", "", "age duration before incomplete repository prefixes are deleted")
+	cmd.Flags().BoolVar(&includeArtifactChecks, "include-artifact-checks", false, "include artifact byte/checksum checks during validation")
+	cmd.Flags().BoolVar(&includeExternalDependencyChecks, "include-external-dependency-checks", false, "include external dependency checks during validation")
+	cmd.Flags().BoolVar(&includeCapacityEstimates, "include-capacity-estimates", false, "include restore capacity estimates during validation")
+	cmd.Flags().BoolVar(&requireCompleteMarker, "require-complete-marker", false, "require repository COMPLETE marker during validation")
 	return cmd
 }
 
 func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
-	var reason, outputDir, archiveFormat, idempotencyKey string
+	var reason, archiveFormat, idempotencyKey string
 	var repositoryID, captureProvider, quiesceReadProfile string
 	var convergenceTimeout time.Duration
 	var wait bool
 	var waitTimeout time.Duration
-	cmd := &cobra.Command{Use: "start", Short: "Start a coordinated cluster backup operation", RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(outputDir) == "" && strings.TrimSpace(repositoryID) == "" {
-			return fmt.Errorf("--output-dir is required unless --repository-id is set")
-		}
+	cmd := &cobra.Command{Use: "start", Short: "Start a repository-backed deployment backup operation", RunE: func(cmd *cobra.Command, args []string) error {
 		format, err := parseBackupArchiveFormat(archiveFormat)
 		if err != nil {
 			return err
@@ -287,33 +167,32 @@ func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		req := &adminv1.StartClusterBackupRequest{Reason: reason, OutputDir: outputDir, ArchiveFormat: format, IdempotencyKey: idempotencyKey, RepositoryId: repositoryID, CaptureProvider: provider, QuiesceReadProfile: readProfile}
+		req := &adminv1.StartBackupRequest{Reason: reason, ArchiveFormat: format, IdempotencyKey: idempotencyKey, RepositoryId: repositoryID, CaptureProvider: provider, QuiesceReadProfile: readProfile}
 		if convergenceTimeout > 0 {
 			req.ConvergenceTimeoutSeconds = int64(convergenceTimeout.Round(time.Second) / time.Second)
 		}
-		res, err := client.StartClusterBackup(authCtx, req)
+		res, err := client.StartBackup(authCtx, req)
 		if err != nil {
-			return backupCLIError("start cluster backup", err)
+			return backupCLIError("start backup", err)
 		}
 		if wait {
-			statusRes, err := waitForClusterBackup(cmd.Context(), client, authCtx, res.GetStatus().GetBackupSetId(), waitTimeout)
+			statusRes, err := waitForClusterBackup(cmd.Context(), client, authCtx, res.GetOperation().GetBackupSetId(), waitTimeout)
 			if err != nil {
 				return err
 			}
 			if a.Output == "json" {
 				return a.Print(statusRes, "")
 			}
-			st := statusRes.GetStatus()
-			return a.Print(statusRes, fmt.Sprintf("cluster backup completed: %s\nstate: %s\nmanifest: %s\nerror: %s\n", st.GetBackupSetId(), st.GetState(), st.GetManifestUri(), st.GetError()))
+			st := statusRes.GetOperation()
+			return a.Print(statusRes, fmt.Sprintf("backup completed: %s\nstate: %s\nmanifest: %s\nerror: %s\n", st.GetBackupSetId(), st.GetState(), st.GetManifestUri(), st.GetError()))
 		}
 		if a.Output == "json" {
 			return a.Print(res, "")
 		}
-		st := res.GetStatus()
-		return a.Print(res, fmt.Sprintf("cluster backup started: %s\nstate: %s\n", st.GetBackupSetId(), st.GetState()))
+		st := res.GetOperation()
+		return a.Print(res, fmt.Sprintf("backup started: %s\nstate: %s\n", st.GetBackupSetId(), st.GetState()))
 	}}
 	cmd.Flags().StringVar(&reason, "reason", "", "backup reason")
-	cmd.Flags().StringVar(&outputDir, "output-dir", "", "cluster backup output directory mounted on each pod")
 	cmd.Flags().StringVar(&archiveFormat, "archive-format", "tar.zst", "backup archive format: zip, tar, tar.gz, or tar.zst")
 	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "optional idempotency key for start retries")
 	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-backed production backup sets")
@@ -327,7 +206,7 @@ func NewAdminBackupClusterStartCommand(a *app.App) *cobra.Command {
 
 func NewAdminBackupClusterCancelCommand(a *app.App) *cobra.Command {
 	var reason string
-	cmd := &cobra.Command{Use: "cancel [BACKUP_SET_ID]", Short: "Cancel a cluster backup operation", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "cancel [BACKUP_SET_ID]", Short: "Cancel a backup operation", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -337,21 +216,21 @@ func NewAdminBackupClusterCancelCommand(a *app.App) *cobra.Command {
 		if len(args) > 0 {
 			backupSetID = args[0]
 		}
-		res, err := client.CancelClusterBackup(authCtx, &adminv1.CancelClusterBackupRequest{BackupSetId: backupSetID, Reason: reason})
+		res, err := client.CancelBackupOperation(authCtx, &adminv1.CancelBackupOperationRequest{BackupSetId: backupSetID, Reason: reason})
 		if err != nil {
-			return backupCLIError("cancel cluster backup", err)
+			return backupCLIError("cancel backup", err)
 		}
 		if a.Output == "json" {
 			return a.Print(res, "")
 		}
-		st := res.GetStatus()
-		return a.Print(res, fmt.Sprintf("cluster backup cancel requested: %s\nstate: %s\n", st.GetBackupSetId(), st.GetState()))
+		st := res.GetOperation()
+		return a.Print(res, fmt.Sprintf("backup cancel requested: %s\nstate: %s\n", st.GetBackupSetId(), st.GetState()))
 	}}
 	cmd.Flags().StringVar(&reason, "reason", "", "cancellation reason")
 	return cmd
 }
 
-func waitForClusterBackup(ctx context.Context, client adminv1.AdminBackupServiceClient, authCtx context.Context, backupSetID string, timeout time.Duration) (*adminv1.GetClusterBackupStatusResponse, error) {
+func waitForClusterBackup(ctx context.Context, client adminv1.AdminBackupServiceClient, authCtx context.Context, backupSetID string, timeout time.Duration) (*adminv1.GetBackupOperationResponse, error) {
 	if strings.TrimSpace(backupSetID) == "" {
 		return nil, fmt.Errorf("backup_set_id is required")
 	}
@@ -365,29 +244,29 @@ func waitForClusterBackup(ctx context.Context, client adminv1.AdminBackupService
 	for {
 		select {
 		case <-waitCtx.Done():
-			return nil, backupCLIError("wait for cluster backup", waitCtx.Err())
+			return nil, backupCLIError("wait for backup", waitCtx.Err())
 		default:
 		}
-		res, err := client.GetClusterBackupStatus(authCtx, &adminv1.GetClusterBackupStatusRequest{BackupSetId: backupSetID})
+		res, err := client.GetBackupOperation(authCtx, &adminv1.GetBackupOperationRequest{BackupSetId: backupSetID})
 		if err != nil {
-			return nil, backupCLIError("get cluster backup status", err)
+			return nil, backupCLIError("get backup operation", err)
 		}
-		switch res.GetStatus().GetStateCode() {
-		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_SUCCEEDED:
+		switch res.GetOperation().GetState() {
+		case adminv1.BackupOperationState_BACKUP_OPERATION_STATE_SUCCEEDED:
 			return res, nil
-		case adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_FAILED, adminv1.ClusterBackupState_CLUSTER_BACKUP_STATE_CANCELED:
-			return res, fmt.Errorf("cluster backup %s finished with state %s: %s", backupSetID, res.GetStatus().GetState(), res.GetStatus().GetError())
+		case adminv1.BackupOperationState_BACKUP_OPERATION_STATE_FAILED, adminv1.BackupOperationState_BACKUP_OPERATION_STATE_CANCELED:
+			return res, fmt.Errorf("backup %s finished with state %s: %s", backupSetID, res.GetOperation().GetState(), res.GetOperation().GetError())
 		}
 		select {
 		case <-waitCtx.Done():
-			return nil, backupCLIError("wait for cluster backup", waitCtx.Err())
+			return nil, backupCLIError("wait for backup", waitCtx.Err())
 		case <-ticker.C:
 		}
 	}
 }
 
 func NewAdminBackupClusterStatusCommand(a *app.App) *cobra.Command {
-	return &cobra.Command{Use: "status [BACKUP_SET_ID]", Short: "Show cluster backup status", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "status [BACKUP_SET_ID]", Short: "Show backup operation status", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
@@ -397,15 +276,15 @@ func NewAdminBackupClusterStatusCommand(a *app.App) *cobra.Command {
 		if len(args) > 0 {
 			backupSetID = args[0]
 		}
-		res, err := client.GetClusterBackupStatus(authCtx, &adminv1.GetClusterBackupStatusRequest{BackupSetId: backupSetID})
+		res, err := client.GetBackupOperation(authCtx, &adminv1.GetBackupOperationRequest{BackupSetId: backupSetID})
 		if err != nil {
-			return backupCLIError("get cluster backup status", err)
+			return backupCLIError("get backup operation", err)
 		}
 		if a.Output == "json" {
 			return a.Print(res, "")
 		}
-		st := res.GetStatus()
-		return a.Print(res, fmt.Sprintf("cluster backup status: %s\nbackup_set_id: %s\ncluster_id: %s\nmanifest: %s\nerror: %s\n", st.GetState(), st.GetBackupSetId(), st.GetClusterId(), st.GetManifestUri(), st.GetError()))
+		st := res.GetOperation()
+		return a.Print(res, fmt.Sprintf("backup status: %s\nbackup_set_id: %s\ndeployment_id: %s\nmanifest: %s\nerror: %s\n", st.GetState(), st.GetBackupSetId(), st.GetDeploymentId(), st.GetManifestUri(), st.GetError()))
 	}}
 }
 
@@ -447,25 +326,15 @@ func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
 	var pageSize int32
 	var pageToken string
 	var repositoryID string
-	cmd := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List cluster backup sets", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List repository-backed backup sets", RunE: func(cmd *cobra.Command, args []string) error {
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer closeConn()
-		if strings.TrimSpace(repositoryID) != "" {
-			res, err := client.ListClusterBackupSets(authCtx, &adminv1.ListClusterBackupSetsRequest{RepositoryId: repositoryID, PageSize: pageSize, PageToken: pageToken})
-			if err != nil {
-				return backupCLIError("list repository cluster backup sets", err)
-			}
-			if a.Output == "json" {
-				return a.Print(res, "")
-			}
-			return a.Print(res.GetBackupSets(), formatClusterBackupSetRows(res.GetBackupSets()))
-		}
-		res, err := client.ListClusterBackups(authCtx, &adminv1.ListClusterBackupsRequest{PageSize: pageSize, PageToken: pageToken})
+		res, err := client.ListBackupSets(authCtx, &adminv1.ListBackupSetsRequest{RepositoryId: repositoryID, PageSize: pageSize, PageToken: pageToken})
 		if err != nil {
-			return backupCLIError("list cluster backups", err)
+			return backupCLIError("list backup sets", err)
 		}
 		if a.Output == "json" {
 			return a.Print(res, "")
@@ -474,7 +343,7 @@ func NewAdminBackupClusterListCommand(a *app.App) *cobra.Command {
 	}}
 	cmd.Flags().Int32Var(&pageSize, "page-size", 0, "page size")
 	cmd.Flags().StringVar(&pageToken, "page-token", "", "page token")
-	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID to list repository-truth backup sets")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID; defaults to policy default_repository_id")
 	return cmd
 }
 
@@ -489,11 +358,11 @@ func NewAdminBackupClusterDeleteCommand(a *app.App) *cobra.Command {
 			return err
 		}
 		defer closeConn()
-		res, err := client.DeleteClusterBackupSet(authCtx, &adminv1.DeleteClusterBackupSetRequest{RepositoryId: repositoryID, BackupSetId: args[0], Reason: reason})
+		res, err := client.DeleteBackupSet(authCtx, &adminv1.DeleteBackupSetRequest{RepositoryId: repositoryID, BackupSetId: args[0], Reason: reason})
 		if err != nil {
 			return backupCLIError("delete cluster backup set", err)
 		}
-		return a.Print(res, fmt.Sprintf("cluster backup set deleted: %s\nrepository: %s\nstate: %s\n", res.GetBackupSetId(), res.GetRepositoryId(), res.GetState()))
+		return a.Print(res, fmt.Sprintf("backup set deleted: %s\nrepository: %s\nstate: %s\n", res.GetBackupSetId(), res.GetRepositoryId(), res.GetState()))
 	}}
 	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID containing the backup set")
 	cmd.Flags().StringVar(&reason, "reason", "", "operator reason for deletion")
@@ -545,89 +414,68 @@ func NewAdminBackupClusterRetentionApplyCommand(a *app.App) *cobra.Command {
 }
 
 func NewAdminBackupClusterValidateCommand(a *app.App) *cobra.Command {
-	var backupSetPath, repositoryID, backupSetID string
-	cmd := &cobra.Command{Use: "validate", Short: "Validate a cluster backup set", RunE: func(cmd *cobra.Command, args []string) error {
-		repositoryMode := strings.TrimSpace(repositoryID) != "" || strings.TrimSpace(backupSetID) != ""
-		if repositoryMode && (strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(backupSetID) == "") {
-			return fmt.Errorf("--repository-id and --backup-set-id are required together")
-		}
-		if !repositoryMode && strings.TrimSpace(backupSetPath) == "" {
-			return fmt.Errorf("--backup-set is required unless --repository-id and --backup-set-id are set")
+	var repositoryID, backupSetID string
+	cmd := &cobra.Command{Use: "validate", Short: "Validate a repository-backed backup set", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(backupSetID) == "" {
+			return fmt.Errorf("--backup-set-id is required")
 		}
 		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
 		defer closeConn()
-		res, err := client.ValidateClusterBackupSet(authCtx, &adminv1.ValidateClusterBackupSetRequest{BackupSetPath: backupSetPath, RepositoryId: repositoryID, BackupSetId: backupSetID})
+		res, err := client.ValidateBackupSet(authCtx, &adminv1.ValidateBackupSetRequest{RepositoryId: repositoryID, BackupSetId: backupSetID})
 		if err != nil {
-			return backupCLIError("validate cluster backup set", err)
+			return backupCLIError("validate backup set", err)
 		}
 		if a.Output == "json" {
 			return a.Print(res, "")
 		}
 		if !res.GetValid() {
-			return a.Print(res, fmt.Sprintf("cluster backup set invalid: %s\n", strings.Join(res.GetErrors(), "; ")))
+			return a.Print(res, fmt.Sprintf("backup set invalid: %s\n", strings.Join(res.GetErrors(), "; ")))
 		}
-		return a.Print(res, fmt.Sprintf("cluster backup set valid: %s\n", res.GetBackupSet().GetBackupSetId()))
+		return a.Print(res, fmt.Sprintf("backup set valid: %s\n", res.GetBackupSet().GetBackupSetId()))
 	}}
-	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
-	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-truth validation")
-	cmd.Flags().StringVar(&backupSetID, "backup-set-id", "", "backup set ID for repository-truth validation")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID; defaults to policy default_repository_id")
+	cmd.Flags().StringVar(&backupSetID, "backup-set-id", "", "backup set ID")
 	return cmd
 }
 
 func NewAdminBackupClusterRestorePlanCommand(a *app.App) *cobra.Command {
-	var backupSetPath, repositoryID, backupSetID, targetMode, identityMode, authSessionPolicy string
-	cmd := &cobra.Command{Use: "restore-plan", Short: "Plan a cluster backup restore", RunE: func(cmd *cobra.Command, args []string) error {
-		repositoryMode := strings.TrimSpace(repositoryID) != "" || strings.TrimSpace(backupSetID) != ""
-		if repositoryMode {
-			if strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(backupSetID) == "" {
-				return fmt.Errorf("--repository-id and --backup-set-id are required together")
-			}
-			target := parseRestoreTargetMode(targetMode)
-			if target == adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_UNSPECIFIED {
-				return fmt.Errorf("invalid --target-mode %q", targetMode)
-			}
-			identity := parseRestoreIdentityMode(identityMode)
-			if identity == adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_UNSPECIFIED {
-				return fmt.Errorf("invalid --identity-mode %q", identityMode)
-			}
-			authPolicy := parseRestoreAuthSessionPolicy(authSessionPolicy)
-			if strings.TrimSpace(authSessionPolicy) != "" && authPolicy == adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED {
-				return fmt.Errorf("invalid --auth-session-policy %q", authSessionPolicy)
-			}
-			client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
-			if err != nil {
-				return err
-			}
-			defer closeConn()
-			res, err := client.PlanClusterRestore(authCtx, &adminv1.PlanClusterRestoreRequest{RepositoryId: repositoryID, BackupSetId: backupSetID, TargetMode: target, IdentityMode: identity, AuthSessionPolicy: authPolicy})
-			if err != nil {
-				return backupCLIError("plan repository cluster restore", err)
-			}
-			if a.Output == "json" {
-				return a.Print(res, "")
-			}
-			return a.Print(res, formatAdminClusterRestorePlan(res.GetPlan()))
+	var repositoryID, backupSetID, targetMode, identityMode, authSessionPolicy string
+	cmd := &cobra.Command{Use: "restore-plan", Short: "Plan a repository-backed backup restore", RunE: func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(backupSetID) == "" {
+			return fmt.Errorf("--backup-set-id is required")
 		}
-		if strings.TrimSpace(backupSetPath) == "" {
-			return fmt.Errorf("--backup-set is required unless --repository-id and --backup-set-id are set")
+		target := parseRestoreTargetMode(targetMode)
+		if target == adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_UNSPECIFIED {
+			return fmt.Errorf("invalid --target-mode %q", targetMode)
 		}
-		plan, _, err := clusterbackup.BuildRestorePlan(cmd.Context(), backupSetPath)
+		identity := parseRestoreIdentityMode(identityMode)
+		if identity == adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_UNSPECIFIED {
+			return fmt.Errorf("invalid --identity-mode %q", identityMode)
+		}
+		authPolicy := parseRestoreAuthSessionPolicy(authSessionPolicy)
+		if strings.TrimSpace(authSessionPolicy) != "" && authPolicy == adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED {
+			return fmt.Errorf("invalid --auth-session-policy %q", authSessionPolicy)
+		}
+		client, authCtx, closeConn, err := adminBackupClient(cmd.Context(), a)
 		if err != nil {
 			return err
 		}
-		plan = clusterbackup.SortRestorePlan(plan)
-		if a.Output == "json" {
-			return a.Print(plan, "")
+		defer closeConn()
+		res, err := client.PlanRestore(authCtx, &adminv1.PlanRestoreRequest{RepositoryId: repositoryID, BackupSetId: backupSetID, TargetMode: target, IdentityMode: identity, AuthSessionPolicy: authPolicy})
+		if err != nil {
+			return backupCLIError("plan repository restore", err)
 		}
-		return a.Print(plan, formatClusterRestorePlan(plan))
+		if a.Output == "json" {
+			return a.Print(res, "")
+		}
+		return a.Print(res, formatAdminClusterRestorePlan(res.GetPlan()))
 	}}
-	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
-	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID for repository-truth restore planning")
+	cmd.Flags().StringVar(&repositoryID, "repository-id", "", "backup repository ID; defaults to policy default_repository_id")
 	cmd.Flags().StringVar(&backupSetID, "backup-set-id", "", "backup set ID for repository-truth restore planning")
-	cmd.Flags().StringVar(&targetMode, "target-mode", "new-cluster-bootstrap", "restore target mode: new-cluster-bootstrap or existing-cluster-replace")
+	cmd.Flags().StringVar(&targetMode, "target-mode", "new-deployment-bootstrap", "restore target mode: new-deployment-bootstrap or existing-deployment-replace")
 	cmd.Flags().StringVar(&identityMode, "identity-mode", "preserve-backup-id", "restore identity mode: preserve-backup-id, adopt-target-id, or generate-new-id")
 	cmd.Flags().StringVar(&authSessionPolicy, "auth-session-policy", "", "auth session policy: preserve-restored-sessions or revoke-all-sessions")
 	return cmd
@@ -635,39 +483,12 @@ func NewAdminBackupClusterRestorePlanCommand(a *app.App) *cobra.Command {
 
 const restoreLocalDataDirFlag = "data" + "-dir"
 
-func NewAdminBackupClusterRestoreLocalCommand(a *app.App) *cobra.Command {
-	var backupSetPath, dataDir string
-	var ordinal int
-	cmd := &cobra.Command{Use: "restore-local", Short: "Restore one cluster backup ordinal into an offline local data dir", RunE: func(cmd *cobra.Command, args []string) error {
-		if strings.TrimSpace(backupSetPath) == "" {
-			return fmt.Errorf("--backup-set is required")
-		}
-		if strings.TrimSpace(dataDir) == "" {
-			return fmt.Errorf("--data-dir is required")
-		}
-		result, err := clusterbackup.RestoreLocal(cmd.Context(), clusterbackup.RestoreLocalInput{BackupSet: backupSetPath, Ordinal: ordinal, DataDir: dataDir})
-		if err != nil {
-			return err
-		}
-		if a.Output == "json" {
-			return a.Print(result, "")
-		}
-		text := fmt.Sprintf("cluster backup ordinal restored: %s\nordinal: %d\npod: %s\ndata_dir: %s\narchive: %s\n", result.BackupSetID, result.Ordinal, result.PodName, result.DataDir, result.ArchivePath)
-		return a.Print(result, text)
-	}}
-	cmd.Flags().StringVar(&backupSetPath, "backup-set", "", "backup-set directory or backup-set.json path")
-	cmd.Flags().IntVar(&ordinal, "ordinal", -1, "cluster node ordinal to restore")
-	cmd.Flags().StringVar(&dataDir, restoreLocalDataDirFlag, "", "empty local data directory to restore into")
-	_ = cmd.MarkFlagRequired("ordinal")
-	return cmd
-}
-
 func formatAdminClusterRestorePlan(plan *adminv1.RestorePlanSummary) string {
 	if plan == nil {
-		return "cluster backup restore plan: <nil>\n"
+		return "backup restore plan: <nil>\n"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "cluster backup restore plan: %s\n", plan.GetRestorePlanId())
+	fmt.Fprintf(&b, "backup restore plan: %s\n", plan.GetRestorePlanId())
 	fmt.Fprintf(&b, "repository: %s\nbackup_set_id: %s\ntarget_mode: %s\nidentity_mode: %s\nauth_session_policy: %s\nrestorable: %t\n", plan.GetRepositoryId(), plan.GetBackupSetId(), formatRestoreTargetMode(plan.GetTargetMode()), formatRestoreIdentityMode(plan.GetIdentityMode()), formatRestoreAuthSessionPolicy(plan.GetAuthSessionPolicy()), plan.GetRestorable())
 	if validation := plan.GetValidation(); validation != nil {
 		fmt.Fprintf(&b, "validation: %s\n", validation.GetState().String())
@@ -693,93 +514,72 @@ func formatAdminClusterRestorePlan(plan *adminv1.RestorePlanSummary) string {
 	return b.String()
 }
 
-func formatClusterRestorePlan(plan clusterbackup.RestorePlan) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "cluster backup restore plan: %s\n", plan.BackupSetID)
-	fmt.Fprintf(&b, "cluster_id: %s\nstate: %s\nmanifest: %s\nexpected_nodes: %d\narchive_format: %s\n", plan.ClusterID, plan.State, plan.ManifestPath, plan.ExpectedNodes, plan.ArchiveFormat)
-	if len(plan.Warnings) > 0 {
-		b.WriteString("warnings:\n")
-		for _, warning := range plan.Warnings {
-			fmt.Fprintf(&b, "  - %s\n", warning)
-		}
-	}
-	b.WriteString("nodes:\n")
-	for _, node := range plan.Nodes {
-		fmt.Fprintf(&b, "  - ordinal: %d\n    pod: %s\n    node_id: %s\n", node.Ordinal, node.PodName, node.NodeID)
-		if node.RaftNodeID > 0 {
-			fmt.Fprintf(&b, "    raft_node_id: %d\n", node.RaftNodeID)
-		}
-		fmt.Fprintf(&b, "    archive: %s\n    manifest: %s\n    checksum_sha256: %s\n", firstNonEmptyBackup(node.ArchivePath, node.ArchiveURI, node.ArchiveName), firstNonEmptyBackup(node.ManifestPath, node.ManifestURI, node.ManifestName), node.ChecksumSHA256)
-	}
-	return b.String()
-}
-
-func parseRestoreTargetMode(value string) adminv1.ClusterRestoreTargetMode {
+func parseRestoreTargetMode(value string) adminv1.RestoreTargetMode {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-")) {
-	case "", "new-cluster-bootstrap", "new":
-		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP
-	case "existing-cluster-replace", "replace":
-		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE
+	case "", "new-deployment-bootstrap", "new-cluster-bootstrap", "new":
+		return adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_NEW_DEPLOYMENT_BOOTSTRAP
+	case "existing-deployment-replace", "existing-cluster-replace", "replace":
+		return adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_EXISTING_DEPLOYMENT_REPLACE
 	default:
-		return adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_UNSPECIFIED
+		return adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_UNSPECIFIED
 	}
 }
 
-func parseRestoreIdentityMode(value string) adminv1.ClusterRestoreIdentityMode {
+func parseRestoreIdentityMode(value string) adminv1.RestoreIdentityMode {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-")) {
 	case "", "preserve-backup-id", "preserve":
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID
 	case "adopt-target-id", "adopt":
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID
 	case "generate-new-id", "generate":
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID
 	default:
-		return adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_UNSPECIFIED
+		return adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_UNSPECIFIED
 	}
 }
 
-func parseRestoreAuthSessionPolicy(value string) adminv1.ClusterRestoreAuthSessionPolicy {
+func parseRestoreAuthSessionPolicy(value string) adminv1.RestoreAuthSessionPolicy {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "_", "-")) {
 	case "":
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
 	case "preserve-restored-sessions", "preserve":
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS
 	case "revoke-all-sessions", "revoke":
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS
 	default:
-		return adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
+		return adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_UNSPECIFIED
 	}
 }
 
-func formatRestoreTargetMode(mode adminv1.ClusterRestoreTargetMode) string {
+func formatRestoreTargetMode(mode adminv1.RestoreTargetMode) string {
 	switch mode {
-	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_NEW_CLUSTER_BOOTSTRAP:
-		return "NEW_CLUSTER_BOOTSTRAP"
-	case adminv1.ClusterRestoreTargetMode_CLUSTER_RESTORE_TARGET_MODE_EXISTING_CLUSTER_REPLACE:
-		return "EXISTING_CLUSTER_REPLACE"
+	case adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_NEW_DEPLOYMENT_BOOTSTRAP:
+		return "NEW_DEPLOYMENT_BOOTSTRAP"
+	case adminv1.RestoreTargetMode_RESTORE_TARGET_MODE_EXISTING_DEPLOYMENT_REPLACE:
+		return "EXISTING_DEPLOYMENT_REPLACE"
 	default:
 		return "UNSPECIFIED"
 	}
 }
 
-func formatRestoreIdentityMode(mode adminv1.ClusterRestoreIdentityMode) string {
+func formatRestoreIdentityMode(mode adminv1.RestoreIdentityMode) string {
 	switch mode {
-	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID:
+	case adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_PRESERVE_BACKUP_ID:
 		return "PRESERVE_BACKUP_ID"
-	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID:
+	case adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_ADOPT_TARGET_ID:
 		return "ADOPT_TARGET_ID"
-	case adminv1.ClusterRestoreIdentityMode_CLUSTER_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID:
+	case adminv1.RestoreIdentityMode_RESTORE_IDENTITY_MODE_GENERATE_NEW_ID:
 		return "GENERATE_NEW_ID"
 	default:
 		return "UNSPECIFIED"
 	}
 }
 
-func formatRestoreAuthSessionPolicy(policy adminv1.ClusterRestoreAuthSessionPolicy) string {
+func formatRestoreAuthSessionPolicy(policy adminv1.RestoreAuthSessionPolicy) string {
 	switch policy {
-	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS:
+	case adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_PRESERVE_RESTORED_SESSIONS:
 		return "PRESERVE_RESTORED_SESSIONS"
-	case adminv1.ClusterRestoreAuthSessionPolicy_CLUSTER_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS:
+	case adminv1.RestoreAuthSessionPolicy_RESTORE_AUTH_SESSION_POLICY_REVOKE_ALL_SESSIONS:
 		return "REVOKE_ALL_SESSIONS"
 	default:
 		return "UNSPECIFIED"
@@ -950,8 +750,24 @@ func printBackupPolicy(a *app.App, policy *adminv1.BackupPolicy) error {
 	if policy == nil {
 		return a.Print(policy, "backup policy: <nil>\n")
 	}
-	text := fmt.Sprintf("backup policy:\n  enabled: %t\n  dir: %s\n  schedule: %s\n  interval_hours: %d\n  time_of_day: %s\n  timezone: %s\n  weekdays: %s\n  run_missed: %t\n  keep: %d\n  include_logs: %t\n  archive_format: %s\n  quiesce_timeout: %s\n  backup_timeout: %s\n  retry_after: %s\n  history_limit: %d\n  allow_reads_during_backup: %t\n", policy.GetEnabled(), policy.GetBackupDir(), firstNonEmptyBackup(policy.GetScheduleKind(), "interval"), policy.GetIntervalHours(), policy.GetTimeOfDay(), policy.GetTimezone(), formatBackupWeekdays(policy.GetWeekdays()), policy.GetRunMissed(), policy.GetRetentionCount(), policy.GetIncludeLogs(), formatBackupArchiveFormat(policy.GetArchiveFormat(), policy.GetCompression()), formatSeconds(policy.GetQuiesceDrainTimeoutSeconds()), formatSeconds(policy.GetBackupTimeoutSeconds()), formatSeconds(policy.GetRetryAfterSeconds()), policy.GetStatusHistoryLimit(), policy.GetAllowReadsDuringBackup())
-	return a.Print(policy, text)
+	var b strings.Builder
+	fmt.Fprintf(&b, "backup policy:\n")
+	fmt.Fprintf(&b, "  default_repository_id: %s\n", policy.GetDefaultRepositoryId())
+	fmt.Fprintf(&b, "  capture_provider: %s\n", policy.GetCaptureProvider().String())
+	fmt.Fprintf(&b, "  quiesce_read_profile: %s\n", policy.GetQuiesceReadProfile().String())
+	fmt.Fprintf(&b, "  allow_read_only_during_quiesce: %t\n", policy.GetAllowReadOnlyDuringQuiesce())
+	if retention := policy.GetRetentionPolicy(); retention != nil {
+		fmt.Fprintf(&b, "  keep_last_successful: %d\n", retention.GetKeepLastSuccessful())
+		fmt.Fprintf(&b, "  keep_for: %s\n", formatSeconds(retention.GetKeepForSeconds()))
+		fmt.Fprintf(&b, "  delete_incomplete_after: %s\n", formatSeconds(retention.GetDeleteIncompleteAfterSeconds()))
+	}
+	if validation := policy.GetValidationOptions(); validation != nil {
+		fmt.Fprintf(&b, "  include_artifact_checks: %t\n", validation.GetIncludeArtifactChecks())
+		fmt.Fprintf(&b, "  include_external_dependency_checks: %t\n", validation.GetIncludeExternalDependencyChecks())
+		fmt.Fprintf(&b, "  include_capacity_estimates: %t\n", validation.GetIncludeCapacityEstimates())
+		fmt.Fprintf(&b, "  require_complete_marker: %t\n", validation.GetRequireCompleteMarker())
+	}
+	return a.Print(policy, b.String())
 }
 
 func firstNonEmptyBackup(values ...string) string {
@@ -963,14 +779,14 @@ func firstNonEmptyBackup(values ...string) string {
 	return ""
 }
 
-func formatClusterBackupSetRows(backups []*adminv1.ClusterBackupSetSummary) string {
+func formatClusterBackupSetRows(backups []*adminv1.BackupSetSummary) string {
 	var b strings.Builder
 	for _, backup := range backups {
 		repository := ""
 		if backup.GetRepositoryId() != "" {
 			repository = "\t" + backup.GetRepositoryId()
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%d nodes%s\n", backup.GetBackupSetId(), backup.GetState(), backup.GetExpectedNodes(), repository)
+		fmt.Fprintf(&b, "%s\t%s\t%d nodes%s\n", backup.GetBackupSetId(), backup.GetState(), backup.GetExpectedNodeCount(), repository)
 	}
 	return b.String()
 }
