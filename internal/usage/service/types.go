@@ -12,6 +12,7 @@ const ModuleName = "usage"
 const (
 	MetricGraphNodeCount                = "graph.node_count"
 	MetricGraphEdgeCount                = "graph.edge_count"
+	MetricGraphLogicalBytes             = "graph.logical_bytes"
 	MetricBlobActiveLogicalBytes        = "blob.active_logical_bytes"
 	MetricBlobActiveCount               = "blob.active_count"
 	MetricBlobLocalActiveLogicalBytes   = "blob.local_active_logical_bytes"

@@ -168,6 +168,7 @@ should include:
 
 - `graph.node_count`;
 - `graph.edge_count`;
+- `graph.logical_bytes`;
 - `blob.active_logical_bytes`;
 - `blob.active_count`;
 - `blob.local_active_logical_bytes`;
@@ -613,7 +614,10 @@ Graph mutations should emit deterministic deltas for:
 
 - `graph.node_count`;
 - `graph.edge_count`;
-- `graph.logical_bytes` once a stable logical-size function is defined.
+- `graph.logical_bytes`, defined as the UTF-8 byte sum of scalar values inside
+  committed node `payload` maps. Map keys and structural JSON syntax do not
+  count; labels, properties, metadata, edge payloads, and physical graph storage
+  overhead are excluded.
 
 Blob mutations should emit deterministic deltas for:
 
@@ -759,9 +763,10 @@ The first implementation should support:
   - `blob.object_store_active_count`;
   - `blob.pending_delete_logical_bytes`;
   - `blob.pending_delete_count`;
-- quota-safe graph count metrics:
+- quota-safe graph metrics:
   - `graph.node_count`;
   - `graph.edge_count`;
+  - `graph.logical_bytes`;
 - read-only admin APIs: `GetUsage`, `BatchGetUsage`, `ListUsage`, and
   `GetUsageAccountingHealth`;
 - dry-run reconciliation that reports drift but does not repair counters
@@ -773,7 +778,7 @@ The first implementation should not use these for hard quota enforcement:
 - PVC/filesystem bytes;
 - index/vector/projection bytes;
 - orphan-candidate bytes;
-- `graph.logical_bytes` until the logical-size formula is finalized;
+- `graph.logical_bytes` hard-limit enforcement until the formula has production history;
 - cross-domain/shared-reference accounting.
 
 ### Phase 0: finalize contract details
@@ -912,6 +917,7 @@ MVP quota-safe metrics use metric version `1`.
 | --- | --- | --- | --- | --- |
 | `graph.node_count` | count | Count committed, non-deleted graph nodes owned by the scope. | `RAFT_COMMITTED_EXACT` | yes |
 | `graph.edge_count` | count | Count committed, non-deleted graph edges owned by the scope. | `RAFT_COMMITTED_EXACT` | yes |
+| `graph.logical_bytes` | bytes | Sum UTF-8 bytes of scalar values inside committed node `payload` maps owned by the scope. Map keys and JSON structure do not count; labels, properties, metadata, edge payloads, blob payload bytes, and physical storage overhead are excluded. | `RAFT_COMMITTED_EXACT` | no for first enforcement |
 | `blob.active_count` | count | Count committed active blob metadata descriptors owned by the scope. A descriptor is identified by its committed `(space_id, domain_id, blob_id)` ownership, not by graph reference count. | `RAFT_COMMITTED_EXACT` | yes |
 | `blob.active_logical_bytes` | bytes | Sum committed payload byte sizes from active blob metadata descriptors owned by the scope. | `RAFT_COMMITTED_EXACT` | yes |
 | `blob.local_active_count` | count | Count active blob descriptors whose payload backend is local filesystem. | `RAFT_COMMITTED_EXACT` | yes |
@@ -921,9 +927,11 @@ MVP quota-safe metrics use metric version `1`.
 | `blob.pending_delete_count` | count | Count committed blob descriptors or tombstones in an explicit Mycel pending-delete state. If no pending-delete state exists for a backend, this metric is `0` only when Mycel can prove there is no pending-delete queue; otherwise it is unavailable. | `RAFT_COMMITTED_EXACT` | no for first enforcement |
 | `blob.pending_delete_logical_bytes` | bytes | Sum payload byte sizes for committed pending-delete descriptors/tombstones. | `RAFT_COMMITTED_EXACT` | no for first enforcement |
 
-`graph.logical_bytes` is intentionally not an MVP quota-safe metric. It should be
-omitted or returned as unavailable until a stable logical-size formula is
-specified.
+For `graph.logical_bytes`, string scalar values count their UTF-8 byte length;
+numeric and boolean scalar values count the byte length of their deterministic
+text representation; `null` values count as zero; arrays and nested maps recurse
+into their values. Payload map keys are intentionally excluded so the metric
+tracks user payload content rather than schema/property overhead.
 
 Duplicate or deduplicated payloads are counted by committed logical ownership,
 not by physical object identity. If the same digest appears in multiple domains,
@@ -1099,20 +1107,24 @@ Acceptance:
 - deletes decrement active usage and update pending-delete metrics as specified;
 - replay/restore tests prove blob deltas are idempotent.
 
-### Phase 4: graph count deltas
+### Phase 4: graph usage deltas
 
-Status: implemented for committed graph node/edge create/delete paths; reconciliation-scan comparison is implemented in Phase 6 health checks.
+Status: implemented for committed graph node/edge create/delete paths, node
+payload logical-byte create/update/delete paths, and reconciliation-scan
+comparison in Phase 6 health checks.
 
-Wire graph mutation paths to produce node and edge count deltas. `graph.logical_bytes`
-should remain disabled or diagnostic-only until its formula is finalized.
+Wire graph mutation paths to produce node count, edge count, and node payload
+logical-byte deltas.
 
 Deliverables:
 
 - node create/delete count deltas;
 - edge create/delete count deltas;
+- node payload logical-byte create/update/delete deltas;
 - import/bulk-write aggregation that produces the same final deltas as ordinary
   mutations;
-- tests for transaction abort, retry, replay, and delete behavior.
+- tests for transaction abort, retry, replay, update, delete, and reconciliation
+  drift behavior.
 
 Acceptance:
 
@@ -1276,7 +1288,8 @@ operator description fields.
 Implemented scope/metric set:
 
 - domain and space hard limits for quota-safe hard-limit-eligible metrics;
-- graph count metrics: `graph.node_count`, `graph.edge_count`;
+- graph metrics: `graph.node_count`, `graph.edge_count`; `graph.logical_bytes`
+  is quota-safe but remains hard-limit ineligible for first enforcement;
 - blob active logical metrics: `blob.active_logical_bytes`,
   `blob.active_count`, `blob.local_active_logical_bytes`,
   `blob.local_active_count`, `blob.object_store_active_logical_bytes`, and
@@ -1312,8 +1325,6 @@ contract.
 
 ### Deferred metric definitions
 
-- Define `graph.logical_bytes`, including whether schema/type metadata,
-  properties, labels, tombstones, or transaction overhead count.
 - Decide whether semantic vectors are graph-derived logical usage, diagnostic
   derived usage, or a separate quota dimension.
 - Decide whether any lexical/semantic/projection/index byte metric can ever be
@@ -1344,8 +1355,8 @@ metric set at both domain and space scopes. Remaining design work includes:
 - how very large imports reserve usage across multiple graph/blob commits;
 - whether future override semantics exist for `HARD_BLOCK` or only for
   `SOFT_BLOCK`-style application warnings;
-- whether additional quota-safe metrics beyond graph counts and committed blob
-  logical usage should become hard-limit eligible.
+- whether additional quota-safe metrics beyond hard-limit-eligible graph counts
+  and committed blob logical usage should become hard-limit eligible.
 
 ### Diagnostic physical collectors
 
@@ -1397,7 +1408,7 @@ Production deployments with billing or throttling should require:
 
 - Finalize pending-delete backend behavior and whether a durable pending-delete
   queue is required for blob cleanup/accounting.
-- Define `graph.logical_bytes` before making it quota-safe.
+- Gather production history for `graph.logical_bytes` before making it hard-limit eligible.
 - Decide whether semantic vectors count as graph-derived logical usage,
   operational index usage, or a separate quota dimension.
 - Define reconciliation repair semantics after the dry-run MVP.

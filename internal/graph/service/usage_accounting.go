@@ -120,7 +120,7 @@ func (m *Module) ReconcileUsage(ctx context.Context, req usageservice.Reconcilia
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				result.ScopesScanned = 1
-				result.Deltas = append(result.Deltas, graphUsageCountDelta(usageservice.DomainScope(scope.SpaceID, scope.DomainID), m.graphUsageDomainClass(ctx, scope.SpaceID, scope.DomainID), 0, 0))
+				result.Deltas = append(result.Deltas, graphUsageReconciliationDelta(usageservice.DomainScope(scope.SpaceID, scope.DomainID), m.graphUsageDomainClass(ctx, scope.SpaceID, scope.DomainID), 0, 0, 0))
 				return result, nil
 			}
 			return result, err
@@ -139,7 +139,7 @@ func (m *Module) ReconcileUsage(ctx context.Context, req usageservice.Reconcilia
 			result.Truncated = true
 			return result, nil
 		}
-		result.Deltas = append(result.Deltas, graphUsageCountDelta(usageservice.DomainScope(scope.SpaceID, scope.DomainID), m.graphUsageDomainClass(ctx, scope.SpaceID, scope.DomainID), len(nodes), len(edges)))
+		result.Deltas = append(result.Deltas, graphUsageReconciliationDelta(usageservice.DomainScope(scope.SpaceID, scope.DomainID), m.graphUsageDomainClass(ctx, scope.SpaceID, scope.DomainID), len(nodes), len(edges), graphNodesPayloadContentBytes(nodes)))
 		return result, ctx.Err()
 	case usageservice.ScopeTypeSpace:
 		if err := scope.Validate(); err != nil {
@@ -150,8 +150,8 @@ func (m *Module) ReconcileUsage(ctx context.Context, req usageservice.Reconcilia
 			return result, err
 		}
 		result.Deltas = append(result.Deltas,
-			graphUsageCountDelta(usageservice.SpaceScope(scope.SpaceID), usageservice.DomainClassRetainedNonSystem, 0, 0),
-			graphUsageCountDelta(usageservice.SpaceScope(scope.SpaceID), usageservice.DomainClassSystem, 0, 0),
+			graphUsageReconciliationDelta(usageservice.SpaceScope(scope.SpaceID), usageservice.DomainClassRetainedNonSystem, 0, 0, 0),
+			graphUsageReconciliationDelta(usageservice.SpaceScope(scope.SpaceID), usageservice.DomainClassSystem, 0, 0, 0),
 		)
 		for _, store := range stores {
 			if err := ctx.Err(); err != nil {
@@ -175,7 +175,7 @@ func (m *Module) ReconcileUsage(ctx context.Context, req usageservice.Reconcilia
 				result.Truncated = true
 				return result, nil
 			}
-			result.Deltas = append(result.Deltas, graphUsageCountDelta(usageservice.DomainScope(key.SpaceID, key.DomainID), m.graphUsageDomainClass(ctx, key.SpaceID, key.DomainID), len(nodes), len(edges)))
+			result.Deltas = append(result.Deltas, graphUsageReconciliationDelta(usageservice.DomainScope(key.SpaceID, key.DomainID), m.graphUsageDomainClass(ctx, key.SpaceID, key.DomainID), len(nodes), len(edges), graphNodesPayloadContentBytes(nodes)))
 		}
 		return result, nil
 	default:
@@ -194,23 +194,29 @@ func storeKeyForUsageReconciliation(m *Module, store *graphstorage.LocalStore) d
 	return domainStoreKey{}
 }
 
-func graphUsageCountDelta(scope usageservice.Scope, domainClass usageservice.DomainClass, nodes int, edges int) usageservice.Delta {
+func graphUsageReconciliationDelta(scope usageservice.Scope, domainClass usageservice.DomainClass, nodes int, edges int, logicalBytes uint64) usageservice.Delta {
 	return usageservice.Delta{Scope: scope, DomainClass: domainClass, Metrics: []usageservice.MetricDelta{
 		{Name: usageservice.MetricGraphNodeCount, Version: 1, Delta: int64(nodes)},
 		{Name: usageservice.MetricGraphEdgeCount, Version: 1, Delta: int64(edges)},
+		{Name: usageservice.MetricGraphLogicalBytes, Version: 1, Delta: int64(logicalBytes)},
 	}}
 }
 
 func graphUsageMetricDeltas(changes []graphchange.Change) []usageservice.MetricDelta {
 	var nodeDelta int64
 	var edgeDelta int64
+	var logicalBytesDelta int64
 	for _, change := range changes {
 		switch graphchange.NormalizeChangeType(string(change.Type)) {
 		case graphchange.ChangeTypeNodeCreated:
 			nodeDelta++
+			logicalBytesDelta += int64(graphNodePayloadContentBytes(change.Node))
+		case graphchange.ChangeTypeNodeUpdated:
+			logicalBytesDelta += graphPayloadContentBytesDelta(change.OldNode, change.Node)
 		case graphchange.ChangeTypeNodeDeleted:
 			if change.OldNode != nil {
 				nodeDelta--
+				logicalBytesDelta -= int64(graphNodePayloadContentBytes(change.OldNode))
 			}
 		case graphchange.ChangeTypeEdgeCreated:
 			edgeDelta++
@@ -220,14 +226,113 @@ func graphUsageMetricDeltas(changes []graphchange.Change) []usageservice.MetricD
 			}
 		}
 	}
-	deltas := make([]usageservice.MetricDelta, 0, 2)
+	deltas := make([]usageservice.MetricDelta, 0, 3)
 	if nodeDelta != 0 {
 		deltas = append(deltas, usageservice.MetricDelta{Name: usageservice.MetricGraphNodeCount, Version: 1, Delta: nodeDelta})
 	}
 	if edgeDelta != 0 {
 		deltas = append(deltas, usageservice.MetricDelta{Name: usageservice.MetricGraphEdgeCount, Version: 1, Delta: edgeDelta})
 	}
+	if logicalBytesDelta != 0 {
+		deltas = append(deltas, usageservice.MetricDelta{Name: usageservice.MetricGraphLogicalBytes, Version: 1, Delta: logicalBytesDelta})
+	}
 	return deltas
+}
+
+func graphPayloadContentBytesDelta(oldNode *domaingraph.Node, newNode *domaingraph.Node) int64 {
+	oldBytes := graphNodePayloadContentBytes(oldNode)
+	newBytes := graphNodePayloadContentBytes(newNode)
+	if newBytes >= oldBytes {
+		return int64(newBytes - oldBytes)
+	}
+	return -int64(oldBytes - newBytes)
+}
+
+func graphNodesPayloadContentBytes(nodes []domaingraph.Node) uint64 {
+	var total uint64
+	for i := range nodes {
+		total += graphPayloadContentBytes(nodes[i].Payload)
+	}
+	return total
+}
+
+func graphNodePayloadContentBytes(node *domaingraph.Node) uint64 {
+	if node == nil {
+		return 0
+	}
+	return graphPayloadContentBytes(node.Payload)
+}
+
+func graphPayloadContentBytes(value any) uint64 {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case string:
+		return uint64(len(v))
+	case bool:
+		if v {
+			return uint64(len("true"))
+		}
+		return uint64(len("false"))
+	case int:
+		return uint64(len(strconv.FormatInt(int64(v), 10)))
+	case int8:
+		return uint64(len(strconv.FormatInt(int64(v), 10)))
+	case int16:
+		return uint64(len(strconv.FormatInt(int64(v), 10)))
+	case int32:
+		return uint64(len(strconv.FormatInt(int64(v), 10)))
+	case int64:
+		return uint64(len(strconv.FormatInt(v, 10)))
+	case uint:
+		return uint64(len(strconv.FormatUint(uint64(v), 10)))
+	case uint8:
+		return uint64(len(strconv.FormatUint(uint64(v), 10)))
+	case uint16:
+		return uint64(len(strconv.FormatUint(uint64(v), 10)))
+	case uint32:
+		return uint64(len(strconv.FormatUint(uint64(v), 10)))
+	case uint64:
+		return uint64(len(strconv.FormatUint(v, 10)))
+	case float32:
+		return uint64(len(strconv.FormatFloat(float64(v), 'g', -1, 32)))
+	case float64:
+		return uint64(len(strconv.FormatFloat(v, 'g', -1, 64)))
+	case json.Number:
+		return uint64(len(v.String()))
+	case []any:
+		var total uint64
+		for _, item := range v {
+			total += graphPayloadContentBytes(item)
+		}
+		return total
+	case []string:
+		var total uint64
+		for _, item := range v {
+			total += uint64(len(item))
+		}
+		return total
+	case map[string]any:
+		var total uint64
+		for _, item := range v {
+			total += graphPayloadContentBytes(item)
+		}
+		return total
+	default:
+		return graphJSONPayloadContentBytes(v)
+	}
+}
+
+func graphJSONPayloadContentBytes(value any) uint64 {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return 0
+	}
+	return graphPayloadContentBytes(decoded)
 }
 
 func graphUsageMutationID(record graphCommitRecord) string {
