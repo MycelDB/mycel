@@ -36,6 +36,7 @@ func TestDefaultRegistryIncludesMVPQuotaSafeMetrics(t *testing.T) {
 	for _, name := range []string{
 		MetricGraphNodeCount,
 		MetricGraphEdgeCount,
+		MetricGraphLogicalBytes,
 		MetricBlobActiveLogicalBytes,
 		MetricBlobActiveCount,
 		MetricBlobLocalActiveLogicalBytes,
@@ -52,6 +53,9 @@ func TestDefaultRegistryIncludesMVPQuotaSafeMetrics(t *testing.T) {
 		if !def.QuotaSafe {
 			t.Fatalf("metric %s is not quota-safe", name)
 		}
+	}
+	if def, _ := registry.Definition(MetricGraphLogicalBytes, 1); def.Unit != UnitBytes || def.HardLimitEligible {
+		t.Fatalf("graph logical bytes definition = %#v, want bytes and not hard-limit eligible", def)
 	}
 	if def, _ := registry.Definition(MetricBlobPendingDeleteCount, 1); def.HardLimitEligible {
 		t.Fatalf("pending-delete count should not be hard-limit eligible in the MVP")

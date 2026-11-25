@@ -103,6 +103,13 @@ mycel admin usage get \
   --include-diagnostic-physical
 ```
 
+Quota-safe graph metrics include `graph.node_count`, `graph.edge_count`, and
+`graph.logical_bytes`. `graph.logical_bytes` is the UTF-8 byte sum of scalar
+values inside committed node `payload` maps; it excludes payload keys, labels,
+properties, metadata, edge payloads, blob payload bytes, and physical graph store
+overhead. It is visible in usage snapshots but is not hard-limit eligible in the
+first enforcement slice.
+
 ```sh
 mycel admin usage limits upsert \
   --space-id <space-id> \
