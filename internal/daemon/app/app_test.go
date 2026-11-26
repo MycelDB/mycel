@@ -16,26 +16,72 @@ import (
 	graphchange "github.com/myceldb/mycel/internal/graph/change"
 	identityservice "github.com/myceldb/mycel/internal/identity/service"
 	"github.com/myceldb/mycel/internal/wal"
+	"gopkg.in/yaml.v3"
 )
 
-func TestDockerPublicationSuppliesImmutableProvenanceLabels(t *testing.T) {
+func TestDockerPublicationPromotesAnAcceptedIndex(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	dockerfile, err := os.ReadFile(filepath.Join(root, "Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	workflow, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "dockerhub.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, required := range []string{"org.opencontainers.image.revision", "io.myceldb.source.dirty", "io.myceldb.build.context-digest", "${BUILD_IDENTITY}"} {
-		if !strings.Contains(string(dockerfile), required) {
-			t.Fatalf("Dockerfile missing provenance field %q", required)
+	dockerfile := readFile(t, filepath.Join(root, "Dockerfile"))
+	for _, required := range []string{
+		`org.opencontainers.image.source="https://github.com/MycelDB/mycel"`,
+		`org.opencontainers.image.revision="${SOURCE_REVISION}"`,
+		`io.myceldb.source.dirty="${SOURCE_DIRTY}"`,
+		`io.myceldb.build.context-digest="${BUILD_CONTEXT_DIGEST}"`,
+		`io.myceldb.build.command="${BUILD_IDENTITY}"`,
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("Dockerfile missing provenance label %q", required)
 		}
 	}
-	for _, required := range []string{"SOURCE_REVISION=${{ env.DAEMON_REVISION }}", "SOURCE_DIRTY=false", "BUILD_CONTEXT_DIGEST=${{ env.BUILD_CONTEXT_DIGEST }}", "BUILD_IDENTITY=github-actions-buildx-multiarch"} {
-		if !strings.Contains(string(workflow), required) {
-			t.Fatalf("Docker workflow missing provenance build arg %q", required)
+	var workflow struct {
+		On map[string]struct {
+			Inputs map[string]struct {
+				Required bool `yaml:"required"`
+			} `yaml:"inputs"`
+		} `yaml:"on"`
+		Jobs map[string]struct {
+			If    string `yaml:"if"`
+			Steps []struct {
+				Run  string `yaml:"run"`
+				Uses string `yaml:"uses"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readFile(t, filepath.Join(root, ".github", "workflows", "dockerhub.yml"))), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	dispatch, ok := workflow.On["workflow_dispatch"]
+	if !ok || len(workflow.On) != 1 {
+		t.Fatal("publication must be explicitly dispatched, not triggered by a tag push")
+	}
+	for _, input := range []string{"release_ref", "accepted_image", "release_manifest_sha256"} {
+		if !dispatch.Inputs[input].Required {
+			t.Fatalf("publication must require %s", input)
+		}
+	}
+	job := workflow.Jobs["dockerhub"]
+	if job.If != "github.ref == 'refs/heads/main'" {
+		t.Fatal("publication must dispatch from main")
+	}
+	var commands strings.Builder
+	for _, workflowJob := range workflow.Jobs {
+		for _, step := range workflowJob.Steps {
+			if strings.Contains(step.Uses, "build-push-action") || strings.Contains(step.Run, "docker build") || strings.Contains(step.Run, "myceldb/mycel:latest") {
+				t.Fatal("publication must not build a new image or move latest")
+			}
+		}
+	}
+	for _, step := range job.Steps {
+		commands.WriteString(step.Run)
+		commands.WriteByte('\n')
+	}
+	for _, required := range []string{
+		`git merge-base --is-ancestor HEAD origin/main`,
+		`.release/mycel-api-ref`,
+		`bash mycel/scripts/promoteAcceptedDockerImage.sh "$RELEASE_REF" "$ACCEPTED_IMAGE" "$daemon_revision" "$context_digest"`,
+	} {
+		if !strings.Contains(commands.String(), required) {
+			t.Fatalf("Docker workflow missing promotion guard %q", required)
 		}
 	}
 }
