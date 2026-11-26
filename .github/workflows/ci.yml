@@ -46,6 +46,10 @@ jobs:
           go-version-file: mycel/go.mod
           cache-dependency-path: mycel/go.sum
 
+      - name: Test accepted image promotion guards
+        working-directory: mycel
+        run: bash scripts/testPromoteAcceptedDockerImage.sh
+
       - name: Test
         working-directory: mycel
         run: make test
