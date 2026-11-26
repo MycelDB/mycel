@@ -696,11 +696,14 @@ Mycel should provide an internal reconciliation job that recomputes quota-safe
 usage from durable graph/blob metadata and compares the result with materialized
 counters.
 
-The first reconciliation mode can be dry-run only and report differences through
-`GetUsageAccountingHealth`. A later admin repair mode may update counters after
-operator review. Reconciliation evidence should include non-secret scope IDs,
-metric names, expected values, observed counter values, and the committed state
-marker used for the scan.
+The first reconciliation mode primarily reports differences through
+`GetUsageAccountingHealth`. It can also perform the narrow, operator-triggered
+backfill of counters for metrics that are explicitly marked
+reconciliation-backfill eligible, starting with newly introduced
+`graph.logical_bytes`. Broader admin repair mode semantics remain separate and
+must require operator review. Reconciliation evidence should include non-secret
+scope IDs, metric names, expected values, observed counter values, and the
+committed state marker used for the scan.
 
 Reconciliation is also the safety net for:
 
@@ -767,10 +770,12 @@ The first implementation should support:
   - `graph.node_count`;
   - `graph.edge_count`;
   - `graph.logical_bytes`;
-- read-only admin APIs: `GetUsage`, `BatchGetUsage`, `ListUsage`, and
-  `GetUsageAccountingHealth`;
-- dry-run reconciliation that reports drift but does not repair counters
-  automatically.
+- admin usage APIs: `GetUsage`, `BatchGetUsage`, `ListUsage`, and
+  `GetUsageAccountingHealth` (reconciliation health is an explicit operator
+  action and can persist readiness/backfill transitions);
+- reconciliation that reports drift, does not repair ordinary counter drift
+  automatically, and may only materialize counters for explicitly
+  backfill-eligible newly introduced metrics.
 
 The first implementation should not use these for hard quota enforcement:
 
@@ -979,7 +984,7 @@ capabilities:
 | --- | --- | --- |
 | `usage.read` | system, space, or domain | Read quota-safe usage snapshots and accounting health for the granted scope. |
 | `usage.diagnostic.read` | system, space, or domain | Include diagnostic physical/operational metrics. |
-| `usage.reconcile` | system or space | Trigger reconciliation dry-runs and read reconciliation evidence. |
+| `usage.reconcile` | system or space | Trigger explicit reconciliation checks, read reconciliation evidence, and allow narrow backfill of reconciliation-backfill-eligible metrics. |
 | `usage.limit.manage` | system or space | Create, update, or delete usage limits. |
 | `usage.limit.override` | system or space | Override soft-block admission when an operation explicitly supports overrides. |
 
@@ -1017,8 +1022,8 @@ whether counters were included as authoritative state or marked rebuildable.
 
 Restore behavior:
 
-- if counters restore cleanly, mark usage accounting `RECONCILING` until a dry-run
-  reconciliation verifies the restored counters;
+- if counters restore cleanly, mark usage accounting `RECONCILING` until an
+  explicit reconciliation verifies the restored counters;
 - if counters are missing, stale, incompatible, or corrupted, mark usage
   accounting `REBUILDING` and recompute from durable graph/blob metadata;
 - while state is `REBUILDING`, `GetUsage(require_quota_safe=true)` fails closed;
@@ -1158,17 +1163,22 @@ Acceptance:
 
 ### Phase 6: reconciliation and health
 
-Status: implemented for dry-run graph/blob quota-safe reconciliation through usage health.
+Status: implemented for graph/blob quota-safe reconciliation through usage
+health, including explicit backfill for reconciliation-backfill-eligible newly
+introduced metrics.
 
-Add dry-run reconciliation that recomputes MVP quota-safe metrics from durable
-metadata and compares them with materialized counters.
+Add reconciliation that recomputes MVP quota-safe metrics from durable metadata
+and compares them with materialized counters. Reconciliation remains diagnostic
+for ordinary drift; it may only materialize counters for metric definitions that
+are explicitly marked reconciliation-backfill eligible, such as newly introduced
+`graph.logical_bytes`.
 
 Deliverables:
 
 - domain and space reconciliation scanner;
 - bounded scan controls and progress/evidence;
 - drift reporting in `GetUsageAccountingHealth`;
-- optional admin/CLI command to trigger reconciliation dry-runs.
+- optional admin/CLI command to trigger explicit reconciliation checks.
 
 Acceptance:
 
@@ -1179,15 +1189,21 @@ Acceptance:
 
 Implemented behavior:
 
-- `GetUsageAccountingHealth(include_reconciliation=true)` runs bounded dry-run
-  scanners for durable graph and blob metadata and compares the recomputed
-  quota-safe counters with materialized state;
+- `GetUsageAccountingHealth(include_reconciliation=true)` runs bounded scanners
+  for durable graph and blob metadata and compares the recomputed quota-safe
+  counters with materialized state;
 - drift is reported as `reconciliation_drift` blockers with sanitized metric,
   scope, expected value, materialized value, and metric-version evidence;
 - truncated or failed reconciliation scans report blocker health and
   `quota_safe_ready=false` instead of claiming fresh quota-safe readiness;
-- reconciliation dry-runs are report-only and do not repair counters or mutate
-  materialized values;
+- reconciliation runs are report-only for ordinary drift and do not repair
+  existing non-backfill-eligible counters;
+- when an upgraded counter state predates a reconciliation-backfill-eligible
+  metric such as `graph.logical_bytes`, the explicit reconciliation action may
+  materialize that metric's counter from durable graph/blob metadata and records
+  informational before/after evidence in health warnings;
+- once a metric/scope has been backfilled, later drift for that metric is
+  reported rather than repeatedly auto-repaired;
 - callers that request reconciliation evidence need `usage.reconcile` in addition
   to `usage.read`;
 - ordinary `GetUsage(require_quota_safe=true)` still uses materialized accounting
@@ -1230,7 +1246,7 @@ Implemented behavior:
 - while state is `RECONCILING` or `REBUILDING`, quota-safe snapshots fail closed
   (`quota_safe_complete=false`, and the admin RPC returns `FailedPrecondition`
   when `require_quota_safe=true`);
-- a matching reconciliation dry-run can clear `RECONCILING`, `REBUILDING`, or
+- a matching reconciliation run can clear `RECONCILING`, `REBUILDING`, or
   previous `DRIFT_DETECTED` readiness state to `READY` without repairing counter
   values; drift or truncated/failed scans keep quota-safe readiness blocked;
 - because health with reconciliation can persist a readiness transition, usage
@@ -1339,9 +1355,12 @@ pending-delete metrics as unavailable until such a queue exists.
 
 ### Reconciliation repair
 
-The MVP reconciliation mode is dry-run/report-only. A later design should define
-operator-approved repair semantics, audit evidence, and whether repaired counters
-require a fresh reconciliation before `quota_safe_complete=true` is restored.
+The MVP reconciliation mode is report-only for ordinary drift, with a narrow
+exception for operator-triggered backfill of explicitly backfill-eligible newly
+introduced metrics such as `graph.logical_bytes`. A later design should define
+broader operator-approved repair semantics, audit evidence, and whether repaired
+counters require a fresh reconciliation before `quota_safe_complete=true` is
+restored.
 
 ### Hard-limit expansion
 
@@ -1411,7 +1430,7 @@ Production deployments with billing or throttling should require:
 - Gather production history for `graph.logical_bytes` before making it hard-limit eligible.
 - Decide whether semantic vectors count as graph-derived logical usage,
   operational index usage, or a separate quota dimension.
-- Define reconciliation repair semantics after the dry-run MVP.
+- Define broader reconciliation repair semantics beyond backfill-eligible newly introduced metrics.
 - Narrow the first hard-limit enforcement slice and solve any required
   cross-partition reservation semantics.
 - Design diagnostic physical collectors per backend.
