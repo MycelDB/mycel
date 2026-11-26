@@ -21,7 +21,7 @@ func DefaultRegistry() Registry {
 	return NewRegistry(
 		MetricDefinition{Name: MetricGraphNodeCount, Version: 1, Unit: UnitCount, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: true},
 		MetricDefinition{Name: MetricGraphEdgeCount, Version: 1, Unit: UnitCount, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: true},
-		MetricDefinition{Name: MetricGraphLogicalBytes, Version: 1, Unit: UnitBytes, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: false, ReconciliationBackfillEligible: true},
+		MetricDefinition{Name: MetricGraphLogicalBytes, Version: 1, Unit: UnitBytes, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: false, ReconciliationBackfillAnchor: MetricGraphNodeCount},
 		MetricDefinition{Name: MetricBlobActiveLogicalBytes, Version: 1, Unit: UnitBytes, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: true},
 		MetricDefinition{Name: MetricBlobActiveCount, Version: 1, Unit: UnitCount, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: true},
 		MetricDefinition{Name: MetricBlobLocalActiveLogicalBytes, Version: 1, Unit: UnitBytes, Authority: AuthorityRaftCommittedExact, QuotaSafe: true, HardLimitEligible: true},

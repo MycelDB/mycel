@@ -1274,6 +1274,22 @@ func TestModuleGraphUsageReconciliationDetectsCounterDrift(t *testing.T) {
 	}
 }
 
+func TestModuleUsageReconciliationDefersWhileGraphCommitIsInFlight(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	usage.WithReconciliationProviders(m)
+	req := usageservice.HealthRequest{Scope: usageservice.SpaceScope(uuid.NewString()), IncludeReconciliation: true}
+	m.usageReconciliationMu.RLock()
+	busy := usage.Health(ctx, req)
+	m.usageReconciliationMu.RUnlock()
+	if busy.QuotaSafeReady || busy.State != usageservice.AccountingStateUnavailable || len(busy.Blockers) != 1 {
+		t.Fatalf("busy accounting health = %#v, want retryable reconciliation blocker", busy)
+	}
+	if ready := usage.Health(ctx, req); !ready.QuotaSafeReady || len(ready.Blockers) != 0 {
+		t.Fatalf("retried accounting health = %#v, want ready", ready)
+	}
+}
+
 func TestModuleGraphUsageReconciliationDetectsLogicalBytesDrift(t *testing.T) {
 	ctx := context.Background()
 	m, usage := newTestGraphModuleWithUsage(t, ctx)

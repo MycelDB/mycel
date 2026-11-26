@@ -128,11 +128,33 @@ Usage snapshot/list/health reads require `usage.read`; reconciliation health als
 requires `usage.reconcile`, and diagnostic physical/collector output requires
 `usage.diagnostic.read`. Hard usage limit CRUD requires `usage.limit.manage`.
 Health with reconciliation may clear restored `RECONCILING`/`REBUILDING`
-readiness after counters match durable metadata. It may also materialize counters
-for explicitly backfill-eligible newly introduced metrics, such as
-`graph.logical_bytes`, and reports before/after evidence in health warnings.
-Ordinary counter drift is still reported rather than repaired automatically, so
-this RPC is not treated as a backup-quiesce read-only call.
+readiness after counters match durable metadata. It can also persist an upgrade
+backfill. Ordinary counter drift is still reported, not automatically repaired,
+so this RPC is not treated as a backup-quiesce read-only call.
+
+### Backfill graph payload bytes after upgrading from v0.25
+
+Start with healthy v0.25 usage counters and a verified pre-upgrade backup.
+Do not downgrade a data directory that has materialized the new metric: the
+v0.25 daemon does not recognize the persisted counter. Use the pre-upgrade
+backup if you need to roll back.
+
+After upgrading, run a space-scoped reconciliation against each daemon
+serving usage for that space, once it is caught up. A domain-scoped check
+backfills only that domain, not the parent space total.
+
+```sh
+mycel admin usage health --space-id <space-id> --include-reconciliation
+mycel admin usage get --space-id <space-id> --metric graph.logical_bytes --require-quota-safe
+```
+
+Graph writes may resume before backfill. Counts continue to update, but the
+daemon withholds `graph.logical_bytes` for affected scopes rather than returning
+partial totals or a false zero. A successful backfill reports `action=backfill`
+with the scan source, scope and record counts, and before/after values. If a
+commit is in flight or accounting changes during the scan, retry when writes
+are idle. For a truncated scan or reported drift, investigate the blockers;
+neither is evidence of a completed backfill.
 
 ## Related docs
 

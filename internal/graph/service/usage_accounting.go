@@ -48,6 +48,26 @@ func (m *Module) graphUsageChangesForRecord(ctx context.Context, store *graphsto
 	return m.overlayChanges(ctx, store, snapshot)
 }
 
+func (m *Module) commitGraphStorageWithUsage(ctx context.Context, tx graphstorage.Txn, record graphCommitRecord, changes []graphchange.Change) (graphstorage.CommitInfo, error) {
+	m.usageReconciliationMu.RLock()
+	defer m.usageReconciliationMu.RUnlock()
+	info, err := tx.CommitWithInfo()
+	if err != nil || info.IdempotentReplay {
+		return info, err
+	}
+	return info, m.applyGraphUsageDelta(ctx, record, changes, info.NextRevision)
+}
+
+func (m *Module) BeginUsageReconciliation(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !m.usageReconciliationMu.TryLock() {
+		return nil, errors.New("graph usage commits or reconciliation are in progress")
+	}
+	return m.usageReconciliationMu.Unlock, nil
+}
+
 func (m *Module) applyGraphUsageDelta(ctx context.Context, record graphCommitRecord, changes []graphchange.Change, revision uint64) error {
 	if m.usageAccounting == nil {
 		return nil
@@ -233,7 +253,9 @@ func graphUsageMetricDeltas(changes []graphchange.Change) []usageservice.MetricD
 	if edgeDelta != 0 {
 		deltas = append(deltas, usageservice.MetricDelta{Name: usageservice.MetricGraphEdgeCount, Version: 1, Delta: edgeDelta})
 	}
-	if logicalBytesDelta != 0 {
+	if logicalBytesDelta != 0 || nodeDelta != 0 {
+		// An explicitly materialized zero distinguishes new empty payloads
+		// from a scope accumulated before graph.logical_bytes was tracked.
 		deltas = append(deltas, usageservice.MetricDelta{Name: usageservice.MetricGraphLogicalBytes, Version: 1, Delta: logicalBytesDelta})
 	}
 	return deltas

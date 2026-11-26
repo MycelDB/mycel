@@ -93,6 +93,7 @@ type Module struct {
 	encryption                       *encryption.Service
 	writeAllowed                     func() error
 	usageAccounting                  graphUsageDeltaApplier
+	usageReconciliationMu            sync.RWMutex
 	checkpointPolicy                 CheckpointPolicyConfig
 	checkpointStates                 map[domainStoreKey]checkpointRuntimeState
 	checkpointWorkerCancel           context.CancelFunc
@@ -2045,7 +2046,7 @@ func (m *Module) CommitTransactionGraphWithRevisionFences(ctx context.Context, t
 				return graphchange.CommitResult{}, mapStorageError(err)
 			}
 		}
-		info, err = storageTx.CommitWithInfo()
+		info, err = m.commitGraphStorageWithUsage(ctx, storageTx, record, changes)
 		if err != nil {
 			mappedErr := mapStorageError(err)
 			return graphchange.CommitResult{}, m.observeIdempotencyError(record.Idempotency, mappedErr)
@@ -2053,11 +2054,6 @@ func (m *Module) CommitTransactionGraphWithRevisionFences(ctx context.Context, t
 		committedRevision = int64(store.Revision())
 		timing.DirectStorage = time.Since(stepStart)
 		timing.StorageCommit = info.Timing
-		if !info.IdempotentReplay {
-			if err := m.applyGraphUsageDelta(ctx, record, changes, info.NextRevision); err != nil {
-				return graphchange.CommitResult{}, err
-			}
-		}
 	} else {
 		timing.StorageMode = "wal"
 		stepStart = time.Now()
