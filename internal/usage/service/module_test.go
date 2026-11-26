@@ -54,8 +54,11 @@ func TestDefaultRegistryIncludesMVPQuotaSafeMetrics(t *testing.T) {
 			t.Fatalf("metric %s is not quota-safe", name)
 		}
 	}
-	if def, _ := registry.Definition(MetricGraphLogicalBytes, 1); def.Unit != UnitBytes || def.HardLimitEligible {
-		t.Fatalf("graph logical bytes definition = %#v, want bytes and not hard-limit eligible", def)
+	if def, _ := registry.Definition(MetricGraphLogicalBytes, 1); def.Unit != UnitBytes || def.HardLimitEligible || !def.ReconciliationBackfillEligible {
+		t.Fatalf("graph logical bytes definition = %#v, want bytes, backfill eligible, and not hard-limit eligible", def)
+	}
+	if def, _ := registry.Definition(MetricGraphNodeCount, 1); def.ReconciliationBackfillEligible {
+		t.Fatalf("graph node count should not be reconciliation-backfill eligible")
 	}
 	if def, _ := registry.Definition(MetricBlobPendingDeleteCount, 1); def.HardLimitEligible {
 		t.Fatalf("pending-delete count should not be hard-limit eligible in the MVP")
@@ -344,6 +347,74 @@ func TestHealthReconciliationHealthyCounters(t *testing.T) {
 	health := m.Health(ctx, HealthRequest{Scope: DomainScope("space-1", "domain-1"), IncludeReconciliation: true})
 	if health.State != AccountingStateReady || !health.QuotaSafeReady || len(health.Blockers) != 0 {
 		t.Fatalf("health = %#v, want ready without blockers", health)
+	}
+}
+
+func TestHealthReconciliationBackfillsNewMetricCountersOnce(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	reconciled := ReconciliationResult{Source: "test", Deltas: []Delta{{Scope: DomainScope("space-1", "domain-1"), DomainClass: DomainClassRetainedNonSystem, Metrics: []MetricDelta{
+		{Name: MetricGraphNodeCount, Version: 1, Delta: 2},
+		{Name: MetricGraphLogicalBytes, Version: 1, Delta: 42},
+	}}}}
+	legacy := NewModule()
+	if result := legacy.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
+		t.Fatalf("legacy Init() = %#v", result)
+	}
+	if err := legacy.CompleteRebuild(ctx, nil, Revision{}); err != nil {
+		t.Fatalf("CompleteRebuild() error = %v", err)
+	}
+	if err := legacy.ApplyDelta(ctx, Delta{MutationID: "legacy-materialized", Scope: DomainScope("space-1", "domain-1"), Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Version: 1, Delta: 2}}}); err != nil {
+		t.Fatalf("ApplyDelta() error = %v", err)
+	}
+
+	m := NewModule().WithReconciliationProviders(fakeReconciliationProvider{result: reconciled})
+	if result := m.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
+		t.Fatalf("Init() = %#v", result)
+	}
+	health := m.Health(ctx, HealthRequest{Scope: DomainScope("space-1", "domain-1"), IncludeReconciliation: true})
+	if health.State != AccountingStateReady || !health.QuotaSafeReady || len(health.Blockers) != 0 {
+		t.Fatalf("health = %#v, want ready after graph.logical_bytes backfill", health)
+	}
+	if len(health.Warnings) != 1 || health.Warnings[0].Metric != MetricGraphLogicalBytes || health.Warnings[0].Reason != StatusReasonReconciliationDrift || health.Warnings[0].Severity != StatusSeverityInfo {
+		t.Fatalf("health warnings = %#v, want one informational graph.logical_bytes backfill", health.Warnings)
+	}
+	if got := health.Warnings[0].Evidence["action"]; got != "backfill" {
+		t.Fatalf("backfill action evidence = %q, want backfill", got)
+	}
+	if got := health.Warnings[0].Evidence["before"]; got != "missing" {
+		t.Fatalf("backfill before evidence = %q, want missing", got)
+	}
+	if got := health.Warnings[0].Evidence["after"]; got != "42" {
+		t.Fatalf("backfill after evidence = %q, want 42", got)
+	}
+	snapshot := mustSnapshot(t, m, SnapshotRequest{Scope: DomainScope("space-1", "domain-1"), MetricNames: []string{MetricGraphLogicalBytes}, RequireQuotaSafe: true})
+	assertMetricValue(t, snapshot, MetricGraphLogicalBytes, 42)
+
+	restarted := NewModule().WithReconciliationProviders(fakeReconciliationProvider{result: reconciled})
+	if result := restarted.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
+		t.Fatalf("restarted Init() = %#v", result)
+	}
+	health = restarted.Health(ctx, HealthRequest{Scope: DomainScope("space-1", "domain-1"), IncludeReconciliation: true})
+	if len(health.Blockers) != 0 || len(health.Warnings) != 0 {
+		t.Fatalf("second reconciliation health = %#v, want no repeated backfill evidence", health)
+	}
+	snapshot = mustSnapshot(t, restarted, SnapshotRequest{Scope: DomainScope("space-1", "domain-1"), MetricNames: []string{MetricGraphLogicalBytes}, RequireQuotaSafe: true})
+	assertMetricValue(t, snapshot, MetricGraphLogicalBytes, 42)
+}
+
+func TestHealthReconciliationDoesNotBackfillWhileRebuilding(t *testing.T) {
+	ctx := context.Background()
+	m := NewModule().WithReconciliationProviders(fakeReconciliationProvider{result: ReconciliationResult{Source: "test", Deltas: []Delta{{Scope: DomainScope("space-1", "domain-1"), Metrics: []MetricDelta{{Name: MetricGraphLogicalBytes, Version: 1, Delta: 42}}}}}})
+	if err := m.MarkRebuilding(ctx, "missing counter state"); err != nil {
+		t.Fatalf("MarkRebuilding() error = %v", err)
+	}
+	health := m.Health(ctx, HealthRequest{Scope: DomainScope("space-1", "domain-1"), IncludeReconciliation: true})
+	if health.State != AccountingStateDriftDetected || health.QuotaSafeReady || len(health.Blockers) == 0 {
+		t.Fatalf("health = %#v, want rebuilding state to remain fail-closed without backfill", health)
+	}
+	if len(health.Warnings) != 0 {
+		t.Fatalf("health warnings = %#v, want no backfill warning", health.Warnings)
 	}
 }
 

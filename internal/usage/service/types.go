@@ -122,12 +122,13 @@ func (s Scope) normalized() Scope {
 }
 
 type MetricDefinition struct {
-	Name              string
-	Version           uint32
-	Unit              Unit
-	Authority         Authority
-	QuotaSafe         bool
-	HardLimitEligible bool
+	Name                           string
+	Version                        uint32
+	Unit                           Unit
+	Authority                      Authority
+	QuotaSafe                      bool
+	HardLimitEligible              bool
+	ReconciliationBackfillEligible bool
 }
 
 type MetricDelta struct {

@@ -128,8 +128,11 @@ Usage snapshot/list/health reads require `usage.read`; reconciliation health als
 requires `usage.reconcile`, and diagnostic physical/collector output requires
 `usage.diagnostic.read`. Hard usage limit CRUD requires `usage.limit.manage`.
 Health with reconciliation may clear restored `RECONCILING`/`REBUILDING`
-readiness after counters match durable metadata, so it is not treated as a
-backup-quiesce read-only RPC.
+readiness after counters match durable metadata. It may also materialize counters
+for explicitly backfill-eligible newly introduced metrics, such as
+`graph.logical_bytes`, and reports before/after evidence in health warnings.
+Ordinary counter drift is still reported rather than repaired automatically, so
+this RPC is not treated as a backup-quiesce read-only call.
 
 ## Related docs
 
