@@ -126,6 +126,8 @@ func (m *Module) snapshotRaftPartition(ctx context.Context, partitionID, partiti
 }
 
 func (m *Module) restoreRaftPartition(ctx context.Context, data []byte, partitionID, partitionCount uint32) error {
+	m.usageReconciliationMu.RLock()
+	defer m.usageReconciliationMu.RUnlock()
 	if partitionCount == 0 {
 		return fmt.Errorf("graph raft restore partition_count is required")
 	}

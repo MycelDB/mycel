@@ -1198,12 +1198,19 @@ Implemented behavior:
   `quota_safe_ready=false` instead of claiming fresh quota-safe readiness;
 - reconciliation runs are report-only for ordinary drift and do not repair
   existing non-backfill-eligible counters;
-- when an upgraded counter state predates a reconciliation-backfill-eligible
-  metric such as `graph.logical_bytes`, the explicit reconciliation action may
-  materialize that metric's counter from durable graph/blob metadata and records
-  informational before/after evidence in health warnings;
-- once a metric/scope has been backfilled, later drift for that metric is
-  reported rather than repeatedly auto-repaired;
+- on upgrade, existing `graph.node_count` keys without a `graph.logical_bytes`
+  key identify scopes that need backfill. Writes keep updating existing counts
+  but do not apply byte deltas to a missing baseline. Snapshots that include the
+  pending metric are incomplete and omit its value, even if writes have resumed;
+- an explicit reconciliation may backfill a missing metric version when the
+  legacy anchor count matches durable metadata. A space scan covers its domain
+  and aggregate counters; a domain scan cannot initialize the wider aggregate.
+  Health reports the scan source, counts, and before/after values;
+- the graph commit guard prevents commits or Raft snapshot installs from
+  racing the scan and backfill. If reconciliation cannot start while a commit
+  is in flight, or the accounting revision changes before persistence, the
+  caller must retry. Once backfilled, subsequent drift for the metric is
+  reported rather than repaired;
 - callers that request reconciliation evidence need `usage.reconcile` in addition
   to `usage.read`;
 - ordinary `GetUsage(require_quota_safe=true)` still uses materialized accounting

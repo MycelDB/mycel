@@ -122,13 +122,15 @@ func (s Scope) normalized() Scope {
 }
 
 type MetricDefinition struct {
-	Name                           string
-	Version                        uint32
-	Unit                           Unit
-	Authority                      Authority
-	QuotaSafe                      bool
-	HardLimitEligible              bool
-	ReconciliationBackfillEligible bool
+	Name              string
+	Version           uint32
+	Unit              Unit
+	Authority         Authority
+	QuotaSafe         bool
+	HardLimitEligible bool
+	// ReconciliationBackfillAnchor identifies a v1 counter that already existed
+	// in populated scopes before this metric was introduced.
+	ReconciliationBackfillAnchor string
 }
 
 type MetricDelta struct {
@@ -309,6 +311,12 @@ type ReconciliationResult struct {
 
 type ReconciliationProvider interface {
 	ReconcileUsage(context.Context, ReconciliationRequest) (ReconciliationResult, error)
+}
+
+// ReconciliationGuard keeps committed records and their usage deltas stable
+// until reconciliation has finished persisting any backfill.
+type ReconciliationGuard interface {
+	BeginUsageReconciliation(context.Context) (release func(), err error)
 }
 
 type DiagnosticRequest struct {

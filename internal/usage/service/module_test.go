@@ -54,10 +54,10 @@ func TestDefaultRegistryIncludesMVPQuotaSafeMetrics(t *testing.T) {
 			t.Fatalf("metric %s is not quota-safe", name)
 		}
 	}
-	if def, _ := registry.Definition(MetricGraphLogicalBytes, 1); def.Unit != UnitBytes || def.HardLimitEligible || !def.ReconciliationBackfillEligible {
+	if def, _ := registry.Definition(MetricGraphLogicalBytes, 1); def.Unit != UnitBytes || def.HardLimitEligible || def.ReconciliationBackfillAnchor != MetricGraphNodeCount {
 		t.Fatalf("graph logical bytes definition = %#v, want bytes, backfill eligible, and not hard-limit eligible", def)
 	}
-	if def, _ := registry.Definition(MetricGraphNodeCount, 1); def.ReconciliationBackfillEligible {
+	if def, _ := registry.Definition(MetricGraphNodeCount, 1); def.ReconciliationBackfillAnchor != "" {
 		t.Fatalf("graph node count should not be reconciliation-backfill eligible")
 	}
 	if def, _ := registry.Definition(MetricBlobPendingDeleteCount, 1); def.HardLimitEligible {
@@ -350,10 +350,10 @@ func TestHealthReconciliationHealthyCounters(t *testing.T) {
 	}
 }
 
-func TestHealthReconciliationBackfillsNewMetricCountersOnce(t *testing.T) {
+func TestHealthReconciliationBackfillsNewMetricCountersAfterWrites(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	reconciled := ReconciliationResult{Source: "test", Deltas: []Delta{{Scope: DomainScope("space-1", "domain-1"), DomainClass: DomainClassRetainedNonSystem, Metrics: []MetricDelta{
+	reconciled := ReconciliationResult{Source: "graph", ScopesScanned: 1, RecordsScanned: 2, Deltas: []Delta{{Scope: DomainScope("space-1", "domain-1"), DomainClass: DomainClassRetainedNonSystem, Metrics: []MetricDelta{
 		{Name: MetricGraphNodeCount, Version: 1, Delta: 2},
 		{Name: MetricGraphLogicalBytes, Version: 1, Delta: 42},
 	}}}}
@@ -372,7 +372,28 @@ func TestHealthReconciliationBackfillsNewMetricCountersOnce(t *testing.T) {
 	if result := m.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
 		t.Fatalf("Init() = %#v", result)
 	}
-	health := m.Health(ctx, HealthRequest{Scope: DomainScope("space-1", "domain-1"), IncludeReconciliation: true})
+	scope := DomainScope("space-1", "domain-1")
+	for _, delta := range []Delta{
+		{MutationID: "new-node", Scope: scope, Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Delta: 1}, {Name: MetricGraphLogicalBytes, Delta: 5}}},
+		{MutationID: "delete-legacy-node", Scope: scope, Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Delta: -1}, {Name: MetricGraphLogicalBytes, Delta: -25}}},
+	} {
+		if err := m.ApplyDelta(ctx, delta); err != nil {
+			t.Fatalf("ApplyDelta(%s) error = %v", delta.MutationID, err)
+		}
+	}
+	if result := m.Init(ctx, testHost{dataDir: dataDir}); !result.OK {
+		t.Fatalf("reload Init() = %#v", result)
+	}
+	metricReq := SnapshotRequest{Scope: scope, MetricNames: []string{MetricGraphLogicalBytes}, RequireQuotaSafe: true}
+	pending := mustSnapshot(t, m, metricReq)
+	if pending.QuotaSafeComplete || pending.State != AccountingStateReconciling || len(pending.Metrics) != 0 || len(pending.Blockers) != 1 {
+		t.Fatalf("pending snapshot = %#v, want no partial bytes", pending)
+	}
+	if pendingHealth := m.Health(ctx, HealthRequest{Scope: scope}); pendingHealth.QuotaSafeReady || pendingHealth.State != AccountingStateReconciling {
+		t.Fatalf("pending health = %#v, want reconciling", pendingHealth)
+	}
+	assertMetricValue(t, mustSnapshot(t, m, SnapshotRequest{Scope: scope, MetricNames: []string{MetricGraphNodeCount}, RequireQuotaSafe: true}), MetricGraphNodeCount, 2)
+	health := m.Health(ctx, HealthRequest{Scope: scope, IncludeReconciliation: true})
 	if health.State != AccountingStateReady || !health.QuotaSafeReady || len(health.Blockers) != 0 {
 		t.Fatalf("health = %#v, want ready after graph.logical_bytes backfill", health)
 	}
@@ -388,6 +409,9 @@ func TestHealthReconciliationBackfillsNewMetricCountersOnce(t *testing.T) {
 	if got := health.Warnings[0].Evidence["after"]; got != "42" {
 		t.Fatalf("backfill after evidence = %q, want 42", got)
 	}
+	if evidence := health.Warnings[0].Evidence; evidence["source"] != "graph" || evidence["scopes_scanned"] != "1" || evidence["records_scanned"] != "2" {
+		t.Fatalf("backfill evidence = %#v, want scan source and counts", evidence)
+	}
 	snapshot := mustSnapshot(t, m, SnapshotRequest{Scope: DomainScope("space-1", "domain-1"), MetricNames: []string{MetricGraphLogicalBytes}, RequireQuotaSafe: true})
 	assertMetricValue(t, snapshot, MetricGraphLogicalBytes, 42)
 
@@ -399,8 +423,22 @@ func TestHealthReconciliationBackfillsNewMetricCountersOnce(t *testing.T) {
 	if len(health.Blockers) != 0 || len(health.Warnings) != 0 {
 		t.Fatalf("second reconciliation health = %#v, want no repeated backfill evidence", health)
 	}
-	snapshot = mustSnapshot(t, restarted, SnapshotRequest{Scope: DomainScope("space-1", "domain-1"), MetricNames: []string{MetricGraphLogicalBytes}, RequireQuotaSafe: true})
+	snapshot = mustSnapshot(t, restarted, metricReq)
 	assertMetricValue(t, snapshot, MetricGraphLogicalBytes, 42)
+
+	space := SpaceScope(scope.SpaceID)
+	metricReq.Scope = space
+	if snapshot := mustSnapshot(t, restarted, metricReq); snapshot.QuotaSafeComplete || len(snapshot.Metrics) != 0 {
+		t.Fatalf("space snapshot = %#v, want missing aggregate after domain-only backfill", snapshot)
+	}
+	health = restarted.Health(ctx, HealthRequest{Scope: space, IncludeReconciliation: true})
+	if !health.QuotaSafeReady || len(health.Blockers) > 0 || len(health.Warnings) != 2 {
+		t.Fatalf("space reconciliation = %#v, want two backfilled aggregate counters", health)
+	}
+	for _, inclusion := range []DomainInclusionMode{DomainInclusionRetainedNonSystem, DomainInclusionRetainedAll} {
+		metricReq.DomainInclusion = inclusion
+		assertMetricValue(t, mustSnapshot(t, restarted, metricReq), MetricGraphLogicalBytes, 42)
+	}
 }
 
 func TestHealthReconciliationDoesNotBackfillWhileRebuilding(t *testing.T) {
@@ -449,7 +487,7 @@ func TestRestoredUsageCounterStateMarksReconcilingAndReconciliationClears(t *tes
 	if err := original.CompleteRebuild(ctx, nil, Revision{}); err != nil {
 		t.Fatalf("CompleteRebuild() error = %v", err)
 	}
-	if err := original.ApplyDelta(ctx, Delta{MutationID: "mutation-1", Scope: DomainScope("space-1", "domain-1"), Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Delta: 2}}}); err != nil {
+	if err := original.ApplyDelta(ctx, Delta{MutationID: "mutation-1", Scope: DomainScope("space-1", "domain-1"), Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Delta: 2}, {Name: MetricGraphLogicalBytes, Delta: 12}}}); err != nil {
 		t.Fatalf("ApplyDelta() error = %v", err)
 	}
 	marker, err := BuildRestoredUsageState(ctx, dir, RestoredUsageStateOptions{BackupSetID: "backup-set-1", RestoreOperationID: "restore-1", RestoredAt: time.Now().UTC()})
@@ -462,7 +500,7 @@ func TestRestoredUsageCounterStateMarksReconcilingAndReconciliationClears(t *tes
 	if err := WriteRestoredUsageState(dir, marker); err != nil {
 		t.Fatalf("WriteRestoredUsageState() error = %v", err)
 	}
-	restored := NewModule().WithReconciliationProviders(fakeReconciliationProvider{result: ReconciliationResult{Source: "test", Deltas: []Delta{{Scope: DomainScope("space-1", "domain-1"), Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Version: 1, Delta: 2}}}}}})
+	restored := NewModule().WithReconciliationProviders(fakeReconciliationProvider{result: ReconciliationResult{Source: "test", Deltas: []Delta{{Scope: DomainScope("space-1", "domain-1"), Metrics: []MetricDelta{{Name: MetricGraphNodeCount, Version: 1, Delta: 2}, {Name: MetricGraphLogicalBytes, Version: 1, Delta: 12}}}}}})
 	if result := restored.Init(ctx, testHost{dataDir: dir}); !result.OK {
 		t.Fatalf("restored Init() = %#v", result)
 	}
