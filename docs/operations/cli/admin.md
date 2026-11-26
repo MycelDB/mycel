@@ -61,6 +61,14 @@ deployments include one artifact per authoritative member plus raft convergence
 evidence. Local filesystem paths remain internal scratch/staging/restore targets
 only and are not public durable backup artifacts.
 
+Before quiescing writes, a clustered `backup start` waits up to
+`--convergence-timeout` for verified raft quorum reads and applied-index evidence.
+While a quorum read is missing, `mycel admin backup status` reports an
+`raft_quorum_read_unverified` blocker naming the affected group. A timeout fails
+without starting capture. After quiescing, the daemon still requires fresh
+quorum reads for the capture barriers; a missing read there aborts the backup
+and releases quiesce instead of reusing the precheck proof.
+
 `observability` returns credential-free metric rows and evaluated alert
 conditions for backup/restore monitoring; the retention probe is read-only and
 opt-in because it lists repository objects. `restore-plan` is a safe daemon RPC

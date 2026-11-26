@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -241,40 +242,9 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		fail(clusterBackupPhasePrechecking, err)
 		return
 	}
-	convergenceTimeout := input.ConvergenceTimeout
-	if convergenceTimeout <= 0 {
-		convergenceTimeout = 5 * time.Minute
-	}
-	deadline := time.Now().Add(convergenceTimeout)
-	var readiness map[string]coordinatorReadiness
-	var groups []ClusterBackupPrecheckRaftGroup
-	for {
-		var err error
-		readiness, groups, err = m.collectCoordinatorReadiness(ctx, input, backupSetID, clusterID, createdAt, nodes)
-		if err != nil {
-			fail(clusterBackupPhasePrechecking, err)
-			return
-		}
-		precheck := m.EvaluateClusterBackupPreconditions(buildCoordinatorPrecheck(backupSetID, clusterID, nodes, input.OutputDir, groups, readiness, !m.raftMode()))
-		if precheck.OK {
-			_ = m.commitClusterBackupRecord(context.Background(), recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, UpdatedAt: time.Now().UTC()})
-			break
-		}
-		blockers := clusterBackupBlockersFromPrecheck(groups, nodes)
-		if len(blockers) == 0 {
-			blockers = []ClusterBackupBlocker{{Reason: "precheck_failed", Detail: strings.Join(precheck.Failures, "; ")}}
-		}
-		_ = m.commitClusterBackupRecord(context.Background(), recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, Blockers: blockers, UpdatedAt: time.Now().UTC()})
-		if time.Now().After(deadline) {
-			fail(clusterBackupPhasePrechecking, precheck.Error())
-			return
-		}
-		select {
-		case <-ctx.Done():
-			fail(clusterBackupPhasePrechecking, ctx.Err())
-			return
-		case <-time.After(2 * time.Second):
-		}
+	if err := m.waitForClusterBackupPrecheck(ctx, input, backupSetID, clusterID, createdAt, nodes); err != nil {
+		fail(clusterBackupPhasePrechecking, err)
+		return
 	}
 	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseReady, UpdatedAt: time.Now().UTC()}); err != nil {
 		fail(clusterBackupPhaseReady, err)
@@ -296,9 +266,11 @@ func (m *Module) runClusterBackupOperation(ctx context.Context, input StartClust
 		acquired = append(acquired, node)
 	}
 	defer m.releaseClusterQuiesce(context.Background(), input, backupSetID, clusterID, createdAt, acquired)
+	// A precheck proof is not a capture barrier. Require fresh quorum reads
+	// after closing the write gate; don't wait for convergence under quiesce.
 	_, barrierGroups, err := m.collectCoordinatorReadiness(ctx, input, backupSetID, clusterID, createdAt, nodes)
 	if err != nil {
-		fail(clusterBackupPhaseBarrierWait, err)
+		fail(clusterBackupPhaseBarrierWait, fmt.Errorf("verify post-quiesce backup barriers: %w", err))
 		return
 	}
 	if err := m.commitClusterBackupRecord(ctx, recordTypeClusterBackupPhase, clusterBackupPhaseRecord{BackupSetID: backupSetID, Phase: clusterBackupPhaseBarrierWait, UpdatedAt: time.Now().UTC()}); err != nil {
@@ -531,7 +503,10 @@ func retryClusterBackupPeer(ctx context.Context, fn func() error) error {
 		if time.Now().After(deadline) {
 			return last
 		}
-		time.Sleep(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 }
 
@@ -1464,6 +1439,80 @@ type coordinatorReadiness struct {
 	commits map[string]uint64
 }
 
+// This error means a complete round of peer probes returned without a verified
+// read for one or more groups. Other probe errors are not convergence blockers.
+type missingBackupQuorumReads struct {
+	groups []string
+}
+
+func (e *missingBackupQuorumReads) Error() string {
+	messages := make([]string, 0, len(e.groups))
+	for _, group := range e.groups {
+		messages = append(messages, "raft group "+group+" has no verified quorum read")
+	}
+	return strings.Join(messages, "; ")
+}
+
+func (e *missingBackupQuorumReads) blockers() []ClusterBackupBlocker {
+	blockers := make([]ClusterBackupBlocker, 0, len(e.groups))
+	for _, group := range e.groups {
+		blockers = append(blockers, ClusterBackupBlocker{RaftGroup: group, Reason: "raft_quorum_read_unverified", Detail: "no peer reported a verified Raft quorum read"})
+	}
+	return blockers
+}
+
+func (m *Module) waitForClusterBackupPrecheck(ctx context.Context, input StartClusterBackupInput, backupSetID, clusterID string, ts time.Time, nodes []ClusterBackupNode) error {
+	timeout := input.ConvergenceTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var lastNotReady error
+	for waitCtx.Err() == nil {
+		readiness, groups, err := m.collectCoordinatorReadiness(waitCtx, input, backupSetID, clusterID, ts, nodes)
+		if waitCtx.Err() != nil {
+			if lastNotReady == nil {
+				lastNotReady = err
+			}
+			break
+		}
+		var blockers []ClusterBackupBlocker
+		if err != nil {
+			var missing *missingBackupQuorumReads
+			if !errors.As(err, &missing) {
+				return err
+			}
+			blockers = missing.blockers()
+		} else {
+			precheck := m.EvaluateClusterBackupPreconditions(buildCoordinatorPrecheck(backupSetID, clusterID, nodes, input.OutputDir, groups, readiness, !m.raftMode()))
+			err = precheck.Error()
+			if err != nil {
+				blockers = clusterBackupBlockersFromPrecheck(groups, nodes)
+				if len(blockers) == 0 {
+					blockers = []ClusterBackupBlocker{{Reason: "precheck_failed", Detail: strings.Join(precheck.Failures, "; ")}}
+				}
+			}
+		}
+		_ = m.commitClusterBackupRecord(waitCtx, recordTypeClusterBackupBlockers, clusterBackupBlockersRecord{BackupSetID: backupSetID, Blockers: blockers, UpdatedAt: time.Now().UTC()})
+		if err == nil {
+			if waitCtx.Err() == nil {
+				return nil
+			}
+			break
+		}
+		lastNotReady = err
+		select {
+		case <-waitCtx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("cluster backup convergence timed out: %w", firstNonNilError(lastNotReady, waitCtx.Err()))
+}
+
 func (m *Module) collectCoordinatorReadiness(ctx context.Context, input StartClusterBackupInput, backupSetID, clusterID string, ts time.Time, nodes []ClusterBackupNode) (map[string]coordinatorReadiness, []ClusterBackupPrecheckRaftGroup, error) {
 	readiness := make(map[string]coordinatorReadiness, len(nodes))
 	commitByGroup := map[string]uint64{}
@@ -1500,24 +1549,27 @@ func (m *Module) collectCoordinatorReadiness(ctx context.Context, input StartClu
 			appliedByGroup[groupID][node.RaftNodeID] = appliedIndex
 		}
 	}
-	for groupID := range seenGroups {
-		if commitByGroup[groupID] == 0 {
-			return nil, nil, fmt.Errorf("raft group %s has no verified quorum read", groupID)
+	if m.raftGroups != nil {
+		for _, group := range m.raftGroups.Status() {
+			// Local status is inventory only, not proof of quorum.
+			if group.GroupID != "" {
+				seenGroups[string(group.GroupID)] = struct{}{}
+			}
 		}
 	}
-	byGroup := map[string]ClusterBackupPrecheckRaftGroup{}
-	for _, group := range m.raftGroupsStatusForPrecheck() {
-		byGroup[string(group.GroupID)] = group
+	var missing []string
+	for groupID := range seenGroups {
+		if commitByGroup[groupID] == 0 {
+			missing = append(missing, groupID)
+		}
+	}
+	if len(missing) != 0 {
+		sort.Strings(missing)
+		return nil, nil, &missingBackupQuorumReads{groups: missing}
 	}
 	groups := make([]ClusterBackupPrecheckRaftGroup, 0, len(commitByGroup))
 	for groupID, commit := range commitByGroup {
-		group := byGroup[groupID]
-		group.GroupID = consensus.GroupID(groupID)
-		group.Leader = consensus.NodeID(quorumLeaderByGroup[groupID])
-		group.HasQuorum = true
-		group.CommitIndex = commit
-		group.AppliedByNode = appliedByGroup[groupID]
-		groups = append(groups, group)
+		groups = append(groups, ClusterBackupPrecheckRaftGroup{GroupID: consensus.GroupID(groupID), Leader: consensus.NodeID(quorumLeaderByGroup[groupID]), HasQuorum: true, CommitIndex: commit, AppliedByNode: appliedByGroup[groupID]})
 	}
 	sort.Slice(groups, func(i, j int) bool { return groups[i].GroupID < groups[j].GroupID })
 	return readiness, groups, nil
@@ -1568,17 +1620,6 @@ func clusterBackupBarriersFromPrecheckGroups(groups []ClusterBackupPrecheckRaftG
 	out := make(map[string]uint64, len(groups))
 	for _, group := range groups {
 		out[string(group.GroupID)] = group.CommitIndex
-	}
-	return out
-}
-
-func (m *Module) raftGroupsStatusForPrecheck() []ClusterBackupPrecheckRaftGroup {
-	if m.raftGroups == nil {
-		return nil
-	}
-	out := []ClusterBackupPrecheckRaftGroup{}
-	for _, st := range m.raftGroups.Status() {
-		out = append(out, ClusterBackupPrecheckRaftGroup{GroupID: st.GroupID, Leader: st.Leader, HasQuorum: st.Leader != 0, CommitIndex: st.CommitIndex, AppliedByNode: map[uint64]uint64{uint64(st.NodeID): st.AppliedIndex}})
 	}
 	return out
 }
