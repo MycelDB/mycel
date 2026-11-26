@@ -11,6 +11,10 @@ This project follows the spirit of [Keep a Changelog](https://keepachangelog.com
 - Added `graph.logical_bytes` usage accounting for committed node payload content bytes. It sums UTF-8 bytes of scalar values in node payloads, excluding keys, labels, properties, metadata, edge payloads, and physical storage overhead. It is quota-safe but not hard-limit eligible (#394).
 - Added operator-triggered backfill through `mycel admin usage health --include-reconciliation`. For upgraded data, the new metric remains unavailable rather than reporting a partial total if writes resume before backfill. Existing counters keep tracking writes; backfill reports scan evidence and does not repair ordinary drift (#410).
 
+### Fixed
+
+- Repository backup prechecks now wait within the configured convergence deadline for missing Raft quorum-read evidence and report the affected groups. Capture still requires fresh post-quiesce barriers and fails closed if any are unverified (#415).
+
 ### Compatibility
 
 - Pinned to `mycel-api v0.26.0`. The protobuf schema and wire format are unchanged from v0.25.0. See [usage upgrade guidance](docs/operations/cli/admin.md#backfill-graph-payload-bytes-after-upgrading-from-v025) for existing data.
