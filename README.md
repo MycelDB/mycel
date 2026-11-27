@@ -8,6 +8,8 @@ Daemon and CLI for mycel graph spaces.
 
 Module path: `github.com/myceldb/mycel`.
 
+Stable Docker images are promoted from the digest that passed release acceptance; pushing a Git tag alone does not publish an image. After approving the coordinated release manifest and tagging the accepted commit on `main`, dispatch **Publish accepted Docker image** from `main` with the stable tag, accepted `docker.io/myceldb/mycel@sha256:…` image, and manifest SHA-256. Promote the versioned tag without rebuilding or moving `latest`.
+
 ## Runtime model
 
 mycel v2 is daemon-first and is being refactored to be daemon-only:

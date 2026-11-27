@@ -61,6 +61,14 @@ deployments include one artifact per authoritative member plus raft convergence
 evidence. Local filesystem paths remain internal scratch/staging/restore targets
 only and are not public durable backup artifacts.
 
+Before quiescing writes, a clustered `backup start` waits up to
+`--convergence-timeout` for verified raft quorum reads and applied-index evidence.
+While a quorum read is missing, `mycel admin backup status` reports an
+`raft_quorum_read_unverified` blocker naming the affected group. A timeout fails
+without starting capture. After quiescing, the daemon still requires fresh
+quorum reads for the capture barriers; a missing read there aborts the backup
+and releases quiesce instead of reusing the precheck proof.
+
 `observability` returns credential-free metric rows and evaluated alert
 conditions for backup/restore monitoring; the retention probe is read-only and
 opt-in because it lists repository objects. `restore-plan` is a safe daemon RPC
@@ -103,6 +111,13 @@ mycel admin usage get \
   --include-diagnostic-physical
 ```
 
+Quota-safe graph metrics include `graph.node_count`, `graph.edge_count`, and
+`graph.logical_bytes`. `graph.logical_bytes` is the UTF-8 byte sum of scalar
+values inside committed node `payload` maps; it excludes payload keys, labels,
+properties, metadata, edge payloads, blob payload bytes, and physical graph store
+overhead. It is visible in usage snapshots but is not hard-limit eligible in the
+first enforcement slice.
+
 ```sh
 mycel admin usage limits upsert \
   --space-id <space-id> \
@@ -121,8 +136,33 @@ Usage snapshot/list/health reads require `usage.read`; reconciliation health als
 requires `usage.reconcile`, and diagnostic physical/collector output requires
 `usage.diagnostic.read`. Hard usage limit CRUD requires `usage.limit.manage`.
 Health with reconciliation may clear restored `RECONCILING`/`REBUILDING`
-readiness after counters match durable metadata, so it is not treated as a
-backup-quiesce read-only RPC.
+readiness after counters match durable metadata. It can also persist an upgrade
+backfill. Ordinary counter drift is still reported, not automatically repaired,
+so this RPC is not treated as a backup-quiesce read-only call.
+
+### Backfill graph payload bytes after upgrading from v0.25
+
+Start with healthy v0.25 usage counters and a verified pre-upgrade backup.
+Do not downgrade a data directory that has materialized the new metric: the
+v0.25 daemon does not recognize the persisted counter. Use the pre-upgrade
+backup if you need to roll back.
+
+After upgrading, run a space-scoped reconciliation against each daemon
+serving usage for that space, once it is caught up. A domain-scoped check
+backfills only that domain, not the parent space total.
+
+```sh
+mycel admin usage health --space-id <space-id> --include-reconciliation
+mycel admin usage get --space-id <space-id> --metric graph.logical_bytes --require-quota-safe
+```
+
+Graph writes may resume before backfill. Counts continue to update, but the
+daemon withholds `graph.logical_bytes` for affected scopes rather than returning
+partial totals or a false zero. A successful backfill reports `action=backfill`
+with the scan source, scope and record counts, and before/after values. If a
+commit is in flight or accounting changes during the scan, retry when writes
+are idle. For a truncated scan or reported drift, investigate the blockers;
+neither is evidence of a completed backfill.
 
 ## Related docs
 

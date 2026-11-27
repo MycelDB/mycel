@@ -42,10 +42,13 @@ type usageState struct {
 	UpdatedAt       time.Time
 	Sequence        uint64
 	Counters        map[counterKey]uint64
-	Applied         map[string]appliedMutation
-	SourceRevisions map[string]string
-	Limits          map[string]UsageLimit
-	RebuildReason   string
+	// Derived on load from missing new counters with a legacy anchor. While
+	// pending, deltas leave the counter absent so a restart preserves the signal.
+	PendingBackfills map[counterKey]struct{}
+	Applied          map[string]appliedMutation
+	SourceRevisions  map[string]string
+	Limits           map[string]UsageLimit
+	RebuildReason    string
 }
 
 type counterKey struct {
@@ -195,6 +198,9 @@ func (m *Module) ApplyDelta(ctx context.Context, delta Delta) error {
 		}
 		keys := aggregateKeys(scope, domainClass, metricDelta)
 		for _, key := range keys {
+			if _, pending := next.PendingBackfills[key]; pending {
+				continue // The backfill scans the committed record, including this mutation.
+			}
 			current := next.Counters[key]
 			value, err := applySignedDelta(current, metricDelta.Delta)
 			if err != nil {
@@ -325,6 +331,11 @@ func (m *Module) Snapshot(ctx context.Context, req SnapshotRequest) (Snapshot, e
 	metricNames := req.MetricNames
 	if len(metricNames) == 0 {
 		metricNames = metricNamesForScope(state.Counters, scope, inclusion)
+		for key := range state.PendingBackfills {
+			if key.Scope == scope && key.DomainInclusion == inclusion && key.MetricVersion == 1 {
+				metricNames = append(metricNames, key.MetricName)
+			}
+		}
 	}
 	for _, name := range metricNames {
 		def, ok := m.registry.Definition(name, 1)
@@ -353,6 +364,14 @@ func (m *Module) Snapshot(ctx context.Context, req SnapshotRequest) (Snapshot, e
 			continue
 		}
 		key := counterKey{Scope: scope, DomainInclusion: inclusion, MetricName: name, MetricVersion: def.Version}
+		if _, pending := state.PendingBackfills[key]; pending {
+			snapshot.Blockers = append(snapshot.Blockers, pendingBackfillStatus(key))
+			snapshot.QuotaSafeComplete = false
+			if snapshot.State == AccountingStateReady {
+				snapshot.State = AccountingStateReconciling
+			}
+			continue
+		}
 		value := state.Counters[key]
 		snapshot.Metrics = append(snapshot.Metrics, metricFromDefinition(def, value, state.UpdatedAt, rev))
 	}
@@ -420,9 +439,21 @@ func (m *Module) List(ctx context.Context, req ListRequest) (ListResponse, error
 func (m *Module) Health(ctx context.Context, req HealthRequest) Health {
 	scope := req.Scope.normalized()
 	m.mu.RLock()
-	state := m.cloneStateLocked()
 	reconcilers := append([]ReconciliationProvider(nil), m.reconcilers...)
 	diagnosticCollectors := append([]DiagnosticCollector(nil), m.diagnosticCollectors...)
+	m.mu.RUnlock()
+
+	var guardErr error
+	var release func()
+	if req.IncludeReconciliation {
+		release, guardErr = guardReconciliation(ctx, reconcilers)
+		if release != nil {
+			release = sync.OnceFunc(release)
+			defer release()
+		}
+	}
+	m.mu.RLock()
+	state := m.cloneStateLocked()
 	m.mu.RUnlock()
 	health := Health{Scope: scope, ObservedAt: state.UpdatedAt, State: state.AccountingState, Revision: state.revision(), QuotaSafeReady: state.AccountingState == AccountingStateReady}
 	if state.AccountingState != AccountingStateReady {
@@ -437,13 +468,58 @@ func (m *Module) Health(ctx context.Context, req HealthRequest) Health {
 	if state.AccountingState == AccountingStateDriftDetected {
 		health.DriftScopeCount = 1
 	}
-	if req.IncludeReconciliation {
+	if guardErr != nil {
+		health.Blockers = append(health.Blockers, Status{Reason: StatusReasonMetricUnavailable, Severity: StatusSeverityBlocker, Message: "could not start usage reconciliation; retry when writes are idle", Scope: scope, Evidence: map[string]string{"error": guardErr.Error()}})
+		health.QuotaSafeReady = false
+		health.State = AccountingStateUnavailable
+	} else if req.IncludeReconciliation {
 		m.applyReconciliationHealth(ctx, req, state, reconcilers, &health)
 	}
+	if release != nil {
+		release()
+	}
+	m.mu.RLock()
+	for key := range m.state.PendingBackfills {
+		if key.Scope == scope {
+			health.Blockers = append(health.Blockers, pendingBackfillStatus(key))
+			health.QuotaSafeReady = false
+			if health.State == AccountingStateReady {
+				health.State = AccountingStateReconciling
+				health.RebuildingScopeCount = 1
+			}
+		}
+	}
+	m.mu.RUnlock()
 	if req.IncludeDiagnosticCollectors {
 		m.applyDiagnosticHealth(ctx, req, diagnosticCollectors, &health)
 	}
 	return health
+}
+
+func guardReconciliation(ctx context.Context, providers []ReconciliationProvider) (func(), error) {
+	var releases []func()
+	release := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	for _, provider := range providers {
+		guard, ok := provider.(ReconciliationGuard)
+		if !ok {
+			continue
+		}
+		unlock, err := guard.BeginUsageReconciliation(ctx)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		releases = append(releases, unlock)
+	}
+	return release, nil
+}
+
+func pendingBackfillStatus(key counterKey) Status {
+	return Status{Reason: StatusReasonCountersRebuilding, Severity: StatusSeverityBlocker, Message: "usage metric requires backfill; run space or domain usage health with reconciliation", Scope: key.Scope, Metric: key.MetricName, Evidence: map[string]string{"domain_inclusion": string(key.DomainInclusion), "metric_version": fmt.Sprintf("%d", key.MetricVersion)}}
 }
 
 func (m *Module) appendDiagnosticSnapshot(ctx context.Context, req SnapshotRequest, collectors []DiagnosticCollector, snapshot *Snapshot) {
@@ -541,6 +617,7 @@ func (m *Module) applyReconciliationHealth(ctx context.Context, req HealthReques
 	}
 	maxRecords := defaultReconciliationMaxRecords
 	expected := map[counterKey]uint64{}
+	backfillEvidence := map[counterKey]map[string]string{}
 	reconciliationProblem := false
 	for _, reconciler := range reconcilers {
 		if reconciler == nil {
@@ -561,6 +638,7 @@ func (m *Module) applyReconciliationHealth(ctx context.Context, req HealthReques
 			health.State = AccountingStateUnavailable
 			continue
 		}
+		scanEvidence := reconciliationEvidence(result)
 		for _, delta := range result.Deltas {
 			domainClass := delta.DomainClass
 			if domainClass == "" {
@@ -586,8 +664,25 @@ func (m *Module) applyReconciliationHealth(ctx context.Context, req HealthReques
 						continue
 					}
 					expected[key] = value
+					if _, pending := state.PendingBackfills[key]; pending {
+						backfillEvidence[key] = scanEvidence
+					}
 				}
 			}
+		}
+	}
+	if !reconciliationProblem {
+		updatedState, statuses, err := m.backfillReconciliationEligibleCounters(ctx, req.Scope.normalized(), state, expected, backfillEvidence)
+		if err != nil {
+			health.Blockers = append(health.Blockers, Status{Reason: StatusReasonMetricUnavailable, Severity: StatusSeverityBlocker, Message: "usage reconciliation backfill could not be persisted", Scope: req.Scope.normalized(), Evidence: map[string]string{"error": err.Error()}})
+			health.QuotaSafeReady = false
+			health.State = AccountingStateUnavailable
+			return
+		} else {
+			state = updatedState
+			health.ObservedAt = state.UpdatedAt
+			health.Revision = state.revision()
+			health.Warnings = append(health.Warnings, statuses...)
 		}
 	}
 	for key, expectedValue := range expected {
@@ -611,7 +706,12 @@ func (m *Module) applyReconciliationHealth(ctx context.Context, req HealthReques
 			health.Warnings = append(health.Warnings, Status{Reason: StatusReasonMetricUnavailable, Severity: StatusSeverityWarning, Message: "usage reconciliation matched but readiness state could not be persisted", Scope: req.Scope.normalized(), Evidence: map[string]string{"error": err.Error()}})
 			return
 		}
+		m.mu.RLock()
+		readyState := m.cloneStateLocked()
+		m.mu.RUnlock()
 		health.State = AccountingStateReady
+		health.ObservedAt = readyState.UpdatedAt
+		health.Revision = readyState.revision()
 		health.QuotaSafeReady = true
 		health.RebuildingScopeCount = 0
 		health.DriftScopeCount = 0
@@ -636,6 +736,119 @@ func reconciliationKeyInScope(key counterKey, scope Scope) bool {
 		return true
 	}
 	return key.Scope == scope
+}
+
+func backfillKeyInScope(key counterKey, scope Scope) bool {
+	scope = scope.normalized()
+	switch scope.Type {
+	case ScopeTypeDomain:
+		return key.Scope == scope
+	case ScopeTypeSpace:
+		if key.Scope == scope {
+			return true
+		}
+		return key.Scope.Type == ScopeTypeDomain && strings.TrimSpace(key.Scope.SpaceID) == strings.TrimSpace(scope.SpaceID)
+	default:
+		return true
+	}
+}
+
+func (m *Module) backfillReconciliationEligibleCounters(ctx context.Context, scope Scope, state usageState, expected map[counterKey]uint64, scanEvidence map[counterKey]map[string]string) (usageState, []Status, error) {
+	if err := ctx.Err(); err != nil {
+		return state, nil, err
+	}
+	if state.AccountingState == AccountingStateRebuilding || len(state.PendingBackfills) == 0 {
+		return state, nil, nil
+	}
+	keys := make([]counterKey, 0, len(state.PendingBackfills))
+	for key := range state.PendingBackfills {
+		if !backfillKeyInScope(key, scope) {
+			continue
+		}
+		if _, scanned := expected[key]; !scanned {
+			continue
+		}
+		def, _ := m.registry.Definition(key.MetricName, key.MetricVersion)
+		anchor := key
+		anchor.MetricName, anchor.MetricVersion = def.ReconciliationBackfillAnchor, 1
+		if value, scanned := expected[anchor]; !scanned || value != state.Counters[anchor] {
+			continue // An inconsistent legacy counter is drift, not an upgrade backfill.
+		}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return state, nil, nil
+	}
+	sort.Slice(keys, func(i, j int) bool { return counterKeySortKey(keys[i]) < counterKeySortKey(keys[j]) })
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return state, nil, err
+	}
+	if m.state.Sequence != state.Sequence || m.state.AccountingState != state.AccountingState || !m.state.UpdatedAt.Equal(state.UpdatedAt) {
+		return state, nil, errors.New("usage accounting changed during reconciliation; retry")
+	}
+	current := m.cloneStateLocked()
+	statuses := make([]Status, 0, len(keys))
+	now := time.Now().UTC()
+	revision := state.revision().Token
+	for _, key := range keys {
+		mutationID := usageBackfillMutationID(key)
+		if _, ok := current.Applied[mutationID]; ok {
+			continue
+		}
+		expectedValue := expected[key]
+		if _, hadBefore := current.Counters[key]; hadBefore {
+			continue
+		}
+		current.Counters[key] = expectedValue
+		delete(current.PendingBackfills, key)
+		current.Applied[mutationID] = appliedMutation{MutationID: mutationID, Source: "usage:reconciliation_backfill", Revision: revision, AppliedAt: now}
+		evidence := map[string]string{"action": "backfill", "domain_inclusion": string(key.DomainInclusion), "before": "missing", "after": fmt.Sprintf("%d", expectedValue), "metric_version": fmt.Sprintf("%d", key.MetricVersion), "mutation_id": mutationID}
+		for _, name := range []string{"source", "scopes_scanned", "records_scanned"} {
+			evidence[name] = scanEvidence[key][name]
+		}
+		statuses = append(statuses, Status{Reason: StatusReasonReconciliationDrift, Severity: StatusSeverityInfo, Message: "usage counter backfilled from reconciliation evidence", Scope: key.Scope, Metric: key.MetricName, Evidence: evidence})
+	}
+	if len(statuses) == 0 {
+		return current, nil, nil
+	}
+	current.Sequence++
+	current.UpdatedAt = now
+	if err := m.persistLocked(current); err != nil {
+		return state, nil, err
+	}
+	m.state = current
+	return current, statuses, nil
+}
+
+func (m *Module) findPendingBackfills(state usageState) map[counterKey]struct{} {
+	pending := map[counterKey]struct{}{}
+	for _, def := range m.registry.Definitions() {
+		if def.ReconciliationBackfillAnchor == "" || !def.QuotaSafe || isDiagnosticMetricDefinition(def) {
+			continue
+		}
+		for anchor := range state.Counters {
+			if anchor.MetricName != def.ReconciliationBackfillAnchor || anchor.MetricVersion != 1 {
+				continue
+			}
+			key := anchor
+			key.MetricName, key.MetricVersion = def.Name, def.Version
+			if _, present := state.Counters[key]; !present {
+				pending[key] = struct{}{}
+			}
+		}
+	}
+	return pending
+}
+
+func usageBackfillMutationID(key counterKey) string {
+	return "usage-backfill:v1:" + counterKeySortKey(key)
+}
+
+func counterKeySortKey(key counterKey) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%d", key.Scope.Type, key.Scope.SpaceID, key.Scope.DomainID, key.DomainInclusion, key.MetricName, key.MetricVersion)
 }
 
 func reconciliationEvidence(result ReconciliationResult) map[string]string {
@@ -804,6 +1017,7 @@ func (m *Module) parsePersistentState(raw []byte) (usageState, error) {
 			state.Applied[applied.MutationID] = applied
 		}
 	}
+	state.PendingBackfills = m.findPendingBackfills(state)
 	for source, revision := range persisted.SourceRevisions {
 		state.SourceRevisions[source] = revision
 	}
@@ -859,6 +1073,12 @@ func (m *Module) cloneStateLocked() usageState {
 	state := usageState{AccountingState: m.state.AccountingState, UpdatedAt: m.state.UpdatedAt, Sequence: m.state.Sequence, Counters: map[counterKey]uint64{}, Applied: map[string]appliedMutation{}, SourceRevisions: map[string]string{}, Limits: map[string]UsageLimit{}, RebuildReason: m.state.RebuildReason}
 	for key, value := range m.state.Counters {
 		state.Counters[key] = value
+	}
+	if len(m.state.PendingBackfills) > 0 {
+		state.PendingBackfills = make(map[counterKey]struct{}, len(m.state.PendingBackfills))
+		for key := range m.state.PendingBackfills {
+			state.PendingBackfills[key] = struct{}{}
+		}
 	}
 	for key, value := range m.state.Applied {
 		state.Applied[key] = value

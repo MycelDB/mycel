@@ -168,6 +168,7 @@ should include:
 
 - `graph.node_count`;
 - `graph.edge_count`;
+- `graph.logical_bytes`;
 - `blob.active_logical_bytes`;
 - `blob.active_count`;
 - `blob.local_active_logical_bytes`;
@@ -613,7 +614,10 @@ Graph mutations should emit deterministic deltas for:
 
 - `graph.node_count`;
 - `graph.edge_count`;
-- `graph.logical_bytes` once a stable logical-size function is defined.
+- `graph.logical_bytes`, defined as the UTF-8 byte sum of scalar values inside
+  committed node `payload` maps. Map keys and structural JSON syntax do not
+  count; labels, properties, metadata, edge payloads, and physical graph storage
+  overhead are excluded.
 
 Blob mutations should emit deterministic deltas for:
 
@@ -692,11 +696,14 @@ Mycel should provide an internal reconciliation job that recomputes quota-safe
 usage from durable graph/blob metadata and compares the result with materialized
 counters.
 
-The first reconciliation mode can be dry-run only and report differences through
-`GetUsageAccountingHealth`. A later admin repair mode may update counters after
-operator review. Reconciliation evidence should include non-secret scope IDs,
-metric names, expected values, observed counter values, and the committed state
-marker used for the scan.
+The first reconciliation mode primarily reports differences through
+`GetUsageAccountingHealth`. It can also perform the narrow, operator-triggered
+backfill of counters for metrics that are explicitly marked
+reconciliation-backfill eligible, starting with newly introduced
+`graph.logical_bytes`. Broader admin repair mode semantics remain separate and
+must require operator review. Reconciliation evidence should include non-secret
+scope IDs, metric names, expected values, observed counter values, and the
+committed state marker used for the scan.
 
 Reconciliation is also the safety net for:
 
@@ -759,13 +766,16 @@ The first implementation should support:
   - `blob.object_store_active_count`;
   - `blob.pending_delete_logical_bytes`;
   - `blob.pending_delete_count`;
-- quota-safe graph count metrics:
+- quota-safe graph metrics:
   - `graph.node_count`;
   - `graph.edge_count`;
-- read-only admin APIs: `GetUsage`, `BatchGetUsage`, `ListUsage`, and
-  `GetUsageAccountingHealth`;
-- dry-run reconciliation that reports drift but does not repair counters
-  automatically.
+  - `graph.logical_bytes`;
+- admin usage APIs: `GetUsage`, `BatchGetUsage`, `ListUsage`, and
+  `GetUsageAccountingHealth` (reconciliation health is an explicit operator
+  action and can persist readiness/backfill transitions);
+- reconciliation that reports drift, does not repair ordinary counter drift
+  automatically, and may only materialize counters for explicitly
+  backfill-eligible newly introduced metrics.
 
 The first implementation should not use these for hard quota enforcement:
 
@@ -773,7 +783,7 @@ The first implementation should not use these for hard quota enforcement:
 - PVC/filesystem bytes;
 - index/vector/projection bytes;
 - orphan-candidate bytes;
-- `graph.logical_bytes` until the logical-size formula is finalized;
+- `graph.logical_bytes` hard-limit enforcement until the formula has production history;
 - cross-domain/shared-reference accounting.
 
 ### Phase 0: finalize contract details
@@ -912,6 +922,7 @@ MVP quota-safe metrics use metric version `1`.
 | --- | --- | --- | --- | --- |
 | `graph.node_count` | count | Count committed, non-deleted graph nodes owned by the scope. | `RAFT_COMMITTED_EXACT` | yes |
 | `graph.edge_count` | count | Count committed, non-deleted graph edges owned by the scope. | `RAFT_COMMITTED_EXACT` | yes |
+| `graph.logical_bytes` | bytes | Sum UTF-8 bytes of scalar values inside committed node `payload` maps owned by the scope. Map keys and JSON structure do not count; labels, properties, metadata, edge payloads, blob payload bytes, and physical storage overhead are excluded. | `RAFT_COMMITTED_EXACT` | no for first enforcement |
 | `blob.active_count` | count | Count committed active blob metadata descriptors owned by the scope. A descriptor is identified by its committed `(space_id, domain_id, blob_id)` ownership, not by graph reference count. | `RAFT_COMMITTED_EXACT` | yes |
 | `blob.active_logical_bytes` | bytes | Sum committed payload byte sizes from active blob metadata descriptors owned by the scope. | `RAFT_COMMITTED_EXACT` | yes |
 | `blob.local_active_count` | count | Count active blob descriptors whose payload backend is local filesystem. | `RAFT_COMMITTED_EXACT` | yes |
@@ -921,9 +932,11 @@ MVP quota-safe metrics use metric version `1`.
 | `blob.pending_delete_count` | count | Count committed blob descriptors or tombstones in an explicit Mycel pending-delete state. If no pending-delete state exists for a backend, this metric is `0` only when Mycel can prove there is no pending-delete queue; otherwise it is unavailable. | `RAFT_COMMITTED_EXACT` | no for first enforcement |
 | `blob.pending_delete_logical_bytes` | bytes | Sum payload byte sizes for committed pending-delete descriptors/tombstones. | `RAFT_COMMITTED_EXACT` | no for first enforcement |
 
-`graph.logical_bytes` is intentionally not an MVP quota-safe metric. It should be
-omitted or returned as unavailable until a stable logical-size formula is
-specified.
+For `graph.logical_bytes`, string scalar values count their UTF-8 byte length;
+numeric and boolean scalar values count the byte length of their deterministic
+text representation; `null` values count as zero; arrays and nested maps recurse
+into their values. Payload map keys are intentionally excluded so the metric
+tracks user payload content rather than schema/property overhead.
 
 Duplicate or deduplicated payloads are counted by committed logical ownership,
 not by physical object identity. If the same digest appears in multiple domains,
@@ -971,7 +984,7 @@ capabilities:
 | --- | --- | --- |
 | `usage.read` | system, space, or domain | Read quota-safe usage snapshots and accounting health for the granted scope. |
 | `usage.diagnostic.read` | system, space, or domain | Include diagnostic physical/operational metrics. |
-| `usage.reconcile` | system or space | Trigger reconciliation dry-runs and read reconciliation evidence. |
+| `usage.reconcile` | system or space | Trigger explicit reconciliation checks, read reconciliation evidence, and allow narrow backfill of reconciliation-backfill-eligible metrics. |
 | `usage.limit.manage` | system or space | Create, update, or delete usage limits. |
 | `usage.limit.override` | system or space | Override soft-block admission when an operation explicitly supports overrides. |
 
@@ -1009,8 +1022,8 @@ whether counters were included as authoritative state or marked rebuildable.
 
 Restore behavior:
 
-- if counters restore cleanly, mark usage accounting `RECONCILING` until a dry-run
-  reconciliation verifies the restored counters;
+- if counters restore cleanly, mark usage accounting `RECONCILING` until an
+  explicit reconciliation verifies the restored counters;
 - if counters are missing, stale, incompatible, or corrupted, mark usage
   accounting `REBUILDING` and recompute from durable graph/blob metadata;
 - while state is `REBUILDING`, `GetUsage(require_quota_safe=true)` fails closed;
@@ -1099,20 +1112,24 @@ Acceptance:
 - deletes decrement active usage and update pending-delete metrics as specified;
 - replay/restore tests prove blob deltas are idempotent.
 
-### Phase 4: graph count deltas
+### Phase 4: graph usage deltas
 
-Status: implemented for committed graph node/edge create/delete paths; reconciliation-scan comparison is implemented in Phase 6 health checks.
+Status: implemented for committed graph node/edge create/delete paths, node
+payload logical-byte create/update/delete paths, and reconciliation-scan
+comparison in Phase 6 health checks.
 
-Wire graph mutation paths to produce node and edge count deltas. `graph.logical_bytes`
-should remain disabled or diagnostic-only until its formula is finalized.
+Wire graph mutation paths to produce node count, edge count, and node payload
+logical-byte deltas.
 
 Deliverables:
 
 - node create/delete count deltas;
 - edge create/delete count deltas;
+- node payload logical-byte create/update/delete deltas;
 - import/bulk-write aggregation that produces the same final deltas as ordinary
   mutations;
-- tests for transaction abort, retry, replay, and delete behavior.
+- tests for transaction abort, retry, replay, update, delete, and reconciliation
+  drift behavior.
 
 Acceptance:
 
@@ -1146,17 +1163,22 @@ Acceptance:
 
 ### Phase 6: reconciliation and health
 
-Status: implemented for dry-run graph/blob quota-safe reconciliation through usage health.
+Status: implemented for graph/blob quota-safe reconciliation through usage
+health, including explicit backfill for reconciliation-backfill-eligible newly
+introduced metrics.
 
-Add dry-run reconciliation that recomputes MVP quota-safe metrics from durable
-metadata and compares them with materialized counters.
+Add reconciliation that recomputes MVP quota-safe metrics from durable metadata
+and compares them with materialized counters. Reconciliation remains diagnostic
+for ordinary drift; it may only materialize counters for metric definitions that
+are explicitly marked reconciliation-backfill eligible, such as newly introduced
+`graph.logical_bytes`.
 
 Deliverables:
 
 - domain and space reconciliation scanner;
 - bounded scan controls and progress/evidence;
 - drift reporting in `GetUsageAccountingHealth`;
-- optional admin/CLI command to trigger reconciliation dry-runs.
+- optional admin/CLI command to trigger explicit reconciliation checks.
 
 Acceptance:
 
@@ -1167,15 +1189,28 @@ Acceptance:
 
 Implemented behavior:
 
-- `GetUsageAccountingHealth(include_reconciliation=true)` runs bounded dry-run
-  scanners for durable graph and blob metadata and compares the recomputed
-  quota-safe counters with materialized state;
+- `GetUsageAccountingHealth(include_reconciliation=true)` runs bounded scanners
+  for durable graph and blob metadata and compares the recomputed quota-safe
+  counters with materialized state;
 - drift is reported as `reconciliation_drift` blockers with sanitized metric,
   scope, expected value, materialized value, and metric-version evidence;
 - truncated or failed reconciliation scans report blocker health and
   `quota_safe_ready=false` instead of claiming fresh quota-safe readiness;
-- reconciliation dry-runs are report-only and do not repair counters or mutate
-  materialized values;
+- reconciliation runs are report-only for ordinary drift and do not repair
+  existing non-backfill-eligible counters;
+- on upgrade, existing `graph.node_count` keys without a `graph.logical_bytes`
+  key identify scopes that need backfill. Writes keep updating existing counts
+  but do not apply byte deltas to a missing baseline. Snapshots that include the
+  pending metric are incomplete and omit its value, even if writes have resumed;
+- an explicit reconciliation may backfill a missing metric version when the
+  legacy anchor count matches durable metadata. A space scan covers its domain
+  and aggregate counters; a domain scan cannot initialize the wider aggregate.
+  Health reports the scan source, counts, and before/after values;
+- the graph commit guard prevents commits or Raft snapshot installs from
+  racing the scan and backfill. If reconciliation cannot start while a commit
+  is in flight, or the accounting revision changes before persistence, the
+  caller must retry. Once backfilled, subsequent drift for the metric is
+  reported rather than repaired;
 - callers that request reconciliation evidence need `usage.reconcile` in addition
   to `usage.read`;
 - ordinary `GetUsage(require_quota_safe=true)` still uses materialized accounting
@@ -1218,7 +1253,7 @@ Implemented behavior:
 - while state is `RECONCILING` or `REBUILDING`, quota-safe snapshots fail closed
   (`quota_safe_complete=false`, and the admin RPC returns `FailedPrecondition`
   when `require_quota_safe=true`);
-- a matching reconciliation dry-run can clear `RECONCILING`, `REBUILDING`, or
+- a matching reconciliation run can clear `RECONCILING`, `REBUILDING`, or
   previous `DRIFT_DETECTED` readiness state to `READY` without repairing counter
   values; drift or truncated/failed scans keep quota-safe readiness blocked;
 - because health with reconciliation can persist a readiness transition, usage
@@ -1276,7 +1311,8 @@ operator description fields.
 Implemented scope/metric set:
 
 - domain and space hard limits for quota-safe hard-limit-eligible metrics;
-- graph count metrics: `graph.node_count`, `graph.edge_count`;
+- graph metrics: `graph.node_count`, `graph.edge_count`; `graph.logical_bytes`
+  is quota-safe but remains hard-limit ineligible for first enforcement;
 - blob active logical metrics: `blob.active_logical_bytes`,
   `blob.active_count`, `blob.local_active_logical_bytes`,
   `blob.local_active_count`, `blob.object_store_active_logical_bytes`, and
@@ -1312,8 +1348,6 @@ contract.
 
 ### Deferred metric definitions
 
-- Define `graph.logical_bytes`, including whether schema/type metadata,
-  properties, labels, tombstones, or transaction overhead count.
 - Decide whether semantic vectors are graph-derived logical usage, diagnostic
   derived usage, or a separate quota dimension.
 - Decide whether any lexical/semantic/projection/index byte metric can ever be
@@ -1328,9 +1362,12 @@ pending-delete metrics as unavailable until such a queue exists.
 
 ### Reconciliation repair
 
-The MVP reconciliation mode is dry-run/report-only. A later design should define
-operator-approved repair semantics, audit evidence, and whether repaired counters
-require a fresh reconciliation before `quota_safe_complete=true` is restored.
+The MVP reconciliation mode is report-only for ordinary drift, with a narrow
+exception for operator-triggered backfill of explicitly backfill-eligible newly
+introduced metrics such as `graph.logical_bytes`. A later design should define
+broader operator-approved repair semantics, audit evidence, and whether repaired
+counters require a fresh reconciliation before `quota_safe_complete=true` is
+restored.
 
 ### Hard-limit expansion
 
@@ -1344,8 +1381,8 @@ metric set at both domain and space scopes. Remaining design work includes:
 - how very large imports reserve usage across multiple graph/blob commits;
 - whether future override semantics exist for `HARD_BLOCK` or only for
   `SOFT_BLOCK`-style application warnings;
-- whether additional quota-safe metrics beyond graph counts and committed blob
-  logical usage should become hard-limit eligible.
+- whether additional quota-safe metrics beyond hard-limit-eligible graph counts
+  and committed blob logical usage should become hard-limit eligible.
 
 ### Diagnostic physical collectors
 
@@ -1397,10 +1434,10 @@ Production deployments with billing or throttling should require:
 
 - Finalize pending-delete backend behavior and whether a durable pending-delete
   queue is required for blob cleanup/accounting.
-- Define `graph.logical_bytes` before making it quota-safe.
+- Gather production history for `graph.logical_bytes` before making it hard-limit eligible.
 - Decide whether semantic vectors count as graph-derived logical usage,
   operational index usage, or a separate quota dimension.
-- Define reconciliation repair semantics after the dry-run MVP.
+- Define broader reconciliation repair semantics beyond backfill-eligible newly introduced metrics.
 - Narrow the first hard-limit enforcement slice and solve any required
   cross-partition reservation semantics.
 - Design diagnostic physical collectors per backend.

@@ -145,15 +145,10 @@ func (m *Module) applyGraphCommitRecord(ctx context.Context, payload graphCommit
 	}
 	timing.DeleteEdges = time.Since(stepStart)
 	stepStart = time.Now()
-	info, err := storageTx.CommitWithInfo()
+	info, err := m.commitGraphStorageWithUsage(ctx, storageTx, payload, usageChanges)
 	timing.StorageCommit = time.Since(stepStart)
 	if err != nil {
 		return 0, payload, graphstorage.CommitInfo{}, mapStorageError(err)
-	}
-	if !info.IdempotentReplay {
-		if err := m.applyGraphUsageDelta(ctx, payload, usageChanges, info.NextRevision); err != nil {
-			return 0, payload, graphstorage.CommitInfo{}, err
-		}
 	}
 	timing.CommitTiming = info.Timing
 	timing.Total = time.Since(totalStart)
