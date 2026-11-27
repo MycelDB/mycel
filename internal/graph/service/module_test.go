@@ -1175,8 +1175,10 @@ func TestModuleGraphUsageAccountingTracksNodeEdgeCommitUpdateAndDelete(t *testin
 	}
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 2)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphEdgeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphLogicalBytes, 23)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphNodeCount, 2)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphEdgeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphLogicalBytes, 23)
 
 	updatedContent := "usage parent updated"
 	updateTx := graphTx(spaceID, domainID, createCommit.CommittedRevision)
@@ -1192,6 +1194,7 @@ func TestModuleGraphUsageAccountingTracksNodeEdgeCommitUpdateAndDelete(t *testin
 	}
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 2)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphEdgeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphLogicalBytes, 31)
 
 	deleteTx := graphTx(spaceID, domainID, updateCommit.CommittedRevision)
 	if _, err := m.DeleteEdge(ctx, deleteTx, edge.ID.String()); err != nil {
@@ -1205,8 +1208,37 @@ func TestModuleGraphUsageAccountingTracksNodeEdgeCommitUpdateAndDelete(t *testin
 	}
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphEdgeCount, 0)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphLogicalBytes, 20)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphNodeCount, 1)
 	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphEdgeCount, 0)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphLogicalBytes, 20)
+}
+
+func TestModuleGraphUsageLogicalBytesCountsPayloadValuesOnly(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{
+		Labels:     []string{"DoNotCount"},
+		Properties: map[string]any{"ignored": strings.Repeat("p", 100)},
+		Payload: map[string]any{
+			"text":   "hello",
+			"nested": map[string]any{"value": "世界"},
+			"items":  []any{"abc", int64(12), true, nil},
+		},
+		Meta: map[string]any{"ignored": strings.Repeat("m", 100)},
+	}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphLogicalBytes, 20)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.SpaceScope(spaceID), usageservice.MetricGraphLogicalBytes, 20)
 }
 
 func TestModuleGraphUsageReconciliationDetectsCounterDrift(t *testing.T) {
@@ -1239,6 +1271,49 @@ func TestModuleGraphUsageReconciliationDetectsCounterDrift(t *testing.T) {
 	}
 	if len(drifted.Blockers) != 1 || drifted.Blockers[0].Reason != usageservice.StatusReasonReconciliationDrift || drifted.Blockers[0].Metric != usageservice.MetricGraphNodeCount {
 		t.Fatalf("drifted blockers = %#v, want graph node drift", drifted.Blockers)
+	}
+}
+
+func TestModuleUsageReconciliationDefersWhileGraphCommitIsInFlight(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	usage.WithReconciliationProviders(m)
+	req := usageservice.HealthRequest{Scope: usageservice.SpaceScope(uuid.NewString()), IncludeReconciliation: true}
+	m.usageReconciliationMu.RLock()
+	busy := usage.Health(ctx, req)
+	m.usageReconciliationMu.RUnlock()
+	if busy.QuotaSafeReady || busy.State != usageservice.AccountingStateUnavailable || len(busy.Blockers) != 1 {
+		t.Fatalf("busy accounting health = %#v, want retryable reconciliation blocker", busy)
+	}
+	if ready := usage.Health(ctx, req); !ready.QuotaSafeReady || len(ready.Blockers) != 0 {
+		t.Fatalf("retried accounting health = %#v, want ready", ready)
+	}
+}
+
+func TestModuleGraphUsageReconciliationDetectsLogicalBytesDrift(t *testing.T) {
+	ctx := context.Background()
+	m, usage := newTestGraphModuleWithUsage(t, ctx)
+	usage.WithReconciliationProviders(m)
+	spaceID := uuid.NewString()
+	domainID := uuid.NewString()
+
+	tx := graphTx(spaceID, domainID, 0)
+	if _, err := m.CreateNode(ctx, tx, domaingraph.NodeInput{Content: "payload"}); err != nil {
+		t.Fatalf("CreateNode() error = %v", err)
+	}
+	if _, err := m.CommitTransactionGraph(ctx, tx); err != nil {
+		t.Fatalf("CommitTransactionGraph() error = %v", err)
+	}
+	if err := usage.ApplyDelta(ctx, usageservice.Delta{MutationID: "inject-graph-byte-drift", Scope: usageservice.DomainScope(spaceID, domainID), Metrics: []usageservice.MetricDelta{{Name: usageservice.MetricGraphLogicalBytes, Delta: -1}}}); err != nil {
+		t.Fatalf("inject graph byte drift: %v", err)
+	}
+
+	drifted := usage.Health(ctx, usageservice.HealthRequest{Scope: usageservice.DomainScope(spaceID, domainID), IncludeReconciliation: true})
+	if drifted.State != usageservice.AccountingStateDriftDetected || drifted.QuotaSafeReady {
+		t.Fatalf("drifted reconciliation = %#v, want drift_detected and not quota-safe", drifted)
+	}
+	if len(drifted.Blockers) != 1 || drifted.Blockers[0].Reason != usageservice.StatusReasonReconciliationDrift || drifted.Blockers[0].Metric != usageservice.MetricGraphLogicalBytes {
+		t.Fatalf("drifted blockers = %#v, want graph logical bytes drift", drifted.Blockers)
 	}
 }
 
@@ -1330,6 +1405,7 @@ func TestModuleGraphUsageAccountingWALReplayIsIdempotent(t *testing.T) {
 		t.Fatalf("CommitTransactionGraph() error = %v", err)
 	}
 	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+	assertGraphUsageMetric(t, ctx, usage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphLogicalBytes, 10)
 
 	it, err := walManager.ReadFrom(ctx, 1)
 	if err != nil {
@@ -1374,6 +1450,7 @@ func TestModuleGraphUsageAccountingWALReplayIsIdempotent(t *testing.T) {
 		t.Fatalf("replayed GetNode() = %+v, %v; want %s", got, err, created.ID)
 	}
 	assertGraphUsageMetric(t, ctx, replayUsage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphNodeCount, 1)
+	assertGraphUsageMetric(t, ctx, replayUsage, usageservice.DomainScope(spaceID, domainID), usageservice.MetricGraphLogicalBytes, 10)
 }
 
 func newTestGraphModuleWithUsage(t *testing.T, ctx context.Context) (*Module, *usageservice.Module) {

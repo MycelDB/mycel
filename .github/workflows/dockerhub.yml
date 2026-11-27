@@ -1,83 +1,70 @@
-name: Publish Docker image
+name: Publish accepted Docker image
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       release_ref:
-        description: 'Release tag/ref to publish, for example v0.17.0'
+        description: 'Existing stable Git tag to publish, for example v0.26.0'
         required: true
         type: string
-      api_ref:
-        description: 'Optional mycel-api ref override. Defaults to .release/mycel-api-ref from the daemon release ref.'
-        required: false
+      accepted_image:
+        description: 'Accepted docker.io/myceldb/mycel image pinned by index digest'
+        required: true
+        type: string
+      release_manifest_sha256:
+        description: 'SHA-256 of the reviewed coordinated release manifest'
+        required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-stable-docker-image
+  cancel-in-progress: false
+
 jobs:
   dockerhub:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}
-      API_REF_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.api_ref || '' }}
+      RELEASE_REF: ${{ inputs.release_ref }}
+      ACCEPTED_IMAGE: ${{ inputs.accepted_image }}
+      RELEASE_MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
     steps:
-      - name: Checkout daemon
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate release inputs
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$ACCEPTED_IMAGE" =~ ^docker\.io/myceldb/mycel@sha256:[a-f0-9]{64}$ ]]
+          [[ "$RELEASE_MANIFEST_SHA256" =~ ^[a-f0-9]{64}$ ]]
+
+      - name: Check out the tagged daemon
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: refs/tags/${{ inputs.release_ref }}
           path: mycel
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Resolve compatible API ref
+      - name: Verify release tag is on main and resolve API pin
         working-directory: mycel
         run: |
-          api_ref="${API_REF_INPUT}"
-          if [ -z "$api_ref" ]; then
-            if [ ! -s .release/mycel-api-ref ]; then
-              echo ".release/mycel-api-ref is required when api_ref is not provided" >&2
-              exit 1
-            fi
-            api_ref="$(tr -d '[:space:]' < .release/mycel-api-ref)"
-          fi
-          if [ -z "$api_ref" ]; then
-            echo "resolved API ref is empty" >&2
-            exit 1
-          fi
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
+          test "$(git rev-parse --verify "refs/tags/${RELEASE_REF}^{commit}")" = "$(git rev-parse HEAD)"
+          api_ref=$(tr -d '[:space:]' < .release/mycel-api-ref)
+          [[ "$api_ref" =~ ^[a-f0-9]{40}$ ]]
           echo "API_REF=$api_ref" >> "$GITHUB_ENV"
-          echo "Using MycelDB/mycel-api@$api_ref"
 
-      - name: Checkout API protos at compatible release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check out the pinned API
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: MycelDB/mycel-api
           ref: ${{ env.API_REF }}
           path: mycel-api
-
-      - name: Verify release ref is on main
-        working-directory: mycel
-        run: |
-          git fetch origin main
-          git merge-base --is-ancestor HEAD origin/main
-
-      - name: Resolve immutable build provenance
-        run: |
-          test -z "$(git -C mycel status --porcelain)"
-          test -z "$(git -C mycel-api status --porcelain)"
-          daemon_revision="$(git -C mycel rev-parse HEAD)"
-          context_digest="$({ echo '[mycel]'; git -C mycel ls-files -s; echo '[mycel-api]'; git -C mycel-api ls-files -s; } | sha256sum | awk '{print $1}')"
-          test "${#daemon_revision}" -eq 40
-          test "${#context_digest}" -eq 64
-          echo "DAEMON_REVISION=$daemon_revision" >> "$GITHUB_ENV"
-          echo "BUILD_CONTEXT_DIGEST=$context_digest" >> "$GITHUB_ENV"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-        with:
-          platforms: arm64
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -88,32 +75,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Write Docker build context ignore
+      - name: Promote the accepted index without rebuilding
         run: |
-          cat > .dockerignore <<'EOF'
-          **/.git
-          **/bin
-          **/coverage
-          **/coverage.out
-          **/data
-          **/node_modules
-          **/target
-          EOF
-
-      - name: Build and push mycel image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          file: mycel/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            SOURCE_REVISION=${{ env.DAEMON_REVISION }}
-            SOURCE_DIRTY=false
-            BUILD_CONTEXT_DIGEST=${{ env.BUILD_CONTEXT_DIGEST }}
-            BUILD_IDENTITY=github-actions-buildx-multiarch
-          tags: |
-            myceldb/mycel:${{ env.RELEASE_REF }}
-            myceldb/mycel:latest
+          set -euo pipefail
+          test "$(git -C mycel-api rev-parse HEAD)" = "$API_REF"
+          test -z "$(git -C mycel status --porcelain)"
+          test -z "$(git -C mycel-api status --porcelain)"
+          daemon_revision=$(git -C mycel rev-parse HEAD)
+          context_digest=$({ echo '[mycel]'; git -C mycel ls-files -s; echo '[mycel-api]'; git -C mycel-api ls-files -s; } | sha256sum | awk '{print $1}')
+          bash mycel/scripts/promoteAcceptedDockerImage.sh "$RELEASE_REF" "$ACCEPTED_IMAGE" "$daemon_revision" "$context_digest"
+          printf 'Release manifest: `%s`\n\nPublished: `docker.io/myceldb/mycel:%s` from `%s`\n' \
+            "$RELEASE_MANIFEST_SHA256" "$RELEASE_REF" "$ACCEPTED_IMAGE" >> "$GITHUB_STEP_SUMMARY"

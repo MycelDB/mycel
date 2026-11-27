@@ -12,6 +12,7 @@ const ModuleName = "usage"
 const (
 	MetricGraphNodeCount                = "graph.node_count"
 	MetricGraphEdgeCount                = "graph.edge_count"
+	MetricGraphLogicalBytes             = "graph.logical_bytes"
 	MetricBlobActiveLogicalBytes        = "blob.active_logical_bytes"
 	MetricBlobActiveCount               = "blob.active_count"
 	MetricBlobLocalActiveLogicalBytes   = "blob.local_active_logical_bytes"
@@ -127,6 +128,9 @@ type MetricDefinition struct {
 	Authority         Authority
 	QuotaSafe         bool
 	HardLimitEligible bool
+	// ReconciliationBackfillAnchor identifies a v1 counter that already existed
+	// in populated scopes before this metric was introduced.
+	ReconciliationBackfillAnchor string
 }
 
 type MetricDelta struct {
@@ -307,6 +311,12 @@ type ReconciliationResult struct {
 
 type ReconciliationProvider interface {
 	ReconcileUsage(context.Context, ReconciliationRequest) (ReconciliationResult, error)
+}
+
+// ReconciliationGuard keeps committed records and their usage deltas stable
+// until reconciliation has finished persisting any backfill.
+type ReconciliationGuard interface {
+	BeginUsageReconciliation(context.Context) (release func(), err error)
 }
 
 type DiagnosticRequest struct {
