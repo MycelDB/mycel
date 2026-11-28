@@ -17,6 +17,7 @@ import (
 	daemonbackup "github.com/myceldb/mycel/internal/backup/service"
 	daemonblob "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	adminapi "github.com/myceldb/mycel/internal/daemon/api/admin"
 	clientapi "github.com/myceldb/mycel/internal/daemon/api/client"
@@ -74,6 +75,7 @@ type Config struct {
 	ClusterConfig            daemonconfig.ClusterConfig
 	RaftGroups               *consensus.MultiGroup
 	RaftTransportDiagnostics *consensus.TransportDiagnostics
+	ForwardingConnPool       *backend.ForwardingConnPool
 }
 
 type Server struct {
@@ -217,7 +219,9 @@ func New(cfg Config, opts ...grpc.ServerOption) (*Server, error) {
 	localNode := consensus.NodeID(cfg.ClusterConfig.RaftLocalNodeID)
 	if cfg.ClusteringManager != nil {
 		identity := cfg.ClusteringManager.Identity()
-		clientRouter = clientapi.NewBackendClientRequestRouter(clientRoutingEnabled(cfg.ClusterConfig, identity.ClusterID), identity.ClusterID, localNode, cfg.ClusterConfig.RaftNodeAddrs, cfg.ClusterBackendAuthToken)
+		router := clientapi.NewBackendClientRequestRouter(clientRoutingEnabled(cfg.ClusterConfig, identity.ClusterID), identity.ClusterID, localNode, cfg.ClusterConfig.RaftNodeAddrs, cfg.ClusterBackendAuthToken)
+		router.Client = router.Client.WithForwardingConnPool(cfg.ForwardingConnPool)
+		clientRouter = router
 	}
 	sessionAPI := clientapi.NewSessionService(cfg.SessionManager, cfg.SpaceManager).WithClientRequestRouter(clientRouter)
 	if provider, ok := cfg.GraphManager.(clientapi.GraphWriteRouteProvider); ok {

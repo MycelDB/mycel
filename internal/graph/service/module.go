@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/partitioning"
 	"github.com/myceldb/mycel/internal/encryption"
@@ -104,7 +105,7 @@ type Module struct {
 	projectionRegistries             *projection.RegistryManager
 	raftLocalNode                    consensus.NodeID
 	raftNodeAddrs                    []string
-	raftBackendAuthToken             string
+	raftBackendClient                backend.Client
 	revisionFenceMACKey              []byte
 	revisionFenceDependencyValidator RevisionFenceDependencyValidator
 	raftAppliedCommands              map[string]struct{}

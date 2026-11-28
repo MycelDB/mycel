@@ -150,6 +150,8 @@ MYCELD_CLUSTER_RAFT_SNAPSHOT_MIN_RETAIN_ENTRIES=0
 
 Raft backend message transport reuses long-lived gRPC connections per peer address. This avoids opening and closing a TCP/HTTP2 connection for every raft heartbeat or append message. Each backend raft send also has a bounded timeout so a stuck peer RPC cannot block a raft ready loop indefinitely.
 
+Forwarded graph reads and client RPCs share a different set of channels: one opened on demand per configured peer and closed at daemon shutdown. The two sets of channels keep forwarding traffic separate from the connections used for Raft messages. Reuse does not change route selection, Raft read consistency, or per-RPC deadlines, and does not retry ambiguous writes.
+
 Timing knobs are available for production tuning:
 
 ```sh

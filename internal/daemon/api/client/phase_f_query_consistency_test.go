@@ -265,6 +265,7 @@ type phaseFQueryNode struct {
 	queryAPI        *QueryService
 	metadataAPI     *MetadataCatalogService
 	router          *BackendClientRequestRouter
+	forwarding      *clusterbackend.ForwardingConnPool
 	groups          *consensus.MultiGroup
 	backendAddr     string
 	backendStop     func()
@@ -329,8 +330,11 @@ func newPhaseFQueryCluster(t *testing.T) *phaseFQueryCluster {
 		addrs[int(id)-1] = n.backendAddr
 	}
 	for _, n := range cluster.nodes {
+		n.forwarding = clusterbackend.NewForwardingConnPool(clusterbackend.Client{}, addrs)
 		n.graphs.EnableExperimentalRaftNetworking(n.id, addrs, "")
+		n.graphs.SetForwardingConnPool(n.forwarding)
 		n.router = NewBackendClientRequestRouter(true, "phase-f4", n.id, addrs, "")
+		n.router.Client = n.router.Client.WithForwardingConnPool(n.forwarding)
 		n.sessionsAPI.WithClientRequestRouter(n.router)
 		n.transactionsAPI.WithClientRequestRouter(n.router)
 		n.graphsAPI.WithClientRequestRouter(n.router)
@@ -359,6 +363,7 @@ func (c *phaseFQueryCluster) tickLoop() {
 func (c *phaseFQueryCluster) stop() {
 	close(c.stopTick)
 	for _, n := range c.nodes {
+		_ = n.forwarding.Close()
 		if n.backendStop != nil {
 			n.backendStop()
 		}

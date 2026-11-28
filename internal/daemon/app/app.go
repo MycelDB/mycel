@@ -17,6 +17,7 @@ import (
 	backupservice "github.com/myceldb/mycel/internal/backup/service"
 	blobservice "github.com/myceldb/mycel/internal/blob/service"
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/daemon/auth"
 	"github.com/myceldb/mycel/internal/daemon/config"
@@ -194,7 +195,7 @@ func Run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "myceld initialization failed: inference service is not registered\n")
 		return 1
 	}
-	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, DataDir: cfg.DataDir, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, UsageManager: usageService, UsageAdmissionManager: usageService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, SearchConfig: cfg.Search, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics})
+	grpcServer, grpcErrCh, err := server.Start(serverCtx, server.Config{Addr: cfg.GRPCAddr, DataDir: cfg.DataDir, PrincipalManager: principalService, ActivityManager: activityService, BackupManager: backupService, UsageManager: usageService, UsageAdmissionManager: usageService, SpaceManager: spaceService, SessionManager: sessionService, GraphManager: graphService, GraphChangeManager: graphNotificationService, BlobManager: blobService, InferenceManager: inferenceService, SemanticManager: semanticService, LexicalManager: lexicalService, SchemaManager: schemaService, AutomationManager: automationService, TokenManager: tokenManager, Logger: rt.Logger, TLSConfig: tlsConfig, ClusterBackendAuthToken: cfg.Cluster.BackendAuthToken, Quiesce: rt.Quiesce, ClusteringManager: rt.ClusterManager, ClusteringServer: rt.ClusterManager.BackendService(), WALStatus: rt.WAL, WALCheckpoint: rt.WALCheckpoint, SearchConfig: cfg.Search, ClusterConfig: cfg.Cluster, RaftGroups: rt.RaftGroups, RaftTransportDiagnostics: rt.RaftTransportDiagnostics, ForwardingConnPool: rt.ForwardingConnPool})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "myceld grpc startup failed: %v\n", err)
 		return 1
@@ -482,6 +483,10 @@ func Initialize(ctx context.Context, cfg config.Config) (*daemonruntime.Runtime,
 		graphService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		graphService.EnableProjectionLifecycle(rt.RaftGroups, consensus.NodeID(cfg.Cluster.RaftLocalNodeID), uint32(cfg.Cluster.RaftPartitionCount))
 		graphService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken)
+		if len(cfg.Cluster.RaftNodeAddrs) > 0 {
+			rt.ForwardingConnPool = backend.NewForwardingConnPool(backend.Client{}, cfg.Cluster.RaftNodeAddrs)
+			graphService.SetForwardingConnPool(rt.ForwardingConnPool)
+		}
 		blobService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
 		blobService.EnableExperimentalRaftNetworking(consensus.NodeID(cfg.Cluster.RaftLocalNodeID), cfg.Cluster.RaftNodeAddrs, cfg.Cluster.BackendAuthToken, identity.ClusterID)
 		semanticService.EnableExperimentalRaft(rt.RaftGroups, uint32(cfg.Cluster.RaftPartitionCount))
