@@ -7,11 +7,13 @@ import (
 )
 
 func (c Client) ExecuteRaftGraphRead(ctx context.Context, addr string, spaceID string, payload []byte) ([]byte, error) {
-	conn, err := c.dial(ctx, addr)
+	conn, release, err := c.forwardingConn(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	if release != nil {
+		defer release()
+	}
 	res, err := clusterpb.NewClusterBackendServiceClient(conn).ExecuteRaftGraphRead(c.authContext(ctx), &clusterpb.ExecuteRaftGraphReadRequest{ProtocolVersion: clusterpb.ClusterProtocolVersion_CLUSTER_PROTOCOL_VERSION_V1, SpaceId: spaceID, Payload: payload})
 	if err != nil {
 		return nil, err

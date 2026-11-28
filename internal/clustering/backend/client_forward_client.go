@@ -28,11 +28,13 @@ type ForwardClientRequestResult struct {
 }
 
 func (c Client) ForwardClientRequest(ctx context.Context, addr string, in ForwardClientRequestInput) (ForwardClientRequestResult, error) {
-	conn, err := c.dial(ctx, addr)
+	conn, release, err := c.forwardingConn(ctx, addr)
 	if err != nil {
 		return ForwardClientRequestResult{}, err
 	}
-	defer conn.Close()
+	if release != nil {
+		defer release()
+	}
 	ctx = c.authContext(ctx)
 	ctx, err = (routing.ForwardingGuard{LocalNode: in.RequesterNode}).OutgoingContext(ctx)
 	if err != nil {

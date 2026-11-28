@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/myceldb/mycel/internal/clustering"
+	"github.com/myceldb/mycel/internal/clustering/backend"
 	"github.com/myceldb/mycel/internal/clustering/consensus"
 	"github.com/myceldb/mycel/internal/clustering/model"
 	"github.com/myceldb/mycel/internal/daemon/config"
@@ -63,6 +64,9 @@ type Runtime struct {
 	RaftRouter               consensus.MessageSender
 	RaftTransportDiagnostics *consensus.TransportDiagnostics
 	ProjectionRegistries     *projection.RegistryManager
+
+	// ForwardingConnPool is shared by graph and client forwarding, not Raft messages.
+	ForwardingConnPool *backend.ForwardingConnPool
 
 	LogPath string
 
@@ -153,6 +157,9 @@ func (r *Runtime) Close() error {
 				firstErr = err
 			}
 		}
+	}
+	if err := r.ForwardingConnPool.Close(); err != nil && firstErr == nil {
+		firstErr = err
 	}
 	if r.WAL != nil {
 		if err := r.WAL.Close(); err != nil && firstErr == nil {

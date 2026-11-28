@@ -14,6 +14,27 @@ import (
 type Client struct {
 	DialOptions []grpc.DialOption
 	AuthToken   string
+
+	forwardingConnPool *ForwardingConnPool
+}
+
+// WithForwardingConnPool shares the daemon's channels without transferring
+// ownership. Auth and cancellation are still scoped to each RPC.
+func (c Client) WithForwardingConnPool(pool *ForwardingConnPool) Client {
+	c.forwardingConnPool = pool
+	return c
+}
+
+func (c Client) forwardingConn(ctx context.Context, addr string) (conn *grpc.ClientConn, release func() error, err error) {
+	if c.forwardingConnPool != nil {
+		conn, err = c.forwardingConnPool.conn(ctx, addr)
+		return conn, nil, err
+	}
+	conn, err = c.dial(ctx, addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, conn.Close, nil
 }
 
 func (c Client) authContext(ctx context.Context) context.Context {

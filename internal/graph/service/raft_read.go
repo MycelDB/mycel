@@ -157,11 +157,16 @@ type raftGraphIdempotencyResponse struct {
 func (m *Module) EnableExperimentalRaftNetworking(local consensus.NodeID, addrs []string, token string) {
 	m.raftLocalNode = local
 	m.raftNodeAddrs = append([]string(nil), addrs...)
-	m.raftBackendAuthToken = token
+	m.raftBackendClient.AuthToken = token
 	if strings.TrimSpace(token) != "" {
 		sum := sha256.Sum256([]byte("mycel.graph.revision-fence.v2\x00" + token))
 		m.revisionFenceMACKey = append([]byte(nil), sum[:]...)
 	}
+}
+
+// SetForwardingConnPool injects the runtime-owned transport during startup.
+func (m *Module) SetForwardingConnPool(pool *backend.ForwardingConnPool) {
+	m.raftBackendClient = m.raftBackendClient.WithForwardingConnPool(pool)
 }
 
 func (m *Module) shouldForwardRaftGraphRead(spaceID string) (consensus.NodeID, bool, error) {
@@ -369,7 +374,7 @@ func (m *Module) forwardRaftGraphRead(ctx context.Context, leader consensus.Node
 	if err != nil {
 		return err
 	}
-	res, err := backend.Client{AuthToken: m.raftBackendAuthToken}.ExecuteRaftGraphRead(ctx, m.raftNodeAddrs[idx], req.SpaceID, payload)
+	res, err := m.raftBackendClient.ExecuteRaftGraphRead(ctx, m.raftNodeAddrs[idx], req.SpaceID, payload)
 	if err != nil {
 		return err
 	}
